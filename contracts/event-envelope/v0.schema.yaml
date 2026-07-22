@@ -2,6 +2,11 @@ $schema: https://json-schema.org/draft/2020-12/schema
 $id: urn:prediction-market:event-envelope:v0
 title: Event Envelope v0
 contract_version: v0
+x-normative-semantic-validator:
+  callable: prediction_market.contracts.validate_contract_v0
+  schema_name: event-envelope/v0.schema.yaml
+  required: true
+  fail_closed_without_runtime: true
 description: Canonical append-only event envelope for raw and derived program events.
 type: object
 additionalProperties: false

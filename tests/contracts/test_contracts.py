@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import re
 import sys
+from collections.abc import Mapping
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -175,6 +177,49 @@ def _rule_snapshot() -> dict[str, Any]:
         "order_types_supported": ["FAK", "FOK", "GTC", "GTD"],
         "source_document_version": "docs.polymarket.com@2026-07-22",
         "raw_response_hash": _digest("e"),
+    }
+
+
+def _validated_event(event: dict[str, Any]):
+    contracts = _contracts()
+    event["payload_sha256"] = contracts.payload_sha256(event["payload"])
+    event["event_id"] = contracts.event_id_for(event)
+    return contracts.EventEnvelopeV0.model_validate(event)
+
+
+def _valid_schema_instances() -> dict[str, Any]:
+    return {
+        "event-envelope/v0.schema.yaml": _raw_event(),
+        "id-registry/v0/entity.schema.yaml": {
+            "assertion_version": "v0",
+            "entity_type": "competition",
+            "canonical_id": "cmp_nba",
+            "asserted_at": "2026-07-22T12:00:00Z",
+            "asserted_by": "Team A",
+            "evidence_refs": ["R-001"],
+        },
+        "id-registry/v0/native-assertion.schema.yaml": {
+            "assertion_version": "v0",
+            "canonical_id": "condition_0xabc",
+            "entity_type": "condition",
+            "native_namespace": "polymarket.condition",
+            "native_id": "0xabc",
+            "valid_from": "2026-07-22T12:00:00Z",
+            "asserted_at": "2026-07-22T12:00:00Z",
+            "evidence_refs": ["O-002"],
+        },
+        "id-registry/v0/relation-assertion.schema.yaml": {
+            "assertion_version": "v0",
+            "left_id": "market_moneyline_001",
+            "relation": "identity",
+            "right_id": "market_moneyline_002",
+            "asserted_at": "2026-07-22T12:00:00Z",
+            "evidence_refs": ["X-10"],
+        },
+        "model-output/v0.schema.yaml": _model_output(),
+        "quality-flags/v0.yaml": "gap_detected",
+        "market-relations/v0.yaml": "identity",
+        "venue-rule-snapshot/v0.schema.yaml": _rule_snapshot(),
     }
 
 
@@ -379,6 +424,23 @@ def test_event_id_hashes_full_model_dump_excluding_only_event_id() -> None:
     assert contracts.event_id_for(envelope) == documented
 
 
+def test_replay_total_order_uses_event_id_to_break_charter_key_collision() -> None:
+    contracts = _contracts()
+    first_data = _raw_event()
+    second_data = copy.deepcopy(first_data)
+    second_data["source"]["sequence"] = 18
+    first = _validated_event(first_data)
+    second = _validated_event(second_data)
+
+    assert first.event_id != second.event_id
+    first_key = contracts.replay_order_key(first)
+    second_key = contracts.replay_order_key(second)
+    assert first_key[:-1] == second_key[:-1]
+    assert first_key[-1] == first.event_id
+    assert second_key[-1] == second.event_id
+    assert first_key != second_key
+
+
 def test_raw_event_may_omit_optional_experiment_and_rule_snapshot_refs() -> None:
     contracts = _contracts()
     event = _raw_event()
@@ -423,10 +485,16 @@ def test_simulated_events_accept_observed_rule_snapshot_ref(event_type: str) -> 
 def test_event_serialization_is_deterministic_for_set_semantics() -> None:
     contracts = _contracts()
     first = _derived_event()
+    first["native_refs"] = [
+        {"namespace": "source.market", "native_id": "market-2"},
+        {"namespace": "source.market", "native_id": "market-1"},
+    ]
+    first["event_id"] = contracts.event_id_for(first)
     second = copy.deepcopy(first)
     second["quality_flags"].reverse()
     second["lineage"]["parent_event_ids"].reverse()
     second["canonical_refs"]["participant_ids"].reverse()
+    second["native_refs"].reverse()
     second["event_id"] = contracts.event_id_for(second)
 
     first_model = contracts.EventEnvelopeV0.model_validate(first)
@@ -439,6 +507,90 @@ def test_event_serialization_is_deterministic_for_set_semantics() -> None:
     assert contracts.canonical_sha256(first_model) == contracts.canonical_sha256(
         second_model
     )
+
+
+def test_generic_payload_list_order_is_not_set_semantics() -> None:
+    contracts = _contracts()
+    first = {"state_space": ["b", "a"]}
+    second = {"state_space": ["a", "b"]}
+
+    assert contracts.payload_sha256(first) != contracts.payload_sha256(second)
+
+
+def _assert_field_values_deeply_immutable(value: Any) -> None:
+    if isinstance(value, BaseModel):
+        for field_name in type(value).model_fields:
+            _assert_field_values_deeply_immutable(getattr(value, field_name))
+        return
+    if isinstance(value, Mapping):
+        assert not isinstance(value, dict)
+        for child in value.values():
+            _assert_field_values_deeply_immutable(child)
+        return
+    if isinstance(value, tuple):
+        for child in value:
+            _assert_field_values_deeply_immutable(child)
+        return
+    assert not isinstance(value, (list, dict, set))
+
+
+def test_validated_event_is_deeply_immutable_and_detached_from_input() -> None:
+    contracts = _contracts()
+    original = _raw_event()
+    envelope = contracts.EventEnvelopeV0.model_validate(original)
+    canonical_before = contracts.canonical_sha256(envelope)
+    event_id_before = envelope.event_id
+
+    original["payload"]["book"]["bids"][0]["price"]["atoms"] = "1"
+    original["payload"]["book"]["bids"].append({"mutated": True})
+    original["canonical_refs"]["participant_ids"].append("participant_mutated")
+    original["native_refs"].append(
+        {"namespace": "polymarket.condition", "native_id": "mutated"}
+    )
+    original["quality_flags"].append("crossed_book")
+
+    with pytest.raises(TypeError):
+        envelope.payload["asset_id"] = "mutated"
+    with pytest.raises(AttributeError):
+        envelope.payload["book"]["bids"].append({"mutated": True})
+
+    assert envelope.payload["book"]["bids"][0]["price"]["atoms"] == "49"
+    assert envelope.event_id == event_id_before
+    assert contracts.canonical_sha256(envelope) == canonical_before
+    _assert_field_values_deeply_immutable(envelope)
+
+
+def test_payload_freezes_serializable_model_nodes_instead_of_retaining_them() -> None:
+    class MutablePayloadNode(BaseModel):
+        values: list[str]
+
+    node = MutablePayloadNode(values=["original"])
+    event = _raw_event()
+    event["payload"]["node"] = node
+    envelope = _validated_event(event)
+
+    node.values.append("mutated")
+
+    assert envelope.payload["node"]["values"] == ("original",)
+    _assert_field_values_deeply_immutable(envelope)
+
+
+def test_all_structural_event_collections_are_tuples() -> None:
+    contracts = _contracts()
+    raw = contracts.EventEnvelopeV0.model_validate(_raw_event())
+    derived = contracts.EventEnvelopeV0.model_validate(_derived_event())
+
+    collections = (
+        raw.canonical_refs.participant_ids,
+        raw.native_refs,
+        derived.lineage.parent_event_ids,
+        raw.quality_flags,
+        raw.payload["book"]["bids"],
+    )
+    assert all(isinstance(value, tuple) for value in collections)
+    for value in collections:
+        with pytest.raises(AttributeError):
+            value.append("mutated")
 
 
 def test_event_accepts_valid_raw_and_derived_contracts() -> None:
@@ -461,6 +613,47 @@ def test_model_output_is_complete_state_transition_distribution() -> None:
         (probability.to_decimal() for probability in output.probabilities.values()),
         start=Decimal(0),
     ) == Decimal(1)
+
+
+def test_model_output_and_rule_snapshot_have_no_mutable_field_values() -> None:
+    contracts = _contracts()
+    output_input = _model_output()
+    snapshot_input = _rule_snapshot()
+    output = contracts.ModelOutputV0.model_validate(output_input)
+    snapshot = contracts.VenueRuleSnapshotV0.model_validate(snapshot_input)
+
+    output_input["state_space"].append("mutated")
+    output_input["probabilities"]["mutated"] = {"atoms": "0", "scale": 0}
+    snapshot_input["order_types_supported"].append("IOC")
+
+    with pytest.raises(TypeError):
+        output.probabilities["mutated"] = contracts.FixedPointV0(atoms="0", scale=0)
+    with pytest.raises(AttributeError):
+        output.state_space.append("mutated")
+    with pytest.raises(AttributeError):
+        snapshot.order_types_supported.append("IOC")
+
+    assert "mutated" not in output.probabilities
+    assert "mutated" not in output.state_space
+    assert "IOC" not in snapshot.order_types_supported
+    _assert_field_values_deeply_immutable(output)
+    _assert_field_values_deeply_immutable(snapshot)
+
+
+def test_immutable_contracts_thaw_deterministically_for_serialization() -> None:
+    contracts = _contracts()
+    models = (
+        contracts.EventEnvelopeV0.model_validate(_raw_event()),
+        contracts.ModelOutputV0.model_validate(_model_output()),
+        contracts.VenueRuleSnapshotV0.model_validate(_rule_snapshot()),
+    )
+
+    for model in models:
+        first = contracts.thaw_contract_v0(model)
+        second = contracts.thaw_contract_v0(model)
+        assert first == second
+        assert isinstance(first, dict)
+        assert json.loads(model.model_dump_json()) == first
 
 
 @pytest.mark.parametrize(
@@ -639,6 +832,108 @@ def test_machine_readable_contract_documents_load(relative_path: str) -> None:
     assert document.get("title")
 
 
+@pytest.mark.parametrize("relative_path", SCHEMA_PATHS)
+def test_every_yaml_contract_requires_one_normative_runtime_validator(
+    relative_path: str,
+) -> None:
+    document = yaml.safe_load(
+        (CONTRACTS_ROOT / relative_path).read_text(encoding="utf-8")
+    )
+
+    assert document["x-normative-semantic-validator"] == {
+        "callable": "prediction_market.contracts.validate_contract_v0",
+        "schema_name": relative_path,
+        "required": True,
+        "fail_closed_without_runtime": True,
+    }
+
+
+def test_normative_runtime_validator_accepts_every_v0_contract_family() -> None:
+    contracts = _contracts()
+
+    for schema_name, instance in _valid_schema_instances().items():
+        assert contracts.validate_contract_v0(schema_name, instance) is not None
+
+
+def test_normative_runtime_validator_rejects_cross_type_id_assertion() -> None:
+    contracts = _contracts()
+    assertion = _valid_schema_instances()["id-registry/v0/entity.schema.yaml"]
+    assertion["entity_type"] = "game"
+
+    with pytest.raises(ValidationError):
+        contracts.validate_contract_v0(
+            "id-registry/v0/entity.schema.yaml", assertion
+        )
+
+
+def test_normative_runtime_validator_rejects_non_unit_probability_sum() -> None:
+    contracts = _contracts()
+    output = _model_output()
+    output["probabilities"]["game_over"] = {"atoms": "24", "scale": 2}
+
+    with pytest.raises(ValidationError, match="sum exactly to 1"):
+        contracts.validate_contract_v0("model-output/v0.schema.yaml", output)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("fee_rate", {"atoms": "-1", "scale": 2}),
+        ("minimum_tick_size", {"atoms": "0", "scale": 0}),
+        ("minimum_order_size", {"atoms": "0", "scale": 0}),
+    ],
+)
+def test_normative_runtime_validator_fails_closed_on_rule_numbers(
+    field: str, value: dict[str, Any]
+) -> None:
+    contracts = _contracts()
+    snapshot = _rule_snapshot()
+    snapshot[field] = value
+
+    with pytest.raises(ValidationError):
+        contracts.validate_contract_v0(
+            "venue-rule-snapshot/v0.schema.yaml", snapshot
+        )
+
+
+def _contains_mapping_key(value: Any, searched_key: str) -> bool:
+    if isinstance(value, dict):
+        return searched_key in value or any(
+            _contains_mapping_key(child, searched_key) for child in value.values()
+        )
+    if isinstance(value, list):
+        return any(_contains_mapping_key(child, searched_key) for child in value)
+    return False
+
+
+def test_numeric_yaml_patterns_match_runtime_sign_constraints() -> None:
+    model_schema = yaml.safe_load(
+        (CONTRACTS_ROOT / "model-output" / "v0.schema.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    venue_schema = yaml.safe_load(
+        (CONTRACTS_ROOT / "venue-rule-snapshot" / "v0.schema.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert model_schema["properties"]["probabilities"]["additionalProperties"] == {
+        "$ref": "#/$defs/probability_fixed_point"
+    }
+    assert model_schema["$defs"]["probability_fixed_point"]["allOf"][1][
+        "properties"
+    ]["atoms"]["pattern"] == "^(?:0|[1-9][0-9]*)$"
+    assert venue_schema["$defs"]["nonnegative_fixed_point"]["allOf"][1][
+        "properties"
+    ]["atoms"]["pattern"] == "^(?:0|[1-9][0-9]*)$"
+    assert venue_schema["$defs"]["positive_fixed_point"]["allOf"][1][
+        "properties"
+    ]["atoms"]["pattern"] == "^[1-9][0-9]*$"
+    assert not _contains_mapping_key(venue_schema, "x-decimal-minimum")
+    assert not _contains_mapping_key(venue_schema, "x-decimal-exclusive-minimum")
+
+
 def test_schema_contracts_forbid_extensions_and_require_core_keys() -> None:
     expected_required = {
         "event-envelope/v0.schema.yaml": {
@@ -815,6 +1110,33 @@ def test_quality_and_relation_yaml_enums_match_python_contract() -> None:
     assert frozenset(relations["enum"]) == contracts.MARKET_RELATIONS
 
 
+def test_all_controlled_yaml_vocabularies_match_python_contract() -> None:
+    contracts = _contracts()
+    event = yaml.safe_load(
+        (CONTRACTS_ROOT / "event-envelope" / "v0.schema.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    venue = yaml.safe_load(
+        (CONTRACTS_ROOT / "venue-rule-snapshot" / "v0.schema.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert frozenset(event["properties"]["event_type"]["enum"]) == (
+        contracts.EVENT_TYPES
+    )
+    assert frozenset(event["$defs"]["experiment_id"]["enum"]) == (
+        contracts.REGISTERED_EXPERIMENT_IDS
+    )
+    assert frozenset(
+        venue["properties"]["start_time_cancel_policy"]["enum"]
+    ) == contracts.START_TIME_CANCEL_POLICIES
+    assert frozenset(
+        venue["properties"]["order_types_supported"]["items"]["enum"]
+    ) == contracts.ORDER_TYPES
+
+
 def test_deterministic_replay_document_records_level_1_and_2_gate() -> None:
     path = CONTRACTS_ROOT / "deterministic-replay" / "v0.md"
     assert path.is_file()
@@ -841,6 +1163,8 @@ def test_deterministic_replay_document_records_level_1_and_2_gate() -> None:
         "32-byte",
         "domain tag",
         "rule_snapshot_ref",
+        "event_id",
+        "structural json/yaml validation alone is insufficient",
     ):
         assert clause in text
     assert "level 1 + level 2" in text
@@ -859,10 +1183,12 @@ def test_replay_order_key_places_every_nullable_field_last(
     field_path: tuple[str, str],
 ) -> None:
     contracts = _contracts()
-    present = _derived_event()
-    null_value = copy.deepcopy(present)
+    present_data = _derived_event()
+    null_data = copy.deepcopy(present_data)
     parent, child = field_path
-    null_value[parent][child] = None
+    null_data[parent][child] = None
+    present = _validated_event(present_data)
+    null_value = _validated_event(null_data)
 
     assert contracts.replay_order_key(present) < contracts.replay_order_key(null_value)
 
@@ -874,31 +1200,50 @@ def test_replay_order_key_uses_documented_tagged_null_sentinel() -> None:
     event["canonical_refs"]["market_id"] = None
     event["canonical_refs"]["outcome_id"] = None
 
-    key = contracts.replay_order_key(event)
+    envelope = _validated_event(event)
+    key = contracts.replay_order_key(envelope)
 
     assert key[1:4] == ((1, ""), (1, ""), (1, ""))
 
 
 def test_level_2_stream_hash_uses_explicit_domain_count_and_digest_framing() -> None:
     contracts = _contracts()
-    event_ids = [_event_id("a"), _event_id("b")]
+    events = [
+        contracts.EventEnvelopeV0.model_validate(_derived_event()),
+        contracts.EventEnvelopeV0.model_validate(_raw_event()),
+    ]
+    ordered = sorted(events, key=contracts.replay_order_key)
     expected_frame = (
         contracts.LEVEL2_STREAM_DOMAIN_TAG
-        + len(event_ids).to_bytes(8, byteorder="big", signed=False)
-        + bytes.fromhex("a" * 64)
-        + bytes.fromhex("b" * 64)
+        + len(ordered).to_bytes(8, byteorder="big", signed=False)
+        + b"".join(
+            bytes.fromhex(envelope.event_id.removeprefix("evt_"))
+            for envelope in ordered
+        )
     )
 
-    frame = contracts.level2_stream_frame(event_ids)
+    frame = contracts.level2_stream_frame(events)
 
     assert frame == expected_frame
     assert len(frame) == len(contracts.LEVEL2_STREAM_DOMAIN_TAG) + 8 + 2 * 32
-    assert contracts.level2_stream_sha256(event_ids) == (
+    assert contracts.level2_stream_sha256(events) == (
         "sha256:" + hashlib.sha256(expected_frame).hexdigest()
     )
-    assert contracts.level2_stream_sha256(reversed(event_ids)) != (
-        contracts.level2_stream_sha256(event_ids)
+    assert contracts.level2_stream_sha256(reversed(events)) == (
+        contracts.level2_stream_sha256(events)
     )
+
+
+def test_public_ordering_and_framing_helpers_reject_unvalidated_values() -> None:
+    contracts = _contracts()
+    envelope = contracts.EventEnvelopeV0.model_validate(_derived_event())
+
+    with pytest.raises(TypeError, match="EventEnvelopeV0"):
+        contracts.replay_order_key(_derived_event())
+    with pytest.raises(TypeError, match="EventEnvelopeV0"):
+        contracts.level2_stream_frame([envelope.event_id])
+    with pytest.raises(TypeError, match="EventEnvelopeV0"):
+        contracts.level2_stream_sha256([_derived_event()])
 
 
 @pytest.mark.parametrize(

@@ -1,5 +1,10 @@
 title: Quality Flags v0
 contract_version: v0
+x-normative-semantic-validator:
+  callable: prediction_market.contracts.validate_contract_v0
+  schema_name: quality-flags/v0.yaml
+  required: true
+  fail_closed_without_runtime: true
 description: Closed vocabulary for canonical data-quality observations.
 type: string
 enum:

@@ -2,6 +2,11 @@ $schema: https://json-schema.org/draft/2020-12/schema
 $id: urn:prediction-market:model-output:v0
 title: State Transition Model Output v0
 contract_version: v0
+x-normative-semantic-validator:
+  callable: prediction_market.contracts.validate_contract_v0
+  schema_name: model-output/v0.schema.yaml
+  required: true
+  fail_closed_without_runtime: true
 description: Point-in-time state-transition distribution; a final win-probability-only output is not this contract.
 type: object
 additionalProperties: false
@@ -57,8 +62,8 @@ properties:
     type: object
     minProperties: 1
     additionalProperties:
-      $ref: '#/$defs/fixed_point'
-    x-invariant: Keys equal state_space; each value is in [0,1]; the exact Decimal sum is 1.
+      $ref: '#/$defs/probability_fixed_point'
+    description: Runtime semantic validation requires keys equal state_space, values in [0,1], and an exact Decimal sum of 1.
   feature_sha256:
     $ref: '#/$defs/sha256'
   data_sha256:
@@ -83,6 +88,13 @@ $defs:
         type: integer
         minimum: 0
         maximum: 18
+  probability_fixed_point:
+    allOf:
+      - $ref: '#/$defs/fixed_point'
+      - properties:
+          atoms:
+            type: string
+            pattern: ^(?:0|[1-9][0-9]*)$
   sha256:
     type: string
     pattern: ^sha256:[0-9a-f]{64}$

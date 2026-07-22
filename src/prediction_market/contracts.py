@@ -10,10 +10,10 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from datetime import datetime
 from decimal import Decimal
-from typing import Annotated, Any, Literal, Mapping
+from typing import Annotated, Any, Generic, Literal, TypeVar
 
 from pydantic import (
     AfterValidator,
@@ -21,6 +21,8 @@ from pydantic import (
     ConfigDict,
     Field,
     StringConstraints,
+    TypeAdapter,
+    field_serializer,
     field_validator,
     model_validator,
 )
@@ -105,6 +107,79 @@ ORDER_TYPES = frozenset(
 
 class _ContractModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+
+_Key = TypeVar("_Key")
+_Value = TypeVar("_Value")
+
+
+class FrozenDict(Mapping[_Key, _Value], Generic[_Key, _Value]):
+    """A mapping backed only by an immutable tuple of key/value pairs."""
+
+    __slots__ = ("_items",)
+
+    def __init__(self, values: Mapping[_Key, _Value]) -> None:
+        object.__setattr__(self, "_items", tuple(values.items()))
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise TypeError("FrozenDict is immutable")
+
+    def __getitem__(self, key: _Key) -> _Value:
+        for stored_key, stored_value in self._items:
+            if stored_key == key:
+                return stored_value
+        raise KeyError(key)
+
+    def __iter__(self) -> Iterator[_Key]:
+        return (key for key, _ in self._items)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __repr__(self) -> str:
+        contents = ", ".join(
+            f"{key!r}: {value!r}" for key, value in self._items
+        )
+        return f"FrozenDict({{{contents}}})"
+
+
+def _freeze(value: Any) -> Any:
+    if isinstance(value, BaseModel):
+        return FrozenDict(
+            {
+                field_name: _freeze(getattr(value, field_name))
+                for field_name in type(value).model_fields
+            }
+        )
+    if isinstance(value, Mapping):
+        return FrozenDict(
+            {key: _freeze(child_value) for key, child_value in value.items()}
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze(child_value) for child_value in value)
+    return value
+
+
+def _as_tuple(value: Any) -> Any:
+    return tuple(value) if isinstance(value, (list, tuple)) else value
+
+
+def thaw_contract_v0(value: Any) -> Any:
+    """Return a detached JSON-compatible representation of immutable values."""
+
+    if isinstance(value, BaseModel):
+        return {
+            field_name: thaw_contract_v0(getattr(value, field_name))
+            for field_name in type(value).model_fields
+        }
+    if isinstance(value, Mapping):
+        return {
+            key: thaw_contract_v0(child_value)
+            for key, child_value in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [thaw_contract_v0(child_value) for child_value in value]
+    return value
 
 
 class FixedPointV0(_ContractModel):
@@ -317,18 +392,23 @@ class EventTimeV0(_ContractModel):
 class CanonicalReferencesV0(_ContractModel):
     competition_id: CompetitionIdV0 | None
     game_id: GameIdV0 | None
-    participant_ids: list[ParticipantIdV0]
+    participant_ids: tuple[ParticipantIdV0, ...]
     venue_event_id: VenueEventIdV0 | None
     market_id: MarketIdV0 | None
     outcome_id: OutcomeIdV0 | None
     condition_id: ConditionIdV0 | None
 
+    @field_validator("participant_ids", mode="before")
+    @classmethod
+    def _participant_input_is_tuple(cls, value: Any) -> Any:
+        return _as_tuple(value)
+
     @field_validator("participant_ids")
     @classmethod
-    def _participants_are_a_set(cls, value: list[str]) -> list[str]:
+    def _participants_are_a_set(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         if len(value) != len(set(value)):
             raise ValueError("participant_ids must be unique")
-        return sorted(value)
+        return tuple(sorted(value))
 
 
 class NativeReferenceV0(_ContractModel):
@@ -339,14 +419,19 @@ class NativeReferenceV0(_ContractModel):
 class EventLineageV0(_ContractModel):
     raw_object_hash: Sha256V0 | None = None
     raw_record_ordinal: int | None = Field(default=None, ge=0)
-    parent_event_ids: list[EventIdV0] = Field(default_factory=list)
+    parent_event_ids: tuple[EventIdV0, ...] = ()
+
+    @field_validator("parent_event_ids", mode="before")
+    @classmethod
+    def _parent_input_is_tuple(cls, value: Any) -> Any:
+        return _as_tuple(value)
 
     @field_validator("parent_event_ids")
     @classmethod
-    def _parents_are_a_set(cls, value: list[str]) -> list[str]:
+    def _parents_are_a_set(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         if len(value) != len(set(value)):
             raise ValueError("parent_event_ids must be unique")
-        return sorted(value)
+        return tuple(sorted(value))
 
     @model_validator(mode="after")
     def _exactly_one_lineage_branch(self) -> "EventLineageV0":
@@ -361,23 +446,45 @@ class EventLineageV0(_ContractModel):
         return self
 
 
-# Lists whose ordering is explicitly set semantics in v0.  Payload arrays not
-# named here retain their source order.
-_SET_SEMANTIC_KEYS = frozenset(
+# Only these complete structural paths have set semantics. Payload paths never
+# match them, even when a payload property reuses a structural field name.
+_SET_SEMANTIC_PATHS = frozenset(
     {
-        "native_refs",
-        "order_types_supported",
-        "parent_event_ids",
-        "participant_ids",
-        "quality_flags",
-        "state_space",
+        ("event_envelope", "canonical_refs", "participant_ids"),
+        ("event_envelope", "native_refs"),
+        ("event_envelope", "lineage", "parent_event_ids"),
+        ("event_envelope", "quality_flags"),
+        ("model_output", "state_space"),
+        ("model_output", "quality_flags"),
+        ("venue_rule_snapshot", "order_types_supported"),
     }
 )
 
 
-def _canonical_value(value: Any, *, key: str | None = None) -> Any:
+def _canonical_root(value: Any) -> tuple[str, ...]:
+    model_name = type(value).__name__ if isinstance(value, BaseModel) else ""
+    if model_name == "EventEnvelopeV0":
+        return ("event_envelope",)
+    if model_name == "ModelOutputV0":
+        return ("model_output",)
+    if model_name == "VenueRuleSnapshotV0":
+        return ("venue_rule_snapshot",)
+    if isinstance(value, Mapping):
+        if value.get("envelope_version") == "v0" and "event_type" in value:
+            return ("event_envelope",)
+        if value.get("contract_version") == "v0" and "probabilities" in value:
+            return ("model_output",)
+        if "condition_id" in value and "raw_response_hash" in value:
+            return ("venue_rule_snapshot",)
+    return ("value",)
+
+
+def _canonical_value(value: Any, *, path: tuple[str, ...]) -> Any:
     if isinstance(value, BaseModel):
-        value = value.model_dump(mode="python")
+        value = {
+            field_name: getattr(value, field_name)
+            for field_name in type(value).model_fields
+        }
     if isinstance(value, float):
         raise ValueError("binary float is forbidden in canonical contracts")
     if isinstance(value, Decimal):
@@ -389,11 +496,15 @@ def _canonical_value(value: Any, *, key: str | None = None) -> Any:
         for child_key, child_value in value.items():
             if not isinstance(child_key, str):
                 raise ValueError("canonical object keys must be strings")
-            normalized[child_key] = _canonical_value(child_value, key=child_key)
+            normalized[child_key] = _canonical_value(
+                child_value, path=path + (child_key,)
+            )
         return normalized
     if isinstance(value, (list, tuple)):
-        normalized_list = [_canonical_value(item) for item in value]
-        if key in _SET_SEMANTIC_KEYS:
+        normalized_list = [
+            _canonical_value(item, path=path + ("[]",)) for item in value
+        ]
+        if path in _SET_SEMANTIC_PATHS:
             normalized_list.sort(
                 key=lambda item: json.dumps(
                     item,
@@ -410,7 +521,7 @@ def _canonical_value(value: Any, *, key: str | None = None) -> Any:
 def canonical_json_bytes(value: Any) -> bytes:
     """Return deterministic UTF-8 JSON for a canonical contract value."""
 
-    normalized = _canonical_value(value)
+    normalized = _canonical_value(value, path=_canonical_root(value))
     return json.dumps(
         normalized,
         ensure_ascii=False,
@@ -429,7 +540,15 @@ def canonical_sha256(value: Any) -> str:
 
 
 def payload_sha256(payload: Mapping[str, Any]) -> str:
-    return canonical_sha256(payload)
+    normalized = _canonical_value(payload, path=("payload",))
+    encoded = json.dumps(
+        normalized,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
 def _event_hash_material(value: Mapping[str, Any] | BaseModel) -> dict[str, Any]:
@@ -503,49 +622,46 @@ def _nulls_last(
     return (1, "") if value is None else (0, transform(value))
 
 
-def replay_order_key(value: Mapping[str, Any] | BaseModel) -> tuple[Any, ...]:
-    """Return the v0 total-order key with tagged NULLS LAST components."""
+def _require_envelope(value: Any) -> "EventEnvelopeV0":
+    if not isinstance(value, EventEnvelopeV0):
+        raise TypeError("ordering and framing require a validated EventEnvelopeV0")
+    return value
 
-    material = value.model_dump(mode="python") if isinstance(value, BaseModel) else value
-    time = material["time"]
-    canonical_refs = material["canonical_refs"]
+
+def replay_order_key(value: "EventEnvelopeV0") -> tuple[Any, ...]:
+    """Return the collision-free v0 total-order key for a validated envelope."""
+
+    envelope = _require_envelope(value)
     return (
-        _timestamp_order_value(time["receive_at"]),
-        _nulls_last(time.get("source_at"), _timestamp_order_value),
-        _nulls_last(canonical_refs.get("market_id"), str),
-        _nulls_last(canonical_refs.get("outcome_id"), str),
-        material["payload_sha256"],
+        _timestamp_order_value(envelope.time.receive_at),
+        _nulls_last(envelope.time.source_at, _timestamp_order_value),
+        _nulls_last(envelope.canonical_refs.market_id, str),
+        _nulls_last(envelope.canonical_refs.outcome_id, str),
+        envelope.payload_sha256,
+        envelope.event_id,
     )
 
 
-def _stream_event_id(value: str | Mapping[str, Any] | BaseModel) -> str:
-    if isinstance(value, str):
-        event_id = value
-    elif isinstance(value, BaseModel):
-        event_id = getattr(value, "event_id", None)
-    else:
-        event_id = value.get("event_id")
-    if not isinstance(event_id, str) or re.fullmatch(r"evt_[0-9a-f]{64}", event_id) is None:
-        raise ValueError("Level-2 framing requires canonical evt_<64hex> event IDs")
-    return event_id
-
-
 def level2_stream_frame(
-    events: Iterable[str | Mapping[str, Any] | BaseModel],
+    events: Iterable["EventEnvelopeV0"],
 ) -> bytes:
-    """Frame ordered event digests without ambiguous concatenation."""
+    """Sort validated envelopes and frame their digests without ambiguity."""
 
-    event_ids = tuple(_stream_event_id(event) for event in events)
-    count = len(event_ids)
+    envelopes = tuple(_require_envelope(event) for event in events)
+    ordered = tuple(sorted(envelopes, key=replay_order_key))
+    count = len(ordered)
     return (
         LEVEL2_STREAM_DOMAIN_TAG
         + count.to_bytes(8, byteorder="big", signed=False)
-        + b"".join(bytes.fromhex(event_id.removeprefix("evt_")) for event_id in event_ids)
+        + b"".join(
+            bytes.fromhex(envelope.event_id.removeprefix("evt_"))
+            for envelope in ordered
+        )
     )
 
 
 def level2_stream_sha256(
-    events: Iterable[str | Mapping[str, Any] | BaseModel],
+    events: Iterable["EventEnvelopeV0"],
 ) -> str:
     return f"sha256:{hashlib.sha256(level2_stream_frame(events)).hexdigest()}"
 
@@ -558,36 +674,54 @@ class EventEnvelopeV0(_ContractModel):
     source: EventSourceV0
     time: EventTimeV0
     canonical_refs: CanonicalReferencesV0
-    native_refs: list[NativeReferenceV0]
+    native_refs: tuple[NativeReferenceV0, ...]
     lineage: EventLineageV0
     experiment_id: ExperimentIdV0 | None = None
     rule_snapshot_ref: Sha256V0 | None = None
-    quality_flags: list[QualityFlagV0]
-    payload: dict[str, Any]
+    quality_flags: tuple[QualityFlagV0, ...]
+    payload: Any
     payload_sha256: Sha256V0
+
+    @field_validator("native_refs", mode="before")
+    @classmethod
+    def _native_ref_input_is_tuple(cls, value: Any) -> Any:
+        return _as_tuple(value)
 
     @field_validator("native_refs")
     @classmethod
     def _native_refs_are_a_set(
-        cls, value: list[NativeReferenceV0]
-    ) -> list[NativeReferenceV0]:
+        cls, value: tuple[NativeReferenceV0, ...]
+    ) -> tuple[NativeReferenceV0, ...]:
         keys = [(reference.namespace, reference.native_id) for reference in value]
         if len(keys) != len(set(keys)):
             raise ValueError("native_refs must be unique")
-        return sorted(value, key=lambda reference: (reference.namespace, reference.native_id))
+        return tuple(
+            sorted(value, key=lambda reference: (reference.namespace, reference.native_id))
+        )
+
+    @field_validator("quality_flags", mode="before")
+    @classmethod
+    def _quality_flag_input_is_tuple(cls, value: Any) -> Any:
+        return _as_tuple(value)
 
     @field_validator("quality_flags")
     @classmethod
-    def _quality_flags_are_a_set(cls, value: list[str]) -> list[str]:
+    def _quality_flags_are_a_set(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         if len(value) != len(set(value)):
             raise ValueError("quality_flags must be unique")
-        return sorted(value)
+        return tuple(sorted(value))
 
     @field_validator("payload", mode="before")
     @classmethod
     def _payload_is_canonical_json(cls, value: Any) -> Any:
-        _canonical_value(value)
-        return value
+        if not isinstance(value, Mapping):
+            raise ValueError("payload must be an object")
+        _canonical_value(value, path=("payload",))
+        return _freeze(value)
+
+    @field_serializer("payload")
+    def _serialize_payload(self, value: Any) -> dict[str, Any]:
+        return thaw_contract_v0(value)
 
     @model_validator(mode="after")
     def _validate_hash_and_conditional_contract(self) -> "EventEnvelopeV0":
@@ -645,29 +779,54 @@ class ModelOutputV0(_ContractModel):
     game_id: GameIdV0
     state_event_id: EventIdV0
     pit_cutoff_at: UtcTimestampV0
-    state_space: list[NonBlankStr]
+    state_space: tuple[NonBlankStr, ...]
     horizon: NonBlankStr
-    probabilities: dict[str, FixedPointV0]
+    probabilities: Mapping[str, FixedPointV0]
     feature_sha256: Sha256V0
     data_sha256: Sha256V0
     config_sha256: Sha256V0
-    quality_flags: list[QualityFlagV0]
+    quality_flags: tuple[QualityFlagV0, ...]
+
+    @field_validator("state_space", mode="before")
+    @classmethod
+    def _state_space_input_is_tuple(cls, value: Any) -> Any:
+        return _as_tuple(value)
 
     @field_validator("state_space")
     @classmethod
-    def _state_space_is_a_set(cls, value: list[str]) -> list[str]:
+    def _state_space_is_a_set(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         if not value:
             raise ValueError("state_space must not be empty")
         if len(value) != len(set(value)):
             raise ValueError("state_space must be unique")
-        return sorted(value)
+        return tuple(sorted(value))
+
+    @field_validator("probabilities")
+    @classmethod
+    def _probabilities_are_immutable(
+        cls, value: Mapping[str, FixedPointV0]
+    ) -> FrozenDict[str, FixedPointV0]:
+        return FrozenDict(value)
+
+    @field_serializer("probabilities")
+    def _serialize_probabilities(
+        self, value: Mapping[str, FixedPointV0]
+    ) -> dict[str, Any]:
+        return thaw_contract_v0(value)
+
+    @field_validator("quality_flags", mode="before")
+    @classmethod
+    def _model_quality_flag_input_is_tuple(cls, value: Any) -> Any:
+        return _as_tuple(value)
 
     @field_validator("quality_flags")
     @classmethod
-    def _model_quality_flags_are_a_set(cls, value: list[str]) -> list[str]:
+    def _model_quality_flags_are_a_set(
+        cls, value: tuple[str, ...]
+    ) -> tuple[str, ...]:
         if len(value) != len(set(value)):
             raise ValueError("quality_flags must be unique")
-        return sorted(value)
+        return tuple(sorted(value))
 
     @model_validator(mode="after")
     def _probabilities_form_distribution(self) -> "ModelOutputV0":
@@ -701,7 +860,7 @@ class VenueRuleSnapshotV0(_ContractModel):
     maker_fee_rate: FixedPointV0
     minimum_tick_size: FixedPointV0
     minimum_order_size: FixedPointV0
-    order_types_supported: list[OrderTypeV0]
+    order_types_supported: tuple[OrderTypeV0, ...]
     source_document_version: NonBlankStr
     raw_response_hash: Sha256V0
 
@@ -719,14 +878,21 @@ class VenueRuleSnapshotV0(_ContractModel):
             raise ValueError("source_document_version must identify the observation")
         return value
 
+    @field_validator("order_types_supported", mode="before")
+    @classmethod
+    def _order_type_input_is_tuple(cls, value: Any) -> Any:
+        return _as_tuple(value)
+
     @field_validator("order_types_supported")
     @classmethod
-    def _order_types_are_a_nonempty_set(cls, value: list[str]) -> list[str]:
+    def _order_types_are_a_nonempty_set(
+        cls, value: tuple[str, ...]
+    ) -> tuple[str, ...]:
         if not value:
             raise ValueError("order_types_supported must not be empty")
         if len(value) != len(set(value)):
             raise ValueError("order_types_supported must be unique")
-        return sorted(value)
+        return tuple(sorted(value))
 
     @model_validator(mode="after")
     def _execution_numbers_are_observed_and_valid(self) -> "VenueRuleSnapshotV0":
@@ -749,6 +915,130 @@ class VenueRuleSnapshotV0(_ContractModel):
         return self
 
 
+EntityTypeV0 = Literal[
+    "competition",
+    "game",
+    "participant",
+    "venue_event",
+    "market",
+    "outcome",
+    "condition",
+]
+CanonicalDomainIdV0 = Annotated[
+    str,
+    StringConstraints(
+        strict=True,
+        pattern=(
+            r"^(?:cmp|game|participant|venue_event|market|outcome|condition)_"
+            r"[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        ),
+    ),
+]
+MarketOutcomeConditionIdV0 = Annotated[
+    str,
+    StringConstraints(
+        strict=True,
+        pattern=r"^(?:market|outcome|condition)_[A-Za-z0-9][A-Za-z0-9._:-]*$",
+    ),
+]
+
+_DOMAIN_PREFIX_BY_TYPE = {
+    "competition": "cmp_",
+    "game": "game_",
+    "participant": "participant_",
+    "venue_event": "venue_event_",
+    "market": "market_",
+    "outcome": "outcome_",
+    "condition": "condition_",
+}
+
+
+class _EvidenceAssertionV0(_ContractModel):
+    evidence_refs: tuple[NonBlankStr, ...]
+
+    @field_validator("evidence_refs", mode="before")
+    @classmethod
+    def _evidence_input_is_tuple(cls, value: Any) -> Any:
+        return _as_tuple(value)
+
+    @field_validator("evidence_refs")
+    @classmethod
+    def _evidence_is_a_nonempty_set(
+        cls, value: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        if not value:
+            raise ValueError("evidence_refs must not be empty")
+        if len(value) != len(set(value)):
+            raise ValueError("evidence_refs must be unique")
+        return tuple(sorted(value))
+
+
+class EntityAssertionV0(_EvidenceAssertionV0):
+    assertion_version: Literal["v0"]
+    entity_type: EntityTypeV0
+    canonical_id: CanonicalDomainIdV0
+    asserted_at: UtcTimestampV0
+    asserted_by: NonBlankStr
+
+    @model_validator(mode="after")
+    def _canonical_prefix_matches_type(self) -> "EntityAssertionV0":
+        expected_prefix = _DOMAIN_PREFIX_BY_TYPE[self.entity_type]
+        if not self.canonical_id.startswith(expected_prefix):
+            raise ValueError("canonical_id prefix must match entity_type")
+        return self
+
+
+class NativeAssertionV0(_EvidenceAssertionV0):
+    assertion_version: Literal["v0"]
+    canonical_id: CanonicalDomainIdV0
+    entity_type: EntityTypeV0
+    native_namespace: NonBlankStr
+    native_id: NonBlankStr
+    valid_from: UtcTimestampV0
+    valid_to: UtcTimestampV0 | None = None
+    asserted_at: UtcTimestampV0
+
+    @model_validator(mode="after")
+    def _canonical_prefix_matches_type(self) -> "NativeAssertionV0":
+        expected_prefix = _DOMAIN_PREFIX_BY_TYPE[self.entity_type]
+        if not self.canonical_id.startswith(expected_prefix):
+            raise ValueError("canonical_id prefix must match entity_type")
+        return self
+
+
+class RelationAssertionV0(_EvidenceAssertionV0):
+    assertion_version: Literal["v0"]
+    left_id: MarketOutcomeConditionIdV0
+    relation: MarketRelationV0
+    right_id: MarketOutcomeConditionIdV0
+    asserted_at: UtcTimestampV0
+
+
+_MODEL_BY_SCHEMA_NAME: dict[str, type[BaseModel]] = {
+    "event-envelope/v0.schema.yaml": EventEnvelopeV0,
+    "id-registry/v0/entity.schema.yaml": EntityAssertionV0,
+    "id-registry/v0/native-assertion.schema.yaml": NativeAssertionV0,
+    "id-registry/v0/relation-assertion.schema.yaml": RelationAssertionV0,
+    "model-output/v0.schema.yaml": ModelOutputV0,
+    "venue-rule-snapshot/v0.schema.yaml": VenueRuleSnapshotV0,
+}
+_QUALITY_FLAG_ADAPTER = TypeAdapter(QualityFlagV0)
+_MARKET_RELATION_ADAPTER = TypeAdapter(MarketRelationV0)
+
+
+def validate_contract_v0(schema_name: str, instance: Any) -> Any:
+    """Run the normative v0 semantic validator for one contract schema."""
+
+    model = _MODEL_BY_SCHEMA_NAME.get(schema_name)
+    if model is not None:
+        return model.model_validate(instance)
+    if schema_name == "quality-flags/v0.yaml":
+        return _QUALITY_FLAG_ADAPTER.validate_python(instance, strict=True)
+    if schema_name == "market-relations/v0.yaml":
+        return _MARKET_RELATION_ADAPTER.validate_python(instance, strict=True)
+    raise ValueError(f"unknown v0 contract schema: {schema_name}")
+
+
 # Short aliases keep consumers from inventing parallel v0 names.
 SourceV0 = EventSourceV0
 TimeV0 = EventTimeV0
@@ -763,21 +1053,25 @@ __all__ = [
     "ConditionIdV0",
     "DERIVED_EVENT_TYPES",
     "EVENT_TYPES",
+    "EntityAssertionV0",
     "EventEnvelopeV0",
     "EventIdV0",
     "EventLineageV0",
     "EventSourceV0",
     "EventTimeV0",
     "FixedPointV0",
+    "FrozenDict",
     "LineageV0",
     "LEVEL2_STREAM_DOMAIN_TAG",
     "MARKET_RELATIONS",
     "ModelOutputV0",
+    "NativeAssertionV0",
     "NativeRefV0",
     "NativeReferenceV0",
     "ORDER_TYPES",
     "QUALITY_FLAGS",
     "REGISTERED_EXPERIMENT_IDS",
+    "RelationAssertionV0",
     "SIMULATED_EVENT_TYPES",
     "START_TIME_CANCEL_POLICIES",
     "Sha256V0",
@@ -795,4 +1089,6 @@ __all__ = [
     "level2_stream_sha256",
     "payload_sha256",
     "replay_order_key",
+    "thaw_contract_v0",
+    "validate_contract_v0",
 ]

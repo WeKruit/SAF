@@ -1,5 +1,10 @@
 title: Market Relations v0
 contract_version: v0
+x-normative-semantic-validator:
+  callable: prediction_market.contracts.validate_contract_v0
+  schema_name: market-relations/v0.yaml
+  required: true
+  fail_closed_without_runtime: true
 description: Closed, directional relation taxonomy for canonical market assertions.
 type: string
 enum:

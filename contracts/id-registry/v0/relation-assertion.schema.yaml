@@ -2,6 +2,11 @@ $schema: https://json-schema.org/draft/2020-12/schema
 $id: urn:prediction-market:id-registry:relation-assertion:v0
 title: Canonical Market Relation Assertion v0
 contract_version: v0
+x-normative-semantic-validator:
+  callable: prediction_market.contracts.validate_contract_v0
+  schema_name: id-registry/v0/relation-assertion.schema.yaml
+  required: true
+  fail_closed_without_runtime: true
 catalog_ids_are_domain_ids: false
 catalog_id_namespaces: [R, I, O]
 domain_id_namespaces:

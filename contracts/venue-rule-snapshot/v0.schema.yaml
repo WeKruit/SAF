@@ -2,6 +2,11 @@ $schema: https://json-schema.org/draft/2020-12/schema
 $id: urn:prediction-market:venue-rule-snapshot:v0
 title: Venue Rule Snapshot v0
 contract_version: v0
+x-normative-semantic-validator:
+  callable: prediction_market.contracts.validate_contract_v0
+  schema_name: venue-rule-snapshot/v0.schema.yaml
+  required: true
+  fail_closed_without_runtime: true
 description: Append-only observation of execution rules for one canonical market condition at one effective time.
 type: object
 additionalProperties: false
@@ -98,11 +103,17 @@ $defs:
   nonnegative_fixed_point:
     allOf:
       - $ref: '#/$defs/fixed_point'
-      - x-decimal-minimum: '0'
+      - properties:
+          atoms:
+            type: string
+            pattern: ^(?:0|[1-9][0-9]*)$
   positive_fixed_point:
     allOf:
       - $ref: '#/$defs/fixed_point'
-      - x-decimal-exclusive-minimum: '0'
+      - properties:
+          atoms:
+            type: string
+            pattern: ^[1-9][0-9]*$
   sha256:
     type: string
     pattern: ^sha256:[0-9a-f]{64}$
