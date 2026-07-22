@@ -1,0 +1,77 @@
+experiment_card:
+  id: X-06
+  name: NBA Game State baseline
+  owner_team: D1+H
+  status: registered
+  hypothesis: Prior plus simple logistic and GBDT features is calibrated and no worse than the market prior under game-grouped walk-forward validation
+  data:
+    - source: Multi-season NBA play-by-play
+      version: unresolved:nba_pbp_manifest
+      pit_basis: source_event_time
+    - source: Historical pregame odds or X-01 archive pregame market price
+      version: unresolved:pregame_prior_manifest
+      pit_basis: frozen_before_game_start
+  method: Compare market prior, logistic regression, and histogram GBDT with game-grouped chronological walk-forward evaluation and game-cluster bootstrap.
+  leakage_checks:
+    - No game crosses folds; training games precede test games.
+    - Features are production-time available and the prior is frozen before game start.
+  split: game-grouped + chronological + walk-forward
+  metrics: [Brier score versus prior, log loss versus prior, calibration slope, calibration intercept, game-cluster bootstrap confidence interval, game-phase stability, season stability]
+  pass_criteria: Gate 1 requires slope 0.9-1.1, intercept near zero under a preregistered tolerance, Brier no worse than prior, and bootstrap-CI support. Gate 2 separately requires a positive prior increment under CI comparable to X-07 cost.
+  fail_criteria: Gate 1 failure blocks Reaction Model promotion; Gate 2 failure blocks any trading-relevance claim. Gate 1 never implies Gate 2.
+  cost_estimate: {compute: unresolved, human_days: unresolved}
+  dependencies: []
+  registered_at: '2026-07-22'
+  result_acceptance_not_before: '2026-07-23T00:00:00Z'
+  due_gate: null
+  results_ref: ''
+  promotion_decision: ''
+  execution_authorized: true
+  authorization_scopes:
+    formal_result:
+      authorized: true
+      required_result_label: FORMAL
+      required_lock_ids: [nba_pbp_manifest, pregame_prior_manifest, seasons_features_and_models, calibration_and_bootstrap_parameters]
+    gate_1_reaction_model:
+      authorized: true
+      required_result_label: FORMAL
+      required_lock_ids: [nba_pbp_manifest, pregame_prior_manifest, seasons_features_and_models, calibration_and_bootstrap_parameters]
+    gate_2_trading_relevance:
+      authorized: false
+      required_result_label: FORMAL
+      required_lock_ids: [nba_pbp_manifest, pregame_prior_manifest, seasons_features_and_models, calibration_and_bootstrap_parameters, x07_cost_comparability]
+  registration_locks:
+    - {id: nba_pbp_manifest, status: unresolved, reason: Seasons, source version, and hashes are unset.}
+    - {id: pregame_prior_manifest, status: unresolved, reason: Historical prior source and PIT manifest are unset.}
+    - {id: seasons_features_and_models, status: unresolved, reason: Cutoffs, PIT feature list, model parameters, and seeds are unset.}
+    - {id: calibration_and_bootstrap_parameters, status: unresolved, reason: Intercept tolerance, CI level, repetitions, and clustering rules are unset.}
+    - {id: x07_cost_comparability, status: unresolved, reason: X-07 cost floor and increment-comparison definition do not yet exist.}
+  measurement_exemption: false
+  falsified_direction_is_valid_measurement: false
+  decision_gates:
+    gate_1_reaction_model: calibration and prior-comparison gate
+    gate_2_trading_relevance: incremental-value and X-07 cost-comparability gate
+  linked_first_artifact_due_gates:
+    - {catalog_item_id: R-009, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: R-010, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: R-011, due_gate: backlog}
+    - {catalog_item_id: R-017, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: R-018, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: I-021, due_gate: 2026-08-05_W2_review}
+  source_lineage:
+    charter_file: charter/research_program_charter_v0.2.md
+    charter_sections: ['Team D1', 'Team H', '§9 X-06']
+    catalog_item_ids: [R-009, R-010, R-011, R-017, R-018, I-021]
+  program_no_go_restrictions:
+    - real_money_execution
+    - maker_strategy_live
+    - exact_queue_fill_claim_from_pmxt_l2
+    - multi_venue_simultaneous_execution_arbitrage
+    - live_copy_trading
+    - llm_hot_path
+    - reinforcement_learning
+    - large_scale_microservices
+    - readme_return_strategy_selection
+    - unregistered_quick_backtest
+  amendments: []
+  registration_record_sha256: sha256:cb28710a35c872b851cdc430bc6a8296e2688b918e259953b9b6cc19bdb9608a

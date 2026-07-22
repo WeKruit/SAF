@@ -1,0 +1,75 @@
+experiment_card:
+  id: X-10
+  name: Matched-cluster semantic precision audit
+  owner_team: G+A
+  status: registered
+  hypothesis: Sports matched clusters have precision below 100% and semantic resolution differences make some apparent matches non-arbitrageable
+  data:
+    - source: Fifty preregistered sports pairs sampled from PMXT Router clusters
+      version: unresolved:router_and_taxonomy_available
+      pit_basis: router_observed_at
+    - source: Manually adjudicated resolution semantics
+      version: unresolved:gold_standard_protocol
+      pit_basis: rule_snapshot_observed_at
+  method: Sample 50 pairs before inspection; classify relation semantics; manually adjudicate correctness; report precision and confidence calibration. Recall is refused without a candidate-universe denominator.
+  leakage_checks:
+    - Lock candidate universe, sample selection and seed, Router query/version, taxonomy, adjudication, and confidence bins before correctness review.
+    - Precision success cannot authorize live multi-venue arbitrage.
+  split: n.a. manual audit; H approval is locked
+  metrics: [precision, semantic-difference categories, confidence calibration, recall only after denominator registration]
+  pass_criteria: At least 45 of 50 correct pairs permits G1 research to advance; live arbitrage remains NO-GO.
+  fail_criteria: Fewer than 45 of 50 requires full manual review of every cluster; unavailable clusters use recorded heuristic matching plus manual review.
+  cost_estimate: {compute: unresolved, human_days: unresolved}
+  dependencies: []
+  registered_at: '2026-07-22'
+  result_acceptance_not_before: '2026-07-23T00:00:00Z'
+  due_gate: null
+  results_ref: ''
+  promotion_decision: ''
+  execution_authorized: false
+  authorization_scopes:
+    precision_audit:
+      authorized: true
+      required_result_label: FORMAL
+      required_lock_ids: [matched_sample_registered, router_and_taxonomy_available]
+    recall:
+      authorized: false
+      required_result_label: FORMAL
+      required_lock_ids: [recall_candidate_universe, gold_standard_protocol]
+    live_arbitrage:
+      authorized: false
+      permanent_no_go: true
+      required_result_label: FORMAL
+      required_lock_ids: []
+  registration_locks:
+    - {id: matched_sample_registered, status: unresolved, reason: Fifty-pair universe, selection method, and seed are unset.}
+    - {id: router_and_taxonomy_available, status: unresolved, reason: Router query/version and relation taxonomy are not pinned.}
+    - {id: gold_standard_protocol, status: unresolved, reason: Resolution gold standard, adjudication, and confidence bins are unset.}
+    - {id: recall_candidate_universe, status: unresolved, reason: No valid candidate-universe denominator exists for recall.}
+    - {id: h_split_approval, status: unresolved, reason: H must approve n.a. in place of the default predictive split.}
+  measurement_exemption: false
+  falsified_direction_is_valid_measurement: false
+  recall_denominator_registered: false
+  linked_first_artifact_due_gates:
+    - {catalog_item_id: R-023, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: R-024, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: R-025, due_gate: 2026-08-19_W4_review}
+    - {catalog_item_id: R-046, due_gate: 2026-08-19_W4_review}
+    - {catalog_item_id: I-013, due_gate: 2026-08-05_W2_review}
+  source_lineage:
+    charter_file: charter/research_program_charter_v0.2.md
+    charter_sections: ['Team G', '§9 X-10']
+    catalog_item_ids: [R-023, R-024, R-025, R-046, I-013]
+  program_no_go_restrictions:
+    - real_money_execution
+    - maker_strategy_live
+    - exact_queue_fill_claim_from_pmxt_l2
+    - multi_venue_simultaneous_execution_arbitrage
+    - live_copy_trading
+    - llm_hot_path
+    - reinforcement_learning
+    - large_scale_microservices
+    - readme_return_strategy_selection
+    - unregistered_quick_backtest
+  amendments: []
+  registration_record_sha256: sha256:9e54c198ca377129378aaa119651527a0c29a5d857023e77954619e0884ce600

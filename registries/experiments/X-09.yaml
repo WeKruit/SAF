@@ -1,0 +1,66 @@
+experiment_card:
+  id: X-09
+  name: Deterministic vertical slice
+  owner_team: B+A+H
+  status: registered
+  hypothesis: Data through dummy signal, risk, simulated order, fill, P&L, and log satisfies deterministic replay Levels 1 and 2
+  data:
+    - source: One frozen X-01 game stream with a dummy score-trigger signal
+      version: unresolved:x09_input_manifest
+      pit_basis: local_receive_time
+    - source: Historical venue_rule_snapshot stream
+      version: unresolved:x09_rule_manifest
+      pit_basis: effective_at_as_of
+  method: Run the same fixed-point vertical slice twice with explicit ordering, pinned dependencies and seed, then compare semantic outputs and canonical stream hashes.
+  leakage_checks:
+    - Pin input and rule hashes, signal semantics, risk, fill, serializer, dependency lockfile, and seed before replay.
+    - Use UTC, fixed point, explicit ORDER BY, deterministic single-writer processing, and no runtime wall clock in canonical data.
+  split: n.a. for deterministic replay; H approval is locked
+  metrics: [Level 1 event/order/fill/P&L identity, Level 2 canonical stream hash identity, complete event_id lineage]
+  pass_criteria: Levels 1 and 2 both pass and every simulated order traces to a triggering event; Level 3 is not required.
+  fail_criteria: Any semantic or hash divergence freezes every strategy backtest until repaired.
+  cost_estimate: {compute: unresolved, human_days: unresolved}
+  dependencies: [X-01]
+  registered_at: '2026-07-22'
+  result_acceptance_not_before: '2026-07-23T00:00:00Z'
+  due_gate: null
+  results_ref: ''
+  promotion_decision: ''
+  execution_authorized: true
+  authorization_scopes:
+    formal_result:
+      authorized: true
+      required_result_label: FORMAL
+      required_lock_ids: [x09_input_manifest, x09_rule_manifest, signal_risk_fill_config, serializer_seed_and_lockfile, h_split_approval]
+  registration_locks:
+    - {id: x09_input_manifest, status: unresolved, reason: Frozen X-01 stream and hashes are unset.}
+    - {id: x09_rule_manifest, status: unresolved, reason: Historical rule snapshot stream and hashes are unset.}
+    - {id: signal_risk_fill_config, status: unresolved, reason: Dummy score trigger, risk, and fill semantics are unset.}
+    - {id: serializer_seed_and_lockfile, status: unresolved, reason: Canonical serializer, seed, and dependency versions are unset.}
+    - {id: h_split_approval, status: unresolved, reason: H must approve n.a. in place of the default predictive split.}
+  measurement_exemption: false
+  falsified_direction_is_valid_measurement: false
+  deterministic_replay_required_levels: [1, 2]
+  linked_first_artifact_due_gates:
+    - {catalog_item_id: R-034, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: R-042, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: I-003, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: I-007, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: I-012, due_gate: 2026-08-19_W4_review}
+  source_lineage:
+    charter_file: charter/research_program_charter_v0.2.md
+    charter_sections: ['§8.2', '§9 X-09']
+    catalog_item_ids: [R-034, R-042, I-003, I-007, I-012]
+  program_no_go_restrictions:
+    - real_money_execution
+    - maker_strategy_live
+    - exact_queue_fill_claim_from_pmxt_l2
+    - multi_venue_simultaneous_execution_arbitrage
+    - live_copy_trading
+    - llm_hot_path
+    - reinforcement_learning
+    - large_scale_microservices
+    - readme_return_strategy_selection
+    - unregistered_quick_backtest
+  amendments: []
+  registration_record_sha256: sha256:d38cf2700de919084dd8e0300e26a88776203ea103cd16725daa0418783e1ded

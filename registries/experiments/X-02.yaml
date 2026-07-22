@@ -1,0 +1,56 @@
+experiment_card:
+  id: X-02
+  name: Timestamp semantics and clock anomalies
+  owner_team: C+H
+  status: registered
+  hypothesis: timestamp minus timestamp_received has a stable enough distribution to serve as pseudo-latency
+  data:
+    - source: X-01 game-day events plus three preregistered random days
+      version: unresolved:timestamp_input_manifest
+      pit_basis: timestamp_received
+  method: Measure signed timestamp differences, quantiles, negative values, drift, and receive-time disorder without selecting days from observed quality.
+  leakage_checks:
+    - Lock the sampling universe, day-selection procedure, seed, units, sign convention, stability definition, and disorder definition before inspection.
+    - Do not replace source or receive timestamps with corrected future values.
+  split: n.a. for a measurement audit; H approval is locked
+  metrics: [difference quantiles, negative difference rate, clock drift, out-of-order rate]
+  pass_criteria: Complete and register the measurement; document timestamp semantics and quality-flag rules. Directional stability is not required for validity.
+  fail_criteria: Unstable or materially negative distributions downgrade millisecond work to seconds; negative rate at least 0.1% or P99 absolute difference above 5s explicitly triggers that decision.
+  cost_estimate: {compute: unresolved, human_days: unresolved}
+  dependencies: [X-01]
+  registered_at: '2026-07-22'
+  result_acceptance_not_before: '2026-07-23T00:00:00Z'
+  due_gate: null
+  results_ref: ''
+  promotion_decision: ''
+  execution_authorized: true
+  authorization_scopes:
+    formal_result:
+      authorized: true
+      required_result_label: FORMAL
+      required_lock_ids: [timestamp_input_manifest, sampling_and_seed, diff_and_stability_definitions, h_split_approval]
+  registration_locks:
+    - {id: timestamp_input_manifest, status: unresolved, reason: X-01 and three-day source versions and hashes are not fixed.}
+    - {id: sampling_and_seed, status: unresolved, reason: Random-day universe, selection procedure, seed, and dates are unset.}
+    - {id: diff_and_stability_definitions, status: unresolved, reason: Difference sign, units, drift, stability, and disorder definitions are unset.}
+    - {id: h_split_approval, status: unresolved, reason: H must approve n.a. in place of the default predictive split.}
+  measurement_exemption: true
+  falsified_direction_is_valid_measurement: true
+  linked_first_artifact_due_gates: []
+  source_lineage:
+    charter_file: charter/research_program_charter_v0.2.md
+    charter_sections: ['§3 Phase 5', '§9 X-02', '§9 measurement exemptions']
+    catalog_item_ids: []
+  program_no_go_restrictions:
+    - real_money_execution
+    - maker_strategy_live
+    - exact_queue_fill_claim_from_pmxt_l2
+    - multi_venue_simultaneous_execution_arbitrage
+    - live_copy_trading
+    - llm_hot_path
+    - reinforcement_learning
+    - large_scale_microservices
+    - readme_return_strategy_selection
+    - unregistered_quick_backtest
+  amendments: []
+  registration_record_sha256: sha256:320c69c3ab7957ff0892aa72deea3cc211038706cf8c3027fe79f5a338a55bc1

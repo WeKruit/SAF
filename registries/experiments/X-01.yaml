@@ -1,0 +1,76 @@
+experiment_card:
+  id: X-01
+  name: PMXT v2 audit and deterministic L2 reconstruction
+  owner_team: C
+  status: registered
+  hypothesis: book plus price_change can reconstruct L2 consistent with an independent source and deterministic replay Levels 1 and 2
+  data:
+    - source: PMXT Polymarket v2 hourly Parquet for one NBA game-day
+      version: unresolved:input_file_manifest
+      pit_basis: timestamp_received
+    - source: PMXT historical fetchOrderBook or overlapping self-captured live snapshots
+      version: unresolved:independent_crosscheck_source
+      pit_basis: receive_time_as_of
+  method: Inventory and hash source files; reconstruct book and price_change globally; deduplicate and classify anomalies; run twice; compare price and size by receive-time as-of join.
+  leakage_checks:
+    - Lock the NBA game, contracts, file hashes, comparison source, as-of age, and independent-source latency estimator before comparison.
+    - Never use a future snapshot or delta and exclude empty sides and pauses from the match-rate denominator.
+  split: n.a. for a deterministic audit; H approval of the non-predictive split is locked
+  metrics:
+    - exact top-price match rate
+    - top-price match within one tick
+    - top-size relative error
+    - book-cross rate
+    - missing-side rate
+    - as-of age distribution
+    - reconstruction divergence duration
+    - anomaly classification counts
+    - canonical stream SHA-256
+  pass_criteria: Exact top-price match is at least 99%; every divergence is classified; deterministic replay Levels 1 and 2 pass; every anomaly is flagged.
+  fail_criteria: If the tie-break cannot be determined, downgrade the archive to a seconds-level research source and increase self-capture weight.
+  cost_estimate: {compute: unresolved, human_days: unresolved}
+  dependencies: []
+  registered_at: '2026-07-22'
+  result_acceptance_not_before: '2026-07-23T00:00:00Z'
+  due_gate: null
+  results_ref: ''
+  promotion_decision: ''
+  execution_authorized: true
+  authorization_scopes:
+    formal_result:
+      authorized: true
+      required_result_label: FORMAL
+      required_lock_ids: [nba_game_and_contracts, input_file_manifest, independent_crosscheck_source, as_of_age_and_latency_estimator, canonicalization_version, h_split_approval]
+  registration_locks:
+    - {id: nba_game_and_contracts, status: unresolved, reason: Exact NBA game-day and contract universe are not selected.}
+    - {id: input_file_manifest, status: unresolved, reason: Input paths, versions, and SHA-256 hashes are not fixed.}
+    - {id: independent_crosscheck_source, status: unresolved, reason: Historical API availability versus self-captured overlap must be measured.}
+    - {id: as_of_age_and_latency_estimator, status: unresolved, reason: Accept the Charter 1s default or preregister another age and estimator.}
+    - {id: canonicalization_version, status: unresolved, reason: Exact reconstructor and serializer commit must be pinned.}
+    - {id: h_split_approval, status: unresolved, reason: H must approve n.a. in place of the default predictive split.}
+  measurement_exemption: false
+  falsified_direction_is_valid_measurement: false
+  deterministic_replay_required_levels: [1, 2]
+  linked_first_artifact_due_gates:
+    - {catalog_item_id: R-038, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: R-039, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: R-040, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: I-013, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: O-006, due_gate: Team_I_compliance_green}
+  source_lineage:
+    charter_file: charter/research_program_charter_v0.2.md
+    charter_sections: ['§3 Phase 1-3', '§8.2', '§9 X-01']
+    catalog_item_ids: [R-038, R-039, R-040, I-013, O-006]
+  program_no_go_restrictions: &no_gos
+    - real_money_execution
+    - maker_strategy_live
+    - exact_queue_fill_claim_from_pmxt_l2
+    - multi_venue_simultaneous_execution_arbitrage
+    - live_copy_trading
+    - llm_hot_path
+    - reinforcement_learning
+    - large_scale_microservices
+    - readme_return_strategy_selection
+    - unregistered_quick_backtest
+  amendments: []
+  registration_record_sha256: sha256:b56a3a23869a3bf628210b2ac25fa9091044abdcbf68017fb845c64e3ab6bd76

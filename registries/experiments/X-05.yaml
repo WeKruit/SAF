@@ -1,0 +1,68 @@
+experiment_card:
+  id: X-05
+  name: Barrier-hit label specification and leakage audit
+  owner_team: E+H
+  status: registered
+  hypothesis: Fixed U, L, and h labels can be generated without leakage while overlap is controlled by purge and embargo
+  data:
+    - source: X-01 reconstructed executable quote sequence
+      version: unresolved:x05_quote_manifest
+      pit_basis: local_receive_time
+  method: Draft executable ask-entry and bid-exit barrier labels with explicit suspension, resume, overlap, purge, and embargo rules; do not generate labels until locks clear.
+  leakage_checks:
+    - Entry uses ask and exit uses bid; midpoint is forbidden.
+    - Lock U, L, h, purge, embargo, same-time touch ordering, and first executable quote after resume before viewing labels.
+  split: game-grouped + chronological + walk-forward with purge and embargo values locked before generation
+  metrics: [label distribution, overlap degree, pre/post-purge metric difference, game-cluster effective sample size]
+  pass_criteria: Publish label spec v1 and leakage threat list with Team H signature.
+  fail_criteria: An inconsistent first executable quote after suspension requires label redesign.
+  cost_estimate: {compute: unresolved, human_days: unresolved}
+  dependencies: [X-01]
+  registered_at: '2026-07-22'
+  result_acceptance_not_before: '2026-07-23T00:00:00Z'
+  due_gate: null
+  results_ref: ''
+  promotion_decision: ''
+  execution_authorized: false
+  authorization_scopes:
+    spec_drafting:
+      authorized: true
+      required_result_label: PRELIMINARY
+      required_lock_ids: []
+    label_generation:
+      authorized: false
+      required_result_label: FORMAL
+      required_lock_ids: [x05_quote_manifest, barrier_values, purge_and_embargo, post_resume_quote_rule, same_time_touch_rule]
+    formal_result:
+      authorized: false
+      required_result_label: FORMAL
+      required_lock_ids: [x05_quote_manifest, barrier_values, purge_and_embargo, post_resume_quote_rule, same_time_touch_rule, h_signature]
+  registration_locks:
+    - {id: x05_quote_manifest, status: unresolved, reason: X-01 executable quote version and hashes are unset.}
+    - {id: barrier_values, status: unresolved, reason: U, L, and h are deliberately not fabricated.}
+    - {id: purge_and_embargo, status: unresolved, reason: Purge and embargo parameters must be preregistered before label inspection.}
+    - {id: post_resume_quote_rule, status: unresolved, reason: First executable quote after suspension must be signed off.}
+    - {id: same_time_touch_rule, status: unresolved, reason: Same-time upper/lower touch ordering is unset.}
+    - {id: h_signature, status: unresolved, reason: Team H has not signed label spec v1.}
+  measurement_exemption: false
+  falsified_direction_is_valid_measurement: false
+  midpoint_allowed: false
+  linked_first_artifact_due_gates:
+    - {catalog_item_id: R-022, due_gate: 2026-08-05_W2_review}
+  source_lineage:
+    charter_file: charter/research_program_charter_v0.2.md
+    charter_sections: ['Team E', 'Team H', '§9 X-05']
+    catalog_item_ids: [R-022]
+  program_no_go_restrictions:
+    - real_money_execution
+    - maker_strategy_live
+    - exact_queue_fill_claim_from_pmxt_l2
+    - multi_venue_simultaneous_execution_arbitrage
+    - live_copy_trading
+    - llm_hot_path
+    - reinforcement_learning
+    - large_scale_microservices
+    - readme_return_strategy_selection
+    - unregistered_quick_backtest
+  amendments: []
+  registration_record_sha256: sha256:87f64d48696a6979ec8841c9212bb74c545446dab542a8fc6a93507d166285b0

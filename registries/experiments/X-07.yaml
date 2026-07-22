@@ -1,0 +1,73 @@
+experiment_card:
+  id: X-07
+  name: Taker cost floor
+  owner_team: F+E
+  status: registered
+  hypothesis: Naive taker net EV is no greater than zero after executable ask entry, bid exit, depth VWAP, point-in-time fee, and delay
+  data:
+    - source: X-04 event sample and X-01 reconstructed depth
+      version: unresolved:x07_event_depth_manifest
+      pit_basis: local_receive_time
+    - source: venue_rule_snapshot as of simulated time
+      version: unresolved:venue_rule_snapshot_replay_version
+      pit_basis: effective_at_as_of
+  method: Build a taker-only simulator using ask entry, bid exit, depth VWAP, venue-rule fee and delay, plus own-delay sensitivities of 0.5, 1, and 3 seconds.
+  leakage_checks:
+    - Never backfill present-day rules into history; replay, paper, and later live paths consume the same snapshot stream.
+    - Do not use midpoint, constant fees, constant delays, future depth, or suspended quotes.
+  split: game-grouped + chronological + walk-forward
+  metrics: [net markout distribution by delay, break-even required edge, fee sensitivity, post-fill markout]
+  pass_criteria: Complete and register the cost floor and required edge regardless of sign; formal conclusions require venue-rule snapshots consumed by replay.
+  fail_criteria: If depth is insufficient, report only a labeled top-of-book optimistic bound and no depth-VWAP claim.
+  cost_estimate: {compute: unresolved, human_days: unresolved}
+  dependencies: [X-01, X-04]
+  registered_at: '2026-07-22'
+  result_acceptance_not_before: '2026-07-23T00:00:00Z'
+  due_gate: null
+  results_ref: ''
+  promotion_decision: ''
+  execution_authorized: false
+  authorization_scopes:
+    preliminary_pipeline:
+      authorized: true
+      required_result_label: PRELIMINARY
+      required_lock_ids: []
+    formal_result:
+      authorized: false
+      required_result_label: FORMAL
+      required_lock_ids: [x07_event_depth_manifest, venue_rule_snapshot_replay_version, order_size_and_vwap_policy, markout_horizons]
+    go_no_go:
+      authorized: false
+      required_result_label: FORMAL
+      required_lock_ids: [x07_event_depth_manifest, venue_rule_snapshot_replay_version, order_size_and_vwap_policy, markout_horizons]
+  registration_locks:
+    - {id: x07_event_depth_manifest, status: unresolved, reason: Event sample and depth versions and hashes are unset.}
+    - {id: venue_rule_snapshot_replay_version, status: unresolved, reason: Snapshot component is not yet consumed by replay.}
+    - {id: order_size_and_vwap_policy, status: unresolved, reason: Simulated quantity or notional and insufficient-depth policy are unset.}
+    - {id: markout_horizons, status: unresolved, reason: Formal markout horizons are unset.}
+  measurement_exemption: true
+  falsified_direction_is_valid_measurement: true
+  midpoint_allowed: false
+  linked_first_artifact_due_gates:
+    - {catalog_item_id: R-028, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: R-029, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: R-032, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: I-008, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: O-002, due_gate: Team_I_compliance_green}
+  source_lineage:
+    charter_file: charter/research_program_charter_v0.2.md
+    charter_sections: ['§0.5', 'Team F', '§8.1', '§9 X-07']
+    catalog_item_ids: [R-028, R-029, R-032, I-008, O-002]
+  program_no_go_restrictions:
+    - real_money_execution
+    - maker_strategy_live
+    - exact_queue_fill_claim_from_pmxt_l2
+    - multi_venue_simultaneous_execution_arbitrage
+    - live_copy_trading
+    - llm_hot_path
+    - reinforcement_learning
+    - large_scale_microservices
+    - readme_return_strategy_selection
+    - unregistered_quick_backtest
+  amendments: []
+  registration_record_sha256: sha256:36c0a3951a28fac0cc2371273a518507b071aa5472b411c67c298a3524f0c51a

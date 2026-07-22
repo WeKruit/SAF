@@ -1,0 +1,64 @@
+experiment_card:
+  id: X-04
+  name: NBA reaction event study
+  owner_team: E
+  status: registered
+  hypothesis: Bid adjustment after a score or lead change is incomplete and exhibits minute-scale drift
+  data:
+    - source: X-01 reconstructed L2
+      version: unresolved:x04_l2_manifest
+      pit_basis: local_receive_time
+    - source: Historical nba_api play-by-play
+      version: unresolved:pbp_version_and_interval_method
+      pit_basis: event_time_interval
+  method: Reproduce the event-reaction direction at plus/minus 1, 2, 5, 10, 30, and 60 seconds, stratified by liquidity and game phase.
+  leakage_checks:
+    - Treat sports-event time as [t_min,t_max], never as an exact production-known database timestamp.
+    - Lock events, estimator, null, confidence interval, tolerance grid, and strata before observing effects; keep games grouped chronologically.
+  split: game-grouped + chronological + walk-forward
+  metrics: [partial-adjustment coefficient, drift half-life, six alignment-tolerance results, liquidity strata, game-phase strata, spread-coverage decomposition]
+  pass_criteria: Report a researchable or not-identifiable conclusion at every tolerance; minute-scale researchable with second-scale indeterminate is an explicitly valid outcome.
+  fail_criteria: Failure to align reliably within plus/minus 60 seconds advances the low-latency sports-feed purchase decision.
+  cost_estimate: {compute: unresolved, human_days: unresolved}
+  dependencies: [X-01, X-02]
+  registered_at: '2026-07-22'
+  result_acceptance_not_before: '2026-07-23T00:00:00Z'
+  due_gate: null
+  results_ref: ''
+  promotion_decision: ''
+  execution_authorized: true
+  authorization_scopes:
+    formal_result:
+      authorized: true
+      required_result_label: FORMAL
+      required_lock_ids: [x04_l2_manifest, pbp_version_and_interval_method, event_and_estimator_definition, strata_and_ci_definition, h_numeric_pass_decision]
+  registration_locks:
+    - {id: x04_l2_manifest, status: unresolved, reason: Reconstructed L2 input version and hashes are unset.}
+    - {id: pbp_version_and_interval_method, status: unresolved, reason: 'PBP version and [t_min,t_max] construction are unset.'}
+    - {id: event_and_estimator_definition, status: unresolved, reason: Game universe, score and lead-change definitions, estimator, and null are unset.}
+    - {id: strata_and_ci_definition, status: unresolved, reason: Liquidity and phase bins plus confidence procedure are unset.}
+    - {id: h_numeric_pass_decision, status: unresolved, reason: Charter supplies no numeric X-04 effect threshold; H must approve without invention.}
+  measurement_exemption: false
+  falsified_direction_is_valid_measurement: false
+  linked_first_artifact_due_gates:
+    - {catalog_item_id: R-019, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: R-020, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: R-021, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: I-021, due_gate: 2026-08-05_W2_review}
+  source_lineage:
+    charter_file: charter/research_program_charter_v0.2.md
+    charter_sections: ['§4 reaction model', '§9 X-04']
+    catalog_item_ids: [R-019, R-020, R-021, I-021]
+  program_no_go_restrictions:
+    - real_money_execution
+    - maker_strategy_live
+    - exact_queue_fill_claim_from_pmxt_l2
+    - multi_venue_simultaneous_execution_arbitrage
+    - live_copy_trading
+    - llm_hot_path
+    - reinforcement_learning
+    - large_scale_microservices
+    - readme_return_strategy_selection
+    - unregistered_quick_backtest
+  amendments: []
+  registration_record_sha256: sha256:0b4897d2392615881a6befc41fdcf076a3566a5f2e5838b801c98618e0a08aa7

@@ -1,0 +1,57 @@
+experiment_card:
+  id: X-03
+  name: Sports-market census
+  owner_team: C+E
+  status: registered
+  hypothesis: NBA exceeds other sports in in-play market count, spread, and depth
+  data:
+    - source: Four-week point-in-time venue metadata and book events
+      version: unresolved:census_input_manifest
+      pit_basis: local_receive_time
+  method: Produce a sport-by-venue census and liquidity scorecard, then rescore the Charter §4 matrix using locked definitions and normalization.
+  leakage_checks:
+    - Lock window endpoints, venues, sports, contract types, mapping, in-play/pause/depth definitions, aggregation, and normalization before inspection.
+    - Use timestamped metadata snapshots rather than current metadata backfill.
+  split: n.a. measurement window; H approval is locked
+  metrics: [in-play hours, contract count, median spread, depth, pause frequency]
+  pass_criteria: Produce and register the sport-by-venue scorecard and rescore Charter §4; NBA need not win for the measurement to be valid.
+  fail_criteria: If metadata cannot classify sport, Team A must deliver the mapping table early.
+  cost_estimate: {compute: unresolved, human_days: unresolved}
+  dependencies: [X-01]
+  registered_at: '2026-07-22'
+  result_acceptance_not_before: '2026-07-23T00:00:00Z'
+  due_gate: null
+  results_ref: ''
+  promotion_decision: ''
+  execution_authorized: true
+  authorization_scopes:
+    formal_result:
+      authorized: true
+      required_result_label: FORMAL
+      required_lock_ids: [census_input_manifest, window_and_universe, metric_and_score_definitions, h_split_approval]
+  registration_locks:
+    - {id: census_input_manifest, status: unresolved, reason: Point-in-time metadata and book source versions and hashes are unset.}
+    - {id: window_and_universe, status: unresolved, reason: Four-week endpoints, venue, sport, and contract universe are unset.}
+    - {id: metric_and_score_definitions, status: unresolved, reason: Mapping, metric definitions, aggregation, and normalization are unset.}
+    - {id: h_split_approval, status: unresolved, reason: H must approve n.a. in place of the default predictive split.}
+  measurement_exemption: true
+  falsified_direction_is_valid_measurement: true
+  linked_first_artifact_due_gates:
+    - {catalog_item_id: I-013, due_gate: 2026-08-05_W2_review}
+  source_lineage:
+    charter_file: charter/research_program_charter_v0.2.md
+    charter_sections: ['§3 Phase 5', '§4', '§9 X-03']
+    catalog_item_ids: [I-013]
+  program_no_go_restrictions:
+    - real_money_execution
+    - maker_strategy_live
+    - exact_queue_fill_claim_from_pmxt_l2
+    - multi_venue_simultaneous_execution_arbitrage
+    - live_copy_trading
+    - llm_hot_path
+    - reinforcement_learning
+    - large_scale_microservices
+    - readme_return_strategy_selection
+    - unregistered_quick_backtest
+  amendments: []
+  registration_record_sha256: sha256:f7ae98bb3ed7f4b17f95f7cae6a953f90bf111d40d26e1c48eab82d152384258

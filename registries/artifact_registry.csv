@@ -1,0 +1,16 @@
+artifact_id,path,owner_team,version,due_gate,status
+ART-H-001,registries/experiment_registry.csv,H,v0,first_round_artifact_gate,registered
+ART-H-002,registries/artifact_registry.csv,H,v0,first_round_artifact_gate,registered
+ART-H-003,artifacts/validation/validation_standard_v0.md,H,v0,first_round_artifact_gate,registered
+ART-H-004,src/prediction_market/experiments.py,H,v0,first_round_artifact_gate,registered
+ART-H-005,tests/test_experiment_registry.py,H,v0,first_round_artifact_gate,registered
+ART-X-001,registries/experiments/X-01.yaml,C,v0,first_round_artifact_gate,registered
+ART-X-002,registries/experiments/X-02.yaml,C+H,v0,first_round_artifact_gate,registered
+ART-X-003,registries/experiments/X-03.yaml,C+E,v0,first_round_artifact_gate,registered
+ART-X-004,registries/experiments/X-04.yaml,E,v0,first_round_artifact_gate,registered
+ART-X-005,registries/experiments/X-05.yaml,E+H,v0,first_round_artifact_gate,registered
+ART-X-006,registries/experiments/X-06.yaml,D1+H,v0,first_round_artifact_gate,registered
+ART-X-007,registries/experiments/X-07.yaml,F+E,v0,first_round_artifact_gate,registered
+ART-X-008,registries/experiments/X-08.yaml,C+B,v0,first_round_artifact_gate,registered
+ART-X-009,registries/experiments/X-09.yaml,B+A+H,v0,first_round_artifact_gate,registered
+ART-X-010,registries/experiments/X-10.yaml,G+A,v0,first_round_artifact_gate,registered

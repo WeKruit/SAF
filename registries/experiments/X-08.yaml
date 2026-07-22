@@ -1,0 +1,82 @@
+experiment_card:
+  id: X-08
+  name: Prospective recorder continuity and dual-venue capture
+  owner_team: C+B
+  status: registered
+  hypothesis: A prospective recorder run can produce immutable continuous logs for seven actual elapsed days and an archive-overlap reconciliation report
+  data:
+    - source: Kalshi pre-stop archive sample
+      version: measured_stopped_window_to_be_hashed
+      pit_basis: archive_timestamp_received
+    - source: New Polymarket public market WebSocket capture
+      version: unresolved:recorder_configuration
+      pit_basis: local_receive_time
+    - source: New authenticated Kalshi L2 WebSocket capture
+      version: blocked:kalshi_credentials
+      pit_basis: local_receive_time
+  method: Audit the stopped archive, prospectively capture immutable venue logs for seven elapsed days, measure gaps and uptime, and reconcile any archive overlap.
+  leakage_checks:
+    - Fixtures and synthetic time cannot satisfy the seven-day elapsed-time requirement.
+    - Lock market/session universe, recorder version, gap denominator, uptime denominator, overlap window, and tolerance before the run.
+  split: n.a. prospective continuity measurement; H approval is locked
+  metrics: [capture uptime, gap rate, GB per day, archive-overlap consistency]
+  pass_criteria: Seven actual elapsed days with no gaps plus a cross-check report.
+  fail_criteria: Uptime <99% triggers reconnect or backpressure repair and a new run; the unresolved band is not a pass.
+  unresolved_decision_band: 99% <= uptime < 100%
+  prospective_observation:
+    actual_elapsed_days: 7
+    fixtures_can_satisfy_elapsed_time: false
+  cost_estimate: {compute: unresolved, human_days: unresolved}
+  dependencies: []
+  registered_at: '2026-07-22'
+  result_acceptance_not_before: '2026-07-23T00:00:00Z'
+  due_gate: null
+  results_ref: ''
+  promotion_decision: ''
+  execution_authorized: false
+  authorization_scopes:
+    archive_audit:
+      authorized: true
+      required_result_label: FORMAL
+      required_lock_ids: []
+    polymarket_capture:
+      authorized: true
+      required_result_label: PRELIMINARY
+      required_lock_ids: [recorder_configuration]
+    kalshi_capture:
+      authorized: false
+      required_result_label: PRELIMINARY
+      required_lock_ids: [recorder_configuration, kalshi_credentials]
+    dual_venue_result:
+      authorized: false
+      required_result_label: FORMAL
+      required_lock_ids: [recorder_configuration, kalshi_credentials, prospective_window_and_metrics, overlap_definition, h_split_approval]
+  registration_locks:
+    - {id: recorder_configuration, status: unresolved, reason: Recorder commit, configuration, and market universe are unset.}
+    - {id: kalshi_credentials, status: unresolved, reason: Kalshi API key ID and RSA key reference were not supplied.}
+    - {id: prospective_window_and_metrics, status: unresolved, reason: Start/end, gap definition, uptime denominator, and 99-100 percent decision band are unset.}
+    - {id: overlap_definition, status: unresolved, reason: Archive overlap window and comparison tolerance are unset.}
+    - {id: h_split_approval, status: unresolved, reason: H must approve n.a. in place of the default predictive split.}
+  measurement_exemption: false
+  falsified_direction_is_valid_measurement: false
+  linked_first_artifact_due_gates:
+    - {catalog_item_id: I-001, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: I-004, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: I-005, due_gate: 2026-08-05_W2_review}
+  source_lineage:
+    charter_file: charter/research_program_charter_v0.2.md
+    charter_sections: ['Team B', 'Team C', '§3 Kalshi branch', '§9 X-08']
+    catalog_item_ids: [I-001, I-004, I-005]
+  program_no_go_restrictions:
+    - real_money_execution
+    - maker_strategy_live
+    - exact_queue_fill_claim_from_pmxt_l2
+    - multi_venue_simultaneous_execution_arbitrage
+    - live_copy_trading
+    - llm_hot_path
+    - reinforcement_learning
+    - large_scale_microservices
+    - readme_return_strategy_selection
+    - unregistered_quick_backtest
+  amendments: []
+  registration_record_sha256: sha256:9e54de8027b023023879772ed930ac6682efc5b6bccf6e5e4d5b72dec441a027
