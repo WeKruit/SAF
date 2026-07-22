@@ -12,6 +12,7 @@ from prediction_market.clusters import (
     X10AuthorizationError,
     build_review_queue,
     cluster_gate,
+    confidence_calibration,
     compute_precision,
     compute_recall,
     load_cluster_pairs_csv,
@@ -83,6 +84,35 @@ def test_precision_refuses_partial_or_duplicate_adjudication() -> None:
     pairs = [_pair("pair-1", "0.50"), _pair("pair-2", "0.60")]
     with pytest.raises(ClusterInputError, match="exactly once"):
         compute_precision(pairs, {"pair-1": True})
+
+
+def test_confidence_calibration_uses_explicit_locked_bins() -> None:
+    pairs = [
+        _pair("pair-1", "0.20"),
+        _pair("pair-2", "0.40"),
+        _pair("pair-3", "0.80"),
+        _pair("pair-4", "0.90"),
+    ]
+    report = confidence_calibration(
+        pairs,
+        {"pair-1": False, "pair-2": True, "pair-3": True, "pair-4": True},
+        bin_edges=(Decimal("0"), Decimal("0.5"), Decimal("1")),
+    )
+
+    assert [item.count for item in report.bins] == [2, 2]
+    assert report.bins[0].observed_precision == Decimal("0.5")
+    assert report.bins[1].observed_precision == Decimal("1.0")
+    assert report.expected_calibration_error == Decimal("0.175")
+
+
+def test_confidence_bins_cannot_be_inferred_or_malformed() -> None:
+    pairs = [_pair("pair-1", "0.50")]
+    with pytest.raises(ClusterInputError, match="bin_edges"):
+        confidence_calibration(
+            pairs,
+            {"pair-1": True},
+            bin_edges=(Decimal("0.1"), Decimal("1")),
+        )
 
 
 def test_cluster_csv_import_is_strict(tmp_path: Path) -> None:

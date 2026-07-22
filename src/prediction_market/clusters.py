@@ -115,6 +115,22 @@ class PrecisionReportV0:
     gate: ClusterGateDecision
 
 
+@dataclass(frozen=True, slots=True)
+class ConfidenceBinV0:
+    lower: Decimal
+    upper: Decimal
+    upper_inclusive: bool
+    count: int
+    mean_confidence: Decimal | None
+    observed_precision: Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
+class ConfidenceCalibrationV0:
+    bins: tuple[ConfidenceBinV0, ...]
+    expected_calibration_error: Decimal
+
+
 def _validate_pair_set(pairs: Iterable[ClusterPairV0]) -> tuple[ClusterPairV0, ...]:
     values = tuple(pairs)
     if any(not isinstance(pair, ClusterPairV0) for pair in values):
@@ -208,6 +224,73 @@ def compute_recall(
     if not reviewed_matches <= candidate_universe:
         raise ClusterInputError("reviewed match is outside candidate universe")
     return Decimal(len(reviewed_matches)) / Decimal(len(candidate_universe))
+
+
+def confidence_calibration(
+    pairs: Iterable[ClusterPairV0],
+    adjudications: Mapping[str, bool],
+    *,
+    bin_edges: tuple[Decimal, ...],
+) -> ConfidenceCalibrationV0:
+    """Summarize correctness in preregistered confidence bins."""
+
+    values = _validate_pair_set(pairs)
+    frozen = dict(adjudications)
+    expected = {pair.pair_id for pair in values}
+    if set(frozen) != expected or len(frozen) != len(values):
+        raise ClusterInputError("every pair must be adjudicated exactly once")
+    if any(type(value) is not bool for value in frozen.values()):
+        raise ClusterInputError("adjudications must be booleans")
+    if (
+        type(bin_edges) is not tuple
+        or len(bin_edges) < 2
+        or any(not isinstance(edge, Decimal) or not edge.is_finite() for edge in bin_edges)
+        or bin_edges[0] != Decimal(0)
+        or bin_edges[-1] != Decimal(1)
+        or any(left >= right for left, right in zip(bin_edges, bin_edges[1:]))
+    ):
+        raise ClusterInputError(
+            "bin_edges must be an explicit strictly increasing Decimal tuple from 0 to 1"
+        )
+    bins: list[ConfidenceBinV0] = []
+    total = Decimal(len(values))
+    ece = Decimal(0)
+    for index, (lower, upper) in enumerate(
+        zip(bin_edges, bin_edges[1:])
+    ):
+        inclusive = index == len(bin_edges) - 2
+        members = [
+            pair
+            for pair in values
+            if pair.confidence >= lower
+            and (pair.confidence <= upper if inclusive else pair.confidence < upper)
+        ]
+        if members:
+            count = len(members)
+            mean_confidence = sum(
+                (pair.confidence for pair in members), start=Decimal(0)
+            ) / Decimal(count)
+            observed = Decimal(
+                sum(1 for pair in members if frozen[pair.pair_id])
+            ) / Decimal(count)
+            ece += Decimal(count) / total * abs(mean_confidence - observed)
+        else:
+            count = 0
+            mean_confidence = None
+            observed = None
+        bins.append(
+            ConfidenceBinV0(
+                lower=lower,
+                upper=upper,
+                upper_inclusive=inclusive,
+                count=count,
+                mean_confidence=mean_confidence,
+                observed_precision=observed,
+            )
+        )
+    return ConfidenceCalibrationV0(
+        bins=tuple(bins), expected_calibration_error=ece
+    )
 
 
 def load_cluster_pairs_csv(path: str | Path) -> tuple[ClusterPairV0, ...]:
@@ -330,12 +413,15 @@ __all__ = [
     "ClusterGateDecision",
     "ClusterInputError",
     "ClusterPairV0",
+    "ConfidenceBinV0",
+    "ConfidenceCalibrationV0",
     "MissingRecallDenominatorError",
     "PrecisionReportV0",
     "ReviewQueueItemV0",
     "X10AuthorizationError",
     "build_review_queue",
     "cluster_gate",
+    "confidence_calibration",
     "compute_precision",
     "compute_recall",
     "load_cluster_pairs_csv",
