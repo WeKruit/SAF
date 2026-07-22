@@ -1,0 +1,125 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: urn:prediction-market:raw-capture:v0
+title: Raw Capture v0
+contract_version: v0
+description: Byte-exact raw capture records and immutable sealed-segment manifests.
+oneOf:
+  - $ref: '#/$defs/raw_record'
+  - $ref: '#/$defs/segment_manifest'
+x-storage-discipline:
+  append_only: true
+  content_addressed: true
+  manifest_is_commit_point: true
+  overwrite_existing_final_path: false
+$defs:
+  sha256:
+    type: string
+    pattern: ^sha256:[0-9a-f]{64}$
+  utc_timestamp:
+    type: string
+    format: date-time
+    pattern: ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z$
+  path_component:
+    type: string
+    pattern: ^[a-z0-9][a-z0-9._-]*$
+  capture_session_id:
+    type: string
+    pattern: ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$
+  raw_record:
+    type: object
+    additionalProperties: false
+    required:
+      - capture_version
+      - capture_session_id
+      - record_ordinal
+      - receive_at
+      - payload_base64
+      - payload_sha256
+    properties:
+      capture_version:
+        const: v0
+      capture_session_id:
+        $ref: '#/$defs/capture_session_id'
+      record_ordinal:
+        type: integer
+        minimum: 0
+      receive_at:
+        $ref: '#/$defs/utc_timestamp'
+      payload_base64:
+        type: string
+        contentEncoding: base64
+        pattern: ^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$
+      payload_sha256:
+        $ref: '#/$defs/sha256'
+  segment_manifest:
+    type: object
+    additionalProperties: false
+    required:
+      - manifest_version
+      - source
+      - stream
+      - capture_session_id
+      - partition_date
+      - partition_hour
+      - record_count
+      - first_record_ordinal
+      - last_record_ordinal
+      - first_receive_at
+      - last_receive_at
+      - object_path
+      - object_sha256
+      - object_size_bytes
+      - compression
+      - record_encoding
+      - sealed_at
+    properties:
+      manifest_version:
+        const: v0
+      source:
+        $ref: '#/$defs/path_component'
+      stream:
+        $ref: '#/$defs/path_component'
+      capture_session_id:
+        $ref: '#/$defs/capture_session_id'
+      partition_date:
+        type: string
+        format: date
+        pattern: ^[0-9]{4}-[0-9]{2}-[0-9]{2}$
+      partition_hour:
+        type: string
+        pattern: ^(?:[01][0-9]|2[0-3])$
+      record_count:
+        type: integer
+        minimum: 0
+      first_record_ordinal:
+        oneOf:
+          - type: integer
+            minimum: 0
+          - type: 'null'
+      last_record_ordinal:
+        oneOf:
+          - type: integer
+            minimum: 0
+          - type: 'null'
+      first_receive_at:
+        oneOf:
+          - $ref: '#/$defs/utc_timestamp'
+          - type: 'null'
+      last_receive_at:
+        oneOf:
+          - $ref: '#/$defs/utc_timestamp'
+          - type: 'null'
+      object_path:
+        type: string
+        pattern: ^raw/source=[a-z0-9][a-z0-9._-]*/stream=[a-z0-9][a-z0-9._-]*/date=[0-9]{4}-[0-9]{2}-[0-9]{2}/hour=(?:[01][0-9]|2[0-3])/[0-9a-f]{64}\.jsonl\.zst$
+      object_sha256:
+        $ref: '#/$defs/sha256'
+      object_size_bytes:
+        type: integer
+        minimum: 1
+      compression:
+        const: zstd
+      record_encoding:
+        const: canonical-json-lines-v0
+      sealed_at:
+        $ref: '#/$defs/utc_timestamp'
