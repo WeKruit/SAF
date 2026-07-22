@@ -29,7 +29,7 @@ properties:
     const: v0
   canonical_id:
     type: string
-    pattern: ^(?:competition|game|participant|venue_event|market|outcome|condition)_[A-Za-z0-9][A-Za-z0-9._:-]*$
+    pattern: ^(?:cmp|game|participant|venue_event|market|outcome|condition)_[A-Za-z0-9][A-Za-z0-9._:-]*$
     not:
       pattern: ^(?:R|I|O)-[0-9]{3}$
   entity_type:
@@ -55,6 +55,49 @@ properties:
     items:
       type: string
       minLength: 1
+oneOf:
+  - properties:
+      entity_type:
+        const: competition
+      canonical_id:
+        type: string
+        pattern: ^cmp_[A-Za-z0-9][A-Za-z0-9._:-]*$
+  - properties:
+      entity_type:
+        const: game
+      canonical_id:
+        type: string
+        pattern: ^game_[A-Za-z0-9][A-Za-z0-9._:-]*$
+  - properties:
+      entity_type:
+        const: participant
+      canonical_id:
+        type: string
+        pattern: ^participant_[A-Za-z0-9][A-Za-z0-9._:-]*$
+  - properties:
+      entity_type:
+        const: venue_event
+      canonical_id:
+        type: string
+        pattern: ^venue_event_[A-Za-z0-9][A-Za-z0-9._:-]*$
+  - properties:
+      entity_type:
+        const: market
+      canonical_id:
+        type: string
+        pattern: ^market_[A-Za-z0-9][A-Za-z0-9._:-]*$
+  - properties:
+      entity_type:
+        const: outcome
+      canonical_id:
+        type: string
+        pattern: ^outcome_[A-Za-z0-9][A-Za-z0-9._:-]*$
+  - properties:
+      entity_type:
+        const: condition
+      canonical_id:
+        type: string
+        pattern: ^condition_[A-Za-z0-9][A-Za-z0-9._:-]*$
 $defs:
   utc_timestamp:
     type: string

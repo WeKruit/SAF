@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import re
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -36,7 +38,7 @@ def _event_id(fill: str = "0") -> str:
 
 def _canonical_refs() -> dict[str, Any]:
     return {
-        "competition_id": "competition_nba",
+        "competition_id": "cmp_nba",
         "game_id": "game_nba_2026_001",
         "participant_ids": ["participant_away", "participant_home"],
         "venue_event_id": "venue_event_polymarket_001",
@@ -365,6 +367,59 @@ def test_event_rejects_nondeterministic_event_id() -> None:
         EventEnvelopeV0.model_validate(event)
 
 
+def test_event_id_hashes_full_model_dump_excluding_only_event_id() -> None:
+    contracts = _contracts()
+    envelope = contracts.EventEnvelopeV0.model_validate(_derived_event())
+    material = envelope.model_dump(mode="python")
+    material.pop("event_id")
+    documented = "evt_" + hashlib.sha256(
+        contracts.canonical_json_bytes(material)
+    ).hexdigest()
+
+    assert contracts.event_id_for(envelope) == documented
+
+
+def test_raw_event_may_omit_optional_experiment_and_rule_snapshot_refs() -> None:
+    contracts = _contracts()
+    event = _raw_event()
+    event.pop("experiment_id")
+    event.pop("rule_snapshot_ref")
+    event["event_id"] = contracts.event_id_for(event)
+
+    envelope = contracts.EventEnvelopeV0.model_validate(event)
+
+    assert envelope.experiment_id is None
+    assert envelope.rule_snapshot_ref is None
+
+
+@pytest.mark.parametrize(
+    "event_type", ["simulated_order", "simulated_fill", "simulated_pnl"]
+)
+def test_simulated_events_require_rule_snapshot_ref(event_type: str) -> None:
+    contracts = _contracts()
+    event = _derived_event()
+    event["event_type"] = event_type
+    event["rule_snapshot_ref"] = None
+    event["event_id"] = contracts.event_id_for(event)
+
+    with pytest.raises(ValidationError, match="rule_snapshot_ref"):
+        contracts.EventEnvelopeV0.model_validate(event)
+
+
+@pytest.mark.parametrize(
+    "event_type", ["simulated_order", "simulated_fill", "simulated_pnl"]
+)
+def test_simulated_events_accept_observed_rule_snapshot_ref(event_type: str) -> None:
+    contracts = _contracts()
+    event = _derived_event()
+    event["event_type"] = event_type
+    event["event_id"] = contracts.event_id_for(event)
+
+    envelope = contracts.EventEnvelopeV0.model_validate(event)
+
+    assert envelope.rule_snapshot_ref == _digest("c")
+
+
 def test_event_serialization_is_deterministic_for_set_semantics() -> None:
     contracts = _contracts()
     first = _derived_event()
@@ -654,6 +709,97 @@ def test_id_registry_assertions_separate_catalog_and_domain_ids() -> None:
         }
 
 
+def _id_pair_matches_schema(
+    document: dict[str, Any], entity_type: str, canonical_id: str
+) -> bool:
+    matches = 0
+    for branch in document["oneOf"]:
+        properties = branch["properties"]
+        expected_type = properties["entity_type"]["const"]
+        id_pattern = properties["canonical_id"]["pattern"]
+        if entity_type == expected_type and re.fullmatch(id_pattern, canonical_id):
+            matches += 1
+    return matches == 1
+
+
+@pytest.mark.parametrize(
+    "filename", ["entity.schema.yaml", "native-assertion.schema.yaml"]
+)
+def test_id_assertions_enforce_entity_type_and_canonical_prefix_pairs(
+    filename: str,
+) -> None:
+    document = yaml.safe_load(
+        (CONTRACTS_ROOT / "id-registry" / "v0" / filename).read_text(
+            encoding="utf-8"
+        )
+    )
+    valid_pairs = {
+        "competition": "cmp_nba",
+        "game": "game_nba_2026_001",
+        "participant": "participant_home",
+        "venue_event": "venue_event_pm_001",
+        "market": "market_moneyline_001",
+        "outcome": "outcome_home_win",
+        "condition": "condition_0xabc",
+    }
+
+    for entity_type, canonical_id in valid_pairs.items():
+        assert _id_pair_matches_schema(document, entity_type, canonical_id)
+
+    assert not _id_pair_matches_schema(document, "game", "participant_home")
+    assert not _id_pair_matches_schema(document, "competition", "competition_nba")
+    assert not _id_pair_matches_schema(document, "condition", "O-002")
+
+
+def test_event_schema_and_python_agree_optional_refs_and_simulated_rule_gate() -> None:
+    contracts = _contracts()
+    document = yaml.safe_load(
+        (CONTRACTS_ROOT / "event-envelope" / "v0.schema.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert "experiment_id" not in document["required"]
+    assert "rule_snapshot_ref" not in document["required"]
+    assert not contracts.EventEnvelopeV0.model_fields["experiment_id"].is_required()
+    assert not contracts.EventEnvelopeV0.model_fields["rule_snapshot_ref"].is_required()
+
+    conditional_types = {
+        event_type
+        for clause in document["allOf"]
+        for event_type in clause.get("if", {})
+        .get("properties", {})
+        .get("event_type", {})
+        .get("enum", [])
+        if "rule_snapshot_ref" in clause.get("then", {}).get("required", [])
+    }
+    assert conditional_types == {"simulated_order", "simulated_fill", "simulated_pnl"}
+
+
+def test_event_schema_declares_defaults_used_by_full_model_event_hash() -> None:
+    document = yaml.safe_load(
+        (CONTRACTS_ROOT / "event-envelope" / "v0.schema.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert document["properties"]["experiment_id"]["default"] is None
+    assert document["properties"]["rule_snapshot_ref"]["default"] is None
+    for field in ("venue", "sequence", "capture_session_id", "record_ordinal"):
+        assert document["$defs"]["source"]["properties"][field]["default"] is None
+    for field in ("source_at", "publish_at", "exchange_at"):
+        assert document["$defs"]["time"]["properties"][field]["default"] is None
+    assert document["$defs"]["raw_lineage"]["properties"]["parent_event_ids"][
+        "default"
+    ] == []
+    assert document["$defs"]["parent_lineage"]["properties"]["raw_object_hash"][
+        "default"
+    ] is None
+    assert document["$defs"]["parent_lineage"]["properties"][
+        "raw_record_ordinal"
+    ]["default"] is None
+
+
 def test_quality_and_relation_yaml_enums_match_python_contract() -> None:
     contracts = _contracts()
     quality = yaml.safe_load(
@@ -690,10 +836,69 @@ def test_deterministic_replay_document_records_level_1_and_2_gate() -> None:
         "single writer",
         "lockfile",
         "random seed",
+        "nulls last",
+        "uint64be",
+        "32-byte",
+        "domain tag",
+        "rule_snapshot_ref",
     ):
         assert clause in text
     assert "level 1 + level 2" in text
     assert "wall-clock processing" not in text
+
+
+@pytest.mark.parametrize(
+    "field_path",
+    [
+        ("time", "source_at"),
+        ("canonical_refs", "market_id"),
+        ("canonical_refs", "outcome_id"),
+    ],
+)
+def test_replay_order_key_places_every_nullable_field_last(
+    field_path: tuple[str, str],
+) -> None:
+    contracts = _contracts()
+    present = _derived_event()
+    null_value = copy.deepcopy(present)
+    parent, child = field_path
+    null_value[parent][child] = None
+
+    assert contracts.replay_order_key(present) < contracts.replay_order_key(null_value)
+
+
+def test_replay_order_key_uses_documented_tagged_null_sentinel() -> None:
+    contracts = _contracts()
+    event = _derived_event()
+    event["time"]["source_at"] = None
+    event["canonical_refs"]["market_id"] = None
+    event["canonical_refs"]["outcome_id"] = None
+
+    key = contracts.replay_order_key(event)
+
+    assert key[1:4] == ((1, ""), (1, ""), (1, ""))
+
+
+def test_level_2_stream_hash_uses_explicit_domain_count_and_digest_framing() -> None:
+    contracts = _contracts()
+    event_ids = [_event_id("a"), _event_id("b")]
+    expected_frame = (
+        contracts.LEVEL2_STREAM_DOMAIN_TAG
+        + len(event_ids).to_bytes(8, byteorder="big", signed=False)
+        + bytes.fromhex("a" * 64)
+        + bytes.fromhex("b" * 64)
+    )
+
+    frame = contracts.level2_stream_frame(event_ids)
+
+    assert frame == expected_frame
+    assert len(frame) == len(contracts.LEVEL2_STREAM_DOMAIN_TAG) + 8 + 2 * 32
+    assert contracts.level2_stream_sha256(event_ids) == (
+        "sha256:" + hashlib.sha256(expected_frame).hexdigest()
+    )
+    assert contracts.level2_stream_sha256(reversed(event_ids)) != (
+        contracts.level2_stream_sha256(event_ids)
+    )
 
 
 @pytest.mark.parametrize(

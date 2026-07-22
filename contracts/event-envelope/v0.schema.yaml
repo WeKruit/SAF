@@ -24,7 +24,7 @@ properties:
   event_id:
     type: string
     pattern: ^evt_[0-9a-f]{64}$
-    x-derived-from: canonical envelope excluding event_id
+    x-derived-from: canonical full model dump, including explicit nulls and empty arrays, excluding only event_id
   event_type:
     type: string
     enum:
@@ -52,10 +52,12 @@ properties:
   lineage:
     $ref: '#/$defs/lineage'
   experiment_id:
+    default: null
     oneOf:
       - $ref: '#/$defs/experiment_id'
       - type: 'null'
   rule_snapshot_ref:
+    default: null
     oneOf:
       - $ref: '#/$defs/sha256'
       - type: 'null'
@@ -100,6 +102,16 @@ allOf:
           $ref: '#/$defs/experiment_id'
         lineage:
           $ref: '#/$defs/parent_lineage'
+  - if:
+      properties:
+        event_type:
+          enum: [simulated_order, simulated_fill, simulated_pnl]
+      required: [event_type]
+    then:
+      required: [rule_snapshot_ref]
+      properties:
+        rule_snapshot_ref:
+          $ref: '#/$defs/sha256'
 $defs:
   sha256:
     type: string
@@ -123,9 +135,11 @@ $defs:
         type: string
         minLength: 1
       venue:
+        default: null
         type: [string, 'null']
         pattern: ^[a-z0-9][a-z0-9._-]*$
       sequence:
+        default: null
         oneOf:
           - type: integer
             minimum: 0
@@ -133,9 +147,11 @@ $defs:
             minLength: 1
           - type: 'null'
       capture_session_id:
+        default: null
         type: [string, 'null']
         minLength: 1
       record_ordinal:
+        default: null
         type: [integer, 'null']
         minimum: 0
   time:
@@ -148,14 +164,17 @@ $defs:
       receive_basis:
         enum: [local_recorder, upstream_exporter]
       source_at:
+        default: null
         oneOf:
           - $ref: '#/$defs/utc_timestamp'
           - type: 'null'
       publish_at:
+        default: null
         oneOf:
           - $ref: '#/$defs/utc_timestamp'
           - type: 'null'
       exchange_at:
+        default: null
         oneOf:
           - $ref: '#/$defs/utc_timestamp'
           - type: 'null'
@@ -192,7 +211,7 @@ $defs:
   nullable_competition_id:
     oneOf:
       - type: string
-        pattern: ^competition_[A-Za-z0-9][A-Za-z0-9._:-]*$
+        pattern: ^cmp_[A-Za-z0-9][A-Za-z0-9._:-]*$
       - type: 'null'
   nullable_game_id:
     oneOf:
@@ -241,6 +260,7 @@ $defs:
         type: integer
         minimum: 0
       parent_event_ids:
+        default: []
         type: array
         maxItems: 0
   parent_lineage:
@@ -249,8 +269,10 @@ $defs:
     required: [parent_event_ids]
     properties:
       raw_object_hash:
+        default: null
         type: 'null'
       raw_record_ordinal:
+        default: null
         type: 'null'
       parent_event_ids:
         type: array

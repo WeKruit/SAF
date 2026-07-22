@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Callable, Iterable
 from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Any, Literal, Mapping
@@ -83,6 +84,11 @@ EVENT_TYPES = frozenset(
 )
 
 DERIVED_EVENT_TYPES = EVENT_TYPES - {"raw_observation"}
+SIMULATED_EVENT_TYPES = frozenset(
+    {"simulated_order", "simulated_fill", "simulated_pnl"}
+)
+
+LEVEL2_STREAM_DOMAIN_TAG = b"prediction-market:event-stream:v0\x00"
 
 START_TIME_CANCEL_POLICIES = frozenset(
     {
@@ -201,7 +207,7 @@ VenueSlugV0 = Annotated[
     StringConstraints(strict=True, pattern=r"^[a-z0-9][a-z0-9._-]*$"),
 ]
 CompetitionIdV0 = Annotated[
-    str, StringConstraints(strict=True, pattern=r"^competition_[A-Za-z0-9][A-Za-z0-9._:-]*$")
+    str, StringConstraints(strict=True, pattern=r"^cmp_[A-Za-z0-9][A-Za-z0-9._:-]*$")
 ]
 GameIdV0 = Annotated[
     str, StringConstraints(strict=True, pattern=r"^game_[A-Za-z0-9][A-Za-z0-9._:-]*$")
@@ -428,26 +434,38 @@ def payload_sha256(payload: Mapping[str, Any]) -> str:
 
 def _event_hash_material(value: Mapping[str, Any] | BaseModel) -> dict[str, Any]:
     if isinstance(value, BaseModel):
-        material = value.model_dump(mode="python", exclude_none=True)
+        material = value.model_dump(mode="python")
     else:
-        material = {
-            key: child_value for key, child_value in value.items() if child_value is not None
-        }
-    material.pop("event_id", None)
+        material = dict(value)
+        material.setdefault("experiment_id", None)
+        material.setdefault("rule_snapshot_ref", None)
 
-    # Optional canonical fields do not change identity merely because model
-    # defaults materialize them during validation.
-    for object_key in ("source", "time", "canonical_refs", "lineage"):
-        child = material.get(object_key)
-        if isinstance(child, Mapping):
-            material[object_key] = {
-                child_key: child_value
-                for child_key, child_value in child.items()
-                if child_value is not None
-            }
-    lineage = material.get("lineage")
-    if isinstance(lineage, dict) and not lineage.get("parent_event_ids"):
-        lineage.pop("parent_event_ids", None)
+        nested_defaults: dict[str, dict[str, Any]] = {
+            "source": {
+                "venue": None,
+                "sequence": None,
+                "capture_session_id": None,
+                "record_ordinal": None,
+            },
+            "time": {
+                "source_at": None,
+                "publish_at": None,
+                "exchange_at": None,
+            },
+            "lineage": {
+                "raw_object_hash": None,
+                "raw_record_ordinal": None,
+                "parent_event_ids": [],
+            },
+        }
+        for object_key, defaults in nested_defaults.items():
+            child = material.get(object_key)
+            if isinstance(child, Mapping):
+                expanded_child = dict(child)
+                for child_key, default in defaults.items():
+                    expanded_child.setdefault(child_key, default)
+                material[object_key] = expanded_child
+    material.pop("event_id", None)
     return material
 
 
@@ -461,6 +479,77 @@ compute_payload_sha256 = payload_sha256
 compute_event_id = event_id_for
 
 
+def _timestamp_order_value(value: str) -> tuple[int, int, int, int, int, int, Decimal]:
+    _validate_utc_timestamp(value)
+    date_part, time_part = value[:-1].split("T", maxsplit=1)
+    year, month, day = (int(part) for part in date_part.split("-"))
+    hour_text, minute_text, second_and_fraction = time_part.split(":")
+    second_text, separator, fraction_text = second_and_fraction.partition(".")
+    fraction = Decimal(f"0.{fraction_text}") if separator else Decimal(0)
+    return (
+        year,
+        month,
+        day,
+        int(hour_text),
+        int(minute_text),
+        int(second_text),
+        fraction,
+    )
+
+
+def _nulls_last(
+    value: Any, transform: Callable[[Any], Any]
+) -> tuple[int, Any]:
+    return (1, "") if value is None else (0, transform(value))
+
+
+def replay_order_key(value: Mapping[str, Any] | BaseModel) -> tuple[Any, ...]:
+    """Return the v0 total-order key with tagged NULLS LAST components."""
+
+    material = value.model_dump(mode="python") if isinstance(value, BaseModel) else value
+    time = material["time"]
+    canonical_refs = material["canonical_refs"]
+    return (
+        _timestamp_order_value(time["receive_at"]),
+        _nulls_last(time.get("source_at"), _timestamp_order_value),
+        _nulls_last(canonical_refs.get("market_id"), str),
+        _nulls_last(canonical_refs.get("outcome_id"), str),
+        material["payload_sha256"],
+    )
+
+
+def _stream_event_id(value: str | Mapping[str, Any] | BaseModel) -> str:
+    if isinstance(value, str):
+        event_id = value
+    elif isinstance(value, BaseModel):
+        event_id = getattr(value, "event_id", None)
+    else:
+        event_id = value.get("event_id")
+    if not isinstance(event_id, str) or re.fullmatch(r"evt_[0-9a-f]{64}", event_id) is None:
+        raise ValueError("Level-2 framing requires canonical evt_<64hex> event IDs")
+    return event_id
+
+
+def level2_stream_frame(
+    events: Iterable[str | Mapping[str, Any] | BaseModel],
+) -> bytes:
+    """Frame ordered event digests without ambiguous concatenation."""
+
+    event_ids = tuple(_stream_event_id(event) for event in events)
+    count = len(event_ids)
+    return (
+        LEVEL2_STREAM_DOMAIN_TAG
+        + count.to_bytes(8, byteorder="big", signed=False)
+        + b"".join(bytes.fromhex(event_id.removeprefix("evt_")) for event_id in event_ids)
+    )
+
+
+def level2_stream_sha256(
+    events: Iterable[str | Mapping[str, Any] | BaseModel],
+) -> str:
+    return f"sha256:{hashlib.sha256(level2_stream_frame(events)).hexdigest()}"
+
+
 class EventEnvelopeV0(_ContractModel):
     envelope_version: Literal["v0"]
     event_id: EventIdV0
@@ -471,8 +560,8 @@ class EventEnvelopeV0(_ContractModel):
     canonical_refs: CanonicalReferencesV0
     native_refs: list[NativeReferenceV0]
     lineage: EventLineageV0
-    experiment_id: ExperimentIdV0 | None
-    rule_snapshot_ref: Sha256V0 | None
+    experiment_id: ExperimentIdV0 | None = None
+    rule_snapshot_ref: Sha256V0 | None = None
     quality_flags: list[QualityFlagV0]
     payload: dict[str, Any]
     payload_sha256: Sha256V0
@@ -524,6 +613,8 @@ class EventEnvelopeV0(_ContractModel):
                 raise ValueError("derived event requires parent event IDs")
             if self.experiment_id is None:
                 raise ValueError("derived event requires a registered experiment ID")
+        if self.event_type in SIMULATED_EVENT_TYPES and self.rule_snapshot_ref is None:
+            raise ValueError("simulated event requires rule_snapshot_ref")
 
         expected_event_id = event_id_for(self)
         if self.event_id != expected_event_id:
@@ -679,6 +770,7 @@ __all__ = [
     "EventTimeV0",
     "FixedPointV0",
     "LineageV0",
+    "LEVEL2_STREAM_DOMAIN_TAG",
     "MARKET_RELATIONS",
     "ModelOutputV0",
     "NativeRefV0",
@@ -686,6 +778,7 @@ __all__ = [
     "ORDER_TYPES",
     "QUALITY_FLAGS",
     "REGISTERED_EXPERIMENT_IDS",
+    "SIMULATED_EVENT_TYPES",
     "START_TIME_CANCEL_POLICIES",
     "Sha256V0",
     "SourceV0",
@@ -698,5 +791,8 @@ __all__ = [
     "compute_event_id",
     "compute_payload_sha256",
     "event_id_for",
+    "level2_stream_frame",
+    "level2_stream_sha256",
     "payload_sha256",
+    "replay_order_key",
 ]
