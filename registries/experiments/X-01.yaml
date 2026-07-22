@@ -33,7 +33,7 @@ experiment_card:
   registered_at: '2026-07-22'
   result_acceptance_not_before: '2026-07-23T00:00:00Z'
   due_gate: null
-  results_ref: ''
+  results_ref: []
   promotion_decision: ''
   execution_authorized: true
   authorization_scopes:
@@ -43,7 +43,7 @@ experiment_card:
       required_lock_ids: [nba_game_and_contracts, input_file_manifest, independent_crosscheck_source, as_of_age_and_latency_estimator, canonicalization_version, h_split_approval]
   registration_locks:
     - {id: nba_game_and_contracts, status: unresolved, reason: Exact NBA game-day and contract universe are not selected.}
-    - {id: input_file_manifest, status: unresolved, reason: Input paths, versions, and SHA-256 hashes are not fixed.}
+    - {id: input_file_manifest, status: unresolved, reason: 'Input paths, versions, and SHA-256 hashes are not fixed.'}
     - {id: independent_crosscheck_source, status: unresolved, reason: Historical API availability versus self-captured overlap must be measured.}
     - {id: as_of_age_and_latency_estimator, status: unresolved, reason: Accept the Charter 1s default or preregister another age and estimator.}
     - {id: canonicalization_version, status: unresolved, reason: Exact reconstructor and serializer commit must be pinned.}
@@ -73,4 +73,4 @@ experiment_card:
     - readme_return_strategy_selection
     - unregistered_quick_backtest
   amendments: []
-  registration_record_sha256: sha256:b56a3a23869a3bf628210b2ac25fa9091044abdcbf68017fb845c64e3ab6bd76
+  registration_record_sha256: sha256:5a435284fbb455732abb99fb76dd7d494fc8d46c2adf4e211a0e9919156e4475

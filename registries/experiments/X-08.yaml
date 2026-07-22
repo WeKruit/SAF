@@ -6,7 +6,7 @@ experiment_card:
   hypothesis: A prospective recorder run can produce immutable continuous logs for seven actual elapsed days and an archive-overlap reconciliation report
   data:
     - source: Kalshi pre-stop archive sample
-      version: measured_stopped_window_to_be_hashed
+      version: unresolved:archive_audit_input_manifest
       pit_basis: archive_timestamp_received
     - source: New Polymarket public market WebSocket capture
       version: unresolved:recorder_configuration
@@ -31,14 +31,14 @@ experiment_card:
   registered_at: '2026-07-22'
   result_acceptance_not_before: '2026-07-23T00:00:00Z'
   due_gate: null
-  results_ref: ''
+  results_ref: []
   promotion_decision: ''
   execution_authorized: false
   authorization_scopes:
     archive_audit:
       authorized: true
       required_result_label: FORMAL
-      required_lock_ids: []
+      required_lock_ids: [archive_audit_input_manifest, h_split_approval]
     polymarket_capture:
       authorized: true
       required_result_label: PRELIMINARY
@@ -52,9 +52,10 @@ experiment_card:
       required_result_label: FORMAL
       required_lock_ids: [recorder_configuration, kalshi_credentials, prospective_window_and_metrics, overlap_definition, h_split_approval]
   registration_locks:
-    - {id: recorder_configuration, status: unresolved, reason: Recorder commit, configuration, and market universe are unset.}
+    - {id: archive_audit_input_manifest, status: unresolved, reason: 'Stopped-archive source paths, versions, and SHA-256 hashes are not fixed.'}
+    - {id: recorder_configuration, status: unresolved, reason: 'Recorder commit, configuration, and market universe are unset.'}
     - {id: kalshi_credentials, status: unresolved, reason: Kalshi API key ID and RSA key reference were not supplied.}
-    - {id: prospective_window_and_metrics, status: unresolved, reason: Start/end, gap definition, uptime denominator, and 99-100 percent decision band are unset.}
+    - {id: prospective_window_and_metrics, status: unresolved, reason: 'Start/end, gap definition, uptime denominator, and 99-100 percent decision band are unset.'}
     - {id: overlap_definition, status: unresolved, reason: Archive overlap window and comparison tolerance are unset.}
     - {id: h_split_approval, status: unresolved, reason: H must approve n.a. in place of the default predictive split.}
   measurement_exemption: false
@@ -79,4 +80,4 @@ experiment_card:
     - readme_return_strategy_selection
     - unregistered_quick_backtest
   amendments: []
-  registration_record_sha256: sha256:9e54de8027b023023879772ed930ac6682efc5b6bccf6e5e4d5b72dec441a027
+  registration_record_sha256: sha256:c105e84ca90ba68ad259185670fed99e51af7740d159838cf51156e9e36153c4

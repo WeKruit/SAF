@@ -11,9 +11,10 @@ experiment_card:
     - source: Historical venue_rule_snapshot stream
       version: unresolved:x09_rule_manifest
       pit_basis: effective_at_as_of
-  method: Run the same fixed-point vertical slice twice with explicit ordering, pinned dependencies and seed, then compare semantic outputs and canonical stream hashes.
+  signal: buy five seconds after score
+  method: Run the same fixed-point vertical slice twice; buy five seconds after score, apply the locked risk and fill rules, preserve explicit ordering and pinned dependencies and seed, then compare semantic outputs and canonical stream hashes.
   leakage_checks:
-    - Pin input and rule hashes, signal semantics, risk, fill, serializer, dependency lockfile, and seed before replay.
+    - Pin input and rule hashes, risk, fill, serializer, dependency lockfile, and seed before replay; the signal is fixed above.
     - Use UTC, fixed point, explicit ORDER BY, deterministic single-writer processing, and no runtime wall clock in canonical data.
   split: n.a. for deterministic replay; H approval is locked
   metrics: [Level 1 event/order/fill/P&L identity, Level 2 canonical stream hash identity, complete event_id lineage]
@@ -24,23 +25,25 @@ experiment_card:
   registered_at: '2026-07-22'
   result_acceptance_not_before: '2026-07-23T00:00:00Z'
   due_gate: null
-  results_ref: ''
+  results_ref: []
   promotion_decision: ''
   execution_authorized: true
   authorization_scopes:
     formal_result:
       authorized: true
       required_result_label: FORMAL
-      required_lock_ids: [x09_input_manifest, x09_rule_manifest, signal_risk_fill_config, serializer_seed_and_lockfile, h_split_approval]
+      required_lock_ids: [x09_input_manifest, x09_rule_manifest, risk_and_fill_config, serializer_seed_and_lockfile, h_split_approval]
   registration_locks:
     - {id: x09_input_manifest, status: unresolved, reason: Frozen X-01 stream and hashes are unset.}
     - {id: x09_rule_manifest, status: unresolved, reason: Historical rule snapshot stream and hashes are unset.}
-    - {id: signal_risk_fill_config, status: unresolved, reason: Dummy score trigger, risk, and fill semantics are unset.}
-    - {id: serializer_seed_and_lockfile, status: unresolved, reason: Canonical serializer, seed, and dependency versions are unset.}
+    - {id: risk_and_fill_config, status: unresolved, reason: Risk and fill semantics are unset; the signal is already fixed.}
+    - {id: serializer_seed_and_lockfile, status: unresolved, reason: 'Canonical serializer, seed, and dependency versions are unset.'}
     - {id: h_split_approval, status: unresolved, reason: H must approve n.a. in place of the default predictive split.}
   measurement_exemption: false
   falsified_direction_is_valid_measurement: false
   deterministic_replay_required_levels: [1, 2]
+  artifact_dependencies:
+    - {path: contracts/event-envelope/v0.schema.yaml, version: v0, sha256: 'sha256:a42eb725cb359293d560e6ee8956738d05079e5f428d31890c8eff7b78fc3260'}
   linked_first_artifact_due_gates:
     - {catalog_item_id: R-034, due_gate: 2026-08-05_W2_review}
     - {catalog_item_id: R-042, due_gate: 2026-08-05_W2_review}
@@ -63,4 +66,4 @@ experiment_card:
     - readme_return_strategy_selection
     - unregistered_quick_backtest
   amendments: []
-  registration_record_sha256: sha256:d38cf2700de919084dd8e0300e26a88776203ea103cd16725daa0418783e1ded
+  registration_record_sha256: sha256:39235a6bb75f827b1260421a9c75ec2142cb8309698f03cad5d4f641b98909e1

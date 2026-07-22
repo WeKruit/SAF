@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import csv
+import copy
 import hashlib
+import os
 import shutil
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -21,6 +24,7 @@ from prediction_market.experiments import (  # noqa: E402
     UnregisteredExperimentError,
     UnresolvedDependencyError,
     UnresolvedRegistrationLockError,
+    compute_amendment_sha256,
     compute_registration_record_sha256,
     load_experiment_registry,
     validate_result_ref,
@@ -43,6 +47,7 @@ EXPECTED_NO_GOS = {
 }
 EXPECTED_TASK_3_PATHS = {
     "registries/experiment_registry.csv",
+    "registries/experiment_amendment_ledger.csv",
     "registries/artifact_registry.csv",
     "artifacts/validation/validation_standard_v0.md",
     "src/prediction_market/experiments.py",
@@ -60,6 +65,8 @@ def _copy_program_fixture(tmp_path: Path) -> Path:
     root = tmp_path / "program"
     shutil.copytree(PROJECT_ROOT / "charter", root / "charter")
     shutil.copytree(PROJECT_ROOT / "registries", root / "registries")
+    shutil.copytree(PROJECT_ROOT / "artifacts", root / "artifacts")
+    shutil.copytree(PROJECT_ROOT / "contracts", root / "contracts")
     return root
 
 
@@ -98,6 +105,24 @@ def _update_registry_card_hash(root: Path, experiment_id: str) -> None:
         writer.writerows(rows)
 
 
+def _update_registry_field(
+    root: Path, experiment_id: str, field: str, value: str
+) -> None:
+    registry_path = root / "registries" / "experiment_registry.csv"
+    with registry_path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = reader.fieldnames
+        rows = list(reader)
+    assert fieldnames is not None
+    for row in rows:
+        if row["experiment_id"] == experiment_id:
+            row[field] = value
+    with registry_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def _rewrite_registered_card(root: Path, experiment_id: str, card: dict) -> None:
     card["registration_record_sha256"] = compute_registration_record_sha256(card)
     _write_card(root, experiment_id, card)
@@ -105,16 +130,128 @@ def _rewrite_registered_card(root: Path, experiment_id: str, card: dict) -> None
 
 
 def _valid_result_ref(
-    *, scope: str = "archive_audit", evaluation_started_at: str = "2026-07-23T00:00:00Z"
+    *,
+    scope: str = "archive_audit",
+    result_label: str = "FORMAL",
+    evaluation_started_at: str = "2026-07-23T00:00:02Z",
+    registration_head_sha256: str = "sha256:" + "4" * 64,
 ) -> dict[str, str]:
     return {
         "scope": scope,
-        "result_label": "FORMAL",
+        "result_label": result_label,
         "evaluation_started_at": evaluation_started_at,
         "code_sha256": "sha256:" + "1" * 64,
         "data_sha256": "sha256:" + "2" * 64,
         "result_sha256": "sha256:" + "3" * 64,
+        "registration_head_sha256": registration_head_sha256,
     }
+
+
+LEDGER_FIELDS = [
+    "experiment_id",
+    "sequence",
+    "record_sha256",
+    "prior_sha256",
+    "amended_at",
+    "approved_by",
+    "reason",
+]
+
+
+def _ensure_seed_ledger(root: Path) -> None:
+    path = root / "registries" / "experiment_amendment_ledger.csv"
+    if path.exists():
+        return
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=LEDGER_FIELDS)
+        writer.writeheader()
+        for experiment_id in sorted(EXPECTED_EXPERIMENT_IDS):
+            card = _read_card(root, experiment_id)
+            writer.writerow(
+                {
+                    "experiment_id": experiment_id,
+                    "sequence": "0",
+                    "record_sha256": card["registration_record_sha256"],
+                    "prior_sha256": "",
+                    "amended_at": "",
+                    "approved_by": "",
+                    "reason": "",
+                }
+            )
+
+
+def _append_amendment(
+    root: Path,
+    experiment_id: str,
+    *,
+    amended_at: str,
+    changes: dict[str, Any],
+    approved_by: str = "H",
+    reason: str = "test fixture",
+) -> dict[str, Any]:
+    _ensure_seed_ledger(root)
+    card = _read_card(root, experiment_id)
+    sequence = len(card["amendments"]) + 1
+    prior_sha256 = (
+        card["registration_record_sha256"]
+        if not card["amendments"]
+        else card["amendments"][-1]["amendment_sha256"]
+    )
+    amendment: dict[str, Any] = {
+        "sequence": sequence,
+        "amended_at": amended_at,
+        "prior_sha256": prior_sha256,
+        "approved_by": approved_by,
+        "reason": reason,
+        "changes": changes,
+    }
+    amendment["amendment_sha256"] = compute_amendment_sha256(amendment)
+    card["amendments"].append(amendment)
+    _write_card(root, experiment_id, card)
+    _update_registry_card_hash(root, experiment_id)
+
+    ledger_path = root / "registries" / "experiment_amendment_ledger.csv"
+    with ledger_path.open("a", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=LEDGER_FIELDS)
+        writer.writerow(
+            {
+                "experiment_id": experiment_id,
+                "sequence": str(sequence),
+                "record_sha256": amendment["amendment_sha256"],
+                "prior_sha256": prior_sha256,
+                "amended_at": amended_at,
+                "approved_by": approved_by,
+                "reason": reason,
+            }
+        )
+    return amendment
+
+
+def _preregister_x08_inputs(root: Path) -> dict[str, Any]:
+    return _append_amendment(
+        root,
+        "X-08",
+        amended_at="2026-07-23T00:00:01Z",
+        changes={
+            "resolve_locks": [
+                {
+                    "lock_id": "archive_audit_input_manifest",
+                    "evidence_ref": "sha256:" + "8" * 64,
+                },
+                {
+                    "lock_id": "h_split_approval",
+                    "evidence_ref": "sha256:" + "9" * 64,
+                },
+            ],
+            "preregistered_inputs": [
+                {
+                    "scope": "archive_audit",
+                    "code_sha256": "sha256:" + "1" * 64,
+                    "data_sha256": "sha256:" + "2" * 64,
+                }
+            ],
+        },
+    )
 
 
 def test_all_seed_experiments_are_registered(program_root: Path) -> None:
@@ -232,7 +369,12 @@ def test_partial_authorization_scopes_fail_closed(program_root: Path) -> None:
     assert x10["authorization_scopes"]["precision_audit"]["authorized"] is True
     assert set(
         x10["authorization_scopes"]["precision_audit"]["required_lock_ids"]
-    ) == {"matched_sample_registered", "router_and_taxonomy_available"}
+    ) == {
+        "matched_sample_registered",
+        "router_and_taxonomy_available",
+        "gold_standard_protocol",
+        "h_split_approval",
+    }
     assert x10["authorization_scopes"]["recall"]["authorized"] is False
     assert x10["authorization_scopes"]["live_arbitrage"]["authorized"] is False
     assert x10["authorization_scopes"]["live_arbitrage"]["permanent_no_go"] is True
@@ -323,25 +465,80 @@ def test_result_scope_must_be_known_and_authorized(program_root: Path) -> None:
         validate_result_ref(program_root, "X-08", blocked_scope)
 
 
-def test_evaluation_must_start_after_registration(program_root: Path) -> None:
-    too_early = _valid_result_ref(evaluation_started_at="2026-07-22T23:59:59Z")
+def test_evaluation_must_start_after_registration(tmp_path: Path) -> None:
+    root = _copy_program_fixture(tmp_path)
+    amendment = _preregister_x08_inputs(root)
+    too_early = _valid_result_ref(
+        evaluation_started_at="2026-07-22T23:59:59Z",
+        registration_head_sha256=amendment["amendment_sha256"],
+    )
     with pytest.raises(PreRegistrationEvaluationError):
-        validate_result_ref(program_root, "X-08", too_early)
+        validate_result_ref(root, "X-08", too_early)
 
-    validated = validate_result_ref(program_root, "X-08", _valid_result_ref())
+    validated = validate_result_ref(
+        root,
+        "X-08",
+        _valid_result_ref(
+            registration_head_sha256=amendment["amendment_sha256"]
+        ),
+    )
     assert validated["scope"] == "archive_audit"
 
 
-def test_result_rejects_unresolved_registration_locks(program_root: Path) -> None:
-    result_ref = _valid_result_ref(scope="formal_result")
+def test_result_rejects_unresolved_registration_locks(tmp_path: Path) -> None:
+    root = _copy_program_fixture(tmp_path)
+    amendment = _append_amendment(
+        root,
+        "X-01",
+        amended_at="2026-07-23T00:00:01Z",
+        changes={
+            "preregistered_inputs": [
+                {
+                    "scope": "formal_result",
+                    "code_sha256": "sha256:" + "1" * 64,
+                    "data_sha256": "sha256:" + "2" * 64,
+                }
+            ]
+        },
+    )
+    result_ref = _valid_result_ref(
+        scope="formal_result",
+        registration_head_sha256=amendment["amendment_sha256"],
+    )
     with pytest.raises(UnresolvedRegistrationLockError):
-        validate_result_ref(program_root, "X-01", result_ref)
+        validate_result_ref(root, "X-01", result_ref)
 
 
-def test_result_rejects_unfinished_dependencies(program_root: Path) -> None:
-    result_ref = _valid_result_ref(scope="formal_result")
+def test_result_rejects_unfinished_dependencies(tmp_path: Path) -> None:
+    root = _copy_program_fixture(tmp_path)
+    x04 = _read_card(root, "X-04")
+    amendment = _append_amendment(
+        root,
+        "X-04",
+        amended_at="2026-07-23T00:00:01Z",
+        changes={
+            "resolve_locks": [
+                {
+                    "lock_id": lock["id"],
+                    "evidence_ref": "sha256:" + "8" * 64,
+                }
+                for lock in x04["registration_locks"]
+            ],
+            "preregistered_inputs": [
+                {
+                    "scope": "formal_result",
+                    "code_sha256": "sha256:" + "1" * 64,
+                    "data_sha256": "sha256:" + "2" * 64,
+                }
+            ],
+        },
+    )
+    result_ref = _valid_result_ref(
+        scope="formal_result",
+        registration_head_sha256=amendment["amendment_sha256"],
+    )
     with pytest.raises(UnresolvedDependencyError):
-        validate_result_ref(program_root, "X-04", result_ref)
+        validate_result_ref(root, "X-04", result_ref)
 
 
 def test_registry_rejects_card_hash_tampering(tmp_path: Path) -> None:
@@ -415,3 +612,513 @@ def test_loader_rejects_blank_pit_lineage_and_bad_scope_locks(tmp_path: Path) ->
 
     with pytest.raises(ExperimentRegistryError, match="unknown registration lock"):
         load_experiment_registry(root)
+
+
+def test_registry_rejects_base_rewrite_even_when_all_public_hashes_are_recomputed(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    card = _read_card(root, "X-01")
+    card["hypothesis"] = "coherently rewritten base registration"
+    _rewrite_registered_card(root, "X-01", card)
+
+    with pytest.raises(ExperimentRegistryError, match="trusted base registration"):
+        load_experiment_registry(root)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [1.5, {1: "integer-key"}, {True: "boolean-key"}, {None: "null-key"}],
+    ids=["float", "integer-key", "boolean-key", "null-key"],
+)
+def test_registration_hash_rejects_noncanonical_values(value: Any) -> None:
+    with pytest.raises(ExperimentRegistryError, match="canonical"):
+        compute_registration_record_sha256({"value": value})
+
+
+@pytest.mark.parametrize(
+    "target,extra_key",
+    [
+        ("card", "unexpected"),
+        ("data", "unexpected"),
+        ("cost_estimate", "unexpected"),
+        ("scope", "unexpected"),
+        ("lock", "unexpected"),
+        ("lineage", "unexpected"),
+        ("gate", "unexpected"),
+    ],
+)
+def test_registry_rejects_extra_keys_at_every_card_structure(
+    tmp_path: Path, target: str, extra_key: str
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    card = _read_card(root, "X-01")
+    targets = {
+        "card": card,
+        "data": card["data"][0],
+        "cost_estimate": card["cost_estimate"],
+        "scope": card["authorization_scopes"]["formal_result"],
+        "lock": card["registration_locks"][0],
+        "lineage": card["source_lineage"],
+        "gate": card["linked_first_artifact_due_gates"][0],
+    }
+    targets[target][extra_key] = "not registered"
+    _rewrite_registered_card(root, "X-01", card)
+
+    with pytest.raises(ExperimentRegistryError):
+        load_experiment_registry(root)
+
+
+def test_registry_rejects_duplicate_yaml_keys(tmp_path: Path) -> None:
+    root = _copy_program_fixture(tmp_path)
+    path = root / "registries" / "experiments" / "X-01.yaml"
+    text = path.read_text(encoding="utf-8")
+    text = text.replace(
+        "  status: registered\n",
+        "  status: failed\n  status: registered\n",
+        1,
+    )
+    path.write_text(text, encoding="utf-8")
+    _update_registry_card_hash(root, "X-01")
+
+    with pytest.raises(ExperimentRegistryError, match="duplicate YAML key"):
+        load_experiment_registry(root)
+
+
+@pytest.mark.parametrize("registry_name", ["experiment_registry.csv", "../charter/catalog_registry.csv"])
+def test_registry_rejects_csv_extra_columns(
+    tmp_path: Path, registry_name: str
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    path = root / "registries" / registry_name
+    lines = path.read_text(encoding="utf-8").splitlines()
+    lines[0] += ",unexpected"
+    lines[1] += ",value"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    with pytest.raises(ExperimentRegistryError, match="CSV columns"):
+        load_experiment_registry(root)
+
+
+def test_registry_rejects_csv_row_overflow(tmp_path: Path) -> None:
+    root = _copy_program_fixture(tmp_path)
+    path = root / "registries" / "experiment_registry.csv"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    lines[1] += ",overflow"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    with pytest.raises(ExperimentRegistryError, match="CSV row"):
+        load_experiment_registry(root)
+
+
+def test_registry_rejects_duplicate_catalog_experiment_links(tmp_path: Path) -> None:
+    root = _copy_program_fixture(tmp_path)
+    catalog_path = root / "charter" / "catalog_registry.csv"
+    with catalog_path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = reader.fieldnames
+        rows = list(reader)
+    assert fieldnames is not None
+    duplicated_row = next(row for row in rows if row["catalog_item_id"] == "R-038")
+    duplicated_row["linked_experiments"] = "X-01;X-01"
+    with catalog_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    card = _read_card(root, "X-01")
+    duplicated_gate = copy.deepcopy(card["linked_first_artifact_due_gates"][0])
+    card["linked_first_artifact_due_gates"].insert(1, duplicated_gate)
+    card["source_lineage"]["catalog_item_ids"].insert(1, "R-038")
+    _rewrite_registered_card(root, "X-01", card)
+
+    with pytest.raises(ExperimentRegistryError, match="duplicate.*link"):
+        load_experiment_registry(root)
+
+
+def test_registry_rejects_whitespace_in_catalog_links(tmp_path: Path) -> None:
+    root = _copy_program_fixture(tmp_path)
+    path = root / "charter" / "catalog_registry.csv"
+    text = path.read_text(encoding="utf-8")
+    path.write_text(text.replace(",X-06,assigned", ", X-06,assigned", 1), encoding="utf-8")
+
+    with pytest.raises(ExperimentRegistryError, match="whitespace"):
+        load_experiment_registry(root)
+
+
+def test_registry_rejects_symlinked_card_even_when_content_hash_matches(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    card_path = root / "registries" / "experiments" / "X-01.yaml"
+    outside_path = tmp_path / "outside-X-01.yaml"
+    outside_path.write_bytes(card_path.read_bytes())
+    card_path.unlink()
+    os.symlink(outside_path, card_path)
+
+    with pytest.raises(ExperimentRegistryError, match="symlink|escape"):
+        load_experiment_registry(root)
+
+
+def test_registry_rejects_symlinked_artifact_dependency(tmp_path: Path) -> None:
+    root = _copy_program_fixture(tmp_path)
+    dependency_path = root / "contracts" / "event-envelope" / "v0.schema.yaml"
+    outside_path = tmp_path / "outside-event-envelope.yaml"
+    outside_path.write_bytes(dependency_path.read_bytes())
+    dependency_path.unlink()
+    os.symlink(outside_path, dependency_path)
+
+    with pytest.raises(ExperimentRegistryError, match="symlink|escape"):
+        load_experiment_registry(root)
+
+
+@pytest.mark.parametrize(
+    "amended_at",
+    [
+        "2026-07-23 00:00:01Z",
+        "2026-07-23X00:00:01Z",
+        "2026-07-23T00:00:01+00:00",
+        "2026-W30-4T00:00:01Z",
+    ],
+)
+def test_amendment_timestamp_must_be_canonical_utc(
+    tmp_path: Path, amended_at: str
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    _append_amendment(
+        root,
+        "X-01",
+        amended_at=amended_at,
+        changes={"status": "running"},
+    )
+
+    with pytest.raises(ExperimentRegistryError, match="canonical UTC"):
+        load_experiment_registry(root)
+
+
+def test_amendment_timestamps_must_be_strictly_monotonic(tmp_path: Path) -> None:
+    root = _copy_program_fixture(tmp_path)
+    _append_amendment(
+        root,
+        "X-01",
+        amended_at="2026-07-23T00:00:02Z",
+        changes={"status": "running"},
+    )
+    _append_amendment(
+        root,
+        "X-01",
+        amended_at="2026-07-23T00:00:01Z",
+        changes={"status": "failed"},
+    )
+
+    with pytest.raises(ExperimentRegistryError, match="monotonic"):
+        load_experiment_registry(root)
+
+
+@pytest.mark.parametrize("approved_by", ["A", "H+A", "team h", ""])
+def test_amendments_require_exact_team_h_approval(
+    tmp_path: Path, approved_by: str
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    _append_amendment(
+        root,
+        "X-01",
+        amended_at="2026-07-23T00:00:01Z",
+        approved_by=approved_by,
+        changes={"status": "running"},
+    )
+
+    with pytest.raises(ExperimentRegistryError, match="approved_by"):
+        load_experiment_registry(root)
+
+
+def test_amendment_rejects_uncontrolled_base_changes(tmp_path: Path) -> None:
+    root = _copy_program_fixture(tmp_path)
+    _append_amendment(
+        root,
+        "X-01",
+        amended_at="2026-07-23T00:00:01Z",
+        changes={"hypothesis": "replace immutable scientific intent"},
+    )
+
+    with pytest.raises(ExperimentRegistryError, match="controlled"):
+        load_experiment_registry(root)
+
+
+def test_amendment_cannot_authorize_permanent_no_go(tmp_path: Path) -> None:
+    root = _copy_program_fixture(tmp_path)
+    _append_amendment(
+        root,
+        "X-10",
+        amended_at="2026-07-23T00:00:01Z",
+        changes={"authorize_scopes": ["live_arbitrage"]},
+    )
+
+    with pytest.raises(ExperimentRegistryError, match="permanent NO-GO"):
+        load_experiment_registry(root)
+
+
+def test_amendment_ledger_and_card_chain_must_match_both_directions(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    _append_amendment(
+        root,
+        "X-01",
+        amended_at="2026-07-23T00:00:01Z",
+        changes={"status": "running"},
+    )
+    card = _read_card(root, "X-01")
+    card["amendments"] = []
+    _write_card(root, "X-01", card)
+    _update_registry_card_hash(root, "X-01")
+
+    with pytest.raises(ExperimentRegistryError, match="ledger.*chain|chain.*ledger"):
+        load_experiment_registry(root)
+
+    root = _copy_program_fixture(tmp_path / "reverse")
+    _append_amendment(
+        root,
+        "X-01",
+        amended_at="2026-07-23T00:00:01Z",
+        changes={"status": "running"},
+    )
+    ledger_path = root / "registries" / "experiment_amendment_ledger.csv"
+    lines = ledger_path.read_text(encoding="utf-8").splitlines()
+    ledger_path.write_text("\n".join(lines[:-1]) + "\n", encoding="utf-8")
+
+    with pytest.raises(ExperimentRegistryError, match="ledger.*chain|chain.*ledger"):
+        load_experiment_registry(root)
+
+
+def test_effective_amendment_applies_status_locks_and_inputs(tmp_path: Path) -> None:
+    root = _copy_program_fixture(tmp_path)
+    amendment = _preregister_x08_inputs(root)
+    registry = load_experiment_registry(root)
+    x08 = registry["X-08"]
+
+    assert x08["registration_head_sha256"] == amendment["amendment_sha256"]
+    assert x08["registration_locks"][0]["status"] == "resolved"
+    assert x08["registration_locks"][0]["evidence_ref"] == "sha256:" + "8" * 64
+    assert x08["preregistered_inputs"]["archive_audit"] == {
+        "code_sha256": "sha256:" + "1" * 64,
+        "data_sha256": "sha256:" + "2" * 64,
+        "registered_at": "2026-07-23T00:00:01Z",
+    }
+
+
+class _ChangingResultMapping(dict[str, Any]):
+    def __init__(self) -> None:
+        super().__init__(
+            {
+                "scope": "archive_audit",
+                "result_label": "FORMAL",
+                "evaluation_started_at": "2026-07-23T00:00:02Z",
+                "code_sha256": "sha256:" + "1" * 64,
+                "data_sha256": "sha256:" + "2" * 64,
+                "result_sha256": "sha256:" + "3" * 64,
+            }
+        )
+        self._reads = 0
+
+    def __getitem__(self, key: str) -> Any:
+        if key == "result_sha256":
+            self._reads += 1
+            if self._reads >= 3:
+                return "not-a-hash"
+        return super().__getitem__(key)
+
+
+def test_result_ref_rejects_non_plain_mapping_toctou(program_root: Path) -> None:
+    with pytest.raises(InvalidResultReferenceError, match="plain dict"):
+        validate_result_ref(program_root, "X-08", _ChangingResultMapping())
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("result_label", None),
+        ("scope", 7),
+        ("evaluation_started_at", 1),
+        ("registration_head_sha256", None),
+        ("code_sha256", b"not-text"),
+    ],
+)
+def test_result_ref_rejects_null_and_wrong_field_types(
+    program_root: Path, field: str, value: Any
+) -> None:
+    result_ref: dict[str, Any] = _valid_result_ref()
+    result_ref[field] = value
+    with pytest.raises(InvalidResultReferenceError, match=field):
+        validate_result_ref(program_root, "X-08", result_ref)
+
+
+@pytest.mark.parametrize(
+    "timestamp",
+    [
+        "2026-07-23 00:00:02Z",
+        "2026-07-23X00:00:02Z",
+        "2026-07-23T00:00:02+00:00",
+        "2026-W30-4T00:00:02Z",
+        "2026-07-23T00:00:02-00:00",
+    ],
+)
+def test_result_timestamp_requires_exact_utc_form(
+    tmp_path: Path, timestamp: str
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    amendment = _preregister_x08_inputs(root)
+    result_ref = _valid_result_ref(
+        evaluation_started_at=timestamp,
+        registration_head_sha256=amendment["amendment_sha256"],
+    )
+
+    with pytest.raises(InvalidResultReferenceError, match="canonical UTC"):
+        validate_result_ref(root, "X-08", result_ref)
+
+
+def test_seed_cards_reject_results_until_scope_inputs_are_preregistered(
+    program_root: Path,
+) -> None:
+    registry = load_experiment_registry(program_root)
+    for experiment_id, card in registry.items():
+        scope_name, scope = next(
+            (name, value)
+            for name, value in card["authorization_scopes"].items()
+            if value["authorized"] and not value.get("permanent_no_go", False)
+        )
+        result_ref = _valid_result_ref(
+            scope=scope_name,
+            result_label=scope["required_result_label"],
+            registration_head_sha256=card["registration_head_sha256"],
+        )
+        with pytest.raises(InvalidResultReferenceError, match="preregistered"):
+            validate_result_ref(program_root, experiment_id, result_ref)
+
+
+def test_valid_result_requires_matching_preregistered_inputs_and_head(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    amendment = _preregister_x08_inputs(root)
+    result_ref = _valid_result_ref(
+        registration_head_sha256=amendment["amendment_sha256"]
+    )
+
+    assert validate_result_ref(root, "X-08", result_ref) == result_ref
+
+    wrong_input = dict(result_ref, data_sha256="sha256:" + "a" * 64)
+    with pytest.raises(InvalidResultReferenceError, match="preregistered"):
+        validate_result_ref(root, "X-08", wrong_input)
+
+    wrong_head = dict(result_ref, registration_head_sha256="sha256:" + "b" * 64)
+    with pytest.raises(InvalidResultReferenceError, match="registration head"):
+        validate_result_ref(root, "X-08", wrong_head)
+
+
+def test_evaluation_must_follow_input_preregistration_amendment(tmp_path: Path) -> None:
+    root = _copy_program_fixture(tmp_path)
+    amendment = _preregister_x08_inputs(root)
+    result_ref = _valid_result_ref(
+        evaluation_started_at="2026-07-23T00:00:01Z",
+        registration_head_sha256=amendment["amendment_sha256"],
+    )
+
+    with pytest.raises(PreRegistrationEvaluationError, match="input preregistration"):
+        validate_result_ref(root, "X-08", result_ref)
+
+
+def test_generated_result_can_be_appended_only_against_its_evaluation_head(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    preregistration = _preregister_x08_inputs(root)
+    result_ref = _valid_result_ref(
+        registration_head_sha256=preregistration["amendment_sha256"]
+    )
+    _append_amendment(
+        root,
+        "X-08",
+        amended_at="2026-07-23T00:00:03Z",
+        changes={"results_ref": result_ref, "status": "done"},
+    )
+
+    effective = load_experiment_registry(root)["X-08"]
+    assert effective["status"] == "done"
+    assert effective["results_ref"] == [result_ref]
+
+    root = _copy_program_fixture(tmp_path / "bad-head")
+    _preregister_x08_inputs(root)
+    wrong_head = _valid_result_ref(registration_head_sha256="sha256:" + "f" * 64)
+    _append_amendment(
+        root,
+        "X-08",
+        amended_at="2026-07-23T00:00:03Z",
+        changes={"results_ref": wrong_head},
+    )
+    with pytest.raises(ExperimentRegistryError, match="evaluation head"):
+        load_experiment_registry(root)
+
+
+def test_dependency_status_done_without_evidence_is_not_ready(tmp_path: Path) -> None:
+    root = _copy_program_fixture(tmp_path)
+    card = _read_card(root, "X-01")
+    card["status"] = "done"
+    _rewrite_registered_card(root, "X-01", card)
+    _update_registry_field(root, "X-01", "status", "done")
+    x02 = _read_card(root, "X-02")
+    for lock in x02["registration_locks"]:
+        lock["status"] = "resolved"
+    x02["status"] = "done"
+    _rewrite_registered_card(root, "X-02", x02)
+    _update_registry_field(root, "X-02", "status", "done")
+
+    with pytest.raises(ExperimentRegistryError, match="trusted base registration"):
+        load_experiment_registry(root)
+
+
+def test_spec_specific_locks_signals_outputs_and_artifact_dependencies(
+    program_root: Path,
+) -> None:
+    registry = load_experiment_registry(program_root)
+
+    assert set(
+        registry["X-07"]["authorization_scopes"]["preliminary_pipeline"][
+            "required_lock_ids"
+        ]
+    ) == {
+        "x07_event_depth_manifest",
+        "order_size_and_vwap_policy",
+        "markout_horizons",
+    }
+    assert set(
+        registry["X-08"]["authorization_scopes"]["archive_audit"][
+            "required_lock_ids"
+        ]
+    ) == {"archive_audit_input_manifest", "h_split_approval"}
+    assert set(
+        registry["X-10"]["authorization_scopes"]["precision_audit"][
+            "required_lock_ids"
+        ]
+    ) == {
+        "matched_sample_registered",
+        "router_and_taxonomy_available",
+        "gold_standard_protocol",
+        "h_split_approval",
+    }
+    assert registry["X-09"]["signal"] == "buy five seconds after score"
+    assert set(registry["X-09"]["artifact_dependencies"][0]) == {
+        "path",
+        "version",
+        "sha256",
+    }
+    assert registry["X-09"]["artifact_dependencies"][0]["path"] == (
+        "contracts/event-envelope/v0.schema.yaml"
+    )
+    assert registry["X-05"]["artifact_dependencies"][0]["path"] == (
+        "artifacts/validation/validation_standard_v0.md"
+    )
+    x10_pass = registry["X-10"]["pass_criteria"].lower()
+    assert "relation taxonomy" in x10_pass
+    assert "review queue" in x10_pass
+    assert "g1 go/no-go input" in x10_pass

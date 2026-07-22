@@ -21,7 +21,7 @@ experiment_card:
   registered_at: '2026-07-22'
   result_acceptance_not_before: '2026-07-23T00:00:00Z'
   due_gate: null
-  results_ref: ''
+  results_ref: []
   promotion_decision: ''
   execution_authorized: false
   authorization_scopes:
@@ -39,7 +39,7 @@ experiment_card:
       required_lock_ids: [x05_quote_manifest, barrier_values, purge_and_embargo, post_resume_quote_rule, same_time_touch_rule, h_signature]
   registration_locks:
     - {id: x05_quote_manifest, status: unresolved, reason: X-01 executable quote version and hashes are unset.}
-    - {id: barrier_values, status: unresolved, reason: U, L, and h are deliberately not fabricated.}
+    - {id: barrier_values, status: unresolved, reason: 'U, L, and h are deliberately not fabricated.'}
     - {id: purge_and_embargo, status: unresolved, reason: Purge and embargo parameters must be preregistered before label inspection.}
     - {id: post_resume_quote_rule, status: unresolved, reason: First executable quote after suspension must be signed off.}
     - {id: same_time_touch_rule, status: unresolved, reason: Same-time upper/lower touch ordering is unset.}
@@ -47,6 +47,8 @@ experiment_card:
   measurement_exemption: false
   falsified_direction_is_valid_measurement: false
   midpoint_allowed: false
+  artifact_dependencies:
+    - {path: artifacts/validation/validation_standard_v0.md, version: v0, sha256: 'sha256:ce067f0fcb0b480c2bcaaa28c066147a060fbd999b6e9584f973f583d0a747ab'}
   linked_first_artifact_due_gates:
     - {catalog_item_id: R-022, due_gate: 2026-08-05_W2_review}
   source_lineage:
@@ -65,4 +67,4 @@ experiment_card:
     - readme_return_strategy_selection
     - unregistered_quick_backtest
   amendments: []
-  registration_record_sha256: sha256:87f64d48696a6979ec8841c9212bb74c545446dab542a8fc6a93507d166285b0
+  registration_record_sha256: sha256:adf2c9ef16e82ddc6f70d18c2993992d4c5cd49a83facabad5937561a1fa4bf4

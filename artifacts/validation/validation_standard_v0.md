@@ -10,20 +10,22 @@ This standard operationalizes the Charter. It does not alter approved scope, pro
 
 ## 1. Registration is a hard prerequisite
 
-Only X-01 through X-10 exist in registry v0. A result is invalid when its experiment, result scope, code hash, input-data hash, or result-artifact hash was not registered before evaluation began. An unknown experiment remains invalid even if it supplies a syntactically valid hash. “Quick backtests” outside the registry have no evidentiary value.
+Only X-01 through X-10 exist in registry v0. A result is invalid when its experiment, result scope, code hash, or input-data hash was not registered by a valid Team H amendment before evaluation began. The result-artifact hash is necessarily created after evaluation: it must be a canonical SHA-256 reference and is appended to `results_ref` by a later Team H amendment against the exact registration head used for evaluation. An unknown experiment remains invalid even if it supplies a syntactically valid hash. “Quick backtests” outside the registry have no evidentiary value.
 
-The base card is content-addressed and immutable. Corrections are append-only amendments with a contiguous sequence, the preceding record hash, an amendment content hash, an H approver, time, reason, and explicit changes. `failed` and `abandoned` records are retained permanently; history is never overwritten.
+The base card is content-addressed and immutable. Its registration SHA is pinned both in validator code and at sequence 0 of `registries/experiment_amendment_ledger.csv`; recomputing a card self-hash or its CSV file hash cannot rewrite that trusted seed. Corrections are append-only amendments with a contiguous sequence, the preceding record hash, an amendment content hash, an exact `H` or `Team H` approver, canonical UTC time, reason, and controlled changes. The card chain and separate ledger must match exactly in both directions. Git protected history is the external monotonic anchor; inside any checkout, a ledger/card mismatch fails closed. `failed` and `abandoned` records are retained permanently; history is never overwritten.
+
+Amendments may change status, append a result reference, resolve named locks with content-addressed evidence, authorize a non-permanent scope, or preregister code/data hashes for a named scope. They may not overwrite the hypothesis, method, scientific boundary, dependencies, or program NO-GOs. Every accepted result carries `registration_head_sha256`; that value must equal the effective head at evaluation. Evaluation must start strictly after the amendment that preregistered its matching code and data hashes.
 
 Because the source program registration is dated but not time-stamped, v0 conservatively accepts evaluation only from `2026-07-23T00:00:00Z`. This is an evidence-acceptance boundary, not a claim that registration occurred at an invented time.
 
 ## 2. Authorization is scope-specific and fail-closed
 
-`execution_authorized` describes acceptance of the complete/formal card. A true sub-scope never authorizes another sub-scope. Dependencies and every scope-specific registration lock must also be complete.
+`execution_authorized` describes acceptance of the complete/formal card. A true sub-scope never authorizes another sub-scope. Every scope-specific registration lock must be resolved with evidence. A dependency is ready only when it is `done`, has a validated appended result, has matching preregistered code/data, has its result-scope locks resolved, and recursively has ready dependencies; status alone is never evidence.
 
 - X-05 authorizes spec drafting only; label generation and a formal result remain blocked until U/L/h, purge, embargo, overlap, suspension/resume, same-time-touch, and H-signature locks clear.
-- X-07 authorizes only a result labeled `PRELIMINARY`; formal conclusions and go/no-go use remain blocked until point-in-time `venue_rule_snapshot` data are consumed by replay.
-- X-08 authorizes the stopped-archive audit and public Polymarket capture. Kalshi capture remains credential-blocked, and the dual-venue result requires seven actual elapsed days. Fixtures cannot satisfy elapsed time. The Charter's `99% <= uptime < 100%` band is unresolved and is never silently passed.
-- X-10 authorizes the precision audit only after its sample and Router/taxonomy locks clear. Recall requires a registered candidate-universe denominator. Live multi-venue arbitrage remains a permanent NO-GO regardless of precision.
+- X-07 authorizes only a result labeled `PRELIMINARY`, after the event/depth input, order-size/VWAP policy, and markout horizons are fixed. The venue-rule replay lock is required for formal conclusions and go/no-go use.
+- X-08 authorizes the stopped-archive audit only after its source manifest and Team H n.a.-split approval are fixed, and authorizes public Polymarket capture after recorder configuration. Kalshi capture remains credential-blocked, and the dual-venue result requires seven actual elapsed days. Fixtures cannot satisfy elapsed time. The Charter's `99% <= uptime < 100%` band is unresolved and is never silently passed.
+- X-10 authorizes the precision audit only after its matched sample, Router/taxonomy, gold-standard protocol, and Team H n.a.-split approval locks clear. Recall requires a registered candidate-universe denominator. Live multi-venue arbitrage remains a permanent NO-GO regardless of precision.
 
 ## 3. Point-in-time and leakage discipline
 
@@ -35,12 +37,12 @@ Formal labels and execution evidence use executable ask for entry and bid for ex
 
 ## 4. Experiment-specific gates
 
-- **X-01 / X-09:** Replay Levels 1 and 2 are mandatory. Equal P&L with a different event order or canonical hash fails. Level 3 byte identity is not required.
+- **X-01 / X-09:** Replay Levels 1 and 2 are mandatory. Equal P&L with a different event order or canonical hash fails. Level 3 byte identity is not required. X-09 pins Team A event-envelope v0 and its signal is exactly `buy five seconds after score`; only risk and fill choices remain locked.
 - **X-02 / X-03 / X-07:** These are measurement exemptions. A falsified directional hypothesis may still produce a valid completed measurement; it does not become a positive promotion decision.
 - **X-04:** Report each ±1/2/5/10/30/60 second tolerance. “Minute-scale researchable, second-scale indeterminate” is a valid conclusion. No unregistered effect threshold is invented.
 - **X-06:** Report Brier, log loss, calibration slope and intercept, and game-cluster bootstrap confidence intervals. Gate 1 (Reaction Model) and Gate 2 (trading relevance/cost comparison) are separate; Gate 1 never implies Gate 2.
 - **X-08:** Seven days means wall-clock elapsed capture, not fixture duration. “No gaps” is the pass criterion; uptime below 99% triggers repair and rerun.
-- **X-10:** 45/50 passes the research precision gate; 44/50 does not. A pass never authorizes live arbitrage.
+- **X-10:** 45/50 passes the research precision gate; 44/50 does not. A passing artifact must also deliver the relation taxonomy, review-queue design, and G1 go/no-go input. A pass never authorizes live arbitrage.
 
 ## 5. Promotion and compliance
 

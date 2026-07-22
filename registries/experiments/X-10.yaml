@@ -17,21 +17,21 @@ experiment_card:
     - Precision success cannot authorize live multi-venue arbitrage.
   split: n.a. manual audit; H approval is locked
   metrics: [precision, semantic-difference categories, confidence calibration, recall only after denominator registration]
-  pass_criteria: At least 45 of 50 correct pairs permits G1 research to advance; live arbitrage remains NO-GO.
+  pass_criteria: At least 45 of 50 correct pairs plus a relation taxonomy, review queue design, and G1 go/no-go input permits G1 research to advance; live arbitrage remains NO-GO.
   fail_criteria: Fewer than 45 of 50 requires full manual review of every cluster; unavailable clusters use recorded heuristic matching plus manual review.
   cost_estimate: {compute: unresolved, human_days: unresolved}
   dependencies: []
   registered_at: '2026-07-22'
   result_acceptance_not_before: '2026-07-23T00:00:00Z'
   due_gate: null
-  results_ref: ''
+  results_ref: []
   promotion_decision: ''
   execution_authorized: false
   authorization_scopes:
     precision_audit:
       authorized: true
       required_result_label: FORMAL
-      required_lock_ids: [matched_sample_registered, router_and_taxonomy_available]
+      required_lock_ids: [matched_sample_registered, router_and_taxonomy_available, gold_standard_protocol, h_split_approval]
     recall:
       authorized: false
       required_result_label: FORMAL
@@ -42,9 +42,9 @@ experiment_card:
       required_result_label: FORMAL
       required_lock_ids: []
   registration_locks:
-    - {id: matched_sample_registered, status: unresolved, reason: Fifty-pair universe, selection method, and seed are unset.}
+    - {id: matched_sample_registered, status: unresolved, reason: 'Fifty-pair universe, selection method, and seed are unset.'}
     - {id: router_and_taxonomy_available, status: unresolved, reason: Router query/version and relation taxonomy are not pinned.}
-    - {id: gold_standard_protocol, status: unresolved, reason: Resolution gold standard, adjudication, and confidence bins are unset.}
+    - {id: gold_standard_protocol, status: unresolved, reason: 'Resolution gold standard, adjudication, and confidence bins are unset.'}
     - {id: recall_candidate_universe, status: unresolved, reason: No valid candidate-universe denominator exists for recall.}
     - {id: h_split_approval, status: unresolved, reason: H must approve n.a. in place of the default predictive split.}
   measurement_exemption: false
@@ -72,4 +72,4 @@ experiment_card:
     - readme_return_strategy_selection
     - unregistered_quick_backtest
   amendments: []
-  registration_record_sha256: sha256:9e54c198ca377129378aaa119651527a0c29a5d857023e77954619e0884ce600
+  registration_record_sha256: sha256:51358f3c7fe47cdc34286c1b7fb552c7f7df2ab08743056a74e245d5a965ddb0

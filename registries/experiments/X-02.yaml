@@ -21,7 +21,7 @@ experiment_card:
   registered_at: '2026-07-22'
   result_acceptance_not_before: '2026-07-23T00:00:00Z'
   due_gate: null
-  results_ref: ''
+  results_ref: []
   promotion_decision: ''
   execution_authorized: true
   authorization_scopes:
@@ -31,8 +31,8 @@ experiment_card:
       required_lock_ids: [timestamp_input_manifest, sampling_and_seed, diff_and_stability_definitions, h_split_approval]
   registration_locks:
     - {id: timestamp_input_manifest, status: unresolved, reason: X-01 and three-day source versions and hashes are not fixed.}
-    - {id: sampling_and_seed, status: unresolved, reason: Random-day universe, selection procedure, seed, and dates are unset.}
-    - {id: diff_and_stability_definitions, status: unresolved, reason: Difference sign, units, drift, stability, and disorder definitions are unset.}
+    - {id: sampling_and_seed, status: unresolved, reason: 'Random-day universe, selection procedure, seed, and dates are unset.'}
+    - {id: diff_and_stability_definitions, status: unresolved, reason: 'Difference sign, units, drift, stability, and disorder definitions are unset.'}
     - {id: h_split_approval, status: unresolved, reason: H must approve n.a. in place of the default predictive split.}
   measurement_exemption: true
   falsified_direction_is_valid_measurement: true
@@ -53,4 +53,4 @@ experiment_card:
     - readme_return_strategy_selection
     - unregistered_quick_backtest
   amendments: []
-  registration_record_sha256: sha256:320c69c3ab7957ff0892aa72deea3cc211038706cf8c3027fe79f5a338a55bc1
+  registration_record_sha256: sha256:52af85bc9220764e62ce97b14e48ea416186fde6d5ec1197d7f680111dc81335

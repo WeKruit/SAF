@@ -4,6 +4,7 @@ ART-H-002,registries/artifact_registry.csv,H,v0,first_round_artifact_gate,regist
 ART-H-003,artifacts/validation/validation_standard_v0.md,H,v0,first_round_artifact_gate,registered
 ART-H-004,src/prediction_market/experiments.py,H,v0,first_round_artifact_gate,registered
 ART-H-005,tests/test_experiment_registry.py,H,v0,first_round_artifact_gate,registered
+ART-H-006,registries/experiment_amendment_ledger.csv,H,v0,first_round_artifact_gate,registered
 ART-X-001,registries/experiments/X-01.yaml,C,v0,first_round_artifact_gate,registered
 ART-X-002,registries/experiments/X-02.yaml,C+H,v0,first_round_artifact_gate,registered
 ART-X-003,registries/experiments/X-03.yaml,C+E,v0,first_round_artifact_gate,registered
