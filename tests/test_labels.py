@@ -122,6 +122,20 @@ def test_same_timestamp_suspension_blocks_active_entry_for_whole_group() -> None
     assert label.resume_quote_ids == ("resume",)
 
 
+def test_same_timestamp_quote_after_entry_can_touch_barrier() -> None:
+    quotes = [
+        _quote("a-entry", 0, "0.49", "0.50"),
+        _quote("b-upper", 0, "0.56", "0.58"),
+        _quote("horizon", 60, "0.50", "0.52"),
+    ]
+
+    label = label_long(quotes, anchor_at=T0, parameters=_parameters())
+
+    assert label.entry_quote_id == "a-entry"
+    assert label.exit_quote_id == "b-upper"
+    assert label.outcome == "UPPER"
+
+
 @pytest.mark.parametrize(
     ("rule", "expected"),
     [("UPPER_FIRST", "UPPER"), ("LOWER_FIRST", "LOWER"), ("AMBIGUOUS", "AMBIGUOUS")],
@@ -202,7 +216,7 @@ def test_authorized_x05_run_is_bound_to_preregistered_runtime_hashes(
         _quote("horizon", 60, "0.49", "0.50"),
     ]
     parameters = _parameters()
-    hashes = compute_x05_runtime_hashes(quotes, parameters)
+    hashes = compute_x05_runtime_hashes(quotes, [T0], parameters)
     locks = [
         {
             "id": lock_id,
@@ -268,6 +282,86 @@ def test_authorized_x05_run_is_bound_to_preregistered_runtime_hashes(
             anchors=[T0],
             parameters=parameters,
         )
+
+    with pytest.raises(LabelAuthorizationError, match="data hash"):
+        generate_x05_long_labels(
+            PROJECT_ROOT,
+            quotes=quotes,
+            anchors=[T0 + timedelta(seconds=1)],
+            parameters=parameters,
+        )
+
+
+def test_generator_freezes_quote_sequence_before_hash_and_label(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prediction_market.labels as labels_module
+
+    first = [
+        _quote("entry", 0, "0.49", "0.50"),
+        _quote("horizon", 60, "0.49", "0.50"),
+    ]
+    replacement = [
+        _quote("entry", 0, "0.49", "0.70"),
+        _quote("horizon", 60, "0.20", "0.21"),
+    ]
+    parameters = _parameters()
+    hashes = compute_x05_runtime_hashes(first, [T0], parameters)
+    lock_ids = (
+        "x05_quote_manifest",
+        "barrier_values",
+        "purge_and_embargo",
+        "post_resume_quote_rule",
+        "same_time_touch_rule",
+    )
+    locks = [
+        {
+            "id": lock_id,
+            "status": "resolved",
+            "evidence_ref": hashes.data_sha256
+            if lock_id == "x05_quote_manifest"
+            else hashes.configuration_sha256,
+        }
+        for lock_id in lock_ids
+    ]
+    fake_registry = {
+        "X-05": {
+            "authorization_scopes": {
+                "label_generation": {
+                    "authorized": True,
+                    "required_lock_ids": list(lock_ids),
+                }
+            },
+            "registration_locks": locks,
+            "preregistered_inputs": {
+                "label_generation": {
+                    "code_sha256": hashes.code_sha256,
+                    "data_sha256": hashes.data_sha256,
+                }
+            },
+            "dependencies": [],
+        }
+    }
+    monkeypatch.setattr(labels_module, "load_experiment_registry", lambda _: fake_registry)
+
+    class SwappingSequence:
+        def __init__(self) -> None:
+            self.iterations = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            return iter(first if self.iterations == 1 else replacement)
+
+    source = SwappingSequence()
+    labels = generate_x05_long_labels(
+        PROJECT_ROOT,
+        quotes=source,  # type: ignore[arg-type]
+        anchors=[T0],
+        parameters=parameters,
+    )
+
+    assert source.iterations == 1
+    assert labels[0].entry_price == _price("0.50")
 
 
 def test_anchor_and_quote_times_must_be_utc() -> None:

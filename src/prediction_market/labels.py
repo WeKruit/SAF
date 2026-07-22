@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import re
 import hashlib
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -172,6 +172,7 @@ def _timedelta_microseconds(value: timedelta) -> int:
 
 def compute_x05_runtime_hashes(
     quotes: Sequence[QuoteV0],
+    anchors: Sequence[datetime],
     parameters: BarrierLabelParameters,
 ) -> X05RuntimeHashes:
     """Hash the exact code bundle, quote inputs, and locked configuration."""
@@ -179,6 +180,7 @@ def compute_x05_runtime_hashes(
     if not isinstance(parameters, BarrierLabelParameters):
         raise LabelInputError("parameters must be BarrierLabelParameters")
     ordered = _ordered_quotes(quotes)
+    ordered_anchors = _ordered_anchors(anchors)
     code_files = {
         "labels.py": Path(__file__),
         "contracts.py": Path(contracts_module.__file__),
@@ -188,17 +190,24 @@ def compute_x05_runtime_hashes(
         name: "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
         for name, path in sorted(code_files.items())
     }
-    data_material = [
-        {
-            "quote_id": quote.quote_id,
-            "source_at": _timestamp_text(quote.source_at),
-            "received_at": _timestamp_text(quote.received_at),
-            "state": quote.state,
-            "bid": None if quote.bid is None else quote.bid.model_dump(mode="json"),
-            "ask": None if quote.ask is None else quote.ask.model_dump(mode="json"),
-        }
-        for quote in ordered
-    ]
+    data_material = {
+        "anchors": [_timestamp_text(anchor) for anchor in ordered_anchors],
+        "quotes": [
+            {
+                "quote_id": quote.quote_id,
+                "source_at": _timestamp_text(quote.source_at),
+                "received_at": _timestamp_text(quote.received_at),
+                "state": quote.state,
+                "bid": None
+                if quote.bid is None
+                else quote.bid.model_dump(mode="json"),
+                "ask": None
+                if quote.ask is None
+                else quote.ask.model_dump(mode="json"),
+            }
+            for quote in ordered
+        ],
+    }
     configuration_material = {
         "specification": "x05-barrier-label-v0",
         "upper_return": str(parameters.upper_return),
@@ -223,6 +232,19 @@ def compute_x05_runtime_hashes(
     )
 
 
+def _ordered_anchors(anchors: Iterable[datetime]) -> list[datetime]:
+    values = list(anchors)
+    if not values:
+        raise LabelInputError("anchors must not be empty")
+    for anchor in values:
+        if not isinstance(anchor, datetime):
+            raise LabelInputError("anchors must contain datetime values")
+        _require_utc(anchor, "anchor")
+    if len(set(values)) != len(values):
+        raise LabelInputError("anchors must be unique")
+    return sorted(values)
+
+
 def label_long(
     quotes: Iterable[QuoteV0],
     *,
@@ -245,7 +267,7 @@ def label_long(
 
     resume_pending = False
     resume_ids: list[str] = []
-    entry_group_end: int | None = None
+    entry_index: int | None = None
     entry: QuoteV0 | None = None
     indexed = enumerate(ordered)
     for received_at, indexed_group in groupby(
@@ -264,13 +286,13 @@ def label_long(
             continue
         if received_at > deadline:
             break
-        entry_group_end = group[-1][0]
         entry = eligible[0]
+        entry_index = next(index for index, quote in group if quote is entry)
         if resume_pending:
             resume_ids.append(entry.quote_id)
             resume_pending = False
         break
-    if entry is None or entry_group_end is None or entry.ask is None:
+    if entry is None or entry_index is None or entry.ask is None:
         raise LabelInputError("no executable ask entry within horizon")
 
     entry_decimal = entry.ask.to_decimal()
@@ -279,7 +301,7 @@ def label_long(
     upper = _from_decimal(upper_decimal)
     lower = _from_decimal(lower_decimal)
 
-    post_entry = ordered[entry_group_end + 1 :]
+    post_entry = ordered[entry_index + 1 :]
     for received_at, group_iter in groupby(
         post_entry, key=lambda quote: quote.received_at
     ):
@@ -384,6 +406,7 @@ def label_long(
 def _assert_x05_authorized(
     program_root: str | Path,
     quotes: Sequence[QuoteV0],
+    anchors: Sequence[datetime],
     parameters: BarrierLabelParameters,
 ) -> X05RuntimeHashes:
     registry = load_experiment_registry(program_root)
@@ -405,7 +428,7 @@ def _assert_x05_authorized(
         raise LabelAuthorizationError(
             "X-05 label_generation code/data hashes are not preregistered"
         )
-    runtime = compute_x05_runtime_hashes(quotes, parameters)
+    runtime = compute_x05_runtime_hashes(quotes, anchors, parameters)
     preregistered = card["preregistered_inputs"]["label_generation"]
     if preregistered["code_sha256"] != runtime.code_sha256:
         raise LabelAuthorizationError("X-05 runtime code hash differs from preregistration")
@@ -437,10 +460,12 @@ def generate_x05_long_labels(
 ) -> tuple[BarrierLabel, ...]:
     """Generate X-05 labels only after registry authorization and preregistration."""
 
-    _assert_x05_authorized(program_root, quotes, parameters)
-    ordered_anchors = sorted(anchors)
-    for anchor in ordered_anchors:
-        _require_utc(anchor, "anchor")
+    quote_snapshot = tuple(quotes)
+    anchor_snapshot = tuple(anchors)
+    ordered_anchors = _ordered_anchors(anchor_snapshot)
+    _assert_x05_authorized(
+        program_root, quote_snapshot, ordered_anchors, parameters
+    )
     labels: list[BarrierLabel] = []
     excluded_until: datetime | None = None
     for anchor in ordered_anchors:
@@ -450,7 +475,7 @@ def generate_x05_long_labels(
             and anchor <= excluded_until
         ):
             continue
-        label = label_long(quotes, anchor_at=anchor, parameters=parameters)
+        label = label_long(quote_snapshot, anchor_at=anchor, parameters=parameters)
         labels.append(label)
         if parameters.overlap_rule == "DROP_LATER":
             excluded_until = label.window_end_at + parameters.purge + parameters.embargo
