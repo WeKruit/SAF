@@ -24,6 +24,7 @@ experiment_card:
   results_ref: []
   promotion_decision: ''
   execution_authorized: true
+  completion_required_scopes: [formal_result]
   authorization_scopes:
     formal_result:
       authorized: true
@@ -53,4 +54,4 @@ experiment_card:
     - readme_return_strategy_selection
     - unregistered_quick_backtest
   amendments: []
-  registration_record_sha256: sha256:52af85bc9220764e62ce97b14e48ea416186fde6d5ec1197d7f680111dc81335
+  registration_record_sha256: sha256:e10cfb92cc066c8e7d16475a808187e546ea807cad048f0ade74ae66273147ad

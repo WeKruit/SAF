@@ -42,16 +42,16 @@ _PROGRAM_NO_GOS = frozenset(
 # This mapping is the in-runtime trust anchor for the initial program registration.
 # The append-only Git history is the external monotonic anchor for later ledger rows.
 _TRUSTED_BASE_REGISTRATIONS = {
-    "X-01": "sha256:5a435284fbb455732abb99fb76dd7d494fc8d46c2adf4e211a0e9919156e4475",
-    "X-02": "sha256:52af85bc9220764e62ce97b14e48ea416186fde6d5ec1197d7f680111dc81335",
-    "X-03": "sha256:007111874de286924a370bb8e2bcb6db4afc35852c91bd4308e3d4ba42dc1960",
-    "X-04": "sha256:9633dc71617a1f6f59ebb2c840c4a71c6df80138a44de6acd900a2e428a4b334",
-    "X-05": "sha256:adf2c9ef16e82ddc6f70d18c2993992d4c5cd49a83facabad5937561a1fa4bf4",
-    "X-06": "sha256:351a31fe2f7f2caf07f681e6181482904f8c77687237b59012221e4072fd91c1",
-    "X-07": "sha256:0702864167a20829bafb0e316905c8a6264dec48c47396e5265118966e61b556",
-    "X-08": "sha256:c105e84ca90ba68ad259185670fed99e51af7740d159838cf51156e9e36153c4",
-    "X-09": "sha256:39235a6bb75f827b1260421a9c75ec2142cb8309698f03cad5d4f641b98909e1",
-    "X-10": "sha256:51358f3c7fe47cdc34286c1b7fb552c7f7df2ab08743056a74e245d5a965ddb0",
+    "X-01": "sha256:d1cea6987540e3889cb81dd896a01a1d8267e80fbd0356a6721115c1d0bc1b30",
+    "X-02": "sha256:e10cfb92cc066c8e7d16475a808187e546ea807cad048f0ade74ae66273147ad",
+    "X-03": "sha256:404dd65a81bb12ff6cd0bd8ad631d495c1e64c093e3fcf533a492e674ff45fd7",
+    "X-04": "sha256:339b90b011cdf2c71a5ac9d1b50cc5511a18e826559f0a5b9fc0b2007f50d2c9",
+    "X-05": "sha256:ab0dc941408c59ea5f509e2ef1650c515fba19374223ef8827d48ef04b99e10a",
+    "X-06": "sha256:4f169608167ca9153e7228abfc111b78a07e405fbf209b66a2d55822230694f9",
+    "X-07": "sha256:44acdd9db4be6dd50b375384fe419dcaef631f381d37a054152f85e26a3295d5",
+    "X-08": "sha256:67aaa454cda3852c293e448e4f762d317c5358c6ac0a927df0da53fe1a44452a",
+    "X-09": "sha256:3c47f6556e11a330f08d8925a1c61516edb07a2169f903c67b20181d549a1173",
+    "X-10": "sha256:bb1fc8aca25e10250bdef744b682788afab1b83357855b7c6a6231086623911a",
 }
 
 _COMMON_CARD_FIELDS = frozenset(
@@ -76,6 +76,7 @@ _COMMON_CARD_FIELDS = frozenset(
         "results_ref",
         "promotion_decision",
         "execution_authorized",
+        "completion_required_scopes",
         "authorization_scopes",
         "registration_locks",
         "measurement_exemption",
@@ -132,6 +133,25 @@ _LEDGER_FIELDS = [
     "approved_by",
     "reason",
 ]
+_ARTIFACT_REGISTRY_FIELDS = [
+    "artifact_id",
+    "path",
+    "owner_team",
+    "version",
+    "due_gate",
+    "status",
+]
+_REQUIRED_TASK3_ARTIFACTS = frozenset(
+    {
+        "registries/experiment_registry.csv",
+        "registries/experiment_amendment_ledger.csv",
+        "registries/artifact_registry.csv",
+        "artifacts/validation/validation_standard_v0.md",
+        "src/prediction_market/experiments.py",
+        "tests/test_experiment_registry.py",
+        *(f"registries/experiments/X-{number:02d}.yaml" for number in range(1, 11)),
+    }
+)
 _RESULT_FIELDS = frozenset(
     {
         "scope",
@@ -299,9 +319,48 @@ def _safe_file(root: Path, relative: str, purpose: str) -> Path:
     return resolved
 
 
-def _load_yaml_card(path: Path, experiment_id: str) -> dict[str, Any]:
+def _validate_card_inventory(root: Path) -> None:
+    directory = root / "registries" / "experiments"
     try:
-        document = yaml.load(path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
+        if directory.is_symlink():
+            raise ExperimentRegistryError("experiment card inventory directory is a symlink")
+        resolved = directory.resolve(strict=True)
+        if not resolved.is_relative_to(root.resolve(strict=True)) or not resolved.is_dir():
+            raise ExperimentRegistryError("experiment card inventory path escape")
+        names = {entry.name for entry in resolved.iterdir()}
+    except ExperimentRegistryError:
+        raise
+    except OSError as exc:
+        raise ExperimentRegistryError("cannot enumerate experiment card inventory") from exc
+    expected = {f"{experiment_id}.yaml" for experiment_id in EXPERIMENT_IDS}
+    if names != expected:
+        raise ExperimentRegistryError("experiment card inventory must be exactly X-01 through X-10")
+
+
+def _validate_artifact_registry(root: Path) -> None:
+    path = _safe_file(root, "registries/artifact_registry.csv", "artifact registry")
+    rows = _strict_csv(path, _ARTIFACT_REGISTRY_FIELDS)
+    seen_ids: set[str] = set()
+    seen_paths: set[str] = set()
+    for row in rows:
+        artifact_id = _nonempty_string(row["artifact_id"], "artifact id")
+        artifact_path = _nonempty_string(row["path"], "artifact path")
+        if artifact_id in seen_ids or artifact_path in seen_paths:
+            raise ExperimentRegistryError("duplicate artifact id or path")
+        seen_ids.add(artifact_id)
+        seen_paths.add(artifact_path)
+        for field_name in ("owner_team", "version", "due_gate", "status"):
+            _nonempty_string(row[field_name], f"artifact {field_name}")
+    missing = sorted(_REQUIRED_TASK3_ARTIFACTS - seen_paths)
+    if missing:
+        raise ExperimentRegistryError(
+            "artifact registry misses Task 3 coverage: " + ", ".join(missing)
+        )
+
+
+def _load_yaml_card(raw: bytes, experiment_id: str) -> dict[str, Any]:
+    try:
+        document = yaml.load(raw.decode("utf-8"), Loader=_UniqueKeyLoader)
     except ExperimentRegistryError:
         raise
     except (OSError, UnicodeError, yaml.YAMLError) as exc:
@@ -465,6 +524,24 @@ def _validate_card_structure(card: dict[str, Any], experiment_id: str) -> None:
     _nonempty_string(cost["human_days"], f"{experiment_id} cost human_days")
     locks = _lock_map(card, experiment_id)
     _validate_scopes(card, experiment_id, locks)
+    completion_scopes = card["completion_required_scopes"]
+    if (
+        type(completion_scopes) is not list
+        or not completion_scopes
+        or any(type(scope) is not str for scope in completion_scopes)
+        or len(completion_scopes) != len(set(completion_scopes))
+        or not set(completion_scopes).issubset(card["authorization_scopes"])
+    ):
+        raise ExperimentRegistryError(
+            f"{experiment_id}: invalid completion_required_scopes"
+        )
+    if any(
+        card["authorization_scopes"][scope].get("permanent_no_go", False)
+        for scope in completion_scopes
+    ):
+        raise ExperimentRegistryError(
+            f"{experiment_id}: permanent NO-GO cannot be a completion scope"
+        )
     lineage = _exact_keys(
         card["source_lineage"],
         {"charter_file", "charter_sections", "catalog_item_ids"},
@@ -656,6 +733,11 @@ class _RegistrationMeta:
     head_at: str = _RESULT_ACCEPTANCE_NOT_BEFORE
     preregistered_inputs: dict[str, dict[str, str]] = field(default_factory=dict)
     stored_results: list[dict[str, str]] = field(default_factory=list)
+    result_appended_at: list[str] = field(default_factory=list)
+    lock_resolved_at: dict[str, str] = field(default_factory=dict)
+    scope_authorized_at: dict[str, str] = field(default_factory=dict)
+    ready_at: str | None = None
+    completion_evaluated_at: str | None = None
 
 
 def _scope_and_locks(
@@ -718,6 +800,30 @@ def _validate_result_against_state(
         raise PreRegistrationEvaluationError(
             f"{card['id']}: evaluation must follow input preregistration amendment"
         )
+    head_at = _canonical_utc(meta.head_at, "registration head", result_error=True)
+    if evaluation_at <= head_at:
+        raise PreRegistrationEvaluationError(
+            f"{card['id']}: evaluation must follow the claimed registration head"
+        )
+    scope_authorized_at = meta.scope_authorized_at.get(result["scope"])
+    if scope_authorized_at is None:
+        raise UnauthorizedResultScopeError(
+            f"{card['id']}: scope {result['scope']} lacks authorization history"
+        )
+    if evaluation_at <= _canonical_utc(
+        scope_authorized_at, "scope authorization", result_error=True
+    ):
+        raise PreRegistrationEvaluationError(
+            f"{card['id']}: scope was not authorized before evaluation"
+        )
+    for lock_id in scope["required_lock_ids"]:
+        resolved_at = meta.lock_resolved_at.get(lock_id)
+        if resolved_at is None or evaluation_at <= _canonical_utc(
+            resolved_at, "lock resolution", result_error=True
+        ):
+            raise PreRegistrationEvaluationError(
+                f"{card['id']}: lock {lock_id} was not resolved before evaluation"
+            )
 
 
 def _apply_amendments(
@@ -745,6 +851,11 @@ def _apply_amendments(
         raise ExperimentRegistryError(f"{experiment_id}: ledger base record mismatch")
     effective = copy.deepcopy(base_card)
     meta = _RegistrationMeta(head=base_card["registration_record_sha256"])
+    meta.scope_authorized_at = {
+        scope_name: _RESULT_ACCEPTANCE_NOT_BEFORE
+        for scope_name, scope in effective["authorization_scopes"].items()
+        if scope["authorized"] is True and not scope.get("permanent_no_go", False)
+    }
     prior_time = _canonical_utc(_RESULT_ACCEPTANCE_NOT_BEFORE, "registration boundary")
     for expected_sequence, amendment in enumerate(base_card["amendments"], start=1):
         expected_keys = {
@@ -792,6 +903,7 @@ def _apply_amendments(
                     raise ExperimentRegistryError(f"{experiment_id}: lock already resolved")
                 lock["status"] = "resolved"
                 lock["evidence_ref"] = item["evidence_ref"]
+                meta.lock_resolved_at[item["lock_id"]] = amendment["amended_at"]
         if "authorize_scopes" in changes:
             for scope_name in changes["authorize_scopes"]:
                 if scope_name not in effective["authorization_scopes"]:
@@ -800,6 +912,7 @@ def _apply_amendments(
                 if scope.get("permanent_no_go", False):
                     raise ExperimentRegistryError(f"{experiment_id}: cannot authorize permanent NO-GO")
                 scope["authorized"] = True
+                meta.scope_authorized_at[scope_name] = amendment["amended_at"]
         if "preregistered_inputs" in changes:
             for item in changes["preregistered_inputs"]:
                 if item["scope"] not in effective["authorization_scopes"]:
@@ -822,8 +935,39 @@ def _apply_amendments(
                 raise ExperimentRegistryError(f"{experiment_id}: result amendment must follow evaluation")
             effective["results_ref"].append(result)
             meta.stored_results.append(result)
+            meta.result_appended_at.append(amendment["amended_at"])
         if "status" in changes:
-            effective["status"] = changes["status"]
+            prior_status = effective["status"]
+            next_status = changes["status"]
+            if prior_status in {"done", "failed", "abandoned"}:
+                raise ExperimentRegistryError(
+                    f"{experiment_id}: terminal status cannot transition"
+                )
+            allowed_transitions = {
+                "registered": {"running", "done", "failed", "abandoned"},
+                "running": {"done", "failed", "abandoned"},
+            }
+            if next_status not in allowed_transitions.get(prior_status, set()):
+                raise ExperimentRegistryError(
+                    f"{experiment_id}: invalid status transition"
+                )
+            if next_status == "done":
+                completed_scopes = {result["scope"] for result in meta.stored_results}
+                missing_scopes = set(effective["completion_required_scopes"]) - completed_scopes
+                if missing_scopes:
+                    raise ExperimentRegistryError(
+                        f"{experiment_id}: terminal done status lacks completion scope evidence"
+                    )
+                meta.ready_at = amendment["amended_at"]
+                completion_results = [
+                    result
+                    for result in meta.stored_results
+                    if result["scope"] in effective["completion_required_scopes"]
+                ]
+                meta.completion_evaluated_at = min(
+                    result["evaluation_started_at"] for result in completion_results
+                )
+            effective["status"] = next_status
         meta.head = amendment["amendment_sha256"]
         meta.head_at = amendment["amended_at"]
         prior_time = amended_time
@@ -837,6 +981,8 @@ def _dependency_ready(
     registry: dict[str, dict[str, Any]],
     metadata: dict[str, _RegistrationMeta],
     visiting: set[str] | None = None,
+    *,
+    before: str | None = None,
 ) -> bool:
     visiting = set() if visiting is None else visiting
     if experiment_id in visiting:
@@ -844,14 +990,23 @@ def _dependency_ready(
     visiting.add(experiment_id)
     card = registry[experiment_id]
     meta = metadata[experiment_id]
-    ready = (
-        card["status"] == "done"
-        and bool(meta.stored_results)
-        and all(
-            _dependency_ready(dependency, registry, metadata, visiting)
+    ready = card["status"] == "done" and meta.ready_at is not None
+    if ready and before is not None:
+        ready = _canonical_utc(meta.ready_at, "dependency ready_at") < _canonical_utc(
+            before, "dependent evaluation"
+        )
+    if ready:
+        dependency_deadline = meta.completion_evaluated_at
+        ready = dependency_deadline is not None and all(
+            _dependency_ready(
+                dependency,
+                registry,
+                metadata,
+                visiting,
+                before=dependency_deadline,
+            )
             for dependency in card["dependencies"]
         )
-    )
     visiting.remove(experiment_id)
     return ready
 
@@ -860,6 +1015,8 @@ def _load_registry_internal(
     program_root: str | Path,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, _RegistrationMeta]]:
     root = Path(program_root)
+    _validate_card_inventory(root)
+    _validate_artifact_registry(root)
     registry_csv = _safe_file(root, "registries/experiment_registry.csv", "experiment registry")
     rows = _strict_csv(registry_csv, _EXPERIMENT_REGISTRY_FIELDS)
     row_by_id: dict[str, dict[str, str]] = {}
@@ -882,7 +1039,7 @@ def _load_registry_internal(
         raw = path.read_bytes()
         if row["card_sha256"] != "sha256:" + hashlib.sha256(raw).hexdigest():
             raise ExperimentRegistryError(f"{experiment_id}: card SHA-256 mismatch")
-        card = _load_yaml_card(path, experiment_id)
+        card = _load_yaml_card(raw, experiment_id)
         _validate_card_structure(card, experiment_id)
         if card["registration_record_sha256"] != compute_registration_record_sha256(card):
             raise ExperimentRegistryError(
@@ -936,6 +1093,10 @@ def _load_registry_internal(
         if card["status"] == "done" and not _dependency_ready(
             experiment_id, registry, metadata
         ):
+            if card["dependencies"]:
+                raise ExperimentRegistryError(
+                    f"{experiment_id}: dependency was not ready before evaluation"
+                )
             raise ExperimentRegistryError(
                 f"{experiment_id}: done status lacks validated result/dependency evidence"
             )
@@ -967,7 +1128,12 @@ def validate_result_ref(
     incomplete = [
         dependency
         for dependency in card["dependencies"]
-        if not _dependency_ready(dependency, registry, metadata)
+        if not _dependency_ready(
+            dependency,
+            registry,
+            metadata,
+            before=result["evaluation_started_at"],
+        )
     ]
     if incomplete:
         raise UnresolvedDependencyError(

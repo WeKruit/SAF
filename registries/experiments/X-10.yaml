@@ -27,6 +27,7 @@ experiment_card:
   results_ref: []
   promotion_decision: ''
   execution_authorized: false
+  completion_required_scopes: [precision_audit]
   authorization_scopes:
     precision_audit:
       authorized: true
@@ -35,7 +36,7 @@ experiment_card:
     recall:
       authorized: false
       required_result_label: FORMAL
-      required_lock_ids: [recall_candidate_universe, gold_standard_protocol]
+      required_lock_ids: [recall_candidate_universe, gold_standard_protocol, router_and_taxonomy_available, h_split_approval]
     live_arbitrage:
       authorized: false
       permanent_no_go: true
@@ -72,4 +73,4 @@ experiment_card:
     - readme_return_strategy_selection
     - unregistered_quick_backtest
   amendments: []
-  registration_record_sha256: sha256:51358f3c7fe47cdc34286c1b7fb552c7f7df2ab08743056a74e245d5a965ddb0
+  registration_record_sha256: sha256:bb1fc8aca25e10250bdef744b682788afab1b83357855b7c6a6231086623911a

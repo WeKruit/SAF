@@ -254,6 +254,53 @@ def _preregister_x08_inputs(root: Path) -> dict[str, Any]:
     )
 
 
+def _complete_scope(
+    root: Path,
+    experiment_id: str,
+    scope: str,
+    *,
+    preregistered_at: str,
+    evaluated_at: str,
+    completed_at: str,
+) -> dict[str, Any]:
+    card = _read_card(root, experiment_id)
+    preregistration = _append_amendment(
+        root,
+        experiment_id,
+        amended_at=preregistered_at,
+        changes={
+            "resolve_locks": [
+                {
+                    "lock_id": lock_id,
+                    "evidence_ref": "sha256:" + "8" * 64,
+                }
+                for lock_id in card["authorization_scopes"][scope][
+                    "required_lock_ids"
+                ]
+            ],
+            "preregistered_inputs": [
+                {
+                    "scope": scope,
+                    "code_sha256": "sha256:" + "1" * 64,
+                    "data_sha256": "sha256:" + "2" * 64,
+                }
+            ],
+        },
+    )
+    result_ref = _valid_result_ref(
+        scope=scope,
+        result_label=card["authorization_scopes"][scope]["required_result_label"],
+        evaluation_started_at=evaluated_at,
+        registration_head_sha256=preregistration["amendment_sha256"],
+    )
+    return _append_amendment(
+        root,
+        experiment_id,
+        amended_at=completed_at,
+        changes={"results_ref": result_ref, "status": "done"},
+    )
+
+
 def test_all_seed_experiments_are_registered(program_root: Path) -> None:
     registry = load_experiment_registry(program_root)
 
@@ -1040,11 +1087,11 @@ def test_generated_result_can_be_appended_only_against_its_evaluation_head(
         root,
         "X-08",
         amended_at="2026-07-23T00:00:03Z",
-        changes={"results_ref": result_ref, "status": "done"},
+        changes={"results_ref": result_ref, "status": "running"},
     )
 
     effective = load_experiment_registry(root)["X-08"]
-    assert effective["status"] == "done"
+    assert effective["status"] == "running"
     assert effective["results_ref"] == [result_ref]
 
     root = _copy_program_fixture(tmp_path / "bad-head")
@@ -1057,6 +1104,163 @@ def test_generated_result_can_be_appended_only_against_its_evaluation_head(
         changes={"results_ref": wrong_head},
     )
     with pytest.raises(ExperimentRegistryError, match="evaluation head"):
+        load_experiment_registry(root)
+
+
+def test_result_cannot_use_a_registration_head_created_after_evaluation(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    _preregister_x08_inputs(root)
+    later_head = _append_amendment(
+        root,
+        "X-08",
+        amended_at="2026-07-23T00:00:03Z",
+        changes={"status": "running"},
+    )
+    result_ref = _valid_result_ref(
+        evaluation_started_at="2026-07-23T00:00:02Z",
+        registration_head_sha256=later_head["amendment_sha256"],
+    )
+
+    with pytest.raises(PreRegistrationEvaluationError, match="registration head"):
+        validate_result_ref(root, "X-08", result_ref)
+
+
+def test_result_cannot_retroactively_resolve_locks_or_authorize_scope(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    preregistration = _append_amendment(
+        root,
+        "X-10",
+        amended_at="2026-07-23T00:00:01Z",
+        changes={
+            "preregistered_inputs": [
+                {
+                    "scope": "precision_audit",
+                    "code_sha256": "sha256:" + "1" * 64,
+                    "data_sha256": "sha256:" + "2" * 64,
+                }
+            ]
+        },
+    )
+    card = _read_card(root, "X-10")
+    result_ref = _valid_result_ref(
+        scope="precision_audit",
+        evaluation_started_at="2026-07-23T00:00:02Z",
+        registration_head_sha256=preregistration["amendment_sha256"],
+    )
+    _append_amendment(
+        root,
+        "X-10",
+        amended_at="2026-07-23T00:00:03Z",
+        changes={
+            "resolve_locks": [
+                {"lock_id": lock_id, "evidence_ref": "sha256:" + "8" * 64}
+                for lock_id in card["authorization_scopes"]["precision_audit"][
+                    "required_lock_ids"
+                ]
+            ],
+            "results_ref": result_ref,
+        },
+    )
+
+    with pytest.raises(ExperimentRegistryError, match="before evaluation|retroactive"):
+        load_experiment_registry(root)
+
+
+def test_partial_scope_result_cannot_complete_whole_experiment(tmp_path: Path) -> None:
+    root = _copy_program_fixture(tmp_path)
+    preregistration = _preregister_x08_inputs(root)
+    result_ref = _valid_result_ref(
+        registration_head_sha256=preregistration["amendment_sha256"]
+    )
+    _append_amendment(
+        root,
+        "X-08",
+        amended_at="2026-07-23T00:00:03Z",
+        changes={"results_ref": result_ref, "status": "done"},
+    )
+
+    with pytest.raises(ExperimentRegistryError, match="completion scope"):
+        load_experiment_registry(root)
+
+
+def test_dependency_must_be_ready_before_dependent_evaluation(tmp_path: Path) -> None:
+    root = _copy_program_fixture(tmp_path)
+    _complete_scope(
+        root,
+        "X-01",
+        "formal_result",
+        preregistered_at="2026-07-23T00:00:03Z",
+        evaluated_at="2026-07-23T00:00:05Z",
+        completed_at="2026-07-23T00:00:06Z",
+    )
+    _complete_scope(
+        root,
+        "X-02",
+        "formal_result",
+        preregistered_at="2026-07-23T00:00:01Z",
+        evaluated_at="2026-07-23T00:00:02Z",
+        completed_at="2026-07-23T00:00:07Z",
+    )
+
+    with pytest.raises(ExperimentRegistryError, match="dependency.*before evaluation"):
+        load_experiment_registry(root)
+
+
+@pytest.mark.parametrize(
+    "first_status,second_status",
+    [("failed", "running"), ("abandoned", "registered"), ("done", "running")],
+)
+def test_terminal_status_cannot_regress(
+    tmp_path: Path, first_status: str, second_status: str
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    _append_amendment(
+        root,
+        "X-01",
+        amended_at="2026-07-23T00:00:01Z",
+        changes={"status": first_status},
+    )
+    _append_amendment(
+        root,
+        "X-01",
+        amended_at="2026-07-23T00:00:02Z",
+        changes={"status": second_status},
+    )
+
+    with pytest.raises(ExperimentRegistryError, match="terminal|transition"):
+        load_experiment_registry(root)
+
+
+def test_unindexed_extra_experiment_card_is_rejected(tmp_path: Path) -> None:
+    root = _copy_program_fixture(tmp_path)
+    shutil.copy2(
+        root / "registries" / "experiments" / "X-01.yaml",
+        root / "registries" / "experiments" / "X-99.yaml",
+    )
+
+    with pytest.raises(ExperimentRegistryError, match="card inventory"):
+        load_experiment_registry(root)
+
+
+def test_artifact_registry_is_strict_and_unique(tmp_path: Path) -> None:
+    root = _copy_program_fixture(tmp_path)
+    path = root / "registries" / "artifact_registry.csv"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    lines[0] += ",unexpected"
+    lines[1] += ",value"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with pytest.raises(ExperimentRegistryError, match="artifact.*CSV columns|CSV columns"):
+        load_experiment_registry(root)
+
+    root = _copy_program_fixture(tmp_path / "duplicate")
+    path = root / "registries" / "artifact_registry.csv"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    path.write_text("\n".join(lines + [lines[1]]) + "\n", encoding="utf-8")
+    with pytest.raises(ExperimentRegistryError, match="duplicate artifact"):
         load_experiment_registry(root)
 
 
@@ -1096,6 +1300,9 @@ def test_spec_specific_locks_signals_outputs_and_artifact_dependencies(
             "required_lock_ids"
         ]
     ) == {"archive_audit_input_manifest", "h_split_approval"}
+    assert "archive_audit_input_manifest" in registry["X-08"][
+        "authorization_scopes"
+    ]["dual_venue_result"]["required_lock_ids"]
     assert set(
         registry["X-10"]["authorization_scopes"]["precision_audit"][
             "required_lock_ids"
@@ -1106,6 +1313,18 @@ def test_spec_specific_locks_signals_outputs_and_artifact_dependencies(
         "gold_standard_protocol",
         "h_split_approval",
     }
+    assert {
+        "router_and_taxonomy_available",
+        "h_split_approval",
+    } <= set(
+        registry["X-10"]["authorization_scopes"]["recall"][
+            "required_lock_ids"
+        ]
+    )
+    assert registry["X-08"]["completion_required_scopes"] == [
+        "dual_venue_result"
+    ]
+    assert registry["X-07"]["completion_required_scopes"] == ["formal_result"]
     assert registry["X-09"]["signal"] == "buy five seconds after score"
     assert set(registry["X-09"]["artifact_dependencies"][0]) == {
         "path",
