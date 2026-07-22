@@ -39,6 +39,7 @@ LICENSE_COLUMNS = (
     "evidence_as_of",
     "evidence_url",
     "open_blocker",
+    "approval_ref",
     "owner",
     "version",
     "due_gate",
@@ -91,6 +92,7 @@ class DataLicenseRow:
     evidence_as_of: str
     evidence_url: str
     open_blocker: str
+    approval_ref: str
     owner: str
     version: str
     due_gate: str
@@ -182,8 +184,11 @@ def _validate_common(row: dict[str, str]) -> None:
         raise ComplianceRegistryError(f"invalid version: {row['version']}")
     if row["due_gate"] != "Team_I_compliance_green":
         raise ComplianceRegistryError("invalid due gate")
-    if not row["open_blocker"]:
-        raise ComplianceRegistryError("open_blocker must be explicit")
+    if row["status"] == "GREEN":
+        if row["open_blocker"]:
+            raise ComplianceRegistryError("GREEN row cannot retain open_blocker")
+    elif not row["open_blocker"]:
+        raise ComplianceRegistryError("non-GREEN open_blocker must be explicit")
 
 
 def load_compliance_matrix(root: str | Path) -> tuple[ComplianceRow, ...]:
@@ -250,6 +255,37 @@ def load_data_license_register(root: str | Path) -> tuple[DataLicenseRow, ...]:
             raise ComplianceRegistryError("invalid attribution_required")
         if raw["operational_use"] not in OPERATIONAL_USE_STATUSES:
             raise ComplianceRegistryError("invalid operational_use")
+        if raw["status"] == "GREEN":
+            if raw["commercial_use"] not in {
+                "PERMITTED",
+                "PERMITTED_WITH_CONDITIONS",
+            }:
+                raise ComplianceRegistryError(
+                    "license GREEN requires permitted commercial_use"
+                )
+            if raw["redistribution"] not in {
+                "PERMITTED",
+                "PERMITTED_WITH_CONDITIONS",
+            }:
+                raise ComplianceRegistryError(
+                    "license GREEN requires known permitted redistribution"
+                )
+            if raw["attribution_required"] == "UNKNOWN":
+                raise ComplianceRegistryError(
+                    "license GREEN requires known attribution requirement"
+                )
+            if raw["operational_use"] != "APPROVED":
+                raise ComplianceRegistryError(
+                    "license GREEN requires operational_use APPROVED"
+                )
+            if not _APPROVAL_REF.fullmatch(raw["approval_ref"]):
+                raise ComplianceRegistryError(
+                    "license GREEN requires Team I approval_ref"
+                )
+        elif raw["approval_ref"]:
+            raise ComplianceRegistryError(
+                "non-GREEN license rows cannot carry approval_ref"
+            )
         rows.append(DataLicenseRow(**raw))
     return tuple(rows)
 
@@ -272,11 +308,19 @@ def may_execute_real_money(
     if len(matches) != 1:
         return False
     row = matches[0]
-    return (
+    context_is_green = (
         row.status == "GREEN"
+        and not row.open_blocker
         and row.eligibility_review == "VERIFIED"
         and row.api_terms_review == "VERIFIED"
         and row.trading_review == "VERIFIED"
         and bool(_APPROVAL_REF.fullmatch(row.approval_ref))
         and "UNSPECIFIED" not in (row.venue, row.jurisdiction, row.account_type)
     )
+    if not context_is_green:
+        return False
+    # Charter v0.2 lists real_money_execution in blocked_scope and the NO-GO
+    # list.  Team I green is a necessary promotion gate, never sufficient
+    # authorization.  Removing this hard stop requires a new governed program
+    # decision, not a registry-row edit.
+    return False

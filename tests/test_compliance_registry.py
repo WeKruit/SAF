@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from prediction_market.compliance import (
+    ComplianceRow,
     ComplianceRegistryError,
     load_compliance_matrix,
     load_data_license_register,
@@ -66,6 +67,51 @@ def test_unknown_context_fails_closed() -> None:
         jurisdiction="US-IL",
         account_type="individual",
     ) is False
+
+
+def test_team_i_green_is_not_sufficient_to_override_program_no_go() -> None:
+    green_context = ComplianceRow(
+        matrix_id="CM-999",
+        venue="kalshi",
+        jurisdiction="US-IL",
+        account_type="individual",
+        status="GREEN",
+        eligibility_review="VERIFIED",
+        api_terms_review="VERIFIED",
+        trading_review="VERIFIED",
+        evidence_as_of="2026-07-22",
+        evidence_url="https://kalshi.com/docs/kalshi-member-agreement.pdf",
+        open_blocker="",
+        approval_ref="I-APPROVAL-TEST",
+        owner="I",
+        version="v0",
+        due_gate="Team_I_compliance_green",
+    )
+
+    assert may_execute_real_money(
+        (green_context,),
+        venue="kalshi",
+        jurisdiction="US-IL",
+        account_type="individual",
+    ) is False
+
+
+def test_green_matrix_row_cannot_retain_an_open_blocker(tmp_path: Path) -> None:
+    root = _copy_registries(tmp_path)
+    path = root / "registries" / "compliance_matrix.csv"
+    for field, value in {
+        "jurisdiction": "US-IL",
+        "account_type": "individual",
+        "status": "GREEN",
+        "eligibility_review": "VERIFIED",
+        "api_terms_review": "VERIFIED",
+        "trading_review": "VERIFIED",
+        "approval_ref": "I-APPROVAL-TEST",
+    }.items():
+        _rewrite_cell(path, row_index=0, field=field, value=value)
+
+    with pytest.raises(ComplianceRegistryError, match="GREEN.*open_blocker"):
+        load_compliance_matrix(root)
 
 
 def test_operational_evidence_ids_are_exactly_o001_through_o008() -> None:
@@ -138,4 +184,24 @@ def test_extra_columns_fail_closed(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ComplianceRegistryError, match="columns"):
+        load_data_license_register(root)
+
+
+def test_license_green_requires_consistent_permissions_and_approval(
+    tmp_path: Path,
+) -> None:
+    root = _copy_registries(tmp_path)
+    path = root / "registries" / "data_license_register.csv"
+    for field, value in {
+        "status": "GREEN",
+        "commercial_use": "PROHIBITED",
+        "redistribution": "PERMITTED",
+        "attribution_required": "YES",
+        "operational_use": "APPROVED",
+        "open_blocker": "",
+        "approval_ref": "I-APPROVAL-TEST",
+    }.items():
+        _rewrite_cell(path, row_index=0, field=field, value=value)
+
+    with pytest.raises(ComplianceRegistryError, match="GREEN.*commercial_use"):
         load_data_license_register(root)
