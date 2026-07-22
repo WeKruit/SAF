@@ -187,6 +187,22 @@ def _validated_event(event: dict[str, Any]):
     return contracts.EventEnvelopeV0.model_validate(event)
 
 
+def _copied_event_with_unvalidated_updates(**updates: Any):
+    contracts = _contracts()
+    envelope = contracts.EventEnvelopeV0.model_validate(_raw_event())
+    material = envelope.model_dump(mode="python", round_trip=True)
+    material.update(updates)
+    material["payload_sha256"] = contracts.payload_sha256(material["payload"])
+    material["event_id"] = contracts.event_id_for(material)
+    return envelope.model_copy(
+        update={
+            **updates,
+            "payload_sha256": material["payload_sha256"],
+            "event_id": material["event_id"],
+        }
+    )
+
+
 def _valid_schema_instances() -> dict[str, Any]:
     return {
         "event-envelope/v0.schema.yaml": _raw_event(),
@@ -575,6 +591,53 @@ def test_payload_freezes_serializable_model_nodes_instead_of_retaining_them() ->
     _assert_field_values_deeply_immutable(envelope)
 
 
+def test_normative_validation_revalidates_copied_event_into_immutable_instance() -> None:
+    contracts = _contracts()
+    payload = {"asset_id": "asset-copy", "levels": [{"price": "0.49"}]}
+    copied = _copied_event_with_unvalidated_updates(payload=payload)
+
+    assert isinstance(copied.payload, dict)
+
+    validated = contracts.validate_contract_v0(
+        "event-envelope/v0.schema.yaml", copied
+    )
+    copied_order_key = contracts.replay_order_key(copied)
+    copied_frame = contracts.level2_stream_frame([copied])
+    payload["levels"].append({"price": "0.50"})
+
+    assert validated is not copied
+    assert validated.payload["levels"] == ({"price": "0.49"},)
+    _assert_field_values_deeply_immutable(validated)
+    assert copied_order_key == contracts.replay_order_key(validated)
+    assert copied_frame == contracts.level2_stream_frame(
+        [validated]
+    )
+    with pytest.raises(ValidationError, match="payload_sha256 mismatch"):
+        contracts.replay_order_key(copied)
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        lambda contracts, event: contracts.replay_order_key(event),
+        lambda contracts, event: contracts.level2_stream_frame([event]),
+        lambda contracts, event: contracts.level2_stream_sha256([event]),
+    ],
+)
+def test_replay_boundaries_reject_invalid_copied_event_models(boundary) -> None:
+    contracts = _contracts()
+    copied = _copied_event_with_unvalidated_updates(
+        payload={"asset_id": "asset-copy", "levels": []},
+        quality_flags=["gap_detected", "gap_detected"],
+    )
+
+    assert isinstance(copied.payload, dict)
+    assert isinstance(copied.quality_flags, list)
+
+    with pytest.raises(ValidationError, match="quality_flags must be unique"):
+        boundary(contracts, copied)
+
+
 def test_all_structural_event_collections_are_tuples() -> None:
     contracts = _contracts()
     raw = contracts.EventEnvelopeV0.model_validate(_raw_event())
@@ -638,6 +701,32 @@ def test_model_output_and_rule_snapshot_have_no_mutable_field_values() -> None:
     assert "IOC" not in snapshot.order_types_supported
     _assert_field_values_deeply_immutable(output)
     _assert_field_values_deeply_immutable(snapshot)
+
+
+def test_normative_validation_rejects_empty_order_types_on_copied_snapshot() -> None:
+    contracts = _contracts()
+    snapshot = contracts.VenueRuleSnapshotV0.model_validate(_rule_snapshot())
+    copied = snapshot.model_copy(update={"order_types_supported": []})
+
+    assert isinstance(copied.order_types_supported, list)
+    with pytest.raises(
+        ValidationError, match="order_types_supported must not be empty"
+    ):
+        contracts.validate_contract_v0(
+            "venue-rule-snapshot/v0.schema.yaml", copied
+        )
+
+
+def test_normative_validation_rejects_duplicate_mutable_state_space_on_copy() -> None:
+    contracts = _contracts()
+    output = contracts.ModelOutputV0.model_validate(_model_output())
+    copied = output.model_copy(
+        update={"state_space": ["home_possession", "home_possession"]}
+    )
+
+    assert isinstance(copied.state_space, list)
+    with pytest.raises(ValidationError, match="state_space must be unique"):
+        contracts.validate_contract_v0("model-output/v0.schema.yaml", copied)
 
 
 def test_immutable_contracts_thaw_deterministically_for_serialization() -> None:

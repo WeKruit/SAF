@@ -182,6 +182,17 @@ def thaw_contract_v0(value: Any) -> Any:
     return value
 
 
+def _untrusted_round_trip_input(value: Any) -> Any:
+    if isinstance(value, BaseModel):
+        return value.model_dump(
+            mode="python",
+            round_trip=True,
+            serialize_as_any=True,
+            warnings="error",
+        )
+    return value
+
+
 class FixedPointV0(_ContractModel):
     """An exact decimal represented as a canonical integer and base-10 scale."""
 
@@ -625,7 +636,7 @@ def _nulls_last(
 def _require_envelope(value: Any) -> "EventEnvelopeV0":
     if not isinstance(value, EventEnvelopeV0):
         raise TypeError("ordering and framing require a validated EventEnvelopeV0")
-    return value
+    return EventEnvelopeV0.model_validate(_untrusted_round_trip_input(value))
 
 
 def replay_order_key(value: "EventEnvelopeV0") -> tuple[Any, ...]:
@@ -1031,7 +1042,7 @@ def validate_contract_v0(schema_name: str, instance: Any) -> Any:
 
     model = _MODEL_BY_SCHEMA_NAME.get(schema_name)
     if model is not None:
-        return model.model_validate(instance)
+        return model.model_validate(_untrusted_round_trip_input(instance))
     if schema_name == "quality-flags/v0.yaml":
         return _QUALITY_FLAG_ADAPTER.validate_python(instance, strict=True)
     if schema_name == "market-relations/v0.yaml":
