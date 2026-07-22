@@ -298,6 +298,54 @@ def _contract_with_declared_name_extra(contract_kind: str, extra_case: str):
     raise AssertionError(f"unknown contract kind: {contract_kind}")
 
 
+class _FalseyExtra(dict[str, Any]):
+    def __bool__(self) -> bool:
+        return False
+
+
+class _LyingLengthExtra(dict[str, Any]):
+    def __len__(self) -> int:
+        return 0
+
+
+def _attacker_controlled_extra(extra_case: str, declared_name: str):
+    values = {declared_name: "injected"}
+    if extra_case == "falsey_bool":
+        return _FalseyExtra(values)
+    if extra_case == "lying_length":
+        return _LyingLengthExtra(values)
+    if extra_case == "empty_dict":
+        return {}
+    raise AssertionError(f"unknown extra case: {extra_case}")
+
+
+def _contract_with_attacker_controlled_extra(
+    contract_kind: str,
+    extra_case: str,
+):
+    contracts = _contracts()
+    if contract_kind == "event":
+        schema_name = "event-envelope/v0.schema.yaml"
+        copied = contracts.EventEnvelopeV0.model_validate(_raw_event()).model_copy()
+        declared_name = "payload"
+    elif contract_kind == "model_output":
+        schema_name = "model-output/v0.schema.yaml"
+        copied = contracts.ModelOutputV0.model_validate(_model_output()).model_copy()
+        declared_name = "state_space"
+    elif contract_kind == "venue_rule_snapshot":
+        schema_name = "venue-rule-snapshot/v0.schema.yaml"
+        copied = contracts.VenueRuleSnapshotV0.model_validate(
+            _rule_snapshot()
+        ).model_copy()
+        declared_name = "minimum_tick_size"
+    else:
+        raise AssertionError(f"unknown contract kind: {contract_kind}")
+
+    extra = _attacker_controlled_extra(extra_case, declared_name)
+    object.__setattr__(copied, "__pydantic_extra__", extra)
+    return schema_name, copied, extra
+
+
 def _valid_schema_instances() -> dict[str, Any]:
     return {
         "event-envelope/v0.schema.yaml": _raw_event(),
@@ -792,7 +840,12 @@ def test_normative_validation_rejects_unknown_pydantic_storage_entries(
             {"unexpected_contract_field": "injected"},
         )
 
-    with pytest.raises(ValueError, match="unexpected_contract_field"):
+    expected_error = (
+        "__pydantic_extra__"
+        if storage == "extra"
+        else "unexpected_contract_field"
+    )
+    with pytest.raises(ValueError, match=expected_error):
         contracts.validate_contract_v0("event-envelope/v0.schema.yaml", copied)
 
 
@@ -817,7 +870,9 @@ def test_event_boundaries_reject_declared_name_pydantic_extras(
 
     assert set(copied.__pydantic_extra__) == {"payload"}
     assert "payload" in type(copied).model_fields
-    with pytest.raises(contracts.ContractValidationError, match="payload"):
+    with pytest.raises(
+        contracts.ContractValidationError, match="__pydantic_extra__"
+    ):
         boundary(contracts, copied)
 
 
@@ -838,6 +893,58 @@ def test_normative_validation_rejects_declared_name_pydantic_extras(
     assert extra_names
     assert extra_names <= set(type(copied).model_fields)
     with pytest.raises(contracts.ContractValidationError, match="__pydantic_extra__"):
+        contracts.validate_contract_v0(schema_name, copied)
+
+
+@pytest.mark.parametrize(
+    "extra_case", ["falsey_bool", "lying_length", "empty_dict"]
+)
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        lambda contracts, event: contracts.validate_contract_v0(
+            "event-envelope/v0.schema.yaml", event
+        ),
+        lambda contracts, event: contracts.replay_order_key(event),
+        lambda contracts, event: contracts.level2_stream_frame([event]),
+        lambda contracts, event: contracts.level2_stream_sha256([event]),
+    ],
+)
+def test_event_boundaries_require_pydantic_extras_to_be_absent(
+    boundary,
+    extra_case: str,
+) -> None:
+    contracts = _contracts()
+    _, copied, extra = _contract_with_attacker_controlled_extra(
+        "event", extra_case
+    )
+
+    assert copied.__pydantic_extra__ is extra
+    with pytest.raises(
+        contracts.ContractValidationError, match="__pydantic_extra__"
+    ):
+        boundary(contracts, copied)
+
+
+@pytest.mark.parametrize(
+    "contract_kind", ["model_output", "venue_rule_snapshot"]
+)
+@pytest.mark.parametrize(
+    "extra_case", ["falsey_bool", "lying_length", "empty_dict"]
+)
+def test_normative_validation_requires_pydantic_extras_to_be_absent(
+    contract_kind: str,
+    extra_case: str,
+) -> None:
+    contracts = _contracts()
+    schema_name, copied, extra = _contract_with_attacker_controlled_extra(
+        contract_kind, extra_case
+    )
+
+    assert copied.__pydantic_extra__ is extra
+    with pytest.raises(
+        contracts.ContractValidationError, match="__pydantic_extra__"
+    ):
         contracts.validate_contract_v0(schema_name, copied)
 
 

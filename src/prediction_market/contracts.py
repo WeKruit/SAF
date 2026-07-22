@@ -212,14 +212,9 @@ def _audit_contract_object_graph(
             )
 
         extra = value.__pydantic_extra__
-        if extra is not None and not isinstance(extra, Mapping):
+        if extra is not None:
             raise ContractValidationError(
-                f"invalid __pydantic_extra__ at {'.'.join(path)}"
-            )
-        if extra:
-            names = ", ".join(sorted(repr(field) for field in extra))
-            raise ContractValidationError(
-                f"forbidden __pydantic_extra__ at {'.'.join(path)}: {names}"
+                f"forbidden __pydantic_extra__ at {'.'.join(path)}"
             )
 
         unknown_fields = (
