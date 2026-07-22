@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -12,6 +13,9 @@ from typing import Iterable, Literal, Sequence
 
 from prediction_market.contracts import FixedPointV0
 from prediction_market.experiments import load_experiment_registry
+from prediction_market.contracts import canonical_sha256
+import prediction_market.contracts as contracts_module
+import prediction_market.experiments as experiments_module
 
 
 QuoteState = Literal["ACTIVE", "SUSPENDED"]
@@ -125,6 +129,13 @@ class BarrierLabel:
     window_end_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class X05RuntimeHashes:
+    code_sha256: str
+    data_sha256: str
+    configuration_sha256: str
+
+
 def _eligible(quote: QuoteV0, parameters: BarrierLabelParameters) -> bool:
     return (
         quote.state == "ACTIVE"
@@ -146,6 +157,70 @@ def _ordered_quotes(quotes: Iterable[QuoteV0]) -> list[QuoteV0]:
     if len(set(ids)) != len(ids):
         raise LabelInputError("duplicate quote_id")
     return sorted(ordered, key=lambda quote: (quote.received_at, quote.quote_id))
+
+
+def _timestamp_text(value: datetime) -> str:
+    _require_utc(value, "runtime timestamp")
+    return value.astimezone(UTC).isoformat(timespec="microseconds").replace(
+        "+00:00", "Z"
+    )
+
+
+def _timedelta_microseconds(value: timedelta) -> int:
+    return value // timedelta(microseconds=1)
+
+
+def compute_x05_runtime_hashes(
+    quotes: Sequence[QuoteV0],
+    parameters: BarrierLabelParameters,
+) -> X05RuntimeHashes:
+    """Hash the exact code bundle, quote inputs, and locked configuration."""
+
+    if not isinstance(parameters, BarrierLabelParameters):
+        raise LabelInputError("parameters must be BarrierLabelParameters")
+    ordered = _ordered_quotes(quotes)
+    code_files = {
+        "labels.py": Path(__file__),
+        "contracts.py": Path(contracts_module.__file__),
+        "experiments.py": Path(experiments_module.__file__),
+    }
+    code_manifest = {
+        name: "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+        for name, path in sorted(code_files.items())
+    }
+    data_material = [
+        {
+            "quote_id": quote.quote_id,
+            "source_at": _timestamp_text(quote.source_at),
+            "received_at": _timestamp_text(quote.received_at),
+            "state": quote.state,
+            "bid": None if quote.bid is None else quote.bid.model_dump(mode="json"),
+            "ask": None if quote.ask is None else quote.ask.model_dump(mode="json"),
+        }
+        for quote in ordered
+    ]
+    configuration_material = {
+        "specification": "x05-barrier-label-v0",
+        "upper_return": str(parameters.upper_return),
+        "lower_return": str(parameters.lower_return),
+        "horizon_microseconds": _timedelta_microseconds(parameters.horizon),
+        "max_quote_age_microseconds": _timedelta_microseconds(
+            parameters.max_quote_age
+        ),
+        "same_time_touch_rule": parameters.same_time_touch_rule,
+        "overlap_rule": parameters.overlap_rule,
+        "purge_microseconds": _timedelta_microseconds(parameters.purge),
+        "embargo_microseconds": _timedelta_microseconds(parameters.embargo),
+        "entry_price": "ask",
+        "exit_price": "bid",
+        "midpoint_allowed": False,
+        "suspension_rule": "whole_receive_timestamp_ineligible_then_first_nonstale_two_sided_quote",
+    }
+    return X05RuntimeHashes(
+        code_sha256=canonical_sha256(code_manifest),
+        data_sha256=canonical_sha256(data_material),
+        configuration_sha256=canonical_sha256(configuration_material),
+    )
 
 
 def label_long(
@@ -170,26 +245,32 @@ def label_long(
 
     resume_pending = False
     resume_ids: list[str] = []
-    entry_index: int | None = None
+    entry_group_end: int | None = None
     entry: QuoteV0 | None = None
-    for index, quote in enumerate(ordered):
-        if quote.state == "SUSPENDED":
+    indexed = enumerate(ordered)
+    for received_at, indexed_group in groupby(
+        indexed, key=lambda item: item[1].received_at
+    ):
+        group = list(indexed_group)
+        group_quotes = [quote for _, quote in group]
+        if any(quote.state == "SUSPENDED" for quote in group_quotes):
             resume_pending = True
             continue
-        if not _eligible(quote, parameters):
+        eligible = [quote for quote in group_quotes if _eligible(quote, parameters)]
+        if not eligible:
             continue
-        if quote.received_at < anchor_at:
+        if received_at < anchor_at:
             resume_pending = False
             continue
-        if quote.received_at > deadline:
+        if received_at > deadline:
             break
-        entry_index = index
-        entry = quote
+        entry_group_end = group[-1][0]
+        entry = eligible[0]
         if resume_pending:
-            resume_ids.append(quote.quote_id)
+            resume_ids.append(entry.quote_id)
             resume_pending = False
         break
-    if entry is None or entry_index is None or entry.ask is None:
+    if entry is None or entry_group_end is None or entry.ask is None:
         raise LabelInputError("no executable ask entry within horizon")
 
     entry_decimal = entry.ask.to_decimal()
@@ -198,7 +279,7 @@ def label_long(
     upper = _from_decimal(upper_decimal)
     lower = _from_decimal(lower_decimal)
 
-    post_entry = ordered[entry_index + 1 :]
+    post_entry = ordered[entry_group_end + 1 :]
     for received_at, group_iter in groupby(
         post_entry, key=lambda quote: quote.received_at
     ):
@@ -300,7 +381,11 @@ def label_long(
     raise LabelInputError("no executable bid exit at or after horizon")
 
 
-def _assert_x05_authorized(program_root: str | Path) -> None:
+def _assert_x05_authorized(
+    program_root: str | Path,
+    quotes: Sequence[QuoteV0],
+    parameters: BarrierLabelParameters,
+) -> X05RuntimeHashes:
     registry = load_experiment_registry(program_root)
     card = registry["X-05"]
     scope = card["authorization_scopes"]["label_generation"]
@@ -320,8 +405,27 @@ def _assert_x05_authorized(program_root: str | Path) -> None:
         raise LabelAuthorizationError(
             "X-05 label_generation code/data hashes are not preregistered"
         )
+    runtime = compute_x05_runtime_hashes(quotes, parameters)
+    preregistered = card["preregistered_inputs"]["label_generation"]
+    if preregistered["code_sha256"] != runtime.code_sha256:
+        raise LabelAuthorizationError("X-05 runtime code hash differs from preregistration")
+    if preregistered["data_sha256"] != runtime.data_sha256:
+        raise LabelAuthorizationError("X-05 runtime data hash differs from preregistration")
+    if locks["x05_quote_manifest"].get("evidence_ref") != runtime.data_sha256:
+        raise LabelAuthorizationError("X-05 quote manifest does not bind runtime data hash")
+    for lock_id in (
+        "barrier_values",
+        "purge_and_embargo",
+        "post_resume_quote_rule",
+        "same_time_touch_rule",
+    ):
+        if locks[lock_id].get("evidence_ref") != runtime.configuration_sha256:
+            raise LabelAuthorizationError(
+                f"X-05 {lock_id} does not bind runtime configuration hash"
+            )
     if any(registry[dependency]["status"] != "done" for dependency in card["dependencies"]):
         raise LabelAuthorizationError("X-05 dependency is not complete")
+    return runtime
 
 
 def generate_x05_long_labels(
@@ -333,7 +437,7 @@ def generate_x05_long_labels(
 ) -> tuple[BarrierLabel, ...]:
     """Generate X-05 labels only after registry authorization and preregistration."""
 
-    _assert_x05_authorized(program_root)
+    _assert_x05_authorized(program_root, quotes, parameters)
     ordered_anchors = sorted(anchors)
     for anchor in ordered_anchors:
         _require_utc(anchor, "anchor")
@@ -359,6 +463,8 @@ __all__ = [
     "LabelAuthorizationError",
     "LabelInputError",
     "QuoteV0",
+    "X05RuntimeHashes",
+    "compute_x05_runtime_hashes",
     "generate_x05_long_labels",
     "label_long",
 ]

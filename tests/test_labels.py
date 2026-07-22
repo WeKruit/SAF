@@ -12,6 +12,7 @@ from prediction_market.labels import (
     LabelAuthorizationError,
     LabelInputError,
     QuoteV0,
+    compute_x05_runtime_hashes,
     generate_x05_long_labels,
     label_long,
 )
@@ -107,6 +108,20 @@ def test_suspension_uses_first_nonstale_executable_quote_after_resume() -> None:
     assert label.outcome == "HORIZON"
 
 
+def test_same_timestamp_suspension_blocks_active_entry_for_whole_group() -> None:
+    quotes = [
+        _quote("active-same-time", 0, "0.49", "0.51"),
+        _quote("suspend-same-time", 0, None, None, state="SUSPENDED"),
+        _quote("resume", 1, "0.50", "0.52"),
+        _quote("horizon", 61, "0.51", "0.53"),
+    ]
+
+    label = label_long(quotes, anchor_at=T0, parameters=_parameters())
+
+    assert label.entry_quote_id == "resume"
+    assert label.resume_quote_ids == ("resume",)
+
+
 @pytest.mark.parametrize(
     ("rule", "expected"),
     [("UPPER_FIRST", "UPPER"), ("LOWER_FIRST", "LOWER"), ("AMBIGUOUS", "AMBIGUOUS")],
@@ -174,6 +189,84 @@ def test_x05_generation_is_blocked_by_current_registry() -> None:
             quotes=quotes,
             anchors=[T0],
             parameters=_parameters(),
+        )
+
+
+def test_authorized_x05_run_is_bound_to_preregistered_runtime_hashes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prediction_market.labels as labels_module
+
+    quotes = [
+        _quote("entry", 0, "0.49", "0.50"),
+        _quote("horizon", 60, "0.49", "0.50"),
+    ]
+    parameters = _parameters()
+    hashes = compute_x05_runtime_hashes(quotes, parameters)
+    locks = [
+        {
+            "id": lock_id,
+            "status": "resolved",
+            "evidence_ref": hashes.data_sha256
+            if lock_id == "x05_quote_manifest"
+            else hashes.configuration_sha256,
+        }
+        for lock_id in (
+            "x05_quote_manifest",
+            "barrier_values",
+            "purge_and_embargo",
+            "post_resume_quote_rule",
+            "same_time_touch_rule",
+        )
+    ]
+    fake_registry = {
+        "X-05": {
+            "authorization_scopes": {
+                "label_generation": {
+                    "authorized": True,
+                    "required_lock_ids": [lock["id"] for lock in locks],
+                }
+            },
+            "registration_locks": locks,
+            "preregistered_inputs": {
+                "label_generation": {
+                    "code_sha256": hashes.code_sha256,
+                    "data_sha256": hashes.data_sha256,
+                }
+            },
+            "dependencies": [],
+        }
+    }
+    monkeypatch.setattr(labels_module, "load_experiment_registry", lambda _: fake_registry)
+
+    changed_parameters = BarrierLabelParameters(
+        upper_return=Decimal("0.11"),
+        lower_return=parameters.lower_return,
+        horizon=parameters.horizon,
+        max_quote_age=parameters.max_quote_age,
+        same_time_touch_rule=parameters.same_time_touch_rule,
+        overlap_rule=parameters.overlap_rule,
+        purge=parameters.purge,
+        embargo=parameters.embargo,
+    )
+    with pytest.raises(LabelAuthorizationError, match="configuration hash"):
+        generate_x05_long_labels(
+            PROJECT_ROOT,
+            quotes=quotes,
+            anchors=[T0],
+            parameters=changed_parameters,
+        )
+
+    changed_quotes = [
+        _quote("entry", 0, "0.48", "0.50"),
+        _quote("horizon", 60, "0.49", "0.50"),
+    ]
+    with pytest.raises(LabelAuthorizationError, match="data hash"):
+        generate_x05_long_labels(
+            PROJECT_ROOT,
+            quotes=changed_quotes,
+            anchors=[T0],
+            parameters=parameters,
         )
 
 
