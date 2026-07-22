@@ -249,6 +249,55 @@ def _copied_contract_with_hidden_field(contract_kind: str, *, nested: bool):
     raise AssertionError(f"unknown contract kind: {contract_kind}")
 
 
+def _contract_with_declared_name_extra(contract_kind: str, extra_case: str):
+    contracts = _contracts()
+    hidden_field = {"unexpected_contract_field": "injected"}
+
+    if contract_kind == "event":
+        copied = contracts.EventEnvelopeV0.model_validate(_raw_event()).model_copy()
+        extra_value = (
+            copied
+            if extra_case == "cycle"
+            else copied.time.model_copy(update=hidden_field)
+        )
+        object.__setattr__(copied, "__pydantic_extra__", {"payload": extra_value})
+        return "event-envelope/v0.schema.yaml", copied
+
+    if contract_kind == "model_output":
+        copied = contracts.ModelOutputV0.model_validate(_model_output()).model_copy()
+        extra_value = (
+            copied
+            if extra_case == "cycle"
+            else next(iter(copied.probabilities.values())).model_copy(
+                update=hidden_field
+            )
+        )
+        object.__setattr__(
+            copied,
+            "__pydantic_extra__",
+            {"state_space": extra_value},
+        )
+        return "model-output/v0.schema.yaml", copied
+
+    if contract_kind == "venue_rule_snapshot":
+        copied = contracts.VenueRuleSnapshotV0.model_validate(
+            _rule_snapshot()
+        ).model_copy()
+        extra_value = (
+            copied
+            if extra_case == "cycle"
+            else copied.minimum_tick_size.model_copy(update=hidden_field)
+        )
+        object.__setattr__(
+            copied,
+            "__pydantic_extra__",
+            {"minimum_tick_size": extra_value},
+        )
+        return "venue-rule-snapshot/v0.schema.yaml", copied
+
+    raise AssertionError(f"unknown contract kind: {contract_kind}")
+
+
 def _valid_schema_instances() -> dict[str, Any]:
     return {
         "event-envelope/v0.schema.yaml": _raw_event(),
@@ -745,6 +794,51 @@ def test_normative_validation_rejects_unknown_pydantic_storage_entries(
 
     with pytest.raises(ValueError, match="unexpected_contract_field"):
         contracts.validate_contract_v0("event-envelope/v0.schema.yaml", copied)
+
+
+@pytest.mark.parametrize("extra_case", ["cycle", "nested_hidden_field"])
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        lambda contracts, event: contracts.validate_contract_v0(
+            "event-envelope/v0.schema.yaml", event
+        ),
+        lambda contracts, event: contracts.replay_order_key(event),
+        lambda contracts, event: contracts.level2_stream_frame([event]),
+        lambda contracts, event: contracts.level2_stream_sha256([event]),
+    ],
+)
+def test_event_boundaries_reject_declared_name_pydantic_extras(
+    boundary,
+    extra_case: str,
+) -> None:
+    contracts = _contracts()
+    _, copied = _contract_with_declared_name_extra("event", extra_case)
+
+    assert set(copied.__pydantic_extra__) == {"payload"}
+    assert "payload" in type(copied).model_fields
+    with pytest.raises(contracts.ContractValidationError, match="payload"):
+        boundary(contracts, copied)
+
+
+@pytest.mark.parametrize(
+    "contract_kind", ["model_output", "venue_rule_snapshot"]
+)
+@pytest.mark.parametrize("extra_case", ["cycle", "nested_hidden_field"])
+def test_normative_validation_rejects_declared_name_pydantic_extras(
+    contract_kind: str,
+    extra_case: str,
+) -> None:
+    contracts = _contracts()
+    schema_name, copied = _contract_with_declared_name_extra(
+        contract_kind, extra_case
+    )
+
+    extra_names = set(copied.__pydantic_extra__)
+    assert extra_names
+    assert extra_names <= set(type(copied).model_fields)
+    with pytest.raises(contracts.ContractValidationError, match="__pydantic_extra__"):
+        contracts.validate_contract_v0(schema_name, copied)
 
 
 def test_all_structural_event_collections_are_tuples() -> None:

@@ -216,11 +216,15 @@ def _audit_contract_object_graph(
             raise ContractValidationError(
                 f"invalid __pydantic_extra__ at {'.'.join(path)}"
             )
+        if extra:
+            names = ", ".join(sorted(repr(field) for field in extra))
+            raise ContractValidationError(
+                f"forbidden __pydantic_extra__ at {'.'.join(path)}: {names}"
+            )
 
         unknown_fields = (
             actual_fields
             | frozenset(fields_set)
-            | frozenset(extra or ())
         ) - declared_fields
         if unknown_fields:
             names = ", ".join(sorted(repr(field) for field in unknown_fields))
