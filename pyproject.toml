@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "prediction-market"
+version = "0.1.0"
+description = "Governed prediction-market research program"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "cryptography",
+    "duckdb",
+    "httpx",
+    "pandas",
+    "pyarrow",
+    "pydantic",
+    "PyYAML",
+    "scikit-learn",
+    "websockets",
+    "zstandard",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,196 @@
+from __future__ import annotations
+
+import csv
+import hashlib
+import shutil
+import subprocess
+import sys
+from collections import Counter
+from dataclasses import FrozenInstanceError
+from pathlib import Path
+
+import pytest
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+CHARTER_DIR = PROJECT_ROOT / "charter"
+SOURCE_MANIFEST = CHARTER_DIR / "SOURCE_MANIFEST.sha256"
+REQUIRED_SOURCE_FILENAMES = (
+    "research_program_charter_v0.2.md",
+    "catalog_registry.csv",
+    "catalog_team_assignments.csv",
+)
+VALIDATOR_SCRIPT = PROJECT_ROOT / "tools" / "validate_governance.py"
+
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
+
+
+def _manifest_entries(manifest: Path = SOURCE_MANIFEST) -> list[tuple[str, str]]:
+    return [
+        tuple(line.split(maxsplit=1))
+        for line in manifest.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def _csv_rows(path: Path) -> list[dict[str, str]]:
+    with path.open(encoding="utf-8", newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
+def _validate(root: Path = PROJECT_ROOT):
+    try:
+        from prediction_market.governance import validate_program
+    except ModuleNotFoundError:
+        pytest.fail("prediction_market.governance has not been implemented")
+    return validate_program(root)
+
+
+def _corrupted_fixture(tmp_path: Path) -> Path:
+    fixture_root = tmp_path / "program"
+    shutil.copytree(CHARTER_DIR, fixture_root / "charter")
+    registry = fixture_root / "charter" / "catalog_registry.csv"
+    registry.write_text(
+        registry.read_text(encoding="utf-8").replace("R-001", "R-999", 1),
+        encoding="utf-8",
+    )
+    return fixture_root
+
+
+def _malformed_assignment_fixture(tmp_path: Path) -> Path:
+    fixture_root = tmp_path / "malformed-program"
+    shutil.copytree(CHARTER_DIR, fixture_root / "charter")
+    assignments = fixture_root / "charter" / "catalog_team_assignments.csv"
+    lines = assignments.read_text(encoding="utf-8").splitlines()
+    lines[-1] = "O-008"
+    assignments.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return fixture_root
+
+
+def _run_validator(root: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(VALIDATOR_SCRIPT), str(root)],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_source_manifest_hashes_all_program_sources() -> None:
+    for expected_digest, filename in _manifest_entries():
+        actual_digest = hashlib.sha256((CHARTER_DIR / filename).read_bytes()).hexdigest()
+        assert actual_digest == expected_digest
+
+    report = _validate()
+    assert report.is_valid
+    assert report.source_count == 3
+
+
+def test_source_manifest_contains_exact_required_filenames() -> None:
+    filenames = tuple(filename for _, filename in _manifest_entries())
+    assert filenames == REQUIRED_SOURCE_FILENAMES
+
+    report = _validate()
+    assert report.source_files == REQUIRED_SOURCE_FILENAMES
+
+
+def test_catalog_contains_exactly_87_unique_ids() -> None:
+    catalog_rows = _csv_rows(CHARTER_DIR / "catalog_registry.csv")
+    catalog_ids = [row["catalog_item_id"] for row in catalog_rows]
+    assert len(catalog_rows) == 87
+    assert len(set(catalog_ids)) == 87
+
+    report = _validate()
+    assert report.catalog_count == 87
+
+
+def test_assignment_table_contains_exactly_150_rows() -> None:
+    assignment_rows = _csv_rows(CHARTER_DIR / "catalog_team_assignments.csv")
+    assert len(assignment_rows) == 150
+
+    report = _validate()
+    assert report.assignment_count == 150
+
+
+def test_all_assignments_reference_known_catalog_ids() -> None:
+    catalog_ids = {
+        row["catalog_item_id"]
+        for row in _csv_rows(CHARTER_DIR / "catalog_registry.csv")
+    }
+    assigned_ids = {
+        row["catalog_item_id"]
+        for row in _csv_rows(CHARTER_DIR / "catalog_team_assignments.csv")
+    }
+    assert assigned_ids <= catalog_ids
+
+    assert _validate().is_valid
+
+
+def test_every_catalog_item_has_exactly_one_primary_assignment() -> None:
+    catalog_ids = {
+        row["catalog_item_id"]
+        for row in _csv_rows(CHARTER_DIR / "catalog_registry.csv")
+    }
+    primary_counts = Counter(
+        row["catalog_item_id"]
+        for row in _csv_rows(CHARTER_DIR / "catalog_team_assignments.csv")
+        if row["responsibility"] == "primary"
+    )
+    assert {catalog_id: primary_counts[catalog_id] for catalog_id in catalog_ids} == {
+        catalog_id: 1 for catalog_id in catalog_ids
+    }
+
+    assert _validate().is_valid
+
+
+def test_validator_returns_immutable_structured_violations(
+    tmp_path: Path,
+) -> None:
+    from prediction_market.governance import GovernanceViolation
+
+    report = _validate(_corrupted_fixture(tmp_path))
+
+    assert not report.is_valid
+    assert isinstance(report.violations, tuple)
+    assert all(isinstance(violation, GovernanceViolation) for violation in report.violations)
+    assert {
+        "source.hash_mismatch",
+        "assignments.unknown_catalog_id",
+        "assignments.primary_count",
+    } <= {violation.code for violation in report.violations}
+    with pytest.raises(FrozenInstanceError):
+        report.catalog_count = 0
+    with pytest.raises(FrozenInstanceError):
+        report.violations[0].code = "changed"
+
+
+def test_cli_exits_nonzero_for_corrupted_fixture(tmp_path: Path) -> None:
+    result = _run_validator(_corrupted_fixture(tmp_path))
+
+    assert result.returncode == 1
+    assert "source.hash_mismatch" in result.stdout
+
+
+def test_malformed_assignment_returns_structured_violation_without_traceback(
+    tmp_path: Path,
+) -> None:
+    fixture_root = _malformed_assignment_fixture(tmp_path)
+
+    report = _validate(fixture_root)
+    result = _run_validator(fixture_root)
+
+    assert "assignments.malformed_row" in {
+        violation.code for violation in report.violations
+    }
+    assert result.returncode == 1
+    assert "assignments.malformed_row" in result.stdout
+    assert result.stderr == ""
+
+
+def test_cli_prints_exact_concise_success() -> None:
+    result = _run_validator(PROJECT_ROOT)
+
+    assert result.returncode == 0
+    assert result.stdout == "OK: 3 sources, 87 catalog items, 150 assignments\n"
+    assert result.stderr == ""
