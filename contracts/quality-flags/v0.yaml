@@ -1,0 +1,20 @@
+title: Quality Flags v0
+contract_version: v0
+description: Closed vocabulary for canonical data-quality observations.
+type: string
+enum:
+  - clock_jump
+  - crossed_book
+  - duplicate_event
+  - gap_detected
+  - missing_initial_snapshot
+  - missing_side
+  - negative_time_delta
+  - non_positive_size
+  - out_of_order
+  - pause_observed
+  - preliminary_rules
+  - reconstruction_divergence
+  - source_clock_unverified
+  - stale_as_of_join
+  - tick_size_change

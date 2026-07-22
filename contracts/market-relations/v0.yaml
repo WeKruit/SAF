@@ -1,0 +1,12 @@
+title: Market Relations v0
+contract_version: v0
+description: Closed, directional relation taxonomy for canonical market assertions.
+type: string
+enum:
+  - identity
+  - subset
+  - superset
+  - overlap
+  - mutex
+  - exhaustive
+  - incompatible

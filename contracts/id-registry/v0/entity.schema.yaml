@@ -1,0 +1,48 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: urn:prediction-market:id-registry:entity:v0
+title: Canonical Entity Assertion v0
+contract_version: v0
+catalog_ids_are_domain_ids: false
+catalog_id_namespaces: [R, I, O]
+domain_id_namespaces:
+  - competition
+  - game
+  - participant
+  - venue_event
+  - market
+  - outcome
+  - condition
+description: Declares one stable canonical domain entity; catalog IDs are governance lineage only.
+type: object
+additionalProperties: false
+required:
+  - assertion_version
+  - entity_type
+  - canonical_id
+  - asserted_at
+  - asserted_by
+  - evidence_refs
+properties:
+  assertion_version:
+    const: v0
+  entity_type:
+    enum: [competition, game, participant, venue_event, market, outcome, condition]
+  canonical_id:
+    type: string
+    pattern: ^(?:competition|game|participant|venue_event|market|outcome|condition)_[A-Za-z0-9][A-Za-z0-9._:-]*$
+    not:
+      pattern: ^(?:R|I|O)-[0-9]{3}$
+  asserted_at:
+    type: string
+    format: date-time
+    pattern: ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z$
+  asserted_by:
+    type: string
+    minLength: 1
+  evidence_refs:
+    type: array
+    minItems: 1
+    uniqueItems: true
+    items:
+      type: string
+      minLength: 1

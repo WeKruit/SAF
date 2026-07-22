@@ -1,0 +1,112 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: urn:prediction-market:venue-rule-snapshot:v0
+title: Venue Rule Snapshot v0
+contract_version: v0
+description: Append-only observation of execution rules for one canonical market condition at one effective time.
+type: object
+additionalProperties: false
+required:
+  - venue
+  - condition_id
+  - fetched_at
+  - effective_from
+  - game_start_time
+  - seconds_delay
+  - cancel_during_delay
+  - start_time_cancel_policy
+  - fees_enabled
+  - fee_rate
+  - fee_exponent
+  - taker_only
+  - maker_fee_rate
+  - minimum_tick_size
+  - minimum_order_size
+  - order_types_supported
+  - source_document_version
+  - raw_response_hash
+properties:
+  venue:
+    type: string
+    pattern: ^[a-z0-9][a-z0-9._-]*$
+    not:
+      const: unknown
+    description: Observed venue slug; this contract defines no global venue constant.
+  condition_id:
+    type: string
+    pattern: ^condition_[A-Za-z0-9][A-Za-z0-9._:-]*$
+    description: Canonical condition ID resolved through the ID registry, never a catalog or native ID.
+  fetched_at:
+    $ref: '#/$defs/utc_timestamp'
+  effective_from:
+    $ref: '#/$defs/utc_timestamp'
+  game_start_time:
+    $ref: '#/$defs/utc_timestamp'
+  seconds_delay:
+    $ref: '#/$defs/nonnegative_fixed_point'
+  cancel_during_delay:
+    type: boolean
+  start_time_cancel_policy:
+    enum:
+      - cancel_all_at_game_start
+      - cancel_all_with_schedule_change_exception
+      - preserve_orders_at_game_start
+  fees_enabled:
+    type: boolean
+  fee_rate:
+    $ref: '#/$defs/nonnegative_fixed_point'
+  fee_exponent:
+    $ref: '#/$defs/nonnegative_fixed_point'
+  taker_only:
+    type: boolean
+  maker_fee_rate:
+    $ref: '#/$defs/nonnegative_fixed_point'
+  minimum_tick_size:
+    $ref: '#/$defs/positive_fixed_point'
+  minimum_order_size:
+    $ref: '#/$defs/positive_fixed_point'
+  order_types_supported:
+    type: array
+    minItems: 1
+    uniqueItems: true
+    items:
+      enum: [DAY, FAK, FOK, GTC, GTD, IOC, LIMIT, MARKET, POST_ONLY]
+  source_document_version:
+    type: string
+    minLength: 1
+    not:
+      enum: [unknown, UNKNOWN]
+  raw_response_hash:
+    $ref: '#/$defs/sha256'
+x-observation-discipline:
+  append_only: true
+  conflicts: Preserve each conflicting observation as a separate snapshot; do not overwrite or arbitrate.
+  no_defaults: Missing or unknown execution fields are invalid; zero is accepted only when explicitly observed and valid for that field.
+  replay_join: Use the latest snapshot effective as of simulated time, never today's rules.
+$defs:
+  fixed_point:
+    type: object
+    additionalProperties: false
+    required: [atoms, scale]
+    properties:
+      atoms:
+        type: string
+        pattern: ^(?:0|-?[1-9][0-9]*)$
+      scale:
+        type: integer
+        minimum: 0
+        maximum: 18
+  nonnegative_fixed_point:
+    allOf:
+      - $ref: '#/$defs/fixed_point'
+      - x-decimal-minimum: '0'
+  positive_fixed_point:
+    allOf:
+      - $ref: '#/$defs/fixed_point'
+      - x-decimal-exclusive-minimum: '0'
+  sha256:
+    type: string
+    pattern: ^sha256:[0-9a-f]{64}$
+  utc_timestamp:
+    type: string
+    format: date-time
+    pattern: ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z$

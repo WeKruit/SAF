@@ -1,0 +1,46 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: urn:prediction-market:id-registry:relation-assertion:v0
+title: Canonical Market Relation Assertion v0
+contract_version: v0
+catalog_ids_are_domain_ids: false
+catalog_id_namespaces: [R, I, O]
+domain_id_namespaces:
+  - competition
+  - game
+  - participant
+  - venue_event
+  - market
+  - outcome
+  - condition
+description: Records an evidenced directional relation between two canonical market or outcome IDs.
+type: object
+additionalProperties: false
+required:
+  - assertion_version
+  - left_id
+  - relation
+  - right_id
+  - asserted_at
+  - evidence_refs
+properties:
+  assertion_version:
+    const: v0
+  left_id:
+    type: string
+    pattern: ^(?:market|outcome|condition)_[A-Za-z0-9][A-Za-z0-9._:-]*$
+  relation:
+    enum: [identity, subset, superset, overlap, mutex, exhaustive, incompatible]
+  right_id:
+    type: string
+    pattern: ^(?:market|outcome|condition)_[A-Za-z0-9][A-Za-z0-9._:-]*$
+  asserted_at:
+    type: string
+    format: date-time
+    pattern: ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z$
+  evidence_refs:
+    type: array
+    minItems: 1
+    uniqueItems: true
+    items:
+      type: string
+      minLength: 1

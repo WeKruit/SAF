@@ -1,0 +1,283 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: urn:prediction-market:event-envelope:v0
+title: Event Envelope v0
+contract_version: v0
+description: Canonical append-only event envelope for raw and derived program events.
+type: object
+additionalProperties: false
+required:
+  - envelope_version
+  - event_id
+  - event_type
+  - payload_schema_version
+  - source
+  - time
+  - canonical_refs
+  - native_refs
+  - lineage
+  - quality_flags
+  - payload
+  - payload_sha256
+properties:
+  envelope_version:
+    const: v0
+  event_id:
+    type: string
+    pattern: ^evt_[0-9a-f]{64}$
+    x-derived-from: canonical envelope excluding event_id
+  event_type:
+    type: string
+    enum:
+      - raw_observation
+      - normalized_observation
+      - model_output
+      - label
+      - signal
+      - simulated_order
+      - simulated_fill
+      - simulated_pnl
+  payload_schema_version:
+    const: v0
+  source:
+    $ref: '#/$defs/source'
+  time:
+    $ref: '#/$defs/time'
+  canonical_refs:
+    $ref: '#/$defs/canonical_refs'
+  native_refs:
+    type: array
+    uniqueItems: true
+    items:
+      $ref: '#/$defs/native_ref'
+  lineage:
+    $ref: '#/$defs/lineage'
+  experiment_id:
+    oneOf:
+      - $ref: '#/$defs/experiment_id'
+      - type: 'null'
+  rule_snapshot_ref:
+    oneOf:
+      - $ref: '#/$defs/sha256'
+      - type: 'null'
+  quality_flags:
+    type: array
+    uniqueItems: true
+    items:
+      $ref: '#/$defs/quality_flag'
+  payload:
+    type: object
+    x-canonical-number-policy: Binary floating-point is forbidden recursively; exact values use FixedPointV0.
+  payload_sha256:
+    $ref: '#/$defs/sha256'
+    x-derived-from: canonical payload JSON
+allOf:
+  - if:
+      properties:
+        event_type:
+          const: raw_observation
+      required: [event_type]
+    then:
+      properties:
+        source:
+          allOf:
+            - $ref: '#/$defs/source'
+            - required: [capture_session_id, record_ordinal]
+              properties:
+                capture_session_id:
+                  type: string
+                  minLength: 1
+                record_ordinal:
+                  type: integer
+                  minimum: 0
+        native_refs:
+          minItems: 1
+        lineage:
+          $ref: '#/$defs/raw_lineage'
+    else:
+      required: [experiment_id]
+      properties:
+        experiment_id:
+          $ref: '#/$defs/experiment_id'
+        lineage:
+          $ref: '#/$defs/parent_lineage'
+$defs:
+  sha256:
+    type: string
+    pattern: ^sha256:[0-9a-f]{64}$
+  utc_timestamp:
+    type: string
+    pattern: ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z$
+    format: date-time
+  experiment_id:
+    type: string
+    enum: [X-01, X-02, X-03, X-04, X-05, X-06, X-07, X-08, X-09, X-10]
+  source:
+    type: object
+    additionalProperties: false
+    required: [system, stream]
+    properties:
+      system:
+        type: string
+        minLength: 1
+      stream:
+        type: string
+        minLength: 1
+      venue:
+        type: [string, 'null']
+        pattern: ^[a-z0-9][a-z0-9._-]*$
+      sequence:
+        oneOf:
+          - type: integer
+            minimum: 0
+          - type: string
+            minLength: 1
+          - type: 'null'
+      capture_session_id:
+        type: [string, 'null']
+        minLength: 1
+      record_ordinal:
+        type: [integer, 'null']
+        minimum: 0
+  time:
+    type: object
+    additionalProperties: false
+    required: [receive_at, receive_basis]
+    properties:
+      receive_at:
+        $ref: '#/$defs/utc_timestamp'
+      receive_basis:
+        enum: [local_recorder, upstream_exporter]
+      source_at:
+        oneOf:
+          - $ref: '#/$defs/utc_timestamp'
+          - type: 'null'
+      publish_at:
+        oneOf:
+          - $ref: '#/$defs/utc_timestamp'
+          - type: 'null'
+      exchange_at:
+        oneOf:
+          - $ref: '#/$defs/utc_timestamp'
+          - type: 'null'
+  canonical_refs:
+    type: object
+    additionalProperties: false
+    required:
+      - competition_id
+      - game_id
+      - participant_ids
+      - venue_event_id
+      - market_id
+      - outcome_id
+      - condition_id
+    properties:
+      competition_id:
+        $ref: '#/$defs/nullable_competition_id'
+      game_id:
+        $ref: '#/$defs/nullable_game_id'
+      participant_ids:
+        type: array
+        uniqueItems: true
+        items:
+          type: string
+          pattern: ^participant_[A-Za-z0-9][A-Za-z0-9._:-]*$
+      venue_event_id:
+        $ref: '#/$defs/nullable_venue_event_id'
+      market_id:
+        $ref: '#/$defs/nullable_market_id'
+      outcome_id:
+        $ref: '#/$defs/nullable_outcome_id'
+      condition_id:
+        $ref: '#/$defs/nullable_condition_id'
+  nullable_competition_id:
+    oneOf:
+      - type: string
+        pattern: ^competition_[A-Za-z0-9][A-Za-z0-9._:-]*$
+      - type: 'null'
+  nullable_game_id:
+    oneOf:
+      - type: string
+        pattern: ^game_[A-Za-z0-9][A-Za-z0-9._:-]*$
+      - type: 'null'
+  nullable_venue_event_id:
+    oneOf:
+      - type: string
+        pattern: ^venue_event_[A-Za-z0-9][A-Za-z0-9._:-]*$
+      - type: 'null'
+  nullable_market_id:
+    oneOf:
+      - type: string
+        pattern: ^market_[A-Za-z0-9][A-Za-z0-9._:-]*$
+      - type: 'null'
+  nullable_outcome_id:
+    oneOf:
+      - type: string
+        pattern: ^outcome_[A-Za-z0-9][A-Za-z0-9._:-]*$
+      - type: 'null'
+  nullable_condition_id:
+    oneOf:
+      - type: string
+        pattern: ^condition_[A-Za-z0-9][A-Za-z0-9._:-]*$
+      - type: 'null'
+  native_ref:
+    type: object
+    additionalProperties: false
+    required: [namespace, native_id]
+    properties:
+      namespace:
+        type: string
+        minLength: 1
+      native_id:
+        type: string
+        minLength: 1
+  raw_lineage:
+    type: object
+    additionalProperties: false
+    required: [raw_object_hash, raw_record_ordinal]
+    properties:
+      raw_object_hash:
+        $ref: '#/$defs/sha256'
+      raw_record_ordinal:
+        type: integer
+        minimum: 0
+      parent_event_ids:
+        type: array
+        maxItems: 0
+  parent_lineage:
+    type: object
+    additionalProperties: false
+    required: [parent_event_ids]
+    properties:
+      raw_object_hash:
+        type: 'null'
+      raw_record_ordinal:
+        type: 'null'
+      parent_event_ids:
+        type: array
+        minItems: 1
+        uniqueItems: true
+        items:
+          type: string
+          pattern: ^evt_[0-9a-f]{64}$
+  lineage:
+    oneOf:
+      - $ref: '#/$defs/raw_lineage'
+      - $ref: '#/$defs/parent_lineage'
+  quality_flag:
+    type: string
+    enum:
+      - clock_jump
+      - crossed_book
+      - duplicate_event
+      - gap_detected
+      - missing_initial_snapshot
+      - missing_side
+      - negative_time_delta
+      - non_positive_size
+      - out_of_order
+      - pause_observed
+      - preliminary_rules
+      - reconstruction_divergence
+      - source_clock_unverified
+      - stale_as_of_join
+      - tick_size_change
