@@ -1,0 +1,6 @@
+{"timestamp_received":"2026-06-01T00:00:00.200Z","timestamp":"2026-06-01T00:00:00.070Z","market":"0xmarket-a","event_type":"price_change","asset_id":"asset-a","price":"0.4600","size":"25.000000","side":"BUY"}
+{"timestamp_received":"2026-06-01T00:00:00.100Z","timestamp":"2026-06-01T00:00:00.080Z","market":"0xmarket-a","event_type":"book","asset_id":"asset-a","bids":"[[\"0.4500\",\"100.000000\"]]","asks":"[[\"0.5500\",\"80.000000\"]]"}
+{"timestamp_received":"2026-06-01T00:00:00.100Z","timestamp":"2026-06-01T00:00:00.080Z","market":"0xmarket-a","event_type":"book","asset_id":"asset-a","bids":"[[\"0.4500\",\"100.000000\"]]","asks":"[[\"0.5500\",\"80.000000\"]]"}
+{"timestamp_received":"2026-06-01T00:00:00.150Z","timestamp":"2026-06-01T00:00:00.130Z","market":"0xmarket-b","event_type":"book","asset_id":"asset-b","bids":"[[\"0.4000\",\"10.000000\"]]","asks":"[[\"0.6000\",\"12.000000\"]]"}
+{"timestamp_received":"2026-06-01T00:00:00.220Z","timestamp":"2026-06-01T00:00:00.210Z","market":"0xmarket-a","event_type":"price_change","asset_id":"asset-a","price":"0.5400","size":"30.000000","side":"SELL"}
+{"timestamp_received":"2026-06-01T00:00:00.230Z","timestamp":"2026-06-01T00:00:00.220Z","market":"0xmarket-a","event_type":"price_change","asset_id":"asset-a","price":"0.5500","size":"0.000000","side":"SELL"}

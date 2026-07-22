@@ -1,0 +1,111 @@
+{
+  "audit_kind": "pmxt_phase1_public_sample",
+  "files": [
+    {
+      "archive": {
+        "byte_size": 436334049,
+        "object_path": "var/raw/pmxt-v2/sha256/59/590216674e38f820fa011362967124603d3aa28959d05fb9b54b6ca4d3bcf399.parquet",
+        "sha256": "sha256:590216674e38f820fa011362967124603d3aa28959d05fb9b54b6ca4d3bcf399",
+        "source_filename": "polymarket_orderbook_2026-05-28T23.parquet",
+        "source_url": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-05-28T23.parquet"
+      },
+      "inventory_object": {
+        "filename": "polymarket_orderbook_2026-05-28T23.parquet",
+        "hour": "2026-05-28T23:00:00.000Z",
+        "size_bytes": null,
+        "url": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-05-28T23.parquet"
+      },
+      "parquet_audit": {
+        "byte_size": 436334049,
+        "column_count": 16,
+        "event_type_counts": {
+          "book": 206571,
+          "last_trade_price": 67815,
+          "price_change": 75313012,
+          "tick_size_change": 296
+        },
+        "null_counts": {
+          "asks": 75381123,
+          "asset_id": 0,
+          "best_ask": 274682,
+          "best_bid": 274682,
+          "bids": 75381123,
+          "event_type": 0,
+          "fee_rate_bps": 75519879,
+          "market": 0,
+          "new_tick_size": 75587398,
+          "old_tick_size": 75587398,
+          "price": 206867,
+          "side": 206867,
+          "size": 206867,
+          "timestamp": 0,
+          "timestamp_received": 0,
+          "transaction_hash": 75519879
+        },
+        "nullable": {
+          "asks": true,
+          "asset_id": false,
+          "best_ask": true,
+          "best_bid": true,
+          "bids": true,
+          "event_type": false,
+          "fee_rate_bps": true,
+          "market": false,
+          "new_tick_size": true,
+          "old_tick_size": true,
+          "price": true,
+          "side": true,
+          "size": true,
+          "timestamp": false,
+          "timestamp_received": false,
+          "transaction_hash": true
+        },
+        "original_sha256": "sha256:590216674e38f820fa011362967124603d3aa28959d05fb9b54b6ca4d3bcf399",
+        "path": "var/raw/pmxt-v2/sha256/59/590216674e38f820fa011362967124603d3aa28959d05fb9b54b6ca4d3bcf399.parquet",
+        "receive_minus_source_ms": {
+          "count": 75587694,
+          "max": 2559328918,
+          "median": 219,
+          "min": 20,
+          "negative_count": 0,
+          "p95": 5064
+        },
+        "row_count": 75587694,
+        "row_group_count": 73,
+        "schema": {
+          "asks": "string",
+          "asset_id": "string",
+          "best_ask": "decimal128(9, 4)",
+          "best_bid": "decimal128(9, 4)",
+          "bids": "string",
+          "event_type": "string",
+          "fee_rate_bps": "uint16",
+          "market": "fixed_size_binary[66]",
+          "new_tick_size": "decimal128(9, 4)",
+          "old_tick_size": "decimal128(9, 4)",
+          "price": "decimal128(9, 4)",
+          "side": "string",
+          "size": "decimal128(18, 6)",
+          "timestamp": "timestamp[ms, tz=UTC]",
+          "timestamp_received": "timestamp[ms, tz=UTC]",
+          "transaction_hash": "string"
+        },
+        "schema_issues": [],
+        "timestamp_range": {
+          "timestamp_max": "2026-05-28T23:59:59.199Z",
+          "timestamp_min": "2026-04-29T08:58:39.323Z",
+          "timestamp_received_max": "2026-05-28T23:59:59.961Z",
+          "timestamp_received_min": "2026-05-28T23:00:00.103Z"
+        }
+      }
+    }
+  ],
+  "limitations": [
+    "PMXT v2 has no exchange sequence number.",
+    "This command audits original Parquet bytes and schema; it does not infer queue position or fills."
+  ],
+  "max_files": 1,
+  "queue_fill_reconstructed": false,
+  "retrieved_at": "2026-07-22T23:23:35.410Z",
+  "source_kind": "real_public_https_download"
+}
