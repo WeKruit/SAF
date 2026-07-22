@@ -1,0 +1,4 @@
+matrix_id,venue,jurisdiction,account_type,status,eligibility_review,api_terms_review,trading_review,evidence_as_of,evidence_url,open_blocker,approval_ref,owner,version,due_gate
+CM-001,polymarket-international,UNSPECIFIED,UNSPECIFIED,NOT_GREEN_OPEN,OPEN,OPEN,BLOCKED,2026-07-22,https://polymarket.com/tos,Operating jurisdiction legal entity account type and current platform terms are not supplied,,I,v0,Team_I_compliance_green
+CM-002,polymarket-us,UNSPECIFIED,UNSPECIFIED,NOT_GREEN_OPEN,OPEN,OPEN,BLOCKED,2026-07-22,https://polymarket.us/,Operating jurisdiction legal entity account type and regulated-platform onboarding evidence are not supplied,,I,v0,Team_I_compliance_green
+CM-003,kalshi,UNSPECIFIED,UNSPECIFIED,NOT_GREEN_OPEN,OPEN,OPEN,BLOCKED,2026-07-22,https://kalshi.com/docs/kalshi-member-agreement.pdf,Operating jurisdiction legal entity account type member agreement and account eligibility are not supplied,,I,v0,Team_I_compliance_green
