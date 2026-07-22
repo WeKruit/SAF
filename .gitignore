@@ -1,0 +1,11 @@
+.DS_Store
+.venv/
+.worktrees/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.py[cod]
+var/
+data/raw/*
+!data/raw/README.md
+

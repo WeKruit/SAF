@@ -1,0 +1,88 @@
+catalog_item_id,source_catalog_id,catalog,title,primary_team,secondary_teams,priority,program_stage,first_artifact,linked_experiments,status,due_gate
+R-001,research_catalog.csv:row1,research,Prediction Markets (Wolfers & Zitzewitz 2004),A,E,core,stage0_foundation,evidence_card,-,assigned,2026-08-05_W2_review
+R-002,research_catalog.csv:row2,research,Logarithmic Market Scoring Rules (Hanson 2002),A,E,core,stage0_foundation,evidence_card,-,assigned,2026-08-05_W2_review
+R-003,research_catalog.csv:row3,research,A Utility Framework for Bounded-Loss Market Makers (2007),A,F,advanced,stage0_foundation,evidence_card,-,assigned,2026-08-19_W4_review
+R-004,research_catalog.csv:row4,research,Prediction Market Accuracy in the Long Run (2008),A,E,background,stage0_foundation,evidence_card,-,assigned,backlog
+R-005,research_catalog.csv:row5,research,Forecasting Future World Events with Neural Networks (2022),G,,background,stage1_baseline,evidence_card,-,assigned,backlog
+R-006,research_catalog.csv:row6,research,A Bayesian Approach to In-Game Win Probability in Soccer (2019),D3,E,core,stage1_baseline,evidence_card,-,assigned,2026-08-05_W2_review
+R-007,research_catalog.csv:row7,research,Stochastic Modelling of Football Matches (2023),D3,,core,stage1_baseline,evidence_card,-,assigned,2026-08-05_W2_review
+R-008,research_catalog.csv:row8,research,A Market-Calibrated AFT Model for In-Play Football (2026),D3,E,core,stage1_baseline,evidence_card,-,assigned,2026-08-05_W2_review
+R-009,research_catalog.csv:row9,research,A Gamma Process Based In-Play Prediction Model for NBA (2020),D1,,core,stage1_baseline,evidence_card,X-06,assigned,2026-08-05_W2_review
+R-010,research_catalog.csv:row10,research,Real-Time NBA Predictions Combining Bookmaker Line (2020),D1,,core,stage1_baseline,evidence_card,X-06,assigned,2026-08-05_W2_review
+R-011,research_catalog.csv:row11,research,The Poisson Model Limits in NBA (2016),D1,H,background,stage1_baseline,evidence_card,X-06,assigned,backlog
+R-012,research_catalog.csv:row12,research,NBA Extreme Score Shifts and Comeback (2024),D1,,background,stage1_baseline,evidence_card,-,assigned,backlog
+R-013,research_catalog.csv:row13,research,Modeling Basketball Play-by-Play Data (2016),D1,,advanced,stage1_baseline,evidence_card,-,assigned,2026-08-19_W4_review
+R-014,research_catalog.csv:row14,research,Random Forests Win Probability NFL (2014),D2,,core,stage1_baseline,evidence_card,-,assigned,2026-08-05_W2_review
+R-015,research_catalog.csv:row15,research,nflWAR (2018),D2,C,core,stage1_baseline,evidence_card,-,assigned,2026-08-05_W2_review
+R-016,research_catalog.csv:row16,research,Going Deep: Continuous-Time Within-Play Valuation (2019),D2,,advanced,stage2_expansion,evidence_card,-,assigned,2026-08-19_W4_review
+R-017,research_catalog.csv:row17,research,Exploring the Difficulty of Estimating Win Probability (2026),H,D1;D2;D3,core,stage0_foundation,evidence_card,X-06,assigned,2026-08-05_W2_review
+R-018,research_catalog.csv:row18,research,ML for Sports Betting: Accuracy or Calibration? (2023),H,D1;D2;D3;D4;D5,core,stage0_foundation,evidence_card,X-06,assigned,2026-08-05_W2_review
+R-019,research_catalog.csv:row19,research,Information and Efficiency: Goal Arrival (2014),E,,core,stage1_baseline,evidence_card,X-04,assigned,2026-08-05_W2_review
+R-020,research_catalog.csv:row20,research,Informational Efficiency In-Play Prediction Markets (2022),E,,core,stage1_baseline,evidence_card,X-04,assigned,2026-08-05_W2_review
+R-021,research_catalog.csv:row21,research,When Do Markets Fully Process Public Information? (2026),E,H,core,stage1_baseline,evidence_card,X-04,assigned,2026-08-05_W2_review
+R-022,research_catalog.csv:row22,research,"Prices, Probabilities, and Parlays (2026)",E,H,core,stage1_baseline,evidence_card,X-05,assigned,2026-08-05_W2_review
+R-023,research_catalog.csv:row23,research,Arbitrage Analysis in Polymarket NBA Markets (2026),E,G,core,stage1_baseline,evidence_card,X-10,assigned,2026-08-05_W2_review
+R-024,research_catalog.csv:row24,research,Semantic Non-Fungibility and LOOP Violations (2026),A,G,core,stage0_foundation,evidence_card,X-10,assigned,2026-08-05_W2_review
+R-025,research_catalog.csv:row25,research,When Certainty Is Not Worth It: Capital Lock-Up (2026),E,G,advanced,stage1_baseline,evidence_card,X-10,assigned,2026-08-19_W4_review
+R-026,research_catalog.csv:row26,research,Decomposing Crowd Wisdom (2026),E,H,advanced,stage1_baseline,evidence_card,-,assigned,2026-08-19_W4_review
+R-027,research_catalog.csv:row27,research,High-Frequency Trading in a Limit Order Book (2008),F,,core,stage2_expansion,evidence_card,-,assigned,2026-08-05_W2_review
+R-028,research_catalog.csv:row28,research,The Queue-Reactive Model (2015),F,,core,stage1_baseline,evidence_card,X-07,assigned,2026-08-05_W2_review
+R-029,research_catalog.csv:row29,research,Fill Probabilities with State-Dependent Flows (2024),F,,core,stage1_baseline,evidence_card,X-07,assigned,2026-08-05_W2_review
+R-030,research_catalog.csv:row30,research,Deep Attentive Survival Analysis in LOB (2023),F,,advanced,stage2_expansion,evidence_card,-,assigned,2026-08-19_W4_review
+R-031,research_catalog.csv:row31,research,KANFormer for Fill Probabilities (2025),F,,frontier,stage2_expansion,evidence_card,-,assigned,backlog
+R-032,research_catalog.csv:row32,research,The Negative Drift of a Limit Order Fill (2024),F,H,core,stage1_baseline,evidence_card,X-07,assigned,2026-08-05_W2_review
+R-033,research_catalog.csv:row33,research,Deep Learning Meets Queue-Reactive (2025),F,,frontier,stage2_expansion,evidence_card,-,assigned,backlog
+R-034,research_catalog.csv:row34,research,ABIDES (2019),F,B,core,stage1_baseline,evidence_card,X-09,assigned,2026-08-05_W2_review
+R-035,research_catalog.csv:row35,research,Multi-Agent RL in LOB Simulation (2020),F,,frontier,stage2_expansion,evidence_card,-,assigned,backlog
+R-036,research_catalog.csv:row36,research,Low-Latency Trading (2013),F,A,core,stage1_baseline,evidence_card,-,assigned,2026-08-05_W2_review
+R-037,research_catalog.csv:row37,research,The HFT Arms Race / Frequent Batch Auctions (2015),F,A,advanced,stage1_baseline,evidence_card,-,assigned,2026-08-19_W4_review
+R-038,research_catalog.csv:row38,research,Unlocking the Forecasting Economy (2026),C,,core,stage0_foundation,evidence_card,X-01,assigned,2026-08-05_W2_review
+R-039,research_catalog.csv:row39,research,Polymarket-v1 Database (2026),C,G,core,stage0_foundation,evidence_card,X-01,assigned,2026-08-05_W2_review
+R-040,research_catalog.csv:row40,research,Anatomy of a Decentralized Prediction Market (2026),C,E,core,stage0_foundation,evidence_card,X-01,assigned,2026-08-05_W2_review
+R-041,research_catalog.csv:row41,research,Fill-Side Non-Retail Trading on Polymarket (2026),C,G,advanced,stage0_foundation,evidence_card,-,assigned,2026-08-19_W4_review
+R-042,research_catalog.csv:row42,research,PredictionMarketBench (2026),H,F,core,stage0_foundation,evidence_card,X-09,assigned,2026-08-05_W2_review
+R-043,research_catalog.csv:row43,research,PolyBench (2026),G,E;C,core,stage1_baseline,evidence_card,-,assigned,2026-08-05_W2_review
+R-044,research_catalog.csv:row44,research,Prediction Arena (2026),G,H,core,stage1_baseline,evidence_card,-,assigned,2026-08-05_W2_review
+R-045,research_catalog.csv:row45,research,PolySwarm (2026),G,,frontier,stage2_expansion,evidence_card,-,assigned,backlog
+R-046,research_catalog.csv:row46,research,Multi-Agent AI Oracle Systems (2026),A,G,advanced,stage0_foundation,evidence_card,X-10,assigned,2026-08-19_W4_review
+R-047,research_catalog.csv:row47,research,ForecastBench (2025),G,H,core,stage1_baseline,evidence_card,-,assigned,2026-08-05_W2_review
+R-048,research_catalog.csv:row48,research,The Power of Simplicity in LLM Event Forecasting (2025),G,,core,stage1_baseline,evidence_card,-,assigned,2026-08-05_W2_review
+R-049,research_catalog.csv:row49,research,LLM as a Risk Manager (2026),G,E,core,stage1_baseline,evidence_card,-,assigned,2026-08-05_W2_review
+R-050,research_catalog.csv:row50,research,ForecastBench-Sim (2026),G,,frontier,stage2_expansion,evidence_card,-,assigned,backlog
+R-051,research_catalog.csv:row51,research,A Reality Check for Data Snooping (2000),H,,core,stage0_foundation,evidence_card,-,assigned,2026-08-05_W2_review
+R-052,research_catalog.csv:row52,research,The Probability of Backtest Overfitting (2016),H,,core,stage0_foundation,evidence_card,-,assigned,2026-08-05_W2_review
+R-053,research_catalog.csv:row53,research,The Deflated Sharpe Ratio (2014),H,,core,stage0_foundation,evidence_card,-,assigned,2026-08-05_W2_review
+R-054,research_catalog.csv:row54,research,Pseudo-Mathematics and Financial Charlatanism (2014),H,G,background,stage0_foundation,evidence_card,-,assigned,backlog
+I-001,implementation_catalog.csv:row1,implementation,Polymarket Market WebSocket,B,C,core,stage0_foundation,capability_matrix_entry,X-08,assigned,2026-08-05_W2_review
+I-002,implementation_catalog.csv:row2,implementation,Polymarket Sports WebSocket,B,D1;D2,core,stage0_foundation,capability_matrix_entry,-,assigned,2026-08-05_W2_review
+I-003,implementation_catalog.csv:row3,implementation,Polymarket Unified SDK / CLOB V2,B,,core,stage0_foundation,capability_matrix_entry,X-09,assigned,2026-08-05_W2_review
+I-004,implementation_catalog.csv:row4,implementation,Kalshi WebSocket Orderbook,B,C,core,stage0_foundation,capability_matrix_entry,X-08,assigned,2026-08-05_W2_review
+I-005,implementation_catalog.csv:row5,implementation,Kalshi Historical Data API,C,B,core,stage0_foundation,audit_report_section,X-08,assigned,2026-08-05_W2_review
+I-006,implementation_catalog.csv:row6,implementation,Kalshi FIX,B,,advanced,stage2_expansion,capability_matrix_entry,-,assigned,2026-08-19_W4_review
+I-007,implementation_catalog.csv:row7,implementation,NautilusTrader,B,F,core,stage0_foundation,capability_matrix_entry,X-09,assigned,2026-08-05_W2_review
+I-008,implementation_catalog.csv:row8,implementation,hftbacktest,F,,core,stage1_baseline,reuse_assessment,X-07,assigned,2026-08-05_W2_review
+I-009,implementation_catalog.csv:row9,implementation,ABIDES,F,,advanced,stage1_baseline,reuse_assessment,-,assigned,2026-08-19_W4_review
+I-010,implementation_catalog.csv:row10,implementation,LEAN,B,,background,stage1_baseline,capability_matrix_entry,-,assigned,backlog
+I-011,implementation_catalog.csv:row11,implementation,flumine,B,,background,stage1_baseline,capability_matrix_entry,-,assigned,backlog
+I-012,implementation_catalog.csv:row12,implementation,PredictionMarketBench,H,F,advanced,stage0_foundation,reuse_assessment,X-09,assigned,2026-08-19_W4_review
+I-013,implementation_catalog.csv:row13,implementation,PMXT,C,B;G,core,stage0_foundation,audit_report_section,X-01;X-03;X-10,assigned,2026-08-05_W2_review
+I-014,implementation_catalog.csv:row14,implementation,Gnosis Prediction Market Agent Tooling,G,,background,stage1_baseline,module_report_section,-,assigned,backlog
+I-015,implementation_catalog.csv:row15,implementation,ForecastBench,G,H,advanced,stage1_baseline,module_report_section,-,assigned,2026-08-19_W4_review
+I-016,implementation_catalog.csv:row16,implementation,PolyBench,G,E,advanced,stage1_baseline,module_report_section,-,assigned,2026-08-19_W4_review
+I-017,implementation_catalog.csv:row17,implementation,Predict Raven,G,,background,stage1_baseline,module_report_section,-,assigned,backlog
+I-018,implementation_catalog.csv:row18,implementation,nflfastR,D2,C,core,stage0_foundation,data_pipeline_poc,-,assigned,2026-08-05_W2_review
+I-019,implementation_catalog.csv:row19,implementation,StatsBomb Open Data,D3,C;I,core,stage0_foundation,data_pipeline_poc,-,assigned,2026-08-05_W2_review
+I-020,implementation_catalog.csv:row20,implementation,Metrica Sports Sample Data,D3,,background,stage0_foundation,data_pipeline_poc,-,assigned,backlog
+I-021,implementation_catalog.csv:row21,implementation,nba_api,D1,C;I,core,stage0_foundation,data_pipeline_poc,X-04;X-06,assigned,2026-08-05_W2_review
+I-022,implementation_catalog.csv:row22,implementation,Polymarket-Kalshi Weather Bot,G,I,background,stage2_expansion,module_report_section,-,assigned,backlog
+I-023,implementation_catalog.csv:row23,implementation,Polymarket Copy-Trading Bots,G,,background,stage2_expansion,module_report_section,-,assigned,backlog
+I-024,implementation_catalog.csv:row24,implementation,PolyTerm,G,,background,stage2_expansion,module_report_section,-,assigned,backlog
+I-025,implementation_catalog.csv:row25,implementation,PolyWorld,G,,background,stage2_expansion,module_report_section,-,assigned,backlog
+O-001,charter_appendix_A_2026-07-22,operational_evidence,Polymarket API / 交易条款（docs.polymarket.com ToS）,I,B,core,stage0_foundation,license_register_entry,-,assigned,Team_I_compliance_green
+O-002,charter_appendix_A_2026-07-22,operational_evidence,Polymarket 费用与延迟规则（trading/fees + orders/create；venue_rule_snapshot 数据源）,I,B;F,core,stage0_foundation,license_register_entry,X-07,assigned,Team_I_compliance_green
+O-003,charter_appendix_A_2026-07-22,operational_evidence,Kalshi API agreement 与交易规则,I,B,core,stage0_foundation,license_register_entry,-,assigned,Team_I_compliance_green
+O-004,charter_appendix_A_2026-07-22,operational_evidence,StatsBomb open data LICENSE.pdf 商用条款,I,D3,core,stage0_foundation,license_register_entry,-,assigned,Team_I_compliance_green
+O-005,charter_appendix_A_2026-07-22,operational_evidence,nba_api / NBA.com ToS 使用边界,I,D1,core,stage0_foundation,license_register_entry,-,assigned,Team_I_compliance_green
+O-006,charter_appendix_A_2026-07-22,operational_evidence,PMXT Archive CC BY 4.0 署名义务,I,C,core,stage0_foundation,license_register_entry,X-01,assigned,Team_I_compliance_green
+O-007,charter_appendix_A_2026-07-22,operational_evidence,Retrosheet notice.txt 署名义务与覆盖范围,I,D4,core,stage0_foundation,license_register_entry,-,assigned,Team_I_compliance_green
+O-008,charter_appendix_A_2026-07-22,operational_evidence,FastF1 (theOehrly/Fast-F1) 与 Jolpica license / 运维单点风险,I,D5,core,stage0_foundation,license_register_entry,-,assigned,Team_I_compliance_green
