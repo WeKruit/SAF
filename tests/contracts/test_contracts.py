@@ -203,6 +203,52 @@ def _copied_event_with_unvalidated_updates(**updates: Any):
     )
 
 
+def _copied_contract_with_hidden_field(contract_kind: str, *, nested: bool):
+    contracts = _contracts()
+    hidden_field = {"unexpected_contract_field": "injected"}
+
+    if contract_kind == "event":
+        if not nested:
+            copied = contracts.EventEnvelopeV0.model_validate(_raw_event()).model_copy(
+                update=hidden_field
+            )
+            return "event-envelope/v0.schema.yaml", copied, copied
+
+        class PayloadNode(BaseModel):
+            value: str
+
+        injected = PayloadNode(value="observed").model_copy(update=hidden_field)
+        copied = _copied_event_with_unvalidated_updates(
+            payload={"nodes": [injected]}
+        )
+        return "event-envelope/v0.schema.yaml", copied, injected
+
+    if contract_kind == "model_output":
+        output = contracts.ModelOutputV0.model_validate(_model_output())
+        if not nested:
+            copied = output.model_copy(update=hidden_field)
+            return "model-output/v0.schema.yaml", copied, copied
+
+        state = output.state_space[0]
+        probabilities = dict(output.probabilities)
+        injected = probabilities[state].model_copy(update=hidden_field)
+        probabilities[state] = injected
+        copied = output.model_copy(update={"probabilities": probabilities})
+        return "model-output/v0.schema.yaml", copied, injected
+
+    if contract_kind == "venue_rule_snapshot":
+        snapshot = contracts.VenueRuleSnapshotV0.model_validate(_rule_snapshot())
+        if not nested:
+            copied = snapshot.model_copy(update=hidden_field)
+            return "venue-rule-snapshot/v0.schema.yaml", copied, copied
+
+        injected = snapshot.minimum_tick_size.model_copy(update=hidden_field)
+        copied = snapshot.model_copy(update={"minimum_tick_size": injected})
+        return "venue-rule-snapshot/v0.schema.yaml", copied, injected
+
+    raise AssertionError(f"unknown contract kind: {contract_kind}")
+
+
 def _valid_schema_instances() -> dict[str, Any]:
     return {
         "event-envelope/v0.schema.yaml": _raw_event(),
@@ -636,6 +682,69 @@ def test_replay_boundaries_reject_invalid_copied_event_models(boundary) -> None:
 
     with pytest.raises(ValidationError, match="quality_flags must be unique"):
         boundary(contracts, copied)
+
+
+@pytest.mark.parametrize(
+    "contract_kind", ["event", "model_output", "venue_rule_snapshot"]
+)
+@pytest.mark.parametrize("nested", [False, True])
+def test_normative_validation_rejects_hidden_fields_on_copied_model_graphs(
+    contract_kind: str,
+    nested: bool,
+) -> None:
+    contracts = _contracts()
+    schema_name, copied, injected = _copied_contract_with_hidden_field(
+        contract_kind, nested=nested
+    )
+
+    assert injected.__dict__["unexpected_contract_field"] == "injected"
+    with pytest.raises(ValueError, match="unexpected_contract_field"):
+        contracts.validate_contract_v0(schema_name, copied)
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        lambda contracts, event: contracts.replay_order_key(event),
+        lambda contracts, event: contracts.level2_stream_frame([event]),
+        lambda contracts, event: contracts.level2_stream_sha256([event]),
+    ],
+)
+@pytest.mark.parametrize("nested", [False, True])
+def test_replay_boundaries_reject_hidden_fields_on_copied_event_graphs(
+    boundary,
+    nested: bool,
+) -> None:
+    contracts = _contracts()
+    _, copied, _ = _copied_contract_with_hidden_field("event", nested=nested)
+
+    with pytest.raises(ValueError, match="unexpected_contract_field"):
+        boundary(contracts, copied)
+
+
+@pytest.mark.parametrize("storage", ["dict", "fields_set", "extra"])
+def test_normative_validation_rejects_unknown_pydantic_storage_entries(
+    storage: str,
+) -> None:
+    contracts = _contracts()
+    copied = contracts.EventEnvelopeV0.model_validate(_raw_event()).model_copy()
+
+    if storage == "dict":
+        copied = copied.model_copy(
+            update={"unexpected_contract_field": "injected"}
+        )
+        copied.__pydantic_fields_set__.discard("unexpected_contract_field")
+    elif storage == "fields_set":
+        copied.__pydantic_fields_set__.add("unexpected_contract_field")
+    else:
+        object.__setattr__(
+            copied,
+            "__pydantic_extra__",
+            {"unexpected_contract_field": "injected"},
+        )
+
+    with pytest.raises(ValueError, match="unexpected_contract_field"):
+        contracts.validate_contract_v0("event-envelope/v0.schema.yaml", copied)
 
 
 def test_all_structural_event_collections_are_tuples() -> None:

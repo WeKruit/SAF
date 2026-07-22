@@ -109,6 +109,10 @@ class _ContractModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
 
+class ContractValidationError(ValueError):
+    """Raised when an in-memory contract graph violates boundary invariants."""
+
+
 _Key = TypeVar("_Key")
 _Value = TypeVar("_Value")
 
@@ -182,7 +186,80 @@ def thaw_contract_v0(value: Any) -> Any:
     return value
 
 
+def _audit_contract_object_graph(
+    value: Any,
+    *,
+    path: tuple[str, ...] = ("contract",),
+    seen: set[int] | None = None,
+) -> None:
+    if not isinstance(value, (BaseModel, Mapping, list, tuple)):
+        return
+
+    visited = seen if seen is not None else set()
+    identity = id(value)
+    if identity in visited:
+        return
+    visited.add(identity)
+
+    if isinstance(value, BaseModel):
+        declared_fields = frozenset(type(value).model_fields)
+        actual_fields = frozenset(value.__dict__)
+
+        fields_set = value.__pydantic_fields_set__
+        if not isinstance(fields_set, (set, frozenset)):
+            raise ContractValidationError(
+                f"invalid __pydantic_fields_set__ at {'.'.join(path)}"
+            )
+
+        extra = value.__pydantic_extra__
+        if extra is not None and not isinstance(extra, Mapping):
+            raise ContractValidationError(
+                f"invalid __pydantic_extra__ at {'.'.join(path)}"
+            )
+
+        unknown_fields = (
+            actual_fields
+            | frozenset(fields_set)
+            | frozenset(extra or ())
+        ) - declared_fields
+        if unknown_fields:
+            names = ", ".join(sorted(repr(field) for field in unknown_fields))
+            raise ContractValidationError(
+                f"unknown contract field at {'.'.join(path)}: {names}"
+            )
+
+        for field_name in declared_fields & actual_fields:
+            _audit_contract_object_graph(
+                value.__dict__[field_name],
+                path=path + (field_name,),
+                seen=visited,
+            )
+        return
+
+    if isinstance(value, Mapping):
+        for key, child_value in value.items():
+            _audit_contract_object_graph(
+                key,
+                path=path + ("<key>",),
+                seen=visited,
+            )
+            _audit_contract_object_graph(
+                child_value,
+                path=path + (f"[{key!r}]",),
+                seen=visited,
+            )
+        return
+
+    for index, child_value in enumerate(value):
+        _audit_contract_object_graph(
+            child_value,
+            path=path + (f"[{index}]",),
+            seen=visited,
+        )
+
+
 def _untrusted_round_trip_input(value: Any) -> Any:
+    _audit_contract_object_graph(value)
     if isinstance(value, BaseModel):
         return value.model_dump(
             mode="python",
@@ -1062,6 +1139,7 @@ __all__ = [
     "CanonicalReferencesV0",
     "CanonicalRefsV0",
     "ConditionIdV0",
+    "ContractValidationError",
     "DERIVED_EVENT_TYPES",
     "EVENT_TYPES",
     "EntityAssertionV0",
