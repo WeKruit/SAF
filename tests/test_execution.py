@@ -121,6 +121,7 @@ def test_buy_consumes_ask_depth_after_rule_and_system_delay() -> None:
     assert fill.filled_quantity == _fp("4")
     assert fill.levels_consumed == 2
     assert fill.result_label == "PRELIMINARY"
+    assert fill.fee_formula == "C_X_RATE_X_P_ONE_MINUS_P_POW_EXPONENT"
     assert fill.markouts[0].executable_bid_vwap == _fp("0.525")
     assert fill.markouts[0].gross_markout_per_unit == _fp("0.01")
 
@@ -216,7 +217,7 @@ def test_tca_schema_and_maker_bounds_are_scope_limited() -> None:
     )
     assert schema["$id"] == "prediction-market/contracts/tca/v0"
     assert schema["additionalProperties"] is False
-    assert {"rule_snapshot_ref", "result_label", "markouts"} <= set(
+    assert {"rule_snapshot_ref", "result_label", "fee_formula", "markouts"} <= set(
         schema["required"]
     )
 

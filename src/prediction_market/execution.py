@@ -126,6 +126,7 @@ class TakerFillV0:
     order_id: str
     experiment_id: Literal["X-07"]
     result_label: Literal["PRELIMINARY"]
+    fee_formula: FeeFormulaV0
     condition_id: str
     created_at: datetime
     executed_at: datetime
@@ -287,6 +288,7 @@ def simulate_taker_buy(
         order_id=order.order_id,
         experiment_id="X-07",
         result_label="PRELIMINARY",
+        fee_formula=order.fee_formula,
         condition_id=order.condition_id,
         created_at=order.created_at,
         executed_at=execution_book.observed_at,

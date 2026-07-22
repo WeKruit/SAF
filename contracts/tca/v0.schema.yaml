@@ -8,6 +8,7 @@ required:
   - order_id
   - experiment_id
   - result_label
+  - fee_formula
   - condition_id
   - created_at
   - executed_at
@@ -26,6 +27,7 @@ properties:
   order_id: {type: string, minLength: 1}
   experiment_id: {const: X-07}
   result_label: {const: PRELIMINARY}
+  fee_formula: {const: C_X_RATE_X_P_ONE_MINUS_P_POW_EXPONENT}
   condition_id: {type: string, pattern: '^condition_[A-Za-z0-9][A-Za-z0-9._:-]*$'}
   created_at: {$ref: '#/$defs/utcTimestamp'}
   executed_at: {$ref: '#/$defs/utcTimestamp'}
