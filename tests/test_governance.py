@@ -67,6 +67,37 @@ def _malformed_assignment_fixture(tmp_path: Path) -> Path:
     return fixture_root
 
 
+def _fixture_with_csv_cell(
+    tmp_path: Path,
+    filename: str,
+    row_index: int,
+    field: str,
+    value: str,
+) -> Path:
+    fixture_root = tmp_path / "cell-program"
+    shutil.copytree(CHARTER_DIR, fixture_root / "charter")
+    csv_path = fixture_root / "charter" / filename
+    with csv_path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = reader.fieldnames
+        rows = list(reader)
+    assert fieldnames is not None
+    rows[row_index][field] = value
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    return fixture_root
+
+
+def _fixture_with_invalid_utf8(tmp_path: Path, relative_path: str) -> Path:
+    fixture_root = tmp_path / "invalid-utf8-program"
+    shutil.copytree(CHARTER_DIR, fixture_root / "charter")
+    target = fixture_root / relative_path
+    target.write_bytes(target.read_bytes() + b"\xff")
+    return fixture_root
+
+
 def _run_validator(root: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(VALIDATOR_SCRIPT), str(root)],
@@ -186,6 +217,166 @@ def test_malformed_assignment_returns_structured_violation_without_traceback(
     assert result.returncode == 1
     assert "assignments.malformed_row" in result.stdout
     assert result.stderr == ""
+
+
+@pytest.mark.parametrize(
+    ("filename", "row_index", "field", "value", "violation_code"),
+    [
+        ("catalog_registry.csv", 0, "catalog_item_id", "", "catalog.malformed_row"),
+        (
+            "catalog_registry.csv",
+            0,
+            "catalog_item_id",
+            "  ",
+            "catalog.malformed_row",
+        ),
+        (
+            "catalog_team_assignments.csv",
+            1,
+            "catalog_item_id",
+            "",
+            "assignments.malformed_row",
+        ),
+        (
+            "catalog_team_assignments.csv",
+            1,
+            "catalog_item_id",
+            "  ",
+            "assignments.malformed_row",
+        ),
+        (
+            "catalog_team_assignments.csv",
+            1,
+            "team",
+            "",
+            "assignments.malformed_row",
+        ),
+        (
+            "catalog_team_assignments.csv",
+            1,
+            "team",
+            "  ",
+            "assignments.malformed_row",
+        ),
+        (
+            "catalog_team_assignments.csv",
+            1,
+            "responsibility",
+            "",
+            "assignments.malformed_row",
+        ),
+        (
+            "catalog_team_assignments.csv",
+            1,
+            "responsibility",
+            "  ",
+            "assignments.malformed_row",
+        ),
+    ],
+    ids=(
+        "empty-catalog-id",
+        "whitespace-catalog-id",
+        "empty-assignment-id",
+        "whitespace-assignment-id",
+        "empty-team",
+        "whitespace-team",
+        "empty-responsibility",
+        "whitespace-responsibility",
+    ),
+)
+def test_blank_required_csv_cells_are_structured_violations(
+    tmp_path: Path,
+    filename: str,
+    row_index: int,
+    field: str,
+    value: str,
+    violation_code: str,
+) -> None:
+    fixture_root = _fixture_with_csv_cell(
+        tmp_path, filename, row_index, field, value
+    )
+
+    report = _validate(fixture_root)
+    result = _run_validator(fixture_root)
+
+    assert violation_code in {violation.code for violation in report.violations}
+    assert result.returncode == 1
+    assert violation_code in result.stdout
+    assert result.stderr == ""
+
+
+def test_assignment_responsibility_rejects_unknown_token(tmp_path: Path) -> None:
+    fixture_root = _fixture_with_csv_cell(
+        tmp_path,
+        "catalog_team_assignments.csv",
+        1,
+        "responsibility",
+        "owner",
+    )
+
+    report = _validate(fixture_root)
+    result = _run_validator(fixture_root)
+
+    assert "assignments.invalid_responsibility" in {
+        violation.code for violation in report.violations
+    }
+    assert result.returncode == 1
+    assert "assignments.invalid_responsibility" in result.stdout
+    assert result.stderr == ""
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "violation_code", "expects_hash_mismatch"),
+    [
+        ("charter/SOURCE_MANIFEST.sha256", "manifest.decode_error", False),
+        ("charter/research_program_charter_v0.2.md", "source.decode_error", True),
+        ("charter/catalog_registry.csv", "catalog.decode_error", True),
+        (
+            "charter/catalog_team_assignments.csv",
+            "assignments.decode_error",
+            True,
+        ),
+    ],
+    ids=("manifest", "charter", "catalog", "assignments"),
+)
+def test_invalid_utf8_returns_structured_violations_without_traceback(
+    tmp_path: Path,
+    relative_path: str,
+    violation_code: str,
+    expects_hash_mismatch: bool,
+) -> None:
+    fixture_root = _fixture_with_invalid_utf8(tmp_path, relative_path)
+
+    report = _validate(fixture_root)
+    result = _run_validator(fixture_root)
+    violation_codes = {violation.code for violation in report.violations}
+
+    assert violation_code in violation_codes
+    if expects_hash_mismatch:
+        assert "source.hash_mismatch" in violation_codes
+        assert "source.hash_mismatch" in result.stdout
+    assert result.returncode == 1
+    assert violation_code in result.stdout
+    assert result.stderr == ""
+
+
+def test_oserror_returns_structured_read_violations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_open = Path.open
+
+    def failing_open(path: Path, *args, **kwargs):
+        if path.name == "catalog_team_assignments.csv":
+            raise OSError("injected read failure")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", failing_open)
+
+    report = _validate()
+    violation_codes = {violation.code for violation in report.violations}
+
+    assert "source.read_error" in violation_codes
+    assert "assignments.read_error" in violation_codes
 
 
 def test_cli_prints_exact_concise_success() -> None:

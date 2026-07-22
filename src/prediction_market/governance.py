@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import io
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,7 @@ REQUIRED_SOURCE_FILENAMES = (
 )
 EXPECTED_CATALOG_COUNT = 87
 EXPECTED_ASSIGNMENT_COUNT = 150
+ALLOWED_RESPONSIBILITIES = frozenset({"primary", "secondary"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +53,34 @@ def _add_violation(
     violations.append(GovernanceViolation(code=code, path=path, message=message))
 
 
+def _read_utf8_text(
+    path: Path,
+    relative_path: str,
+    violation_prefix: str,
+    violations: list[GovernanceViolation],
+) -> str | None:
+    try:
+        contents = path.read_bytes()
+    except OSError as error:
+        _add_violation(
+            violations,
+            f"{violation_prefix}.read_error",
+            relative_path,
+            f"could not read file: {error}",
+        )
+        return None
+    try:
+        return contents.decode("utf-8")
+    except UnicodeDecodeError as error:
+        _add_violation(
+            violations,
+            f"{violation_prefix}.decode_error",
+            relative_path,
+            f"file is not valid UTF-8: {error}",
+        )
+        return None
+
+
 def _read_manifest(
     manifest_path: Path,
     violations: list[GovernanceViolation],
@@ -65,9 +95,15 @@ def _read_manifest(
         )
         return ()
 
+    manifest_text = _read_utf8_text(
+        manifest_path, relative_path, "manifest", violations
+    )
+    if manifest_text is None:
+        return ()
+
     entries: list[tuple[str, str]] = []
     for line_number, line in enumerate(
-        manifest_path.read_text(encoding="utf-8").splitlines(), start=1
+        manifest_text.splitlines(), start=1
     ):
         if not line.strip():
             continue
@@ -109,7 +145,13 @@ def _read_csv_rows(
         )
         return ()
 
-    with path.open(encoding="utf-8", newline="") as handle:
+    csv_text = _read_utf8_text(
+        path, relative_path, violation_prefix, violations
+    )
+    if csv_text is None:
+        return ()
+
+    with io.StringIO(csv_text, newline="") as handle:
         reader = csv.DictReader(handle)
         fieldnames = frozenset(reader.fieldnames or ())
         missing_columns = sorted(required_columns - fieldnames)
@@ -125,7 +167,7 @@ def _read_csv_rows(
             missing_values = sorted(
                 column
                 for column in required_columns & fieldnames
-                if row.get(column) is None
+                if row.get(column) is None or not row[column].strip()
             )
             if missing_values:
                 _add_violation(
@@ -176,16 +218,33 @@ def validate_program(root: str | Path) -> GovernanceReport:
                 "required program source is missing",
             )
             continue
-        expected_digest = manifest_digests.get(filename)
-        if expected_digest is None:
+        try:
+            source_bytes = source_path.read_bytes()
+        except OSError as error:
+            _add_violation(
+                violations,
+                "source.read_error",
+                relative_path,
+                f"could not read file: {error}",
+            )
             continue
-        actual_digest = hashlib.sha256(source_path.read_bytes()).hexdigest()
-        if actual_digest != expected_digest:
+        actual_digest = hashlib.sha256(source_bytes).hexdigest()
+        expected_digest = manifest_digests.get(filename)
+        if expected_digest is not None and actual_digest != expected_digest:
             _add_violation(
                 violations,
                 "source.hash_mismatch",
                 relative_path,
                 f"expected {expected_digest}, found {actual_digest}",
+            )
+        try:
+            source_bytes.decode("utf-8")
+        except UnicodeDecodeError as error:
+            _add_violation(
+                violations,
+                "source.decode_error",
+                relative_path,
+                f"file is not valid UTF-8: {error}",
             )
 
     catalog_rows = _read_csv_rows(
@@ -219,7 +278,7 @@ def validate_program(root: str | Path) -> GovernanceReport:
     assignment_rows = _read_csv_rows(
         charter_dir / "catalog_team_assignments.csv",
         "charter/catalog_team_assignments.csv",
-        frozenset({"catalog_item_id", "responsibility"}),
+        frozenset({"catalog_item_id", "team", "responsibility"}),
         "assignments",
         violations,
     )
@@ -229,6 +288,23 @@ def validate_program(root: str | Path) -> GovernanceReport:
             "assignments.row_count",
             "charter/catalog_team_assignments.csv",
             f"expected {EXPECTED_ASSIGNMENT_COUNT} rows, found {len(assignment_rows)}",
+        )
+
+    invalid_responsibilities = sorted(
+        {
+            responsibility
+            for row in assignment_rows
+            if (responsibility := row.get("responsibility", "")).strip()
+            and responsibility not in ALLOWED_RESPONSIBILITIES
+        }
+    )
+    if invalid_responsibilities:
+        _add_violation(
+            violations,
+            "assignments.invalid_responsibility",
+            "charter/catalog_team_assignments.csv",
+            "responsibility must be exactly primary or secondary; found: "
+            + ", ".join(invalid_responsibilities),
         )
 
     known_catalog_ids = set(catalog_ids)
@@ -247,7 +323,7 @@ def validate_program(root: str | Path) -> GovernanceReport:
     primary_counts = Counter(
         row.get("catalog_item_id", "").strip()
         for row in assignment_rows
-        if row.get("responsibility", "").strip() == "primary"
+        if row.get("responsibility", "") == "primary"
     )
     invalid_primary_counts = sorted(
         (catalog_id, primary_counts[catalog_id])
