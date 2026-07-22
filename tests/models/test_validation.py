@@ -6,6 +6,7 @@ import pytest
 
 from prediction_market.models.validation import (
     ValidationInputError,
+    evaluate_model_vs_prior,
     evaluate_probabilities,
     game_grouped_walk_forward,
 )
@@ -57,6 +58,8 @@ def test_metric_report_contains_required_calibration_and_cluster_ci() -> None:
         probabilities,
         groups=groups,
         bootstrap_samples=100,
+        confidence_level=0.90,
+        minimum_valid_samples=100,
         seed=17,
     )
 
@@ -74,6 +77,8 @@ def test_metric_report_contains_required_calibration_and_cluster_ci() -> None:
         "calibration_intercept",
     }
     assert report["clusters"] == 8
+    assert report["confidence_level"] == 0.90
+    assert report["bootstrap_samples_valid"] == 100
 
 
 def test_metrics_reject_unclustered_or_invalid_predictions() -> None:
@@ -83,6 +88,8 @@ def test_metrics_reject_unclustered_or_invalid_predictions() -> None:
             [0.2],
             groups=["a", "b"],
             bootstrap_samples=20,
+            confidence_level=0.95,
+            minimum_valid_samples=20,
             seed=1,
         )
     with pytest.raises(ValidationInputError, match=r"\[0, 1\]"):
@@ -91,5 +98,97 @@ def test_metrics_reject_unclustered_or_invalid_predictions() -> None:
             [0.2, 1.2],
             groups=["a", "b"],
             bootstrap_samples=20,
+            confidence_level=0.95,
+            minimum_valid_samples=20,
+            seed=1,
+        )
+
+
+def test_metrics_require_registered_confidence_and_enough_valid_resamples() -> None:
+    with pytest.raises(ValidationInputError, match="confidence_level"):
+        evaluate_probabilities(
+            [0, 1],
+            [0.2, 0.8],
+            groups=["a", "b"],
+            bootstrap_samples=20,
+            confidence_level=1.0,
+            minimum_valid_samples=20,
+            seed=1,
+        )
+
+    with pytest.raises(ValidationInputError, match="valid clustered bootstrap"):
+        evaluate_probabilities(
+            [0, 0, 1, 1],
+            [0.2, 0.3, 0.7, 0.8],
+            groups=["only-zero", "only-zero", "only-one", "only-one"],
+            bootstrap_samples=20,
+            confidence_level=0.95,
+            minimum_valid_samples=20,
+            seed=1,
+        )
+
+
+def test_model_vs_prior_reports_deterministic_paired_cluster_delta_ci() -> None:
+    y = np.tile([0, 1], 10)
+    prior_strength = np.array(
+        [0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.55, 0.60, 0.65, 0.70]
+    )
+    model_strength = 1 - np.sqrt((1 - prior_strength) ** 2 - 0.01)
+    prior = np.column_stack((1 - prior_strength, prior_strength)).reshape(-1)
+    model = np.column_stack((1 - model_strength, model_strength)).reshape(-1)
+    groups = np.repeat([f"game-{index}" for index in range(10)], 2)
+
+    expected = evaluate_model_vs_prior(
+        y,
+        model,
+        prior,
+        groups=groups,
+        bootstrap_samples=100,
+        confidence_level=0.90,
+        minimum_valid_samples=100,
+        seed=23,
+    )
+    repeated = evaluate_model_vs_prior(
+        y,
+        model,
+        prior,
+        groups=groups,
+        bootstrap_samples=100,
+        confidence_level=0.90,
+        minimum_valid_samples=100,
+        seed=23,
+    )
+
+    assert repeated == expected
+    assert expected["delta_definition"] == "model_minus_prior"
+    assert set(expected["delta"]) == {"brier", "log_loss"}
+    assert set(expected["delta_bootstrap_ci"]) == {"brier", "log_loss"}
+    for metric in ("brier", "log_loss"):
+        assert expected["delta"][metric] == pytest.approx(
+            expected["model_metrics"][metric]
+            - expected["prior_metrics"][metric]
+        )
+        assert expected["delta_bootstrap_ci"][metric][1] < 0
+    assert expected["delta_bootstrap_ci"]["brier"] == pytest.approx(
+        (-0.01, -0.01)
+    )
+    assert expected["confidence_level"] == 0.90
+    assert expected["minimum_valid_samples"] == 100
+    assert expected["bootstrap_samples_requested"] == 100
+    assert expected["bootstrap_samples_valid"] == 100
+    assert expected["clusters"] == 10
+    assert expected["observations"] == 20
+
+
+def test_model_vs_prior_requires_enough_valid_paired_resamples() -> None:
+    with pytest.raises(ValidationInputError, match="valid clustered bootstrap"):
+        evaluate_model_vs_prior(
+            [0, 0, 1, 1],
+            [0.1, 0.2, 0.8, 0.9],
+            [0.3, 0.4, 0.6, 0.7],
+            groups=["only-zero", "only-zero", "only-one", "only-one"],
+            bootstrap_samples=20,
+            confidence_level=0.95,
+            minimum_valid_samples=20,
             seed=1,
         )

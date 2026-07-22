@@ -103,20 +103,48 @@ def _point_metrics(y: np.ndarray, p: np.ndarray) -> dict[str, float]:
     }
 
 
+def _bootstrap_parameters(
+    *,
+    bootstrap_samples: int,
+    confidence_level: float,
+    minimum_valid_samples: int,
+    seed: int,
+) -> float:
+    if type(bootstrap_samples) is not int or bootstrap_samples < 20:
+        raise ValidationInputError("bootstrap_samples must be an integer >= 20")
+    if type(confidence_level) is not float or not 0 < confidence_level < 1:
+        raise ValidationInputError("confidence_level must be a float in (0, 1)")
+    if (
+        type(minimum_valid_samples) is not int
+        or minimum_valid_samples < 20
+        or minimum_valid_samples > bootstrap_samples
+    ):
+        raise ValidationInputError(
+            "minimum_valid_samples must be an integer between 20 and bootstrap_samples"
+        )
+    if type(seed) is not int:
+        raise ValidationInputError("seed must be an integer")
+    return (1 - confidence_level) / 2
+
+
 def evaluate_probabilities(
     y_true: Sequence[int] | np.ndarray,
     probabilities: Sequence[float] | np.ndarray,
     *,
     groups: Sequence[object] | np.ndarray,
     bootstrap_samples: int,
+    confidence_level: float,
+    minimum_valid_samples: int,
     seed: int,
 ) -> dict[str, object]:
     """Report Brier/log loss/calibration and game-cluster bootstrap CIs."""
 
-    if type(bootstrap_samples) is not int or bootstrap_samples < 20:
-        raise ValidationInputError("bootstrap_samples must be an integer >= 20")
-    if type(seed) is not int:
-        raise ValidationInputError("seed must be an integer")
+    alpha = _bootstrap_parameters(
+        bootstrap_samples=bootstrap_samples,
+        confidence_level=confidence_level,
+        minimum_valid_samples=minimum_valid_samples,
+        seed=seed,
+    )
     y, p, cluster = _arrays(y_true, probabilities, groups)
     point = _point_metrics(y, p)
     try:
@@ -141,20 +169,107 @@ def evaluate_probabilities(
             continue
         for name, value in metrics.items():
             samples[name].append(value)
-    if any(len(values) < 2 for values in samples.values()):
-        raise ValidationInputError("too few valid clustered bootstrap samples")
+    valid_samples = min(len(values) for values in samples.values())
+    if valid_samples < minimum_valid_samples:
+        raise ValidationInputError(
+            "too few valid clustered bootstrap samples: "
+            f"{valid_samples} < {minimum_valid_samples}"
+        )
     confidence_intervals = {
         name: (
-            float(np.quantile(values, 0.025)),
-            float(np.quantile(values, 0.975)),
+            float(np.quantile(values, alpha)),
+            float(np.quantile(values, 1 - alpha)),
         )
         for name, values in samples.items()
     }
     return {
         **point,
         "bootstrap_ci": confidence_intervals,
+        "confidence_level": confidence_level,
+        "minimum_valid_samples": minimum_valid_samples,
         "bootstrap_samples_requested": bootstrap_samples,
-        "bootstrap_samples_valid": min(len(values) for values in samples.values()),
+        "bootstrap_samples_valid": valid_samples,
+        "clusters": len(unique_groups),
+        "observations": len(y),
+    }
+
+
+def evaluate_model_vs_prior(
+    y_true: Sequence[int] | np.ndarray,
+    model_probabilities: Sequence[float] | np.ndarray,
+    prior_probabilities: Sequence[float] | np.ndarray,
+    *,
+    groups: Sequence[object] | np.ndarray,
+    bootstrap_samples: int,
+    confidence_level: float,
+    minimum_valid_samples: int,
+    seed: int,
+) -> dict[str, object]:
+    """Report paired game-cluster CIs for model-minus-prior score deltas."""
+
+    alpha = _bootstrap_parameters(
+        bootstrap_samples=bootstrap_samples,
+        confidence_level=confidence_level,
+        minimum_valid_samples=minimum_valid_samples,
+        seed=seed,
+    )
+    y, model, cluster = _arrays(y_true, model_probabilities, groups)
+    _, prior, _ = _arrays(y_true, prior_probabilities, groups)
+    model_metrics = _point_metrics(y, model)
+    prior_metrics = _point_metrics(y, prior)
+    score_names = ("brier", "log_loss")
+    delta = {
+        name: model_metrics[name] - prior_metrics[name] for name in score_names
+    }
+
+    try:
+        unique_groups = tuple(dict.fromkeys(cluster.tolist()))
+    except TypeError as error:
+        raise ValidationInputError("groups must be hashable") from error
+    if len(unique_groups) < 2:
+        raise ValidationInputError("cluster bootstrap requires at least two groups")
+    index_by_group = {
+        group: np.flatnonzero(cluster == group) for group in unique_groups
+    }
+
+    rng = np.random.default_rng(seed)
+    samples: dict[str, list[float]] = {name: [] for name in score_names}
+    for _ in range(bootstrap_samples):
+        selected = rng.choice(len(unique_groups), size=len(unique_groups), replace=True)
+        indices = np.concatenate(
+            [index_by_group[unique_groups[int(index)]] for index in selected]
+        )
+        try:
+            sampled_model = _point_metrics(y[indices], model[indices])
+            sampled_prior = _point_metrics(y[indices], prior[indices])
+        except ValidationInputError:
+            continue
+        for name in score_names:
+            samples[name].append(sampled_model[name] - sampled_prior[name])
+
+    valid_samples = min(len(values) for values in samples.values())
+    if valid_samples < minimum_valid_samples:
+        raise ValidationInputError(
+            "too few valid clustered bootstrap samples: "
+            f"{valid_samples} < {minimum_valid_samples}"
+        )
+    confidence_intervals = {
+        name: (
+            float(np.quantile(values, alpha)),
+            float(np.quantile(values, 1 - alpha)),
+        )
+        for name, values in samples.items()
+    }
+    return {
+        "model_metrics": model_metrics,
+        "prior_metrics": prior_metrics,
+        "delta": delta,
+        "delta_definition": "model_minus_prior",
+        "delta_bootstrap_ci": confidence_intervals,
+        "confidence_level": confidence_level,
+        "minimum_valid_samples": minimum_valid_samples,
+        "bootstrap_samples_requested": bootstrap_samples,
+        "bootstrap_samples_valid": valid_samples,
         "clusters": len(unique_groups),
         "observations": len(y),
     }
@@ -162,6 +277,7 @@ def evaluate_probabilities(
 
 __all__ = [
     "ValidationInputError",
+    "evaluate_model_vs_prior",
     "evaluate_probabilities",
     "game_grouped_walk_forward",
 ]
