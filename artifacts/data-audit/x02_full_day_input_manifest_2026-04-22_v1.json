@@ -1,0 +1,201 @@
+{
+  "canonicalization_version": "pmxt-reconstructor-v1",
+  "day": "2026-04-22",
+  "inventory_sha256": "sha256:74d7e9f21003f595d2d505bc63c89c7eadcd5339d541032bc80704d4b14b3043",
+  "manifest_sha256": "sha256:d01571e413a942c615489bc674560a0abc5a718507d990ad4106c1a90f3f61ed",
+  "objects": [
+    {
+      "hour": "2026-04-22T00:00:00Z",
+      "inventory_size_bytes": 453299404,
+      "object_path": "raw/source=pmxt/dataset=DS-PMXT-V2/version=v2/partition=hour-2026-04-22T00/5d8157b1ed5312dc72c6abe8c85e5775fd176ca78786b1d5b4ff047486b71b50.parquet",
+      "object_sha256": "sha256:5d8157b1ed5312dc72c6abe8c85e5775fd176ca78786b1d5b4ff047486b71b50",
+      "source_url": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-04-22T00.parquet",
+      "static_manifest_sha256": "sha256:a3a4ceaed6f7f2bd7810f606ee61928748f799806ed27ceed3de550c947d2aad"
+    },
+    {
+      "hour": "2026-04-22T01:00:00Z",
+      "inventory_size_bytes": 429916160,
+      "object_path": "raw/source=pmxt/dataset=DS-PMXT-V2/version=v2/partition=hour-2026-04-22T01/e6ced269ec15b89da9dd257ea64f6a26228f6e5ce61dae1ecd9a3e9da6777de0.parquet",
+      "object_sha256": "sha256:e6ced269ec15b89da9dd257ea64f6a26228f6e5ce61dae1ecd9a3e9da6777de0",
+      "source_url": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-04-22T01.parquet",
+      "static_manifest_sha256": "sha256:8af22be7defe0f930ee76fb843f3a756ea9cca4f99e08b29808791998b84d05e"
+    },
+    {
+      "hour": "2026-04-22T02:00:00Z",
+      "inventory_size_bytes": 437151334,
+      "object_path": "raw/source=pmxt/dataset=DS-PMXT-V2/version=v2/partition=hour-2026-04-22T02/a32d0cdd4e6b39a4e24e42ca3e2a93fc2d243968873d4811abd48a56faea2516.parquet",
+      "object_sha256": "sha256:a32d0cdd4e6b39a4e24e42ca3e2a93fc2d243968873d4811abd48a56faea2516",
+      "source_url": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-04-22T02.parquet",
+      "static_manifest_sha256": "sha256:29dc712682cb5ff3f43d35eb5fc3ce981629dc8a94c752acb3f2ec5ab46a470d"
+    },
+    {
+      "hour": "2026-04-22T03:00:00Z",
+      "inventory_size_bytes": 432537600,
+      "object_path": "raw/source=pmxt/dataset=DS-PMXT-V2/version=v2/partition=hour-2026-04-22T03/73c464413365111a019d8c4f13b7608594b597449f6be7413c4fee4a4972d258.parquet",
+      "object_sha256": "sha256:73c464413365111a019d8c4f13b7608594b597449f6be7413c4fee4a4972d258",
+      "source_url": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-04-22T03.parquet",
+      "static_manifest_sha256": "sha256:02d7cc26e1fefc013930fe392d1fc7c4e5058f4671b83dffb0c95aa610caf3b4"
+    },
+    {
+      "hour": "2026-04-22T04:00:00Z",
+      "inventory_size_bytes": 439877632,
+      "object_path": "raw/source=pmxt/dataset=DS-PMXT-V2/version=v2/partition=hour-2026-04-22T04/98da9bb87557cf1f2aaac7529ed7f695defa69a4af0e31283cb5ec6dfd8028b5.parquet",
+      "object_sha256": "sha256:98da9bb87557cf1f2aaac7529ed7f695defa69a4af0e31283cb5ec6dfd8028b5",
+      "source_url": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-04-22T04.parquet",
+      "static_manifest_sha256": "sha256:3682854868a3779d386f3d55da6de1a3983e0f5caea500b78a53da3491e02d0e"
+    },
+    {
+      "hour": "2026-04-22T05:00:00Z",
+      "inventory_size_bytes": 450468249,
+      "object_path": "raw/source=pmxt/dataset=DS-PMXT-V2/version=v2/partition=hour-2026-04-22T05/eb6d6f3476abbfb607e406e0f62c1177778d981780f3e991b9b5b7e681a2a5c1.parquet",
+      "object_sha256": "sha256:eb6d6f3476abbfb607e406e0f62c1177778d981780f3e991b9b5b7e681a2a5c1",
+      "source_url": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-04-22T05.parquet",
+      "static_manifest_sha256": "sha256:aa29a18cd3200fe04d826f97b4096e1f29f00fa448e1733db6fe14c3ef8726ae"
+    },
+    {
+      "hour": "2026-04-22T06:00:00Z",
+      "inventory_size_bytes": 451831398,
+      "object_path": "raw/source=pmxt/dataset=DS-PMXT-V2/version=v2/partition=hour-2026-04-22T06/5abd50b0ca5d0d4242eacf7d5818aee422f231201c577b021d03facd9fc15892.parquet",
+      "object_sha256": "sha256:5abd50b0ca5d0d4242eacf7d5818aee422f231201c577b021d03facd9fc15892",
+      "source_url": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-04-22T06.parquet",
+      "static_manifest_sha256": "sha256:9950f0e43ff5db0db2c1f10fb9d954d6ae99ee6fce25571a8dbe985616998b52"
+    },
+    {
+      "hour": "2026-04-22T07:00:00Z",
+      "inventory_size_bytes": 440506777,
+      "object_path": "raw/source=pmxt/dataset=DS-PMXT-V2/version=v2/partition=hour-2026-04-22T07/95ae2ef44538d402fd393f403fdb528dbabbd06ceededfb325ba51ab1d0bde06.parquet",
+      "object_sha256": "sha256:95ae2ef44538d402fd393f403fdb528dbabbd06ceededfb325ba51ab1d0bde06",
+      "source_url": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-04-22T07.parquet",
+      "static_manifest_sha256": "sha256:0637e0edd24592f9f72ae84cd98a9d69c23cba0d304aa30bfb7ad0fcaaaef559"
+    },
+    {
+      "hour": "2026-04-22T08:00:00Z",
+      "inventory_size_bytes": 433795891,
+      "object_path": "raw/source=pmxt/dataset=DS-PMXT-V2/version=v2/partition=hour-2026-04-22T08/388aa5d43eca449e48bd6fd00f1a5e9036ab425b1c5fffce06bb41757b6ec94b.parquet",
+      "object_sha256": "sha256:388aa5d43eca449e48bd6fd00f1a5e9036ab425b1c5fffce06bb41757b6ec94b",
+      "source_url": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-04-22T08.parquet",
+      "static_manifest_sha256": "sha256:13c54f8f82a116940910c9afced84bba5410252c4024db4c8bc11fea1b447e1a"
+    },
+    {
+      "hour": "2026-04-22T09:00:00Z",
+      "inventory_size_bytes": 435159040,
+      "object_path": "raw/source=pmxt/dataset=DS-PMXT-V2/version=v2/partition=hour-2026-04-22T09/c321e737a99db198ca7545b7a331343edd7c0bafdd880629979f8ea5a6ea3219.parquet",
+      "object_sha256": "sha256:c321e737a99db198ca7545b7a331343edd7c0bafdd880629979f8ea5a6ea3219",
+      "source_url": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-04-22T09.parquet",
+      "static_manifest_sha256": "sha256:0402a5a04ec8b0fc60212d15db6c3d195b590dc6233af681f256eb90349f0a71"
+    },
+    {
+      "hour": "2026-04-22T10:00:00Z",
+      "inventory_size_bytes": 447637094,
+      "object_path": "raw/source=pmxt/dataset=DS-PMXT-V2/version=v2/partition=hour-2026-04-22T10/86d1b41d285ca77e697bbd8e5ee4c206796ad5e8bbda695de2e44c990d0db52b.parquet",
+      "object_sha256": "sha256:86d1b41d285ca77e697bbd8e5ee4c206796ad5e8bbda695de2e44c990d0db52b",
+      "source_url": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-04-22T10.parquet",
+      "static_manifest_sha256": "sha256:de8c59d7459294057c794a23365a986860cc98a5cf3bb6da964b5da018d791c7"
+    },
+    {
+      "hour": "2026-04-22T11:00:00Z",
+      "inventory_size_bytes": 426455859,
+      "object_path": "raw/source=pmxt/dataset=DS-PMXT-V2/version=v2/partition=hour-2026-04-22T11/52fd640e5624d2c41351a97975b436f41398361d03e92a2e7e4c7172925ddec0.parquet",
+      "object_sha256": "sha256:52fd640e5624d2c41351a97975b436f41398361d03e92a2e7e4c7172925ddec0",
+      "source_url": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-04-22T11.parquet",
+      "static_manifest_sha256": "sha256:e6f6325180aa0200f4ea9a1924134396b69c23917b0f0baa2ece2dc86e840c06"
+    },
+    {
+      "hour": "2026-04-22T12:00:00Z",
+      "inventory_size_bytes": 451411968,
+      "object_path": "raw/source=pmxt/dataset=DS-PMXT-V2/version=v2/partition=hour-2026-04-22T12/ec77f8edb347f6660f56f6168cb6593c704452e314adbfa54db708972a43c3c5.parquet",
+      "object_sha256": "sha256:ec77f8edb347f6660f56f6168cb6593c704452e314adbfa54db708972a43c3c5",
+      "source_url": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-04-22T12.parquet",
+      "static_manifest_sha256": "sha256:95a1530717c00d1597b3448cf1372af416354d18bc8c70b00664c76ac0379214"
+    },
+    {
+      "hour": "2026-04-22T13:00:00Z",
+      "inventory_size_bytes": 451097395,
+      "object_path": "raw/source=pmxt/dataset=DS-PMXT-V2/version=v2/partition=hour-2026-04-22T13/1ec49a5e167aab3f6bc8a199fffb73b5e3b211a49e555badf32a6e1fc958cdb9.parquet",
+      "object_sha256": "sha256:1ec49a5e167aab3f6bc8a199fffb73b5e3b211a49e555badf32a6e1fc958cdb9",
+      "source_url": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-04-22T13.parquet",
+      "static_manifest_sha256": "sha256:bacda9a3f308aae83fa2c0bee9a389fe9c88a5fbd40e28400d3756ec6a0b031c"
+    },
+    {
+      "hour": "2026-04-22T14:00:00Z",
+      "inventory_size_bytes": 459800576,
+      "object_path": "raw/source=pmxt/dataset=DS-PMXT-V2/version=v2/partition=hour-2026-04-22T14/2bbb337599f2dd363fa65b26320da1173db95363f841e70e5c5912642891f26a.parquet",
+      "object_sha256": "sha256:2bbb337599f2dd363fa65b26320da1173db95363f841e70e5c5912642891f26a",
+      "source_url": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-04-22T14.parquet",
+      "static_manifest_sha256": "sha256:362267b94b7060d33e56c36d3f6cba522f14c1357e49d429fc2b37d060abfd36"
+    },
+    {
+      "hour": "2026-04-22T15:00:00Z",
+      "inventory_size_bytes": 476472934,
+      "object_path": "raw/source=pmxt/dataset=DS-PMXT-V2/version=v2/partition=hour-2026-04-22T15/4997b5b0bb8c58fb1bd11e569c0f4d553d854eb7106be44a9d6a8e283ff46cb7.parquet",
+      "object_sha256": "sha256:4997b5b0bb8c58fb1bd11e569c0f4d553d854eb7106be44a9d6a8e283ff46cb7",
+      "source_url": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-04-22T15.parquet",
+      "static_manifest_sha256": "sha256:d36b595c1d811209810403f01542c117de8b14f8e820e7feae0ce109aebd505e"
+    },
+    {
+      "hour": "2026-04-22T16:00:00Z",
+      "inventory_size_bytes": 469762048,
+      "object_path": "raw/source=pmxt/dataset=DS-PMXT-V2/version=v2/partition=hour-2026-04-22T16/ea2c36dcc25bc7da3890d389af219947ce576b8738864ba6768ba537c85b05db.parquet",
+      "object_sha256": "sha256:ea2c36dcc25bc7da3890d389af219947ce576b8738864ba6768ba537c85b05db",
+      "source_url": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-04-22T16.parquet",
+      "static_manifest_sha256": "sha256:949a6d0ac2e5796dffc5edf3cf14e1ecda66fe7248102ce0acad170334344b11"
+    },
+    {
+      "hour": "2026-04-22T17:00:00Z",
+      "inventory_size_bytes": 476787507,
+      "object_path": "raw/source=pmxt/dataset=DS-PMXT-V2/version=v2/partition=hour-2026-04-22T17/cd68fa2337773c9b9410f09f9c99540938532005dc38bb5de0e8472baeffd2b8.parquet",
+      "object_sha256": "sha256:cd68fa2337773c9b9410f09f9c99540938532005dc38bb5de0e8472baeffd2b8",
+      "source_url": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-04-22T17.parquet",
+      "static_manifest_sha256": "sha256:5e4eea8658063a526c8e35baa09a0fc9ef98adb117e8a3f19d44b833421b5323"
+    },
+    {
+      "hour": "2026-04-22T18:00:00Z",
+      "inventory_size_bytes": 440506777,
+      "object_path": "raw/source=pmxt/dataset=DS-PMXT-V2/version=v2/partition=hour-2026-04-22T18/2c5abf2f89874c6ae8970a555015d07ab9cca15089d38757143c638d5a7d3495.parquet",
+      "object_sha256": "sha256:2c5abf2f89874c6ae8970a555015d07ab9cca15089d38757143c638d5a7d3495",
+      "source_url": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-04-22T18.parquet",
+      "static_manifest_sha256": "sha256:19de3a5996866c9f1305d6b0c34336521b95a4235c371ab39dbfca764abb6a44"
+    },
+    {
+      "hour": "2026-04-22T19:00:00Z",
+      "inventory_size_bytes": 438514483,
+      "object_path": "raw/source=pmxt/dataset=DS-PMXT-V2/version=v2/partition=hour-2026-04-22T19/6e72fc8dd907654e71b00a48bd7c64b77edeccdc241aacb3ed4fd5516817a6ae.parquet",
+      "object_sha256": "sha256:6e72fc8dd907654e71b00a48bd7c64b77edeccdc241aacb3ed4fd5516817a6ae",
+      "source_url": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-04-22T19.parquet",
+      "static_manifest_sha256": "sha256:e5583c481a4d00bf9d6d7f8d1843100c9a98fcc6f5f7295f48839c6e515df60a"
+    },
+    {
+      "hour": "2026-04-22T20:00:00Z",
+      "inventory_size_bytes": 432118169,
+      "object_path": "raw/source=pmxt/dataset=DS-PMXT-V2/version=v2/partition=hour-2026-04-22T20/180b964b13ed6c050fad0754ab03a7c12c3fbbd8b4c28ae8196b4a0537920a81.parquet",
+      "object_sha256": "sha256:180b964b13ed6c050fad0754ab03a7c12c3fbbd8b4c28ae8196b4a0537920a81",
+      "source_url": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-04-22T20.parquet",
+      "static_manifest_sha256": "sha256:88a7391b254111351576619c55741e9f23ec4103b5de0599098fa90c2884a32a"
+    },
+    {
+      "hour": "2026-04-22T21:00:00Z",
+      "inventory_size_bytes": 409154355,
+      "object_path": "raw/source=pmxt/dataset=DS-PMXT-V2/version=v2/partition=hour-2026-04-22T21/cc52fc1a6d6c82c92840a55a0da0a9ab0e25837842e9e321f1d4fcf01618f958.parquet",
+      "object_sha256": "sha256:cc52fc1a6d6c82c92840a55a0da0a9ab0e25837842e9e321f1d4fcf01618f958",
+      "source_url": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-04-22T21.parquet",
+      "static_manifest_sha256": "sha256:92ab457eeb59f2a3d88a5129533c78a89953d699ec04f19ef0ac23401e748dbb"
+    },
+    {
+      "hour": "2026-04-22T22:00:00Z",
+      "inventory_size_bytes": 412614656,
+      "object_path": "raw/source=pmxt/dataset=DS-PMXT-V2/version=v2/partition=hour-2026-04-22T22/7c839b7cd6f0675d7194da70bcd404c784d293d368a17a7cd0004414006f9c37.parquet",
+      "object_sha256": "sha256:7c839b7cd6f0675d7194da70bcd404c784d293d368a17a7cd0004414006f9c37",
+      "source_url": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-04-22T22.parquet",
+      "static_manifest_sha256": "sha256:a738dd5e4ce28a6cc260beb569f02d18219f5d684de367dd5764ee49d3557f37"
+    },
+    {
+      "hour": "2026-04-22T23:00:00Z",
+      "inventory_size_bytes": 434320179,
+      "object_path": "raw/source=pmxt/dataset=DS-PMXT-V2/version=v2/partition=hour-2026-04-22T23/f86337ffb24ecfa8abd32d9967ec8b9e0e549013c2c78ff5f4ccc2cb08cdf53a.parquet",
+      "object_sha256": "sha256:f86337ffb24ecfa8abd32d9967ec8b9e0e549013c2c78ff5f4ccc2cb08cdf53a",
+      "source_url": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-04-22T23.parquet",
+      "static_manifest_sha256": "sha256:38daed3778c934925c47f8366ee0d9801e9a1f23c53e613975d6a2c4695c881e"
+    }
+  ],
+  "version": "pmxt-full-day-manifest-v1"
+}

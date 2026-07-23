@@ -1,0 +1,48 @@
+{
+  "additional_days": [
+    "2026-04-22",
+    "2026-06-05",
+    "2026-06-25"
+  ],
+  "bundle_sha256": "sha256:9477f8d9a224b47b6dda47dd691761d4ca8b5d88be6ad07416217a2bb44c89a4",
+  "day_count": 4,
+  "day_manifests": [
+    {
+      "artifact_file_sha256": "sha256:36d20e073a41ed4cbe0a2e7f37e726c3334075a0ff4017d42b38d5e15d4a5e85",
+      "day": "2026-04-22",
+      "full_day_manifest_sha256": "sha256:d01571e413a942c615489bc674560a0abc5a718507d990ad4106c1a90f3f61ed",
+      "object_count": 24,
+      "path": "artifacts/data-audit/x02_full_day_input_manifest_2026-04-22_v1.json"
+    },
+    {
+      "artifact_file_sha256": "sha256:06f1c0aeadd0a735474756e272fd4f9cccb8d718ca65c316163ff08361ac22c5",
+      "day": "2026-05-28",
+      "full_day_manifest_sha256": "sha256:e7dfc9e7992f1eb085edc0c67f37100db10c6541533220833dcace2a1e244df3",
+      "object_count": 24,
+      "path": "artifacts/data-audit/x01_full_day_input_manifest_v1.json"
+    },
+    {
+      "artifact_file_sha256": "sha256:ddb609d9bf15550e487caa3e785999340b4fa337ab82036eccec09965aa598f8",
+      "day": "2026-06-05",
+      "full_day_manifest_sha256": "sha256:b4f688f1da57827426efd5b0b212b15457282f56a253ceffca74542d11f6419e",
+      "object_count": 24,
+      "path": "artifacts/data-audit/x02_full_day_input_manifest_2026-06-05_v1.json"
+    },
+    {
+      "artifact_file_sha256": "sha256:94546f473149f31ef75179f8a1e8982fc31d99e712ba9d5c3b94cf603b458850",
+      "day": "2026-06-25",
+      "full_day_manifest_sha256": "sha256:0b6e87e6b59035751405b5d87a8b9bde2902f0e5545163e0eb17c30a1f3f956e",
+      "object_count": 24,
+      "path": "artifacts/data-audit/x02_full_day_input_manifest_2026-06-25_v1.json"
+    }
+  ],
+  "formal_result": false,
+  "inventory_path": "artifacts/data-audit/phase0_inventory.json",
+  "inventory_sha256": "sha256:74d7e9f21003f595d2d505bc63c89c7eadcd5339d541032bc80704d4b14b3043",
+  "object_count": 96,
+  "purpose": "frozen_input_only_before_X02_evaluation",
+  "selection_procedure": "x01_day_plus_random.Random(seed).sample(sorted_exact_complete_utc_days_excluding_x01,3);additional_days_sorted",
+  "selection_seed": 20260722,
+  "version": "x02-timestamp-input-bundle-v1",
+  "x01_day": "2026-05-28"
+}

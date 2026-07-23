@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -17,6 +18,8 @@ from prediction_market.pmxt.full_day import (
 )
 from prediction_market.pmxt.timestamp_audit import (
     TimestampAuditError,
+    _canonical_disorder_counts,
+    _exact_frequency_quantile,
     audit_full_day_timestamps,
     select_timestamp_audit_days,
 )
@@ -50,7 +53,12 @@ def _inventory(days: list[date], *, incomplete: date | None = None):
     return entries
 
 
-def _write_hour(path: Path, hour: int) -> None:
+def _write_hour(
+    path: Path,
+    hour: int,
+    *,
+    timestamp_rows: list[tuple[datetime, datetime]] | None = None,
+) -> None:
     received = datetime(2026, 5, 28, hour, 0, 10, tzinfo=timezone.utc)
     if hour == 5:
         source = datetime(2026, 5, 28, 0, 0, tzinfo=timezone.utc)
@@ -72,17 +80,19 @@ def _write_hour(path: Path, hour: int) -> None:
             pa.field("side", pa.string()),
         ]
     )
+    rows = timestamp_rows or [(received, source)]
+    row_count = len(rows)
     values: dict[str, list[object]] = {
-        "timestamp_received": [received],
-        "timestamp": [source],
-        "market": [MARKET.encode("ascii")],
-        "event_type": ["price_change"],
-        "asset_id": ["asset-a"],
-        "bids": [None],
-        "asks": [None],
-        "price": [Decimal("0.5000")],
-        "size": [Decimal("1.000000")],
-        "side": ["BUY"],
+        "timestamp_received": [row[0] for row in rows],
+        "timestamp": [row[1] for row in rows],
+        "market": [MARKET.encode("ascii")] * row_count,
+        "event_type": ["price_change"] * row_count,
+        "asset_id": ["asset-a"] * row_count,
+        "bids": [None] * row_count,
+        "asks": [None] * row_count,
+        "price": [Decimal("0.5000")] * row_count,
+        "size": [Decimal("1.000000")] * row_count,
+        "side": ["BUY"] * row_count,
     }
     pq.write_table(
         pa.Table.from_arrays(
@@ -93,13 +103,21 @@ def _write_hour(path: Path, hour: int) -> None:
     )
 
 
-def _manifest(tmp_path: Path):
+def _manifest(
+    tmp_path: Path,
+    *,
+    timestamp_rows_by_hour: dict[int, list[tuple[datetime, datetime]]] | None = None,
+):
     entries: list[ArchiveEntry] = []
     objects: list[HourlyObjectRef] = []
     for hour in range(24):
         filename = f"polymarket_orderbook_2026-05-28T{hour:02d}.parquet"
         path = tmp_path / filename
-        _write_hour(path, hour)
+        _write_hour(
+            path,
+            hour,
+            timestamp_rows=(timestamp_rows_by_hour or {}).get(hour),
+        )
         payload = path.read_bytes()
         observed = datetime(2026, 5, 28, hour, tzinfo=timezone.utc)
         url = f"https://r2v2.pmxt.dev/{filename}"
@@ -177,6 +195,95 @@ def test_full_day_timestamp_audit_reports_locked_metrics(tmp_path: Path) -> None
     assert report.out_of_order_count == 1
     assert report.out_of_order_rate == pytest.approx(1 / 23)
     assert report.hourly_median_drift_ms == pytest.approx(0.0)
+    assert report.absolute_p99_ms > 5_000.0
+    assert report.quantile_method == "exact_frequency_quantile_cont_ms_v1"
+    assert report.disorder_definition == (
+        "per_market_asset_canonical_receive_source_adjacent_source_regression_v1"
+    )
+    assert report.millisecond_research_eligible is False
+    assert report.downgrade_triggers == (
+        "negative_delta_rate_ge_0.001",
+        "absolute_p99_ms_gt_5000",
+    )
     assert report.timestamp_semantics == (
         "receive_at_primary;source_at_secondary_audit_only"
     )
+
+
+def test_timestamp_audit_fails_closed_when_native_file_order_is_broken(
+    tmp_path: Path,
+) -> None:
+    later = datetime(2026, 5, 28, 0, 0, 20, tzinfo=timezone.utc)
+    earlier = datetime(2026, 5, 28, 0, 0, 10, tzinfo=timezone.utc)
+    manifest = _manifest(
+        tmp_path,
+        timestamp_rows_by_hour={
+            0: [
+                (later, later - timedelta(milliseconds=100)),
+                (earlier, earlier - timedelta(milliseconds=100)),
+            ]
+        },
+    )
+
+    with pytest.raises(TimestampAuditError, match="native PMXT order"):
+        audit_full_day_timestamps(tmp_path, manifest)
+
+
+def test_timestamp_audit_applies_canonical_source_tie_break_without_sorting_rows(
+    tmp_path: Path,
+) -> None:
+    receive_1 = datetime(2026, 5, 28, 0, 0, 10, tzinfo=timezone.utc)
+    receive_2 = datetime(2026, 5, 28, 0, 0, 20, tzinfo=timezone.utc)
+    manifest = _manifest(
+        tmp_path,
+        timestamp_rows_by_hour={
+            0: [
+                (receive_1, receive_1 + timedelta(milliseconds=100)),
+                (receive_1, receive_1 - timedelta(milliseconds=100)),
+                (receive_2, receive_1 - timedelta(milliseconds=50)),
+                (receive_2, receive_1 - timedelta(milliseconds=20)),
+            ]
+        },
+    )
+
+    report = audit_full_day_timestamps(tmp_path, manifest)
+
+    # Canonical source ordering turns each receive-time tie into an ascending
+    # run.  Only the boundary from max(run 1) to min(run 2) is a regression.
+    assert report.ordered_comparison_count == 26
+    assert report.out_of_order_count == 2
+
+
+def test_streaming_disorder_carries_tied_receive_run_across_batches(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "cross-batch.parquet"
+    receive_1 = datetime(2026, 5, 28, 0, 0, 10, tzinfo=timezone.utc)
+    receive_2 = datetime(2026, 5, 28, 0, 0, 20, tzinfo=timezone.utc)
+    _write_hour(
+        path,
+        0,
+        timestamp_rows=[
+            (receive_1, receive_1 + timedelta(milliseconds=100)),
+            (receive_1, receive_1 + timedelta(milliseconds=200)),
+            (receive_1, receive_1 + timedelta(milliseconds=50)),
+            (receive_2, receive_1 + timedelta(milliseconds=150)),
+        ],
+    )
+
+    rows, comparisons, regressions = _canonical_disorder_counts(
+        [str(path)], batch_size=2
+    )
+
+    assert rows == 4
+    assert comparisons == 3
+    assert regressions == 1
+
+
+def test_exact_frequency_quantile_matches_continuous_rank_interpolation() -> None:
+    counts = Counter({0: 1, 10: 3})
+
+    assert _exact_frequency_quantile(counts, 0.0) == 0.0
+    assert _exact_frequency_quantile(counts, 0.25) == pytest.approx(7.5)
+    assert _exact_frequency_quantile(counts, 0.5) == 10.0
+    assert _exact_frequency_quantile(counts, 1.0) == 10.0
