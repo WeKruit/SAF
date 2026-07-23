@@ -239,11 +239,42 @@ def _parse_book(event: EventEnvelopeV0) -> _ObservedBook:
     if type(suspended) is not bool:
         raise X09VerticalSliceInputError("book suspended must be boolean")
     try:
+        local_receive_at = _parse_timestamp(event.time.receive_at)
+        bids = _parse_levels(payload["bids"], "bids")
+        asks = _parse_levels(payload["asks"], "asks")
+        venue = event.source.venue
+        condition_id = event.canonical_refs.condition_id
+        content_sha256 = canonical_sha256(
+            {
+                "book_version": "v0",
+                "venue": venue,
+                "condition_id": condition_id,
+                "local_receive_at": _timestamp(local_receive_at),
+                "bids": [
+                    {
+                        "price": level.price.model_dump(mode="json"),
+                        "quantity": level.quantity.model_dump(mode="json"),
+                    }
+                    for level in bids
+                ],
+                "asks": [
+                    {
+                        "price": level.price.model_dump(mode="json"),
+                        "quantity": level.quantity.model_dump(mode="json"),
+                    }
+                    for level in asks
+                ],
+                "suspended": suspended,
+            }
+        )
         book = BookSnapshotV0(
-            observed_at=_parse_timestamp(event.time.receive_at),
-            bids=_parse_levels(payload["bids"], "bids"),
-            asks=_parse_levels(payload["asks"], "asks"),
+            venue=venue,
+            condition_id=condition_id,
+            local_receive_at=local_receive_at,
+            bids=bids,
+            asks=asks,
             suspended=suspended,
+            content_sha256=content_sha256,
         )
     except (TypeError, ValueError) as exc:
         raise X09VerticalSliceInputError("invalid executable book") from exc
@@ -354,7 +385,10 @@ def _first_executable(
     books: tuple[_ObservedBook, ...], not_before: datetime
 ) -> _ObservedBook:
     for observed in books:
-        if observed.book.observed_at >= not_before and not observed.book.suspended:
+        if (
+            observed.book.local_receive_at >= not_before
+            and not observed.book.suspended
+        ):
             return observed
     raise X09VerticalSliceInputError(
         "no executable book at or after the required simulated time"
@@ -481,7 +515,7 @@ def _execute_once(fixture: X09FixtureV0) -> ReplayRunV0:
         event_type="simulated_fill",
         stream="simulated-fills",
         sequence=3,
-        receive_at=execution.book.observed_at,
+        receive_at=execution.book.local_receive_at,
         source_at=_parse_timestamp(
             execution.event.time.source_at or execution.event.time.receive_at
         ),
@@ -501,7 +535,7 @@ def _execute_once(fixture: X09FixtureV0) -> ReplayRunV0:
     )
 
     mark = _first_executable(
-        books, execution.book.observed_at + config.pnl_horizon
+        books, execution.book.local_receive_at + config.pnl_horizon
     )
     exit_vwap, gross_proceeds, exit_levels_consumed = _consume(
         mark.book.bids, quantity, "bid"
@@ -511,7 +545,7 @@ def _execute_once(fixture: X09FixtureV0) -> ReplayRunV0:
         event_type="simulated_pnl",
         stream="simulated-pnl",
         sequence=4,
-        receive_at=mark.book.observed_at,
+        receive_at=mark.book.local_receive_at,
         source_at=_parse_timestamp(mark.event.time.source_at or mark.event.time.receive_at),
         score=score,
         parents=(fill.event_id, mark.event.event_id),
