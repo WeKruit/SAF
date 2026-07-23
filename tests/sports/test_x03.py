@@ -412,6 +412,22 @@ def test_duplicate_logical_observation_is_rejected() -> None:
         x03.run_x03_census(_payload(document))
 
 
+def test_canonical_market_cannot_change_sport_within_window() -> None:
+    document = _document()
+    observations = document["observations"]
+    assert isinstance(observations, list)
+    conflicting = copy.deepcopy(observations[0])
+    conflicting["observed_at"] = "2026-06-01T04:00:00Z"
+    conflicting["sport"] = "nfl"
+    observations.append(conflicting)
+
+    with pytest.raises(x03.X03DataError, match="changes sport"):
+        x03.normalized_input_sha256(document)
+    document["input_sha256"] = "sha256:" + "0" * 64
+    with pytest.raises(x03.X03DataError, match="changes sport"):
+        x03.run_x03_census(_payload(document))
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

@@ -309,7 +309,18 @@ def _normalized_input_material(
         for index, observation in enumerate(observations)
     ]
     logical_keys: set[tuple[str, str, str]] = set()
+    market_sports: dict[tuple[str, str], str] = {}
     for observation in normalized:
+        market_key = (
+            str(observation["venue"]),
+            str(observation["canonical_market_id"]),
+        )
+        sport = str(observation["sport"])
+        registered_sport = market_sports.setdefault(market_key, sport)
+        if registered_sport != sport:
+            raise X03DataError(
+                "canonical market changes sport within the locked window"
+            )
         key = (
             str(observation["venue"]),
             str(observation["canonical_market_id"]),
