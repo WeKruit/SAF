@@ -1,0 +1,152 @@
+{
+  "artifact_type": "soccer_real_replay_validation",
+  "artifact_version": "v0",
+  "validation_class": "ENGINEERING_VALIDATION",
+  "formal_experiment_result": false,
+  "experiment_context": "X-12",
+  "result_claim_boundary": {
+    "predictive_accuracy_measured": false,
+    "model_inference_latency_measured": false,
+    "prediction_market_alignment_measured": false,
+    "permitted_claim": "A frozen real StatsBomb match can be adapted and reduced deterministically under the game-state contract.",
+    "forbidden_claims": [
+      "This is a formal X-12 model result.",
+      "Reducer latency is model inference latency.",
+      "The replay demonstrates prediction-market alpha."
+    ]
+  },
+  "generated_at": "2026-07-23T16:10:27Z",
+  "implementation": {
+    "adapter": "prediction_market.sports.soccer_game_state.adapt_statsbomb_event",
+    "reducer": "prediction_market.sports.soccer_game_state.reduce_soccer_game_state",
+    "reducer_id": "soccer.statsbomb.event-reducer",
+    "reducer_version": "v1",
+    "implementation_sha256": "sha256:0ddd8229c352869ce4fb735523927e16473fb2174c6f06d04821476e13cf66ac",
+    "integration_test": "tests/sports/test_soccer_real_replay.py",
+    "integration_test_sha256": "sha256:fe00598fa525350b51a1895991ccb38fd40c1332f9029caf220bdc585ff8ab48"
+  },
+  "source": {
+    "dataset_id": "DS-STATSBOMB-OPEN",
+    "license_ref": "O-004",
+    "license_status": "research_only",
+    "upstream_commit": "b0bc9f22dd77c206ddedc1d742893b3bbe64baec",
+    "competition_id": 2,
+    "season_id": 27,
+    "competition": "Premier League",
+    "season": "2015/16",
+    "match_id": 3754288,
+    "match_date": "2015-10-24",
+    "home_team": {
+      "id": 40,
+      "name": "West Ham United"
+    },
+    "away_team": {
+      "id": 33,
+      "name": "Chelsea"
+    },
+    "events_object": {
+      "sha256": "sha256:740ff49347291252a573a8e56e08bf48e997edfe99eeaee5d73b705b226ade9b",
+      "manifest_sha256": "sha256:577b104004b861a562f89c1d65320461c37ff4d05fbadc8f71fd8079c3ee638a",
+      "byte_length": 2719844,
+      "event_count": 3175
+    },
+    "matches_object": {
+      "sha256": "sha256:e07d6d360b30e0cd17f9aeea0db1502d2a5666d298f1b44b83a2d2f21ba3d21b",
+      "manifest_sha256": "sha256:cc77da4204ff4244b26b652992703cf8b29761d19b207c5ea14689dfbb765381"
+    }
+  },
+  "point_in_time_audit": {
+    "adapter_reads_one_event_at_a_time": true,
+    "future_event_fields_are_not_read": true,
+    "event_id_is_required_from_external_event_envelope": true,
+    "authoritative_order_key": "StatsBomb index",
+    "contiguous_index_required": true,
+    "source_clock_is_not_used_as_an_order_key": true
+  },
+  "replay": {
+    "functional_replay_count": 2,
+    "both_replays_completed": true,
+    "both_final_states_equal": true,
+    "both_final_hashes_equal": true,
+    "final_state_sha256": "sha256:7730bff147058bec4b6ddd72c9abd42a35287aa697b2aa0049fa0fae4da43277",
+    "final_state": {
+      "sequence": 3175,
+      "period": 2,
+      "clock_ms": 5699192,
+      "period_clock_ms": 2999192,
+      "home_score": 2,
+      "away_score": 1,
+      "source_home_score": 2,
+      "source_away_score": 1,
+      "card_count": 8,
+      "substitution_count": 6,
+      "home_active_player_count": 11,
+      "away_active_player_count": 10,
+      "in_play": false,
+      "last_action": "Half End",
+      "terminal": false,
+      "terminal_reason": null
+    },
+    "invariants": {
+      "sequence_contiguous": true,
+      "period_legal": true,
+      "score_matches_source_metadata": true,
+      "cards_applied": true,
+      "second_yellow_removes_active_player": true,
+      "substitutions_applied": true,
+      "terminal_fields_consistent": true
+    },
+    "terminal_semantics": "This StatsBomb file ends with Half End and has no explicit Match End event. The reducer therefore leaves terminal=false rather than infer terminal status from future knowledge."
+  },
+  "source_clock_anomalies": {
+    "count": 1,
+    "handling": "The event is accepted in authoritative index order; state clocks remain same-period high-water marks while the immutable event retains the source clock.",
+    "required_envelope_quality_flags": [
+      "clock_jump",
+      "out_of_order"
+    ],
+    "events": [
+      {
+        "sequence": 1578,
+        "native_event_id": "d7bf1db5-ab42-4ea6-8149-578725ad1508",
+        "action": "Ball Receipt*",
+        "event_clock_ms": 524,
+        "prior_state_clock_ms": 2842489,
+        "event_period_clock_ms": 524,
+        "prior_state_period_clock_ms": 2842489
+      }
+    ]
+  },
+  "reducer_latency": {
+    "scope": "reduce_soccer_game_state only",
+    "excluded": [
+      "JSON decoding",
+      "event adaptation",
+      "EventEnvelope construction and validation",
+      "feature extraction",
+      "model inference",
+      "prediction-market joins"
+    ],
+    "warmup_replays": 3,
+    "timed_replays": 20,
+    "sample_count": 63500,
+    "timer": "time.perf_counter_ns",
+    "quantile_method": "nearest-rank",
+    "latency_ns": {
+      "min": 23416,
+      "p50": 34000,
+      "p95": 45541,
+      "p99": 77583,
+      "max": 24285791,
+      "mean": 33351.689
+    },
+    "runtime": {
+      "python": "3.13.12",
+      "system": "Darwin",
+      "release": "25.5.0",
+      "machine": "arm64",
+      "processor": "arm"
+    },
+    "interpretation": "Observed local engineering timing only; it is not an SLA and cannot be reported as probabilistic model latency."
+  }
+}

@@ -1,0 +1,69 @@
+{
+  "artifact_type": "ENGINEERING_VALIDATION",
+  "artifact_version": "v0",
+  "generated_at": "2026-07-23T16:13:18Z",
+  "owner": "Team D4+C",
+  "formal_result_eligible": false,
+  "sport": "mlb",
+  "source": {
+    "dataset_id": "DS-RETROSHEET",
+    "license_ref": "O-007",
+    "license_status": "research_only",
+    "raw_object_hash": "sha256:30592120e807f7b2e073ddee544ac615a7194db43e551956e22f4a98bf722b7a",
+    "manifest_sha256": "sha256:15eda81cfe06c8c742536fd9a8df6717215998d529755ff90049007315b6bc91",
+    "native_game_id": "ANA202504040",
+    "canonical_game_id": "game_retrosheet_ANA202504040",
+    "parser": "chadwick.cwevent",
+    "parser_version": "0.10.0",
+    "events": 88
+  },
+  "state_validation": {
+    "replay_count": 2,
+    "adapter_vs_next_observation_comparisons": 87,
+    "field_mismatches": 0,
+    "final_state_sha256": "sha256:3d065eb91980c9fdf17c17103b2076735a6194dd4bc36ac7358bb6011c20f96c",
+    "replay_hash_match": true,
+    "final_score": {
+      "away": 8,
+      "home": 6
+    },
+    "final_inning": 9,
+    "final_half": "bottom",
+    "terminal": true,
+    "event_id_binding": "engineering_harness_content_hash_with_evt_shape",
+    "event_envelope_registry_validation": false,
+    "event_envelope_open_gate": "MLB engineering validation has no registered experiment binding"
+  },
+  "latency": {
+    "scope": "reducer_only_excludes_cwevent_process_adapter_features_and_model",
+    "clock": "time.perf_counter_ns",
+    "warmups": 20,
+    "repetitions": 500,
+    "samples": 44000,
+    "p50_ns": 4958,
+    "p95_ns": 5500,
+    "p99_ns": 5667,
+    "max_ns": 1281542,
+    "mean_ns": 5022,
+    "runtime": {
+      "python": "3.13.12",
+      "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+      "processor": "arm"
+    }
+  },
+  "model_assessment": {
+    "status": "not_measured_no_registered_model",
+    "accuracy": null,
+    "inference_latency": null,
+    "calibration": null
+  },
+  "prediction_market_alignment": {
+    "status": "not_run",
+    "reason": "no canonical game-to-condition and same-time executable quote join"
+  },
+  "limitations": [
+    "This validates one full frozen game and the deterministic reducer, not the 2025 season.",
+    "The reducer latency is local engineering timing and is not a live SLA.",
+    "No MLB predictive model, alpha, or trading conclusion is reported."
+  ]
+}

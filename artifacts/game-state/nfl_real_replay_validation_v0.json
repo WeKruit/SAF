@@ -1,0 +1,163 @@
+{
+  "artifact_id": "EV-NFL-GAME-STATE-REAL-REPLAY-v0",
+  "artifact_type": "ENGINEERING_VALIDATION",
+  "version": "v0",
+  "generated_at": "2026-07-23T16:09:43Z",
+  "owner": "Team D2",
+  "scope": {
+    "experiment_id": null,
+    "registered_experiment_reference": "X-11",
+    "formal_experiment_result": false,
+    "model_evaluation": false,
+    "prediction_market_alpha_evidence": false,
+    "statement": "This artifact validates deterministic NFL state reconstruction only. It is not an X-11 model result, a model-accuracy result, model-inference latency, or alpha evidence."
+  },
+  "source": {
+    "dataset_id": "DS-NFLVERSE",
+    "catalog_id": "I-018",
+    "source_url": "https://github.com/nflverse/nflverse-data/releases/download/pbp/play_by_play_2025.parquet",
+    "version": "github-release-58152862-20260212T102526Z",
+    "partition": "season-2025",
+    "raw_object_path": "var/raw/raw/source=nflverse/dataset=DS-NFLVERSE/version=github-release-58152862-20260212T102526Z/partition=season-2025/3730c4db2ab99d2dfc4017de975b7610c46c35301b9280b65c03de1b1c74265a.parquet",
+    "raw_object_sha256": "sha256:3730c4db2ab99d2dfc4017de975b7610c46c35301b9280b65c03de1b1c74265a",
+    "raw_hash_recomputed_equal": true,
+    "manifest_path": "var/raw/manifests/source=nflverse/dataset=DS-NFLVERSE/version=github-release-58152862-20260212T102526Z/partition=season-2025/e06985cfae03b5967d8970be8a9f7a82699d72b549595c044d1056b553c1d99d.manifest.json"
+  },
+  "game": {
+    "native_game_id": "2025_01_ARI_NO",
+    "canonical_game_id": "game_nflverse_2025_01_ARI_NO",
+    "rows": 182,
+    "transitions": 181,
+    "first_source_play_id": "1",
+    "last_source_play_id": "4714",
+    "terminal": true,
+    "final_score": {
+      "home": 13,
+      "away": 20
+    }
+  },
+  "validation": {
+    "replay_runs": 2,
+    "accepted_transitions_per_run": 181,
+    "field_level_post_state_comparisons_per_run": 181,
+    "field_level_mismatches_per_run": 0,
+    "comparison_basis": "Every reducer output dataclass field was compared with the same next nflverse row normalized by state_from_nflverse_row, including sequence and externally supplied last_event_id.",
+    "run_1_final_state_sha256": "sha256:8721c58e508d8bdbd778f528ec2401f18783492aab96069bbbf62e5cc62ddfa5",
+    "run_2_final_state_sha256": "sha256:8721c58e508d8bdbd778f528ec2401f18783492aab96069bbbf62e5cc62ddfa5",
+    "canonical_hashes_equal": true,
+    "event_id_boundary": {
+      "adapter_generates_event_id": false,
+      "event_id_argument_required": true,
+      "invalid_event_id_rejected": true,
+      "event_envelope_integration_tested": true,
+      "replay_id_basis": "The test caller deterministically derives each evt_<sha256> outside the adapter from raw-object hash, native game ID, transition ordinal, and source play ID."
+    },
+    "leakage_audit": {
+      "future_or_outcome_fields_denied": [
+        "away_score",
+        "def_wp",
+        "def_wpa",
+        "drive_ended_with_score",
+        "drive_result",
+        "ep",
+        "epa",
+        "fixed_drive_result",
+        "home_score",
+        "home_wp",
+        "result",
+        "series_result",
+        "series_success",
+        "success",
+        "total",
+        "vegas_home_wp",
+        "vegas_wp",
+        "wp",
+        "wpa"
+      ],
+      "series_result_mutation_invariance_tested": true,
+      "final_score_fallback_forbidden": true,
+      "transition_flag_rule": "first_down, turnover, and timeout are committed only when the adjacent pre/post snapshots verify the corresponding state change."
+    }
+  },
+  "season_partition_census": {
+    "role": "Supplementary engineering scan; the committed deterministic integration assertion remains the complete game above.",
+    "scan_runs": 2,
+    "games_total": 285,
+    "full_replay_games": 281,
+    "fail_closed_games": 4,
+    "post_state_comparisons_per_run_before_fail_closed_boundaries": 48298,
+    "run_final_hash_maps_equal": true,
+    "run_failure_maps_equal": true,
+    "failures": [
+      {
+        "native_game_id": "2025_01_CAR_JAX",
+        "failed_transition": 48,
+        "error": "nflverse row requires time"
+      },
+      {
+        "native_game_id": "2025_01_DAL_PHI",
+        "failed_transition": 108,
+        "error": "nflverse row requires time"
+      },
+      {
+        "native_game_id": "2025_03_NYJ_TB",
+        "failed_transition": 184,
+        "error": "event clock moved backwards within a period"
+      },
+      {
+        "native_game_id": "2025_20_BUF_DEN",
+        "failed_transition": 200,
+        "error": "event.away_timeouts_remaining must be at least 0 and at most 3"
+      }
+    ],
+    "interpretation": "The four source anomalies remain explicit fail-closed boundaries; this validation did not impute missing clocks, accept a backwards clock, or accept a negative timeout count."
+  },
+  "reducer_latency": {
+    "scope": "NFLGameStateReducer.reduce only",
+    "clock": "time.perf_counter_ns",
+    "warmup_calls": 181,
+    "measurement_repetitions": 250,
+    "samples": 45250,
+    "min_ns": 3458,
+    "p50_ns": 3875,
+    "p95_ns": 4042,
+    "p99_ns": 4166,
+    "max_ns": 28916,
+    "mean_ns": 3904,
+    "percentile_method": "round((n - 1) * p) on sorted samples",
+    "excludes": [
+      "Parquet I/O",
+      "event-envelope construction",
+      "nflverse row adaptation",
+      "feature construction",
+      "model inference"
+    ],
+    "model_inference_latency": null,
+    "sla_claim": false,
+    "runtime": {
+      "python": "3.13.12",
+      "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+      "processor": "arm"
+    }
+  },
+  "implementation": {
+    "reducer_id": "REDUCER-NFL-PLAY-STATE",
+    "reducer_version": "v1",
+    "module_path": "src/prediction_market/sports/nfl_game_state.py",
+    "module_sha256": "sha256:fe2a73edcd5b09eb5b9721cec1080868a8da59820c9c1e77ff382804a9917a91",
+    "test_path": "tests/sports/test_nfl_real_replay.py",
+    "base_revision_before_uncommitted_validation_changes": "5843045d8f36974b51705553872ae64e085cf957"
+  },
+  "test_result": {
+    "command": "PYTHONPATH=src .venv/bin/pytest -q tests/sports/test_nfl_real_replay.py tests/sports/test_nfl_game_state.py tests/sports/test_game_state_interface.py tests/sports/test_state_validation.py tests/sports/test_sport_event_envelopes.py",
+    "passed": 36,
+    "failed": 0,
+    "duration_seconds": 0.65
+  },
+  "limitations": [
+    "One complete real game is the committed deterministic integration assertion; the supplementary whole-partition scan still has four explicit fail-closed games.",
+    "The source is an offline nflverse export, not a live point-in-time feed.",
+    "Reducer state parity does not measure win-probability or transition-model accuracy.",
+    "No prediction-market condition, quote, spread, depth, or as-of join was used."
+  ]
+}

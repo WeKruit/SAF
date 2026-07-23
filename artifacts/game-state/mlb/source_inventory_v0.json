@@ -39,7 +39,8 @@
       "version": 2430
     }
   },
-  "bevent_state_mapping": {
+  "cwevent_state_mapping": {
+    "parser_version": "0.10.0",
     "game_id": "GAME_ID",
     "event_index": "EVENT_ID",
     "inning": "INN_CT",
@@ -50,11 +51,12 @@
     "event_code": "EVENT_CD",
     "batter_destination": "BAT_DEST_ID",
     "runner_destinations": ["RUN1_DEST_ID", "RUN2_DEST_ID", "RUN3_DEST_ID"],
-    "requires_chadwick_bevent": true,
-    "executed_in_inventory": false
+    "requires_chadwick_cwevent": true,
+    "executed_in_inventory": true,
+    "full_game_engineering_validation": "../mlb_real_replay_validation_v0.json"
   },
   "limitations": [
-    "This deliverable inventories the native Retrosheet archive and declares the BEVENT mapping; the Chadwick bevent executable was not installed and no derived state table was produced.",
+    "This deliverable inventories the native Retrosheet archive; one frozen game was parsed with Chadwick cwevent 0.10.0 for reducer engineering validation.",
     "Retrosheet states that supplied information can be corrected later and disclaims accuracy guarantees, so release bytes and hashes must remain frozen.",
     "No MLB model, calibration result, production conclusion, or trading conclusion is included."
   ]
