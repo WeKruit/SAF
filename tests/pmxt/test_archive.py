@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import stat
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -91,11 +93,105 @@ def test_preserve_parquet_is_content_addressed_and_append_only(tmp_path):
     assert first.object_path == second.object_path
     assert first.object_path.read_bytes() == source.read_bytes()
     assert first.object_path.name == f"{expected.removeprefix('sha256:')}.parquet"
+    assert stat.S_IMODE(first.object_path.stat().st_mode) == 0o444
 
+    first.object_path.chmod(0o644)
     first.object_path.write_bytes(b"tampered")
-    with pytest.raises(ArchiveIntegrityError, match="refusing to overwrite"):
+    with pytest.raises(ArchiveIntegrityError, match="content address"):
         preserve_parquet(source, raw_root=raw_root)
     assert first.object_path.read_bytes() == b"tampered"
+
+
+@pytest.mark.parametrize("link_level", ["raw_root", "pmxt_v2"])
+def test_preserve_parquet_rejects_symlink_at_every_raw_store_level(
+    tmp_path, link_level
+):
+    from prediction_market.pmxt.archive import ArchiveIntegrityError, preserve_parquet
+
+    source = tmp_path / "source.parquet"
+    source.write_bytes(b"original parquet bytes")
+    external = tmp_path / "external"
+    external.mkdir()
+    raw_root = tmp_path / "raw"
+    if link_level == "raw_root":
+        raw_root.symlink_to(external, target_is_directory=True)
+    else:
+        raw_root.mkdir()
+        (raw_root / "pmxt-v2").symlink_to(external, target_is_directory=True)
+
+    with pytest.raises(ArchiveIntegrityError, match="symbolic link"):
+        preserve_parquet(source, raw_root=raw_root)
+
+    assert list(external.iterdir()) == []
+
+
+def test_preserve_parquet_rejects_parent_traversal_in_raw_root(tmp_path):
+    from prediction_market.pmxt.archive import ArchiveIntegrityError, preserve_parquet
+
+    source = tmp_path / "source.parquet"
+    source.write_bytes(b"original parquet bytes")
+    escaped_root = tmp_path / "raw" / ".." / "escaped"
+
+    with pytest.raises(ArchiveIntegrityError, match="parent traversal"):
+        preserve_parquet(source, raw_root=escaped_root)
+
+    assert not (tmp_path / "escaped").exists()
+
+
+def test_preserve_parquet_does_not_expose_final_object_before_file_fsync(
+    tmp_path, monkeypatch
+):
+    from prediction_market.pmxt import archive
+
+    source = tmp_path / "source.parquet"
+    source.write_bytes(b"original parquet bytes")
+    digest_hex = hashlib.sha256(source.read_bytes()).hexdigest()
+    target = (
+        tmp_path
+        / "raw"
+        / "pmxt-v2"
+        / "sha256"
+        / digest_hex[:2]
+        / f"{digest_hex}.parquet"
+    )
+    original_fsync = archive.os.fsync
+    final_visibility_at_file_fsync: list[bool] = []
+
+    def observe_fsync(file_descriptor: int) -> None:
+        if stat.S_ISREG(os.fstat(file_descriptor).st_mode):
+            final_visibility_at_file_fsync.append(target.exists())
+        original_fsync(file_descriptor)
+
+    monkeypatch.setattr(archive.os, "fsync", observe_fsync)
+
+    archive.preserve_parquet(source, raw_root=tmp_path / "raw")
+
+    assert final_visibility_at_file_fsync
+    assert final_visibility_at_file_fsync == [False]
+
+
+def test_archived_content_address_is_verified_before_every_read(tmp_path):
+    from prediction_market.pmxt.archive import (
+        ArchiveIntegrityError,
+        audit_parquet,
+        preserve_parquet,
+        read_parquet_events,
+    )
+
+    source = tmp_path / "source.parquet"
+    table = _official_table([1_780_272_000_100])
+    pq.write_table(table, source)
+    archived = preserve_parquet(source, raw_root=tmp_path / "raw")
+    archived.object_path.chmod(0o644)
+    pq.write_table(
+        table.replace_schema_metadata({b"tampered": b"true"}),
+        archived.object_path,
+    )
+
+    with pytest.raises(ArchiveIntegrityError, match="content address"):
+        audit_parquet(archived.object_path)
+    with pytest.raises(ArchiveIntegrityError, match="content address"):
+        read_parquet_events([archived.object_path])
 
 
 def test_audit_parquet_reports_schema_precision_and_timestamp_lag(tmp_path):

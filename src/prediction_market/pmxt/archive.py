@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import hashlib
+import errno
 import os
 import re
-import tempfile
+import secrets
+import stat
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import duckdb
@@ -311,11 +314,293 @@ def summarize_inventory(
 
 
 def sha256_file(path: str | Path) -> str:
+    digest, _ = _sha256_path(path)
+    return digest
+
+
+def _sha256_path(path: str | Path) -> tuple[str, int]:
     digest = hashlib.sha256()
+    byte_size = 0
     with Path(path).open("rb") as handle:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
-    return f"sha256:{digest.hexdigest()}"
+            byte_size += len(block)
+    return f"sha256:{digest.hexdigest()}", byte_size
+
+
+def _absolute_path_without_parent_traversal(path: str | Path) -> Path:
+    lexical = Path(path)
+    if ".." in lexical.parts:
+        raise ArchiveIntegrityError(
+            f"raw archive path contains parent traversal: {lexical}"
+        )
+    return Path(os.path.abspath(os.fspath(lexical)))
+
+
+def _raise_unsafe_directory_component(
+    error: OSError,
+    *,
+    directory_fd: int,
+    component: str,
+    path: Path,
+) -> None:
+    try:
+        component_stat = os.stat(
+            component,
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+    except OSError:
+        component_stat = None
+    if component_stat is not None and stat.S_ISLNK(component_stat.st_mode):
+        raise ArchiveIntegrityError(
+            f"raw archive path contains symbolic link: {path}"
+        ) from error
+    raise ArchiveIntegrityError(
+        f"raw archive path component is not a directory: {path}"
+    ) from error
+
+
+@contextmanager
+def _secure_directory(
+    path: str | Path,
+    *,
+    create: bool,
+) -> Iterator[tuple[Path, int]]:
+    """Open a directory by descriptor without following any symlink component."""
+
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+        raise ArchiveIntegrityError(
+            "secure raw archive traversal requires O_NOFOLLOW and O_DIRECTORY"
+        )
+    absolute = _absolute_path_without_parent_traversal(path)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    descriptor = os.open(absolute.anchor, flags)
+    traversed = Path(absolute.anchor)
+    try:
+        for component in absolute.parts[1:]:
+            traversed /= component
+            try:
+                child = os.open(component, flags, dir_fd=descriptor)
+            except FileNotFoundError as error:
+                if not create:
+                    raise ArchiveIntegrityError(
+                        f"raw archive directory does not exist: {traversed}"
+                    ) from error
+                try:
+                    os.mkdir(component, mode=0o755, dir_fd=descriptor)
+                    os.fsync(descriptor)
+                except FileExistsError:
+                    pass
+                except OSError as mkdir_error:
+                    _raise_unsafe_directory_component(
+                        mkdir_error,
+                        directory_fd=descriptor,
+                        component=component,
+                        path=traversed,
+                    )
+                try:
+                    child = os.open(component, flags, dir_fd=descriptor)
+                except OSError as open_error:
+                    _raise_unsafe_directory_component(
+                        open_error,
+                        directory_fd=descriptor,
+                        component=component,
+                        path=traversed,
+                    )
+            except OSError as error:
+                if error.errno in {errno.ELOOP, errno.ENOTDIR}:
+                    _raise_unsafe_directory_component(
+                        error,
+                        directory_fd=descriptor,
+                        component=component,
+                        path=traversed,
+                    )
+                raise ArchiveIntegrityError(
+                    f"failed to open raw archive directory {traversed}: {error}"
+                ) from error
+            os.close(descriptor)
+            descriptor = child
+        yield absolute, descriptor
+    finally:
+        os.close(descriptor)
+
+
+def _sha256_descriptor(file_descriptor: int) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    byte_size = 0
+    while True:
+        block = os.read(file_descriptor, 1024 * 1024)
+        if not block:
+            break
+        digest.update(block)
+        byte_size += len(block)
+    return f"sha256:{digest.hexdigest()}", byte_size
+
+
+def _verified_object_size(
+    directory_fd: int,
+    filename: str,
+    expected_digest: str,
+    *,
+    require_existing: bool,
+    make_read_only: bool,
+) -> int | None:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+    try:
+        descriptor = os.open(filename, flags, dir_fd=directory_fd)
+    except FileNotFoundError as error:
+        if require_existing:
+            raise ArchiveIntegrityError(
+                f"content-addressed object does not exist: {filename}"
+            ) from error
+        return None
+    except OSError as error:
+        if error.errno == errno.ELOOP:
+            raise ArchiveIntegrityError(
+                f"content-addressed object is a symbolic link: {filename}"
+            ) from error
+        raise ArchiveIntegrityError(
+            f"failed to open content-addressed object {filename}: {error}"
+        ) from error
+    try:
+        object_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(object_stat.st_mode):
+            raise ArchiveIntegrityError(
+                f"content-addressed object is not a regular file: {filename}"
+            )
+        actual_digest, byte_size = _sha256_descriptor(descriptor)
+        if actual_digest != expected_digest:
+            raise ArchiveIntegrityError(
+                f"content address {filename} contains {actual_digest}; expected {expected_digest}"
+            )
+        if make_read_only and stat.S_IMODE(object_stat.st_mode) != 0o444:
+            os.fchmod(descriptor, 0o444)
+            os.fsync(descriptor)
+        return byte_size
+    finally:
+        os.close(descriptor)
+
+
+def _exclusive_staging_file(
+    directory_fd: int,
+    *,
+    prefix: str,
+    suffix: str,
+) -> tuple[str, int]:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+    for _ in range(32):
+        filename = f"{prefix}{secrets.token_hex(16)}{suffix}"
+        try:
+            return filename, os.open(filename, flags, 0o600, dir_fd=directory_fd)
+        except FileExistsError:
+            continue
+    raise ArchiveIntegrityError("could not allocate an exclusive archive staging file")
+
+
+def _copy_to_staging(
+    source_path: Path,
+    *,
+    directory_fd: int,
+    expected_digest: str,
+    expected_size: int,
+) -> str:
+    staging_name, descriptor = _exclusive_staging_file(
+        directory_fd,
+        prefix=".pmxt-object-",
+        suffix=".partial",
+    )
+    digest = hashlib.sha256()
+    byte_size = 0
+    try:
+        with (
+            os.fdopen(descriptor, "wb") as destination,
+            source_path.open("rb") as input_file,
+        ):
+            for block in iter(lambda: input_file.read(1024 * 1024), b""):
+                destination.write(block)
+                digest.update(block)
+                byte_size += len(block)
+            destination.flush()
+            os.fchmod(destination.fileno(), 0o444)
+            os.fsync(destination.fileno())
+        actual_digest = f"sha256:{digest.hexdigest()}"
+        if actual_digest != expected_digest or byte_size != expected_size:
+            raise ArchiveIntegrityError(
+                "source Parquet changed while it was being archived"
+            )
+        return staging_name
+    except Exception:
+        try:
+            os.unlink(staging_name, dir_fd=directory_fd)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _publish_staging_file(
+    *,
+    directory_fd: int,
+    staging_name: str,
+    target_name: str,
+    expected_digest: str,
+) -> int:
+    try:
+        try:
+            os.link(
+                staging_name,
+                target_name,
+                src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+        except FileExistsError:
+            pass
+        byte_size = _verified_object_size(
+            directory_fd,
+            target_name,
+            expected_digest,
+            require_existing=True,
+            make_read_only=True,
+        )
+        assert byte_size is not None
+        return byte_size
+    finally:
+        try:
+            os.unlink(staging_name, dir_fd=directory_fd)
+        except FileNotFoundError:
+            pass
+        os.fsync(directory_fd)
+
+
+def _content_address_from_archive_path(path: Path) -> str | None:
+    if (
+        path.parent.parent.name != "sha256"
+        or path.parent.parent.parent.name != "pmxt-v2"
+    ):
+        return None
+    match = re.fullmatch(r"(?P<digest>[0-9a-f]{64})\.parquet", path.name)
+    if match is None or path.parent.name != match.group("digest")[:2]:
+        raise ArchiveIntegrityError(
+            f"invalid PMXT content-addressed object path: {path}"
+        )
+    return f"sha256:{match.group('digest')}"
+
+
+def _verify_archived_parquet_path(path: str | Path) -> str | None:
+    parquet_path = Path(path)
+    expected_digest = _content_address_from_archive_path(parquet_path)
+    if expected_digest is None:
+        return None
+    with _secure_directory(parquet_path.parent, create=False) as (_, directory_fd):
+        _verified_object_size(
+            directory_fd,
+            parquet_path.name,
+            expected_digest,
+            require_existing=True,
+            make_read_only=False,
+        )
+    return expected_digest
 
 
 def preserve_parquet(
@@ -334,43 +619,46 @@ def preserve_parquet(
     source_path = Path(source)
     if not source_path.is_file():
         raise ArchiveIntegrityError(f"source Parquet does not exist: {source_path}")
-    digest = sha256_file(source_path)
+    digest, source_size = _sha256_path(source_path)
     digest_hex = digest.removeprefix("sha256:")
-    object_directory = Path(raw_root) / "pmxt-v2" / "sha256" / digest_hex[:2]
-    object_directory.mkdir(parents=True, exist_ok=True)
-    target = object_directory / f"{digest_hex}.parquet"
+    raw_path = _absolute_path_without_parent_traversal(raw_root)
+    object_directory = raw_path / "pmxt-v2" / "sha256" / digest_hex[:2]
+    target_name = f"{digest_hex}.parquet"
+    target = object_directory / target_name
 
-    if target.exists():
-        if not target.is_file() or sha256_file(target) != digest:
-            raise ArchiveIntegrityError(
-                f"content address {target} is occupied by different bytes; refusing to overwrite"
+    with _secure_directory(object_directory, create=True) as (_, directory_fd):
+        existing_size = _verified_object_size(
+            directory_fd,
+            target_name,
+            digest,
+            require_existing=False,
+            make_read_only=True,
+        )
+        if existing_size is None:
+            staging_name = _copy_to_staging(
+                source_path,
+                directory_fd=directory_fd,
+                expected_digest=digest,
+                expected_size=source_size,
             )
-    else:
-        try:
-            with target.open("xb") as destination, source_path.open("rb") as input_file:
-                for block in iter(lambda: input_file.read(1024 * 1024), b""):
-                    destination.write(block)
-                destination.flush()
-                os.fsync(destination.fileno())
-        except FileExistsError:
-            if not target.is_file() or sha256_file(target) != digest:
-                raise ArchiveIntegrityError(
-                    f"content address {target} changed concurrently; refusing to overwrite"
-                )
-        except Exception:
-            target.unlink(missing_ok=True)
-            raise
-        if sha256_file(target) != digest:
-            target.unlink(missing_ok=True)
-            raise ArchiveIntegrityError(
-                "archived Parquet failed post-write SHA-256 verification"
+            archived_size = _publish_staging_file(
+                directory_fd=directory_fd,
+                staging_name=staging_name,
+                target_name=target_name,
+                expected_digest=digest,
             )
+        else:
+            archived_size = existing_size
+    if archived_size != source_size:
+        raise ArchiveIntegrityError(
+            f"content address {target} byte size does not match the source"
+        )
 
     return ArchivedFile(
         source_filename=source_filename or source_path.name,
         source_url=source_url,
         sha256=digest,
-        byte_size=source_path.stat().st_size,
+        byte_size=source_size,
         object_path=target,
     )
 
@@ -397,47 +685,52 @@ def download_and_preserve(
     if max_bytes <= 0:
         raise ArchiveNetworkError("max_bytes must be positive")
 
-    raw_path = Path(raw_root)
-    raw_path.mkdir(parents=True, exist_ok=True)
-    file_descriptor, temporary_name = tempfile.mkstemp(
-        prefix=".pmxt-download-", suffix=".partial", dir=raw_path
-    )
-    temporary_path = Path(temporary_name)
-    received = 0
-    try:
-        with os.fdopen(file_descriptor, "wb") as destination:
-            with httpx.stream(
-                "GET", url, follow_redirects=True, timeout=timeout_seconds
-            ) as response:
-                response.raise_for_status()
-                content_length = response.headers.get("content-length")
-                if content_length is not None and int(content_length) > max_bytes:
-                    raise ArchiveNetworkError(
-                        f"PMXT object is {content_length} bytes, above max_bytes={max_bytes}"
-                    )
-                for block in response.iter_bytes(chunk_size=1024 * 1024):
-                    received += len(block)
-                    if received > max_bytes:
-                        raise ArchiveNetworkError(
-                            f"PMXT object exceeded max_bytes={max_bytes} while streaming"
-                        )
-                    destination.write(block)
-                destination.flush()
-                os.fsync(destination.fileno())
-        return preserve_parquet(
-            temporary_path,
-            raw_root=raw_path,
-            source_url=url,
-            source_filename=filename,
+    raw_path = _absolute_path_without_parent_traversal(raw_root)
+    with _secure_directory(raw_path, create=True) as (absolute_raw, directory_fd):
+        temporary_name, file_descriptor = _exclusive_staging_file(
+            directory_fd,
+            prefix=".pmxt-download-",
+            suffix=".partial",
         )
-    except ArchiveError:
-        raise
-    except (httpx.HTTPError, OSError, ValueError) as exc:
-        raise ArchiveNetworkError(
-            f"failed to download PMXT sample {url}: {exc}"
-        ) from exc
-    finally:
-        temporary_path.unlink(missing_ok=True)
+        temporary_path = absolute_raw / temporary_name
+        received = 0
+        try:
+            with os.fdopen(file_descriptor, "wb") as destination:
+                with httpx.stream(
+                    "GET", url, follow_redirects=True, timeout=timeout_seconds
+                ) as response:
+                    response.raise_for_status()
+                    content_length = response.headers.get("content-length")
+                    if content_length is not None and int(content_length) > max_bytes:
+                        raise ArchiveNetworkError(
+                            f"PMXT object is {content_length} bytes, above max_bytes={max_bytes}"
+                        )
+                    for block in response.iter_bytes(chunk_size=1024 * 1024):
+                        received += len(block)
+                        if received > max_bytes:
+                            raise ArchiveNetworkError(
+                                f"PMXT object exceeded max_bytes={max_bytes} while streaming"
+                            )
+                        destination.write(block)
+                    destination.flush()
+                    os.fsync(destination.fileno())
+            return preserve_parquet(
+                temporary_path,
+                raw_root=absolute_raw,
+                source_url=url,
+                source_filename=filename,
+            )
+        except ArchiveError:
+            raise
+        except (httpx.HTTPError, OSError, ValueError) as exc:
+            raise ArchiveNetworkError(
+                f"failed to download PMXT sample {url}: {exc}"
+            ) from exc
+        finally:
+            try:
+                os.unlink(temporary_name, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass
 
 
 def _quoted_identifier(name: str) -> str:
@@ -468,6 +761,7 @@ def audit_parquet(path: str | Path) -> ParquetAudit:
     """Audit original PMXT schema, nullability, event mix, and clock deltas."""
 
     parquet_path = Path(path)
+    archived_digest = _verify_archived_parquet_path(parquet_path)
     if not parquet_path.is_file():
         raise ArchiveIntegrityError(f"Parquet sample does not exist: {parquet_path}")
     try:
@@ -566,9 +860,13 @@ def audit_parquet(path: str | Path) -> ParquetAudit:
         connection.close()
 
     metadata = parquet_file.metadata
+    post_read_digest = _verify_archived_parquet_path(parquet_path)
+    original_sha256 = (
+        post_read_digest if archived_digest is not None else sha256_file(parquet_path)
+    )
     return ParquetAudit(
         path=parquet_path,
-        original_sha256=sha256_file(parquet_path),
+        original_sha256=original_sha256,
         byte_size=parquet_path.stat().st_size,
         row_count=metadata.num_rows,
         row_group_count=metadata.num_row_groups,
@@ -592,7 +890,9 @@ def read_parquet_events(
 
     if not paths:
         raise ArchiveIntegrityError("at least one Parquet path is required")
-    resolved = [str(Path(path).resolve()) for path in paths]
+    input_paths = [Path(path) for path in paths]
+    archived_digests = [_verify_archived_parquet_path(path) for path in input_paths]
+    resolved = [str(path.resolve()) for path in input_paths]
     missing = [path for path in resolved if not Path(path).is_file()]
     if missing:
         raise ArchiveIntegrityError(f"Parquet path does not exist: {missing[0]}")
@@ -630,6 +930,14 @@ def read_parquet_events(
         ) from exc
     finally:
         connection.close()
+
+    for path, archived_digest in zip(input_paths, archived_digests):
+        if archived_digest is not None:
+            post_read_digest = _verify_archived_parquet_path(path)
+            if post_read_digest != archived_digest:
+                raise ArchiveIntegrityError(
+                    f"content address changed while reading {path}"
+                )
 
     for event in events:
         received_epoch_ms = event.pop("_timestamp_received_epoch_ms")

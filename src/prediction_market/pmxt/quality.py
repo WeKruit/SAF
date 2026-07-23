@@ -9,13 +9,14 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass, field
 
+from prediction_market.contracts import validate_contract_v0
 
-CROSSED_BOOK = "CROSSED_BOOK"
-DUPLICATE_EVENT = "DUPLICATE_EVENT"
-MISSING_INITIAL_SNAPSHOT = "MISSING_INITIAL_SNAPSHOT"
-NONPOSITIVE_SIZE = "NONPOSITIVE_SIZE"
-OUT_OF_ORDER = "OUT_OF_ORDER"
-RECEIVE_GAP_CANDIDATE = "RECEIVE_GAP_CANDIDATE"
+
+CROSSED_BOOK = "crossed_book"
+DUPLICATE_EVENT = "duplicate_event"
+MISSING_INITIAL_SNAPSHOT = "missing_initial_snapshot"
+NONPOSITIVE_SIZE = "non_positive_size"
+OUT_OF_ORDER = "out_of_order"
 
 
 @dataclass
@@ -26,7 +27,8 @@ class QualityTracker:
     counts: Counter[str] = field(default_factory=Counter)
 
     def mark(self, flag: str, counter: str, amount: int = 1) -> None:
-        self.flags.add(flag)
+        validated = validate_contract_v0("quality-flags/v0.yaml", flag)
+        self.flags.add(validated)
         self.counts[counter] += amount
 
     def sorted_flags(self) -> tuple[str, ...]:

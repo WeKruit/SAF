@@ -17,13 +17,18 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
+from prediction_market.contracts import (
+    EventEnvelopeV0,
+    FixedPointV0,
+    level2_stream_sha256,
+    replay_order_key,
+)
 from prediction_market.pmxt.quality import (
     CROSSED_BOOK,
     DUPLICATE_EVENT,
     MISSING_INITIAL_SNAPSHOT,
     NONPOSITIVE_SIZE,
     OUT_OF_ORDER,
-    RECEIVE_GAP_CANDIDATE,
     QualityTracker,
 )
 
@@ -49,7 +54,7 @@ class PMXTValidationError(ValueError):
 class ReconstructionResult:
     """Deterministic semantic stream plus auditable quality observations."""
 
-    semantic_events: tuple[dict[str, object], ...]
+    semantic_events: tuple[EventEnvelopeV0, ...]
     stream_sha256: str
     quality_flags: tuple[str, ...]
     counts: dict[str, int]
@@ -71,6 +76,7 @@ class _PreparedEvent:
     sort_key: tuple[str, str, str, str, str]
     receive_at: datetime
     source_at: datetime
+    source_event_id: str
 
 
 def _plain_decimal(value: Decimal) -> str:
@@ -274,6 +280,69 @@ def canonical_event_sort_key(
     )
 
 
+def _native_references(event: Mapping[str, Any]) -> list[dict[str, str]]:
+    return [
+        {
+            "namespace": "polymarket.asset_id",
+            "native_id": event["asset_id"],
+        },
+        {
+            "namespace": "polymarket.condition_id",
+            "native_id": event["market"],
+        },
+    ]
+
+
+def _empty_canonical_references() -> dict[str, object]:
+    return {
+        "competition_id": None,
+        "game_id": None,
+        "participant_ids": [],
+        "venue_event_id": None,
+        "market_id": None,
+        "outcome_id": None,
+        "condition_id": None,
+    }
+
+
+def _source_event_envelope(
+    canonical: Mapping[str, Any],
+    *,
+    source_event_sha256: str,
+) -> EventEnvelopeV0:
+    digest_hex = source_event_sha256.removeprefix("sha256:")
+    return EventEnvelopeV0.create(
+        envelope_version="v0",
+        event_type="raw_observation",
+        payload_schema_version="v0",
+        source={
+            "system": "pmxt-v2",
+            "stream": "canonical-orderbook-row",
+            "venue": "polymarket",
+            "sequence": source_event_sha256,
+            "capture_session_id": f"pmxt-canonical-row-{digest_hex}",
+            "record_ordinal": 0,
+        },
+        time={
+            "receive_at": canonical["timestamp_received"],
+            "receive_basis": "upstream_exporter",
+            "source_at": canonical["timestamp"],
+            "publish_at": None,
+            "exchange_at": None,
+        },
+        canonical_refs=_empty_canonical_references(),
+        native_refs=_native_references(canonical),
+        lineage={
+            "raw_object_hash": source_event_sha256,
+            "raw_record_ordinal": 0,
+        },
+        experiment_id=None,
+        rule_snapshot_ref=None,
+        quality_flags=[],
+        payload={"canonical_pmxt_event": canonical},
+    )
+
+
 def _prepare(event: Mapping[str, object]) -> _PreparedEvent:
     canonical = canonicalize_event(event)
     payload = _canonical_bytes(canonical)
@@ -294,6 +363,10 @@ def _prepare(event: Mapping[str, object]) -> _PreparedEvent:
             canonical["timestamp_received"], field="timestamp_received"
         ),
         source_at=_utc_datetime(canonical["timestamp"], field="timestamp"),
+        source_event_id=_source_event_envelope(
+            canonical,
+            source_event_sha256=sha256,
+        ).event_id,
     )
 
 
@@ -387,9 +460,12 @@ def _apply_delta(
 
 def _levels_for_output(
     levels: Mapping[Decimal, Decimal], *, reverse: bool
-) -> list[dict[str, str]]:
+) -> list[dict[str, dict[str, object]]]:
     return [
-        {"price": _plain_decimal(price), "size": _plain_decimal(levels[price])}
+        {
+            "price": FixedPointV0.from_value(price).model_dump(mode="python"),
+            "size": FixedPointV0.from_value(levels[price]).model_dump(mode="python"),
+        }
         for price in sorted(levels, reverse=reverse)
     ]
 
@@ -398,18 +474,42 @@ def _semantic_event(
     event: _PreparedEvent,
     state: _BookState,
     local_flags: set[str],
-) -> dict[str, object]:
-    return {
-        "timestamp_received": event.canonical["timestamp_received"],
-        "timestamp": event.canonical["timestamp"],
-        "market": event.canonical["market"],
-        "asset_id": event.canonical["asset_id"],
-        "event_type": event.canonical["event_type"],
-        "source_event_sha256": event.sha256,
-        "bids": _levels_for_output(state.bids, reverse=True),
-        "asks": _levels_for_output(state.asks, reverse=False),
-        "quality_flags": sorted(local_flags),
-    }
+) -> EventEnvelopeV0:
+    return EventEnvelopeV0.create(
+        envelope_version="v0",
+        event_type="normalized_observation",
+        payload_schema_version="v0",
+        source={
+            "system": "pmxt-l2-reconstructor",
+            "stream": "visible-orderbook-state",
+            "venue": "polymarket",
+            "sequence": event.sha256,
+            "capture_session_id": None,
+            "record_ordinal": None,
+        },
+        time={
+            "receive_at": event.canonical["timestamp_received"],
+            "receive_basis": "upstream_exporter",
+            "source_at": event.canonical["timestamp"],
+            "publish_at": None,
+            "exchange_at": None,
+        },
+        canonical_refs=_empty_canonical_references(),
+        native_refs=_native_references(event.canonical),
+        lineage={"parent_event_ids": [event.source_event_id]},
+        experiment_id="X-01",
+        rule_snapshot_ref=None,
+        quality_flags=sorted(local_flags),
+        payload={
+            "native_market": event.canonical["market"],
+            "native_asset_id": event.canonical["asset_id"],
+            "source_event_type": event.canonical["event_type"],
+            "source_event_sha256": event.sha256,
+            "source_event_id": event.source_event_id,
+            "bids": _levels_for_output(state.bids, reverse=True),
+            "asks": _levels_for_output(state.asks, reverse=False),
+        },
+    )
 
 
 def reconstruct(
@@ -449,12 +549,14 @@ def reconstruct(
     )
 
     unique_by_hash: dict[str, _PreparedEvent] = {}
+    duplicate_hashes: set[str] = set()
     for event in prepared:
         existing = unique_by_hash.get(event.sha256)
         if existing is not None:
             if existing.canonical_bytes != event.canonical_bytes:
                 raise PMXTValidationError("canonical SHA-256 collision detected")
             tracker.mark(DUPLICATE_EVENT, "duplicate_events")
+            duplicate_hashes.add(event.sha256)
             continue
         unique_by_hash[event.sha256] = event
 
@@ -463,13 +565,15 @@ def reconstruct(
     states: dict[tuple[str, str], _BookState] = {}
     previous_receive: dict[tuple[str, str], datetime] = {}
     previous_source: dict[tuple[str, str], datetime] = {}
-    semantic_events: list[dict[str, object]] = []
+    semantic_events: list[EventEnvelopeV0] = []
 
     for event in ordered:
         canonical = event.canonical
         stream = (canonical["market"], canonical["asset_id"])
         state = states.setdefault(stream, _BookState(bids={}, asks={}))
         local_flags: set[str] = set()
+        if event.sha256 in duplicate_hashes:
+            local_flags.add(DUPLICATE_EVENT)
 
         prior_source = previous_source.get(stream)
         if prior_source is not None and event.source_at < prior_source:
@@ -481,8 +585,7 @@ def reconstruct(
         if prior is not None:
             delta_ms = int((event.receive_at - prior).total_seconds() * 1_000)
             if delta_ms > gap_threshold_ms:
-                tracker.mark(RECEIVE_GAP_CANDIDATE, "gap_candidates")
-                local_flags.add(RECEIVE_GAP_CANDIDATE)
+                tracker.counts["gap_candidates"] += 1
         previous_receive[stream] = event.receive_at
 
         event_type = canonical["event_type"]
@@ -500,13 +603,11 @@ def reconstruct(
             local_flags.add(CROSSED_BOOK)
         semantic_events.append(_semantic_event(event, state, local_flags))
 
-    counts["semantic_events"] = len(semantic_events)
-    stream_payload = b"".join(
-        _canonical_bytes(event) + b"\n" for event in semantic_events
-    )
-    stream_sha256 = f"sha256:{hashlib.sha256(stream_payload).hexdigest()}"
+    ordered_semantic_events = tuple(sorted(semantic_events, key=replay_order_key))
+    counts["semantic_events"] = len(ordered_semantic_events)
+    stream_sha256 = level2_stream_sha256(ordered_semantic_events)
     return ReconstructionResult(
-        semantic_events=tuple(semantic_events),
+        semantic_events=ordered_semantic_events,
         stream_sha256=stream_sha256,
         quality_flags=tracker.sorted_flags(),
         counts=dict(sorted(counts.items())),

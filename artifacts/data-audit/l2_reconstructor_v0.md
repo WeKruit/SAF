@@ -12,7 +12,7 @@ The reconstructor applies only two PMXT event types:
 1. `book` replaces both sides for one `(market, asset_id)` stream from the official `[price, size]` pairs.
 2. `price_change` updates bids for `BUY`, asks for `SELL`, and removes a level when delta size is zero.
 
-Prices and sizes are parsed as `Decimal` and emitted as canonical decimal strings. Binary floats, naïve timestamps, non-millisecond timestamps, malformed book pairs, and invalid sides fail closed.
+Prices and sizes are parsed as `Decimal` and emitted as canonical `FixedPointV0 {atoms, scale}` values. Every semantic state is a validated `EventEnvelopeV0` with event type `normalized_observation`, `X-01` experiment lineage, native Polymarket market/asset references, and a parent event ID deterministically derived through a validated source-row envelope. Canonical IDs remain null until an ID-registry snapshot resolves them; the reconstructor does not fabricate mappings. Binary floats, naïve timestamps, non-millisecond timestamps, malformed book pairs, and invalid sides fail closed.
 
 The implementation does **not** reconstruct queue position, order identity, trade matching, or fills. `queue_fill_reconstructed` is always `false`. PMXT has no exchange sequence field, so none of those claims can be recovered from this stream.
 
@@ -30,22 +30,23 @@ The final in-memory ordering adds canonical event SHA-256 as the fifth key, yiel
 receive_ts → source_ts → market → asset_id → payload_hash
 ```
 
-Canonical events use sorted JSON keys, UTF-8, UTC millisecond timestamps, fixed-point decimal strings, and no insignificant whitespace. Exact canonical duplicates are removed by SHA-256. Each Level-2 semantic event contains the source event hash and the complete sorted bid/ask state. The stream hash is SHA-256 over canonical JSON Lines, including one newline per semantic event.
+Canonical source rows use sorted JSON keys, UTF-8, UTC millisecond timestamps, fixed-point decimals, and no insignificant whitespace. Exact canonical duplicates are removed by SHA-256. Each semantic envelope contains the source event ID/hash and complete sorted bid/ask state.
 
-Input enumeration order does not affect semantic events, quality counts, or the stream hash. `OUT_OF_ORDER` means that, after receive-time ordering, source time moved backward within the same `(market, asset_id)` stream. It does not mean the caller supplied files in a particular order.
+The Level-2 hash is produced only by the repository's accepted `level2_stream_sha256` implementation. It validates and internally orders every `EventEnvelopeV0`, then hashes the `prediction-market:event-stream:v0\x00` domain tag, one `uint64be` event count, and each ordered event's fixed 32-byte `event_id` digest. It is not a JSONL or delimiter-based hash.
+
+Input enumeration order does not affect semantic events, quality counts, or the stream hash. `out_of_order` means that, after receive-time ordering, source time moved backward within the same `(market, asset_id)` stream. It does not mean the caller supplied files in a particular order.
 
 ## Quality semantics
 
 | Flag | Exact meaning |
 |---|---|
-| `DUPLICATE_EVENT` | Repeated canonical source event |
-| `OUT_OF_ORDER` | Source timestamp regressed within a receive-ordered stream |
-| `RECEIVE_GAP_CANDIDATE` | Same-stream receive interval exceeded the configured threshold; not confirmed loss |
-| `MISSING_INITIAL_SNAPSHOT` | Delta arrived before that asset's first observed snapshot |
-| `NONPOSITIVE_SIZE` | Snapshot level had size ≤ 0, or delta had size < 0; zero delta remains the defined delete operation |
-| `CROSSED_BOOK` | After an applied semantic event, best bid was greater than or equal to best ask |
+| `duplicate_event` | Repeated canonical source event |
+| `out_of_order` | Source timestamp regressed within a receive-ordered stream |
+| `missing_initial_snapshot` | Delta arrived before that asset's first observed snapshot |
+| `non_positive_size` | Snapshot level had size ≤ 0, or delta had size < 0; zero delta remains the defined delete operation |
+| `crossed_book` | After an applied semantic event, best bid was greater than or equal to best ask |
 
-Counts are event/level observations, not distinct incidents. A time gap is never promoted to confirmed packet loss because no sequence is available.
+These flags are validated against the closed `contracts/quality-flags/v0.yaml` vocabulary. Counts are event/level observations, not distinct incidents. `gap_candidates` remains a diagnostic counter only: a receive-time interval is never promoted to the canonical `gap_detected` flag because PMXT provides no sequence evidence.
 
 ## Real NBA-hour measurement
 
@@ -70,18 +71,18 @@ The pushed-down query over `polymarket_orderbook_2026-05-28T23.parquet` observed
 | Nonpositive-size anomalies | 0 |
 | Crossed-book observations | 0 |
 
-Two independent executions over the same preserved original produced the same stream hash:
+Forward and reverse input enumeration over the same preserved original produced 9,342 validated envelopes and the same contract-framed stream hash:
 
 ```text
-sha256:3fadfe6daa685b92b8cb2578964dbf405e92b7a1ab6367b8144155adf18fb981
+sha256:a812eee2881b1a745da6e484c5a4c0be27233c10a4b445fd22cfecccb49103b7
 ```
 
 The tracked deterministic fixture additionally covers exact deduplication, input-order independence, fixed-point updates, delete semantics, crossed books, nonpositive sizes, missing snapshots, and receive-gap candidates. Its current test-vector stream hash is:
 
 ```text
-sha256:c0e89df02ed173ab0c8eb704deefdc89c4a5fdd83724a4474e3941707a9ede86
+sha256:6f2874def23b05d9d450f1d7858a51c8e2c9d1a8a8c6fea89a92ecb9a8289d4e
 ```
 
 ## Evidence boundary
 
-This is an engineering reconstruction measurement for one real hour. It is not an X-01 result: the full selected day, an independent implementation comparison, preregistered hashes, and all X-01 locks remain outstanding. Level-1 replay is derivable from these Level-2 states, but no execution or fill conclusion follows from that fact.
+This is an engineering reconstruction measurement for one real hour. It does not complete Charter Phase 0 or Phase 1 and is not an X-01 result: the full selected day, an independent implementation comparison, preregistered hashes, and all X-01 locks remain outstanding. Level-1 replay is derivable from these Level-2 states, but no execution or fill conclusion follows from that fact.

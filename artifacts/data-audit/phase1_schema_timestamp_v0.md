@@ -12,7 +12,7 @@
 | Bounded schema sample | `polymarket_orderbook_2026-05-22T18.parquet` | 1,611,563 | `sha256:f7e71296c6163760c94389a40458ec3d9e9769f92975c5f68c1c44b313ff7661` | 224,332 | 1 |
 | NBA-hour sample | `polymarket_orderbook_2026-05-28T23.parquet` | 436,334,049 | `sha256:590216674e38f820fa011362967124603d3aa28959d05fb9b54b6ca4d3bcf399` | 75,587,694 | 73 |
 
-Both files were downloaded from `https://r2v2.pmxt.dev/<filename>`, preserved unchanged under a SHA-256 content address, and audited from the preserved object. The raw objects remain under the gitignored `var/raw/pmxt-v2/sha256/` store; the committed reports pin URL, exact byte length, and hash.
+Both files were downloaded from `https://r2v2.pmxt.dev/<filename>`, preserved unchanged under a SHA-256 content address, and audited from the preserved object. The raw objects remain under the gitignored `var/raw/pmxt-v2/sha256/` store; the committed reports pin URL, exact byte length, and hash. Publication uses a same-directory fully synced staging file followed by atomic no-overwrite publication. Every path component is opened without following symlinks, published objects are read-only, and every reuse or archived read verifies bytes against the filename content address.
 
 The bounded sample was selected as the smallest currently listed object, breaking equal-size ties toward the later hour. It is useful for schema verification but is not representative of market activity. The second object was deliberately selected because official Gamma metadata identifies condition `0x3904885b86a86a2e20b76d92e3eb91ba5e9d6cd3ed294ee759c5f638fe8ec9bb` as the `Thunder vs. Spurs` NBA moneyline market (`nba-okc-sas-2026-05-28`). The metadata lookup was <https://gamma-api.polymarket.com/markets?condition_ids=0x3904885b86a86a2e20b76d92e3eb91ba5e9d6cd3ed294ee759c5f638fe8ec9bb>.
 
@@ -55,7 +55,7 @@ Null counts for every column are in the machine reports. Timestamp, market, even
 
 ## Remaining gate
 
-The NBA evidence covers one market in one hourly object, not the complete UTC day. It therefore validates the implementation and sample boundary but does not complete X-01, X-02, or X-03. A formal one-market/day result still requires all selected-day objects, a frozen market-metadata snapshot, preregistered hashes, and the independent reconstruction comparison required by X-01.
+The NBA evidence covers one market in one hourly object, not the complete UTC day. Its optional reconstruction summary records 9,980 inputs, 9,342 validated `EventEnvelopeV0` states, and contract-framed Level-2 hash `sha256:a812eee2881b1a745da6e484c5a4c0be27233c10a4b445fd22cfecccb49103b7`. It therefore validates the implementation and sample boundary but does not complete Charter Phase 0/1, X-01, X-02, or X-03. A formal one-market/day result still requires all selected-day objects, a frozen market-metadata snapshot, preregistered hashes, and the independent reconstruction comparison required by X-01.
 
 ## Reproduction
 
@@ -69,6 +69,7 @@ uv run python -m prediction_market.cli.audit_pmxt sample \
   --url https://r2v2.pmxt.dev/polymarket_orderbook_2026-05-28T23.parquet \
   --max-files 1 \
   --max-bytes 600000000 \
+  --condition-id 0x3904885b86a86a2e20b76d92e3eb91ba5e9d6cd3ed294ee759c5f638fe8ec9bb \
   --raw-root var/raw \
   --output artifacts/data-audit/phase1_nba_hour_sample.json
 ```

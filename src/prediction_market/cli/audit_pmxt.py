@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import tempfile
 from collections.abc import Sequence
@@ -18,8 +19,10 @@ from prediction_market.pmxt.archive import (
     audit_parquet,
     download_and_preserve,
     fetch_archive_inventory,
+    read_parquet_events,
     summarize_inventory,
 )
+from prediction_market.pmxt.reconstructor import reconstruct
 
 
 def _positive_integer(value: str) -> int:
@@ -34,6 +37,14 @@ def _positive_float(value: str) -> float:
     if parsed <= 0:
         raise argparse.ArgumentTypeError("value must be positive")
     return parsed
+
+
+def _native_condition_id(value: str) -> str:
+    if re.fullmatch(r"0x[0-9a-fA-F]{64}", value) is None:
+        raise argparse.ArgumentTypeError(
+            "condition ID must be a 0x-prefixed 32-byte identifier"
+        )
+    return value
 
 
 def _utc_now() -> str:
@@ -137,13 +148,31 @@ def _sample_report(args: argparse.Namespace) -> dict[str, object]:
             timeout_seconds=args.timeout_seconds,
         )
         parquet_audit = audit_parquet(archived.object_path)
-        files.append(
-            {
-                "inventory_object": entry.to_dict(),
-                "archive": archived.to_dict(),
-                "parquet_audit": parquet_audit.to_dict(),
+        file_report: dict[str, object] = {
+            "inventory_object": entry.to_dict(),
+            "archive": archived.to_dict(),
+            "parquet_audit": parquet_audit.to_dict(),
+        }
+        if args.condition_id is not None:
+            source_events = read_parquet_events(
+                [archived.object_path],
+                market=args.condition_id,
+            )
+            if not source_events:
+                raise ArchiveError(
+                    f"condition {args.condition_id} has no events in {entry.filename}"
+                )
+            reconstruction = reconstruct(source_events)
+            file_report["condition_reconstruction"] = {
+                "native_condition_id": args.condition_id,
+                "scope": "bounded_single_hour_engineering_sample",
+                "phase_gate_complete": False,
+                "counts": reconstruction.counts,
+                "quality_flags": list(reconstruction.quality_flags),
+                "level2_stream_sha256": reconstruction.stream_sha256,
+                "queue_fill_reconstructed": reconstruction.queue_fill_reconstructed,
             }
-        )
+        files.append(file_report)
     return {
         "audit_kind": "pmxt_phase1_public_sample",
         "retrieved_at": _utc_now(),
@@ -154,6 +183,7 @@ def _sample_report(args: argparse.Namespace) -> dict[str, object]:
         "limitations": [
             "PMXT v2 has no exchange sequence number.",
             "This command audits original Parquet bytes and schema; it does not infer queue position or fills.",
+            "A requested condition reconstruction covers each selected hourly object only and does not complete any Charter Phase 0/1 or X-01 gate.",
         ],
     }
 
@@ -183,6 +213,11 @@ def _build_parser() -> argparse.ArgumentParser:
     sample.add_argument("--max-files", type=_positive_integer, default=1)
     sample.add_argument("--max-bytes", type=_positive_integer, default=600_000_000)
     sample.add_argument("--timeout-seconds", type=_positive_float, default=120.0)
+    sample.add_argument(
+        "--condition-id",
+        type=_native_condition_id,
+        help="optionally reconstruct one native condition within each selected hour",
+    )
     sample.add_argument("--raw-root", type=Path, required=True)
     sample.add_argument("--output", type=Path)
     return parser
