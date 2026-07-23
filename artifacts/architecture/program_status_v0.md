@@ -12,7 +12,7 @@ The repository foundation, Team A contracts, Team H registry, immutable raw stor
 
 - X-01: `DATA_READY_PREFLIGHT_ONLY`; the selected 2026-05-28 UTC day has a frozen 24-hour, 24-object input manifest and preflight. The preflight explicitly records `reconstruction_executed: false`; all-contract full-day semantic reconstruction, independent price/size comparison, and remaining registration locks are open.
 - X-02: `DATA_READY_NO_RESULT`; the frozen bundle covers the four selected UTC days and 96 objects. Its bundle hash is registered, but the experiment card's `results_ref` remains empty and no timestamp measurement result or promotion decision is claimed.
-- X-03: registered; one NBA market mapping exists, but the required four-week sport census is not complete.
+- X-03: `POC_ONLY`; the fail-closed 28-day normalized-input census aggregator and tests exist, including PIT-missing exclusion and deterministic sport-by-venue metrics. No frozen four-week PMXT/Polymarket/Kalshi input manifest or empirical census result exists, so the formal experiment remains incomplete.
 - X-04: registered; no formal event-study execution has started because X-01 and X-02 are incomplete.
 - X-05: specification complete; label generation remains blocked by unresolved locks and X-01.
 - X-06: model/validation POC exists; empirical run is blocked by O-005 and unresolved data choices.

@@ -18,3 +18,4 @@ W1-016,G,Build X-10 queue gate and eight module reports,artifacts/strategy-repor
 W1-017,I,Create compliance matrix and data license register,registries/compliance_matrix.csv,COMPLETE,No operating context is green,I,v0,Team_I_compliance_green
 W1-018,B+A+H,Build deterministic X-09 vertical-slice harness,artifacts/architecture/x09_vertical_slice_v0.md,COMPLETE,Harness passes but formal X-09 locks and X-01 dependency remain unresolved,B+A+H,v0,X09_deterministic_vertical_slice
 W1-019,A,Integrate artifact backlog risk and NO-GO audits,artifacts/architecture/program_status_v0.md,COMPLETE,-,A,v0,first_round_artifact_gate
+W1-020,C+E,Implement fail-closed X-03 census aggregation POC,src/prediction_market/sports/x03.py,COMPLETE,No frozen four-week PMXT Polymarket Kalshi input manifest or formal census result exists,C+E,v0,2026-08-05_W2_review
