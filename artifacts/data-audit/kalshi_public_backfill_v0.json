@@ -1,0 +1,65 @@
+{
+  "artifact_id": "KALSHI-PUBLIC-BACKFILL-V0",
+  "artifact_version": "v0",
+  "owner": "Team C",
+  "due_gate": "2026-07-29_W1_data_ready",
+  "status": "BOUNDED_ACCESS_SMOKE",
+  "dataset_id": "DS-KALSHI-HISTORICAL",
+  "license_review_id": "O-003",
+  "license_status": "pending",
+  "fetched_at": "2026-07-23T04:00:27.243705Z",
+  "source": {
+    "api_root": "https://external-api.kalshi.com/trade-api/v2",
+    "authentication_required": false,
+    "historical_l2_claimed": false
+  },
+  "cutoff": {
+    "market_settled_ts": "2026-05-23T00:00:00Z",
+    "orders_updated_ts": "2026-05-23T00:00:00Z",
+    "trades_created_ts": "2026-05-23T00:00:00Z",
+    "manifest_sha256": "sha256:24b699eb65f466367f304e8992a87e4d0a000202e98699fd48e83f8a1fbfffac",
+    "object_sha256": "sha256:f929a2ef3869c14dea6492341b3ec163e727a0a5eaac8eaeebd93d4b71746238"
+  },
+  "bounded_pages": {
+    "markets": {
+      "complete": false,
+      "page_count": 1,
+      "raw_item_count": 1000,
+      "unique_item_count": 1000,
+      "exact_duplicate_count": 0,
+      "stable_id_sha256": "sha256:ab18a83b6965c9ff830abfcb07964717853a427d71f7f59d320ddeddb227db5d",
+      "terminal_cursor": "CgwIu8zI0AYQyKiwzwMSOUtYTVZFU1BPUlRTTVVMVElHQU1FRVhURU5ERUQtUzIwMjZFNEVGOTBEOEIyOC1CNkRCNjNDOTIyMg",
+      "manifest_sha256": "sha256:91fadcaed9ee963e31a885e3b1fa323c08d46adba5715fb3b9aab6dd5049ef4d",
+      "object_sha256": "sha256:c237d3f09a914d68515513f2f50fc908a32d9d25bc0fddfc5786ddc796dfdb7d"
+    },
+    "trades": {
+      "complete": false,
+      "page_count": 1,
+      "raw_item_count": 1000,
+      "unique_item_count": 1000,
+      "exact_duplicate_count": 0,
+      "stable_id_sha256": "sha256:615a73ca8b272f5cda26ef8cf6b60162009a52fcdb74c5066122bbd8a1b75791",
+      "terminal_cursor": "EhIKEILy9oqVMHMLCOmfB0W0tF8aCwjx_sjQBhCQ7csp",
+      "manifest_sha256": "sha256:2e6dc7d63d6b71f10a2ccf07b9bd0785ec16e851c074a7f1d752836e5276f20b",
+      "object_sha256": "sha256:834a82546f43923be1f9cbb28a377fd5873d282da350f6f329224bbda89aaaba"
+    }
+  },
+  "candlestick_smoke": {
+    "fetched_at": "2026-07-23T04:05:19.156590Z",
+    "ticker": "KXMVESPORTSMULTIGAMEEXTENDED-S20268E997F90E45-FA888857746",
+    "start_ts": 1779579600,
+    "end_ts": 1779580200,
+    "period_interval_minutes": 1,
+    "candlestick_count": 5,
+    "first_end_period_ts": 1779579720,
+    "last_end_period_ts": 1779579960,
+    "cutoff_manifest_sha256": "sha256:3e836440b819fb31505eddb273f6229f72ed1afd1143f037fe71bd18bc7527b2",
+    "manifest_sha256": "sha256:1ab0a9613aab0b148e8f7e028344859b3f5b1cc33f1f5d27776e54ad63921abd",
+    "object_sha256": "sha256:3f32b030f73b4234c7e5262b58ae82a4a0722f1490d24cd8e6ece2338ff632b4"
+  },
+  "limitations": [
+    "This is a one-page access and raw-preservation smoke, not a complete historical backfill.",
+    "Kalshi public historical REST exposes markets, trades, and candlesticks; it does not provide historical L2.",
+    "O-003 remains pending, so these objects are not eligible for formal empirical promotion."
+  ]
+}
