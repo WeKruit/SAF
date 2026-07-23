@@ -370,9 +370,10 @@ def _native_markets(paths: Sequence[Path]) -> tuple[str, ...]:
             raise FullDayInputError("PMXT market identifier has an invalid type")
         if _MARKET_PATTERN.fullmatch(market) is None:
             raise FullDayInputError(f"invalid PMXT market identifier: {market!r}")
-        markets.append(market.lower())
-    if len(markets) != len(set(markets)):
-        raise FullDayInputError("case-normalized PMXT market identifiers collide")
+        # Preserve the byte-exact native spelling: the pushed-down Parquet
+        # filter is binary equality, so normalizing hex case would silently
+        # select zero rows for an uppercase source identifier.
+        markets.append(market)
     return tuple(sorted(markets))
 
 

@@ -47,13 +47,13 @@ def _schema() -> pa.Schema:
     )
 
 
-def _write_hour(path: Path, hour: int) -> None:
+def _write_hour(path: Path, hour: int, *, market: str = MARKET) -> None:
     observed = datetime(2026, 5, 28, hour, 0, 0, 100_000, tzinfo=timezone.utc)
     snapshot = hour == 0
     values: dict[str, list[object]] = {
         "timestamp_received": [observed],
         "timestamp": [observed - timedelta(milliseconds=20)],
-        "market": [MARKET.encode("ascii")],
+        "market": [market.encode("ascii")],
         "event_type": ["book" if snapshot else "price_change"],
         "asset_id": [ASSET],
         "bids": ['[["0.45", "100"]]' if snapshot else None],
@@ -70,13 +70,15 @@ def _write_hour(path: Path, hour: int) -> None:
     pq.write_table(table, path)
 
 
-def _day_inputs(tmp_path: Path) -> tuple[list[ArchiveEntry], list[HourlyObjectRef]]:
+def _day_inputs(
+    tmp_path: Path, *, market: str = MARKET
+) -> tuple[list[ArchiveEntry], list[HourlyObjectRef]]:
     entries: list[ArchiveEntry] = []
     objects: list[HourlyObjectRef] = []
     for hour in range(24):
         filename = f"polymarket_orderbook_2026-05-28T{hour:02d}.parquet"
         path = tmp_path / filename
-        _write_hour(path, hour)
+        _write_hour(path, hour, market=market)
         payload = path.read_bytes()
         observed_at = datetime(2026, 5, 28, hour, tzinfo=timezone.utc)
         url = f"https://r2v2.pmxt.dev/{filename}"
@@ -206,3 +208,23 @@ def test_full_day_fails_closed_when_locked_object_is_tampered(
 
     with pytest.raises(FullDayInputError, match="SHA-256"):
         run_full_day_reconstruction(tmp_path, manifest)
+
+
+def test_native_market_case_is_preserved_for_exact_parquet_filtering(
+    tmp_path: Path,
+) -> None:
+    uppercase_market = "0x" + "A" * 64
+    entries, objects = _day_inputs(tmp_path, market=uppercase_market)
+    manifest = build_full_day_manifest(
+        day=DAY,
+        entries=select_complete_utc_day(entries, day=DAY),
+        objects=objects,
+        inventory_sha256=_digest(b"inventory"),
+        canonicalization_version="pmxt-reconstructor-v1",
+    )
+
+    report = run_full_day_reconstruction(tmp_path, manifest)
+
+    assert report.market_count == 1
+    assert report.input_event_count == 24
+    assert report.market_results[0].native_market_id == uppercase_market
