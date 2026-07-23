@@ -1,0 +1,357 @@
+{
+  "artifact_id": "NFL-SEASON-STATE-VALIDATION-V2",
+  "artifact_sha256": "sha256:c98c27ffb6a4dcc37cd2a55fd30b74fe3ad03f9d2c265f2ab846c8799594b8bb",
+  "artifact_version": "v2",
+  "dataset": {
+    "dataset_id": "DS-NFLVERSE",
+    "license_ref": "O-010",
+    "license_status": "approved",
+    "raw_object_sha256": "sha256:3730c4db2ab99d2dfc4017de975b7610c46c35301b9280b65c03de1b1c74265a",
+    "season": 2025,
+    "season_types": [
+      "REG",
+      "POST"
+    ],
+    "source_manifest_sha256": "sha256:e06985cfae03b5967d8970be8a9f7a82699d72b549595c044d1056b553c1d99d",
+    "source_version": "github-release-58152862-20260212T102526Z"
+  },
+  "due_gate": "2026-08-05_W2_review",
+  "evidence_as_of": "2026-07-23",
+  "evidence_boundary": {
+    "alpha_status": "NOT_VERIFIED",
+    "event_lineage": "direct_offline_NFLPlayEvent_ID_binds_raw_SHA_and_full_successor_window",
+    "full_season_event_envelope_integration": false,
+    "live_sla_claimed": false,
+    "matched_as_of_rows": 0,
+    "model_accuracy_claimed": false,
+    "observation_mode": "offline_reconstruction_not_live_pit",
+    "oracle_independence": "oracle_parses_native_rows_without_reducer_or_adapter_helpers",
+    "prediction_market_aligned": false,
+    "probability_model_evaluated": false,
+    "reducer_latency_scope": "state_plus_normalized_event_to_next_state_only; excludes source parsing, I/O, envelopes, model, market join, and network",
+    "state_transition_claim": "independent_native_field_oracle_matches_reducer_v3_for_frozen_2025",
+    "symmetry_status": "NOT_VERIFIED"
+  },
+  "owner": "Team D2+C+H",
+  "status": "PRELIMINARY_RESEARCH_ONLY",
+  "validation": {
+    "canonical_state_sha256": "sha256:63fc2732726e204fcf49500ae39ff40a4ec3b3e1dd9825459ad3369dc53697ed",
+    "census_version": "v0",
+    "completed_games": 285,
+    "dataset_id": "DS-NFLVERSE",
+    "deterministic": true,
+    "fail_closed_games": 0,
+    "failures": [],
+    "field_audits": [
+      {
+        "basis": "native_derived",
+        "comparisons": 48771,
+        "field": "away_score",
+        "matches": 48771,
+        "mismatches": 0
+      },
+      {
+        "basis": "native_direct",
+        "comparisons": 48771,
+        "field": "away_team",
+        "matches": 48771,
+        "mismatches": 0
+      },
+      {
+        "basis": "rule_derived",
+        "comparisons": 48771,
+        "field": "away_timeouts_remaining",
+        "matches": 48771,
+        "mismatches": 0
+      },
+      {
+        "basis": "rule_derived",
+        "comparisons": 48486,
+        "field": "carry_forward_context",
+        "matches": 48486,
+        "mismatches": 0
+      },
+      {
+        "basis": "rule_derived",
+        "comparisons": 48486,
+        "field": "clock_correction",
+        "matches": 48486,
+        "mismatches": 0
+      },
+      {
+        "basis": "native_direct",
+        "comparisons": 48486,
+        "field": "clock_correction_observed_game_seconds_remaining",
+        "matches": 48486,
+        "mismatches": 0
+      },
+      {
+        "basis": "native_direct",
+        "comparisons": 48486,
+        "field": "clock_correction_observed_period_seconds_remaining",
+        "matches": 48486,
+        "mismatches": 0
+      },
+      {
+        "basis": "lineage",
+        "comparisons": 48771,
+        "field": "context_source_order_sequence",
+        "matches": 48771,
+        "mismatches": 0
+      },
+      {
+        "basis": "lineage",
+        "comparisons": 48771,
+        "field": "context_source_play_id",
+        "matches": 48771,
+        "mismatches": 0
+      },
+      {
+        "basis": "native_derived",
+        "comparisons": 48771,
+        "field": "distance",
+        "matches": 48771,
+        "mismatches": 0
+      },
+      {
+        "basis": "native_derived",
+        "comparisons": 48771,
+        "field": "down",
+        "matches": 48771,
+        "mismatches": 0
+      },
+      {
+        "basis": "native_derived",
+        "comparisons": 48771,
+        "field": "drive_id",
+        "matches": 48771,
+        "mismatches": 0
+      },
+      {
+        "basis": "lineage",
+        "comparisons": 48486,
+        "field": "event_context_source_order_sequence",
+        "matches": 48486,
+        "mismatches": 0
+      },
+      {
+        "basis": "lineage",
+        "comparisons": 48486,
+        "field": "event_context_source_play_id",
+        "matches": 48486,
+        "mismatches": 0
+      },
+      {
+        "basis": "native_direct",
+        "comparisons": 48771,
+        "field": "game_id",
+        "matches": 48771,
+        "mismatches": 0
+      },
+      {
+        "basis": "native_direct",
+        "comparisons": 48771,
+        "field": "game_seconds_remaining",
+        "matches": 48771,
+        "mismatches": 0
+      },
+      {
+        "basis": "native_derived",
+        "comparisons": 48771,
+        "field": "goal_to_go",
+        "matches": 48771,
+        "mismatches": 0
+      },
+      {
+        "basis": "native_derived",
+        "comparisons": 48771,
+        "field": "home_score",
+        "matches": 48771,
+        "mismatches": 0
+      },
+      {
+        "basis": "native_direct",
+        "comparisons": 48771,
+        "field": "home_team",
+        "matches": 48771,
+        "mismatches": 0
+      },
+      {
+        "basis": "rule_derived",
+        "comparisons": 48771,
+        "field": "home_timeouts_remaining",
+        "matches": 48771,
+        "mismatches": 0
+      },
+      {
+        "basis": "lineage",
+        "comparisons": 48771,
+        "field": "last_event_id",
+        "matches": 48771,
+        "mismatches": 0
+      },
+      {
+        "basis": "rule_derived",
+        "comparisons": 48486,
+        "field": "lifecycle_action",
+        "matches": 48486,
+        "mismatches": 0
+      },
+      {
+        "basis": "native_direct",
+        "comparisons": 48771,
+        "field": "period",
+        "matches": 48771,
+        "mismatches": 0
+      },
+      {
+        "basis": "native_direct",
+        "comparisons": 48771,
+        "field": "period_seconds_remaining",
+        "matches": 48771,
+        "mismatches": 0
+      },
+      {
+        "basis": "native_derived",
+        "comparisons": 48771,
+        "field": "play_clock_seconds",
+        "matches": 48771,
+        "mismatches": 0
+      },
+      {
+        "basis": "native_derived",
+        "comparisons": 48771,
+        "field": "possession_team",
+        "matches": 48771,
+        "mismatches": 0
+      },
+      {
+        "basis": "rule_derived",
+        "comparisons": 1,
+        "field": "postseason_third_timeout_zero",
+        "matches": 1,
+        "mismatches": 0
+      },
+      {
+        "basis": "rule_derived",
+        "comparisons": 48486,
+        "field": "quarter_end",
+        "matches": 48486,
+        "mismatches": 0
+      },
+      {
+        "basis": "native_direct",
+        "comparisons": 48771,
+        "field": "season_type",
+        "matches": 48771,
+        "mismatches": 0
+      },
+      {
+        "basis": "lineage",
+        "comparisons": 48771,
+        "field": "sequence",
+        "matches": 48771,
+        "mismatches": 0
+      },
+      {
+        "basis": "native_direct",
+        "comparisons": 48771,
+        "field": "source_order_sequence",
+        "matches": 48771,
+        "mismatches": 0
+      },
+      {
+        "basis": "native_direct",
+        "comparisons": 48771,
+        "field": "source_play_id",
+        "matches": 48771,
+        "mismatches": 0
+      },
+      {
+        "basis": "lineage",
+        "comparisons": 48486,
+        "field": "source_window_order_sequences",
+        "matches": 48486,
+        "mismatches": 0
+      },
+      {
+        "basis": "lineage",
+        "comparisons": 48486,
+        "field": "source_window_play_ids",
+        "matches": 48486,
+        "mismatches": 0
+      },
+      {
+        "basis": "rule_derived",
+        "comparisons": 48771,
+        "field": "suspended",
+        "matches": 48771,
+        "mismatches": 0
+      },
+      {
+        "basis": "native_direct",
+        "comparisons": 48771,
+        "field": "terminal",
+        "matches": 48771,
+        "mismatches": 0
+      },
+      {
+        "basis": "rule_derived",
+        "comparisons": 48486,
+        "field": "timeout_charge_team",
+        "matches": 48486,
+        "mismatches": 0
+      },
+      {
+        "basis": "native_derived",
+        "comparisons": 48486,
+        "field": "timeout_kind",
+        "matches": 48486,
+        "mismatches": 0
+      },
+      {
+        "basis": "native_derived",
+        "comparisons": 48486,
+        "field": "timeout_observed",
+        "matches": 48486,
+        "mismatches": 0
+      },
+      {
+        "basis": "native_derived",
+        "comparisons": 48486,
+        "field": "timeout_observed_team",
+        "matches": 48486,
+        "mismatches": 0
+      },
+      {
+        "basis": "native_derived",
+        "comparisons": 48771,
+        "field": "yardline_100",
+        "matches": 48771,
+        "mismatches": 0
+      }
+    ],
+    "games_total": 285,
+    "lifecycle_counts": {
+      "resume": 2,
+      "suspend": 2
+    },
+    "quality_flag_counts": {
+      "source_order_inserted_timeout": 1
+    },
+    "reducer_latency": {
+      "max_ns": 10022042,
+      "mean_ns": 8422,
+      "operations_per_second": 118736,
+      "p50_ns": 8000,
+      "p95_ns": 8667,
+      "p99_ns": 17500,
+      "samples": 96972
+    },
+    "reducer_version": "v3",
+    "rulebook_version": "2025",
+    "scan_runs": 2,
+    "source_version": "github-release-58152862-20260212T102526Z",
+    "transitions": 48486
+  }
+}

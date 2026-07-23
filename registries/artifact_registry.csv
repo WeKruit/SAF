@@ -71,6 +71,8 @@ ART-D1-003,artifacts/game-state/nba_state_engine_validation_v0.json,D1+H,v0,X06_
 ART-D2-001,artifacts/game-state/nfl/evidence_pipeline_poc_v0.md,D2,v0,2026-08-05_W2_review,complete
 ART-D2-002,artifacts/game-state/nfl/x11_real_data_pipeline_evidence_v0.json,D2+H,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
 ART-D2-003,artifacts/game-state/nfl_real_replay_validation_v1.json,D2+C,v1,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
+ART-D2-004,artifacts/game-state/nfl/polymarket_v1_game_binding_audit_v0.json,D2+C+H,v0,2026-08-05_W2_review,RETROSPECTIVE_RESEARCH_ONLY
+ART-D2-005,artifacts/game-state/nfl_season_state_validation_v2.json,D2+C+H,v2,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
 ART-D3-001,artifacts/game-state/soccer/evidence_pipeline_poc_v0.md,D3,v0,2026-08-05_W2_review,complete
 ART-D3-002,artifacts/game-state/soccer/x12_real_data_poc_v0.json,D3+H+I,v0,2026-08-05_W2_review,POC_ONLY
 ART-D3-003,artifacts/game-state/soccer_real_replay_validation_v1.json,D3+C,v1,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
