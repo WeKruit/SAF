@@ -1,0 +1,552 @@
+{
+  "artifact_id": "NFL_POLYMARKET_V1_GAME_BINDING_AUDIT",
+  "artifact_sha256": "sha256:6b3f893d06a613e35b908a0902c9a7d321f202bd2389e85cec81573e6222d875",
+  "artifact_version": "v0",
+  "contract_assessment": {
+    "all_six_documents_contract_validated": true,
+    "contract": "MarketMetadataSnapshotV0",
+    "safe_use": "content-addressed venue metadata as captured in 2026, after the events; valid only for retrospective identity binding",
+    "unsafe_use": "must not be used as game-time point-in-time model or quote evidence"
+  },
+  "evidence_as_of": "2026-07-23T04:26:54.608688Z",
+  "evidence_boundary": {
+    "alpha_status": "NOT_VERIFIED",
+    "executable_depth_available": false,
+    "fill_prices_treated_as_two_sided_quotes": false,
+    "fills_are_level2": false,
+    "forbidden_claims": [
+      "historical L2 reconstruction",
+      "same-time executable bid/ask symmetry",
+      "lead-lag or market mispricing",
+      "queue position or fill probability",
+      "profit, return, or trading alpha"
+    ],
+    "gamma_license_ref": "O-001",
+    "gamma_license_status": "pending",
+    "intended_use": "RETROSPECTIVE_RESEARCH_ONLY",
+    "local_receive_time_available": false,
+    "matched_as_of_rows": 0,
+    "metadata_fetched_after_event": true,
+    "model_output_count": 0,
+    "point_in_time_for_game_state_or_model": false,
+    "profit_or_return_computed": false,
+    "symmetry_status": "NOT_VERIFIED",
+    "venue_rule_snapshot_available": false
+  },
+  "exact_game_bindings": [
+    {
+      "canonical_game_id": "game_nflverse_2022_17_MIA_NE",
+      "canonical_outcome_documents": [
+        {
+          "canonical_refs": {
+            "competition_id": "cmp_nfl",
+            "condition_id": "condition_polymarket_0x86a95921efba50773e078f7b935e0ce94b6bfb35f42fcab86ff63ff226d9237f",
+            "game_id": "game_nflverse_2022_17_MIA_NE",
+            "market_id": "market_polymarket_248292",
+            "outcome_id": "outcome_polymarket_39601455758369911966590594998421737282855690498160527804252361420579184284299",
+            "participant_ids": [
+              "participant_nflverse_MIA",
+              "participant_nflverse_NE"
+            ],
+            "venue_event_id": "venue_event_polymarket_886411"
+          },
+          "captured_at": "2026-07-23T04:26:54.608688Z",
+          "closed": true,
+          "competition": "NFL",
+          "game_start_at": "2023-01-01T18:00:00Z",
+          "native_condition_id": "0x86a95921efba50773e078f7b935e0ce94b6bfb35f42fcab86ff63ff226d9237f",
+          "native_event_id": "886411",
+          "native_market_id": "248292",
+          "native_outcome_id": "Dolphins",
+          "native_token_id": "39601455758369911966590594998421737282855690498160527804252361420579184284299",
+          "participants": [
+            "Miami Dolphins",
+            "New England Patriots"
+          ],
+          "quality_flags": [],
+          "raw_object_hash": "sha256:55197647196c4acdd0187befe3db0ebb296b428355e783b894010fd28cc50e53",
+          "resolution": "Patriots",
+          "resolved": true,
+          "rules": "In the upcoming NFL game scheduled for January 1, 2023:\n\nIf the Miami Dolphins win, this market will resolve to \"Dolphins\".\n\nIf the New England Patriots win, this market will resolve to \"Patriots\".\n\nIf this game ends in a tie, this market will resolve 50-50. If this game is not completed by January 8, 2023, 11:59:59 PM ET, this market will resolve 50-50.",
+          "snapshot_sha256": "sha256:4f930cb8a39af554cf82f04cad55be0ce956bbe58dc51d7bc1d0ce67e49a7bf7",
+          "snapshot_version": "v0",
+          "source_updated_at": "2023-02-10T01:03:40.974Z",
+          "sport": "nfl",
+          "venue": "polymarket"
+        },
+        {
+          "canonical_refs": {
+            "competition_id": "cmp_nfl",
+            "condition_id": "condition_polymarket_0x86a95921efba50773e078f7b935e0ce94b6bfb35f42fcab86ff63ff226d9237f",
+            "game_id": "game_nflverse_2022_17_MIA_NE",
+            "market_id": "market_polymarket_248292",
+            "outcome_id": "outcome_polymarket_32617860024739527772596931407224187377153925332092639664308668372667366263664",
+            "participant_ids": [
+              "participant_nflverse_MIA",
+              "participant_nflverse_NE"
+            ],
+            "venue_event_id": "venue_event_polymarket_886411"
+          },
+          "captured_at": "2026-07-23T04:26:54.608688Z",
+          "closed": true,
+          "competition": "NFL",
+          "game_start_at": "2023-01-01T18:00:00Z",
+          "native_condition_id": "0x86a95921efba50773e078f7b935e0ce94b6bfb35f42fcab86ff63ff226d9237f",
+          "native_event_id": "886411",
+          "native_market_id": "248292",
+          "native_outcome_id": "Patriots",
+          "native_token_id": "32617860024739527772596931407224187377153925332092639664308668372667366263664",
+          "participants": [
+            "Miami Dolphins",
+            "New England Patriots"
+          ],
+          "quality_flags": [],
+          "raw_object_hash": "sha256:55197647196c4acdd0187befe3db0ebb296b428355e783b894010fd28cc50e53",
+          "resolution": "Patriots",
+          "resolved": true,
+          "rules": "In the upcoming NFL game scheduled for January 1, 2023:\n\nIf the Miami Dolphins win, this market will resolve to \"Dolphins\".\n\nIf the New England Patriots win, this market will resolve to \"Patriots\".\n\nIf this game ends in a tie, this market will resolve 50-50. If this game is not completed by January 8, 2023, 11:59:59 PM ET, this market will resolve 50-50.",
+          "snapshot_sha256": "sha256:bc16c9d50dfad21b763c0d9b59c1a62efcec2b83c3f376a1959f26135ce9b4b5",
+          "snapshot_version": "v0",
+          "source_updated_at": "2023-02-10T01:03:40.974Z",
+          "sport": "nfl",
+          "venue": "polymarket"
+        }
+      ],
+      "condition_id": "0x86a95921efba50773e078f7b935e0ce94b6bfb35f42fcab86ff63ff226d9237f",
+      "gamma_event_id": "886411",
+      "gamma_manifest_sha256": "sha256:25b00196b675a9e460df972e7c2e92e9b4140e9281fe351115ed315915aab068",
+      "gamma_market_id": "248292",
+      "gamma_object_sha256": "sha256:55197647196c4acdd0187befe3db0ebb296b428355e783b894010fd28cc50e53",
+      "identity": {
+        "away_team": "MIA",
+        "fuzzy_matching_used": false,
+        "game_date": "2023-01-01",
+        "gamma_full_team_names": [
+          "Miami Dolphins",
+          "New England Patriots"
+        ],
+        "gamma_nfl_abbreviations": [
+          "MIA",
+          "NE"
+        ],
+        "gamma_outcome_aliases": [
+          "Dolphins",
+          "Patriots"
+        ],
+        "home_team": "NE",
+        "match_method": "gamma_text_alias_parse_then_unique_unordered_team_pair_date_scan"
+      },
+      "native_nflverse_game_id": "2022_17_MIA_NE",
+      "nflverse_manifest_sha256": "sha256:d4ab4bd0dbf09d2fc199c0f9b8bb0c151182c3130fa17cae0599d08d74bd496d",
+      "nflverse_object_sha256": "sha256:931121d8897779d7944e2a293e92ed8799c8e5cceef84096ac42339003fedc09",
+      "nflverse_row_count": 179,
+      "resolution_cross_check": {
+        "extract_winning_outcome": "Patriots",
+        "gamma_outcome_prices": [
+          "0.0000007551082340058121376113524791800999",
+          "0.9999992448917659941878623886475208"
+        ],
+        "gamma_terminal_winner": "Patriots",
+        "status": "PROVEN_RETROSPECTIVE"
+      },
+      "source_time_comparison": {
+        "anomaly_detected": false,
+        "anomaly_kind": null,
+        "correction_applied": false,
+        "gamma_game_start_at": "2023-01-01T18:00:00Z",
+        "gamma_minus_nflverse_seconds": -145,
+        "nflverse_start_at_utc": "2023-01-01T18:02:25Z",
+        "nflverse_start_time_native": "1/1/23, 13:02:25",
+        "nflverse_start_timezone_interpretation": "America/New_York"
+      }
+    },
+    {
+      "canonical_game_id": "game_nflverse_2022_17_MIN_GB",
+      "canonical_outcome_documents": [
+        {
+          "canonical_refs": {
+            "competition_id": "cmp_nfl",
+            "condition_id": "condition_polymarket_0x9a7209897461d86a93aec03b1f731c338b43ef3a8306f2b8a2b1f295e04f193f",
+            "game_id": "game_nflverse_2022_17_MIN_GB",
+            "market_id": "market_polymarket_248293",
+            "outcome_id": "outcome_polymarket_88428790652179549254360942452373754154366610521579076074527134990518309232472",
+            "participant_ids": [
+              "participant_nflverse_GB",
+              "participant_nflverse_MIN"
+            ],
+            "venue_event_id": "venue_event_polymarket_886415"
+          },
+          "captured_at": "2026-07-23T04:26:54.608688Z",
+          "closed": true,
+          "competition": "NFL",
+          "game_start_at": "2023-01-01T09:25:00Z",
+          "native_condition_id": "0x9a7209897461d86a93aec03b1f731c338b43ef3a8306f2b8a2b1f295e04f193f",
+          "native_event_id": "886415",
+          "native_market_id": "248293",
+          "native_outcome_id": "Vikings",
+          "native_token_id": "88428790652179549254360942452373754154366610521579076074527134990518309232472",
+          "participants": [
+            "Green Bay Packers",
+            "Minnesota Vikings"
+          ],
+          "quality_flags": [
+            "source_clock_unverified"
+          ],
+          "raw_object_hash": "sha256:4ba866d8991d8754b1e78878548f91549c174a32b9e0e9e0b1d2a48488b40029",
+          "resolution": "Packers",
+          "resolved": true,
+          "rules": "In the upcoming NFL game scheduled for January 1, 2023:\n\nIf the Minnesota Vikings win, this market will resolve to \"Vikings\".\n\nIf the Green Bay Packers win, this market will resolve to \"Packers\".\n\nIf this game ends in a tie, this market will resolve 50-50. If this game is not completed by January 8, 2023, 11:59:59 PM ET, this market will resolve 50-50.",
+          "snapshot_sha256": "sha256:a9a9c49a8d8a9a94aa710ecc656ccc0201048b2eade65b7fb03a104aebf0b209",
+          "snapshot_version": "v0",
+          "source_updated_at": "2023-02-10T01:03:37.406Z",
+          "sport": "nfl",
+          "venue": "polymarket"
+        },
+        {
+          "canonical_refs": {
+            "competition_id": "cmp_nfl",
+            "condition_id": "condition_polymarket_0x9a7209897461d86a93aec03b1f731c338b43ef3a8306f2b8a2b1f295e04f193f",
+            "game_id": "game_nflverse_2022_17_MIN_GB",
+            "market_id": "market_polymarket_248293",
+            "outcome_id": "outcome_polymarket_94215417842996822256303199398506099617778342183703714112595651745723243233606",
+            "participant_ids": [
+              "participant_nflverse_GB",
+              "participant_nflverse_MIN"
+            ],
+            "venue_event_id": "venue_event_polymarket_886415"
+          },
+          "captured_at": "2026-07-23T04:26:54.608688Z",
+          "closed": true,
+          "competition": "NFL",
+          "game_start_at": "2023-01-01T09:25:00Z",
+          "native_condition_id": "0x9a7209897461d86a93aec03b1f731c338b43ef3a8306f2b8a2b1f295e04f193f",
+          "native_event_id": "886415",
+          "native_market_id": "248293",
+          "native_outcome_id": "Packers",
+          "native_token_id": "94215417842996822256303199398506099617778342183703714112595651745723243233606",
+          "participants": [
+            "Green Bay Packers",
+            "Minnesota Vikings"
+          ],
+          "quality_flags": [
+            "source_clock_unverified"
+          ],
+          "raw_object_hash": "sha256:4ba866d8991d8754b1e78878548f91549c174a32b9e0e9e0b1d2a48488b40029",
+          "resolution": "Packers",
+          "resolved": true,
+          "rules": "In the upcoming NFL game scheduled for January 1, 2023:\n\nIf the Minnesota Vikings win, this market will resolve to \"Vikings\".\n\nIf the Green Bay Packers win, this market will resolve to \"Packers\".\n\nIf this game ends in a tie, this market will resolve 50-50. If this game is not completed by January 8, 2023, 11:59:59 PM ET, this market will resolve 50-50.",
+          "snapshot_sha256": "sha256:ec96ddd4d60215adcf146096f508df9a07163c99c44f150644c79ad333d91d1b",
+          "snapshot_version": "v0",
+          "source_updated_at": "2023-02-10T01:03:37.406Z",
+          "sport": "nfl",
+          "venue": "polymarket"
+        }
+      ],
+      "condition_id": "0x9a7209897461d86a93aec03b1f731c338b43ef3a8306f2b8a2b1f295e04f193f",
+      "gamma_event_id": "886415",
+      "gamma_manifest_sha256": "sha256:c5e0bc8b60f6063b154ee1cdb6bcdb368dad66aa10bec8dd76b865628179a8fe",
+      "gamma_market_id": "248293",
+      "gamma_object_sha256": "sha256:4ba866d8991d8754b1e78878548f91549c174a32b9e0e9e0b1d2a48488b40029",
+      "identity": {
+        "away_team": "MIN",
+        "fuzzy_matching_used": false,
+        "game_date": "2023-01-01",
+        "gamma_full_team_names": [
+          "Minnesota Vikings",
+          "Green Bay Packers"
+        ],
+        "gamma_nfl_abbreviations": [
+          "MIN",
+          "GB"
+        ],
+        "gamma_outcome_aliases": [
+          "Vikings",
+          "Packers"
+        ],
+        "home_team": "GB",
+        "match_method": "gamma_text_alias_parse_then_unique_unordered_team_pair_date_scan"
+      },
+      "native_nflverse_game_id": "2022_17_MIN_GB",
+      "nflverse_manifest_sha256": "sha256:d4ab4bd0dbf09d2fc199c0f9b8bb0c151182c3130fa17cae0599d08d74bd496d",
+      "nflverse_object_sha256": "sha256:931121d8897779d7944e2a293e92ed8799c8e5cceef84096ac42339003fedc09",
+      "nflverse_row_count": 166,
+      "resolution_cross_check": {
+        "extract_winning_outcome": "Packers",
+        "gamma_outcome_prices": [
+          "0.000000523282990760667694599081676560867",
+          "0.9999994767170092393323054009183234"
+        ],
+        "gamma_terminal_winner": "Packers",
+        "status": "PROVEN_RETROSPECTIVE"
+      },
+      "source_time_comparison": {
+        "anomaly_detected": true,
+        "anomaly_kind": "gamma_game_start_approximately_12_hours_early",
+        "correction_applied": false,
+        "gamma_game_start_at": "2023-01-01T09:25:00Z",
+        "gamma_minus_nflverse_seconds": -43231,
+        "nflverse_start_at_utc": "2023-01-01T21:25:31Z",
+        "nflverse_start_time_native": "1/1/23, 16:25:31",
+        "nflverse_start_timezone_interpretation": "America/New_York"
+      }
+    },
+    {
+      "canonical_game_id": "game_nflverse_2022_17_PIT_BAL",
+      "canonical_outcome_documents": [
+        {
+          "canonical_refs": {
+            "competition_id": "cmp_nfl",
+            "condition_id": "condition_polymarket_0x5e5172329111b4ee0c810f2c96f30a5967e9dd283ed8a4f27fff5056246b2141",
+            "game_id": "game_nflverse_2022_17_PIT_BAL",
+            "market_id": "market_polymarket_248294",
+            "outcome_id": "outcome_polymarket_17752522915577482349025945129073295837556020015757852272359508749964008429604",
+            "participant_ids": [
+              "participant_nflverse_BAL",
+              "participant_nflverse_PIT"
+            ],
+            "venue_event_id": "venue_event_polymarket_886413"
+          },
+          "captured_at": "2026-07-23T04:26:54.608688Z",
+          "closed": true,
+          "competition": "NFL",
+          "game_start_at": "2023-01-02T01:20:00Z",
+          "native_condition_id": "0x5e5172329111b4ee0c810f2c96f30a5967e9dd283ed8a4f27fff5056246b2141",
+          "native_event_id": "886413",
+          "native_market_id": "248294",
+          "native_outcome_id": "Steelers",
+          "native_token_id": "17752522915577482349025945129073295837556020015757852272359508749964008429604",
+          "participants": [
+            "Baltimore Ravens",
+            "Pittsburgh Steelers"
+          ],
+          "quality_flags": [],
+          "raw_object_hash": "sha256:5af3fc2db280791ef57237fcbbba12973099f7223f232ce15026ecce1eaeb43d",
+          "resolution": "Steelers",
+          "resolved": true,
+          "rules": "In the upcoming NFL game scheduled for January 1, 2023:\n\nIf the Pittsburgh Steelers win, this market will resolve to \"Steelers\".\n\nIf the Baltimore Ravens win, this market will resolve to \"Ravens\".\n\nIf this game ends in a tie, this market will resolve 50-50. If this game is not completed by January 8, 2023, 11:59:59 PM ET, this market will resolve 50-50.",
+          "snapshot_sha256": "sha256:3d3b40b9ed952999d3ca85c3d64cde2ce79dadbe63beb996338ba9cf254b09c4",
+          "snapshot_version": "v0",
+          "source_updated_at": "2023-02-10T01:03:40.43Z",
+          "sport": "nfl",
+          "venue": "polymarket"
+        },
+        {
+          "canonical_refs": {
+            "competition_id": "cmp_nfl",
+            "condition_id": "condition_polymarket_0x5e5172329111b4ee0c810f2c96f30a5967e9dd283ed8a4f27fff5056246b2141",
+            "game_id": "game_nflverse_2022_17_PIT_BAL",
+            "market_id": "market_polymarket_248294",
+            "outcome_id": "outcome_polymarket_11822173605861964627435536336370946041450339876351373094059547547230574127695",
+            "participant_ids": [
+              "participant_nflverse_BAL",
+              "participant_nflverse_PIT"
+            ],
+            "venue_event_id": "venue_event_polymarket_886413"
+          },
+          "captured_at": "2026-07-23T04:26:54.608688Z",
+          "closed": true,
+          "competition": "NFL",
+          "game_start_at": "2023-01-02T01:20:00Z",
+          "native_condition_id": "0x5e5172329111b4ee0c810f2c96f30a5967e9dd283ed8a4f27fff5056246b2141",
+          "native_event_id": "886413",
+          "native_market_id": "248294",
+          "native_outcome_id": "Ravens",
+          "native_token_id": "11822173605861964627435536336370946041450339876351373094059547547230574127695",
+          "participants": [
+            "Baltimore Ravens",
+            "Pittsburgh Steelers"
+          ],
+          "quality_flags": [],
+          "raw_object_hash": "sha256:5af3fc2db280791ef57237fcbbba12973099f7223f232ce15026ecce1eaeb43d",
+          "resolution": "Steelers",
+          "resolved": true,
+          "rules": "In the upcoming NFL game scheduled for January 1, 2023:\n\nIf the Pittsburgh Steelers win, this market will resolve to \"Steelers\".\n\nIf the Baltimore Ravens win, this market will resolve to \"Ravens\".\n\nIf this game ends in a tie, this market will resolve 50-50. If this game is not completed by January 8, 2023, 11:59:59 PM ET, this market will resolve 50-50.",
+          "snapshot_sha256": "sha256:455932761030a4e297d69cf2a6d0e0a86d266179405d5473f36d2aa5a633c470",
+          "snapshot_version": "v0",
+          "source_updated_at": "2023-02-10T01:03:40.43Z",
+          "sport": "nfl",
+          "venue": "polymarket"
+        }
+      ],
+      "condition_id": "0x5e5172329111b4ee0c810f2c96f30a5967e9dd283ed8a4f27fff5056246b2141",
+      "gamma_event_id": "886413",
+      "gamma_manifest_sha256": "sha256:8393fc627f640ac68cbbfd86da5f1a1ee9dd267aed44c71af9b40b5c58b766dd",
+      "gamma_market_id": "248294",
+      "gamma_object_sha256": "sha256:5af3fc2db280791ef57237fcbbba12973099f7223f232ce15026ecce1eaeb43d",
+      "identity": {
+        "away_team": "PIT",
+        "fuzzy_matching_used": false,
+        "game_date": "2023-01-01",
+        "gamma_full_team_names": [
+          "Pittsburgh Steelers",
+          "Baltimore Ravens"
+        ],
+        "gamma_nfl_abbreviations": [
+          "PIT",
+          "BAL"
+        ],
+        "gamma_outcome_aliases": [
+          "Steelers",
+          "Ravens"
+        ],
+        "home_team": "BAL",
+        "match_method": "gamma_text_alias_parse_then_unique_unordered_team_pair_date_scan"
+      },
+      "native_nflverse_game_id": "2022_17_PIT_BAL",
+      "nflverse_manifest_sha256": "sha256:d4ab4bd0dbf09d2fc199c0f9b8bb0c151182c3130fa17cae0599d08d74bd496d",
+      "nflverse_object_sha256": "sha256:931121d8897779d7944e2a293e92ed8799c8e5cceef84096ac42339003fedc09",
+      "nflverse_row_count": 159,
+      "resolution_cross_check": {
+        "extract_winning_outcome": "Steelers",
+        "gamma_outcome_prices": [
+          "0.9999996860042283652553000986139187",
+          "0.0000003139957716347446999013860812751548"
+        ],
+        "gamma_terminal_winner": "Steelers",
+        "status": "PROVEN_RETROSPECTIVE"
+      },
+      "source_time_comparison": {
+        "anomaly_detected": false,
+        "anomaly_kind": null,
+        "correction_applied": false,
+        "gamma_game_start_at": "2023-01-02T01:20:00Z",
+        "gamma_minus_nflverse_seconds": -169,
+        "nflverse_start_at_utc": "2023-01-02T01:22:49Z",
+        "nflverse_start_time_native": "1/1/23, 20:22:49",
+        "nflverse_start_timezone_interpretation": "America/New_York"
+      }
+    }
+  ],
+  "extract_validation": {
+    "condition_count": 4,
+    "condition_join": "exact_condition_id",
+    "condition_outcome_token_orientation_validated": true,
+    "contains_fills": true,
+    "contains_level2": false,
+    "row_count": 17
+  },
+  "input_objects": [
+    {
+      "dataset_id": "DS-POLYMARKET-V1",
+      "fetched_at": "2026-07-23T04:26:54.608688Z",
+      "license_ref": "R-039",
+      "license_status": "approved",
+      "manifest_path": "manifests/source=huggingface/dataset=DS-POLYMARKET-V1/version=66a1d6ddfc3cdab9e2087c1e2e855bab272d3404/partition=sports-extract-2023-01-01/2d134425e0098c61a9401136a9ba1da7b5dc779db3ea0b5c1687c816f401473c.manifest.json",
+      "manifest_sha256": "sha256:2d134425e0098c61a9401136a9ba1da7b5dc779db3ea0b5c1687c816f401473c",
+      "native_object_path": "raw/source=huggingface/dataset=DS-POLYMARKET-V1/version=66a1d6ddfc3cdab9e2087c1e2e855bab272d3404/partition=sports-extract-2023-01-01/709cb27a89df201215f75d77da91033844f5db30dcb4311f3e9e93c8994cdb6a.jsonl",
+      "object_sha256": "sha256:709cb27a89df201215f75d77da91033844f5db30dcb4311f3e9e93c8994cdb6a",
+      "role": "polymarket_v1_bounded_nfl_fills"
+    },
+    {
+      "dataset_id": "DS-POLYMARKET-PUBLIC",
+      "fetched_at": "2026-07-23T04:26:54.608688Z",
+      "license_ref": "O-001",
+      "license_status": "pending",
+      "manifest_path": "manifests/source=polymarket/dataset=DS-POLYMARKET-PUBLIC/version=public-api-20260722/partition=gamma-market-248292/25b00196b675a9e460df972e7c2e92e9b4140e9281fe351115ed315915aab068.manifest.json",
+      "manifest_sha256": "sha256:25b00196b675a9e460df972e7c2e92e9b4140e9281fe351115ed315915aab068",
+      "native_object_path": "raw/source=polymarket/dataset=DS-POLYMARKET-PUBLIC/version=public-api-20260722/partition=gamma-market-248292/55197647196c4acdd0187befe3db0ebb296b428355e783b894010fd28cc50e53.json",
+      "object_sha256": "sha256:55197647196c4acdd0187befe3db0ebb296b428355e783b894010fd28cc50e53",
+      "role": "gamma_market_248292"
+    },
+    {
+      "dataset_id": "DS-POLYMARKET-PUBLIC",
+      "fetched_at": "2026-07-23T04:26:54.608688Z",
+      "license_ref": "O-001",
+      "license_status": "pending",
+      "manifest_path": "manifests/source=polymarket/dataset=DS-POLYMARKET-PUBLIC/version=public-api-20260722/partition=gamma-market-248293/c5e0bc8b60f6063b154ee1cdb6bcdb368dad66aa10bec8dd76b865628179a8fe.manifest.json",
+      "manifest_sha256": "sha256:c5e0bc8b60f6063b154ee1cdb6bcdb368dad66aa10bec8dd76b865628179a8fe",
+      "native_object_path": "raw/source=polymarket/dataset=DS-POLYMARKET-PUBLIC/version=public-api-20260722/partition=gamma-market-248293/4ba866d8991d8754b1e78878548f91549c174a32b9e0e9e0b1d2a48488b40029.json",
+      "object_sha256": "sha256:4ba866d8991d8754b1e78878548f91549c174a32b9e0e9e0b1d2a48488b40029",
+      "role": "gamma_market_248293"
+    },
+    {
+      "dataset_id": "DS-POLYMARKET-PUBLIC",
+      "fetched_at": "2026-07-23T04:26:54.608688Z",
+      "license_ref": "O-001",
+      "license_status": "pending",
+      "manifest_path": "manifests/source=polymarket/dataset=DS-POLYMARKET-PUBLIC/version=public-api-20260722/partition=gamma-market-248294/8393fc627f640ac68cbbfd86da5f1a1ee9dd267aed44c71af9b40b5c58b766dd.manifest.json",
+      "manifest_sha256": "sha256:8393fc627f640ac68cbbfd86da5f1a1ee9dd267aed44c71af9b40b5c58b766dd",
+      "native_object_path": "raw/source=polymarket/dataset=DS-POLYMARKET-PUBLIC/version=public-api-20260722/partition=gamma-market-248294/5af3fc2db280791ef57237fcbbba12973099f7223f232ce15026ecce1eaeb43d.json",
+      "object_sha256": "sha256:5af3fc2db280791ef57237fcbbba12973099f7223f232ce15026ecce1eaeb43d",
+      "role": "gamma_market_248294"
+    },
+    {
+      "dataset_id": "DS-POLYMARKET-PUBLIC",
+      "fetched_at": "2026-07-23T04:26:54.608688Z",
+      "license_ref": "O-001",
+      "license_status": "pending",
+      "manifest_path": "manifests/source=polymarket/dataset=DS-POLYMARKET-PUBLIC/version=public-api-20260722/partition=gamma-market-248295/61b2818cd6201ad8088dc566b8a7e698e2ecf66520f2d1cc158aa5376d268e3d.manifest.json",
+      "manifest_sha256": "sha256:61b2818cd6201ad8088dc566b8a7e698e2ecf66520f2d1cc158aa5376d268e3d",
+      "native_object_path": "raw/source=polymarket/dataset=DS-POLYMARKET-PUBLIC/version=public-api-20260722/partition=gamma-market-248295/247df994a7ef00462e02adb8e329c6558b42002123545557f8d816ce628adec3.json",
+      "object_sha256": "sha256:247df994a7ef00462e02adb8e329c6558b42002123545557f8d816ce628adec3",
+      "role": "gamma_market_248295"
+    },
+    {
+      "dataset_id": "DS-NFLVERSE",
+      "fetched_at": "2026-07-23T03:30:46.788957Z",
+      "license_ref": "I-018",
+      "license_status": "approved",
+      "manifest_path": "manifests/source=nflverse/dataset=DS-NFLVERSE/version=github-release-58152862-20260212T102526Z/partition=season-2022/d4ab4bd0dbf09d2fc199c0f9b8bb0c151182c3130fa17cae0599d08d74bd496d.manifest.json",
+      "manifest_sha256": "sha256:d4ab4bd0dbf09d2fc199c0f9b8bb0c151182c3130fa17cae0599d08d74bd496d",
+      "native_object_path": "raw/source=nflverse/dataset=DS-NFLVERSE/version=github-release-58152862-20260212T102526Z/partition=season-2022/931121d8897779d7944e2a293e92ed8799c8e5cceef84096ac42339003fedc09.parquet",
+      "object_sha256": "sha256:931121d8897779d7944e2a293e92ed8799c8e5cceef84096ac42339003fedc09",
+      "role": "nflverse_2022_play_by_play"
+    }
+  ],
+  "owner": "C+D2",
+  "scope": {
+    "binding_method": "gamma_text_alias_parse_then_unique_unordered_team_pair_date_scan",
+    "fuzzy_matching_used": false,
+    "nflverse_season": 2022,
+    "polymarket_v1_partition": "daily_aligned/2023-01-01.parquet",
+    "production_expected_game_ids": false,
+    "sport": "NFL",
+    "time_correction_applied": false
+  },
+  "status": "RETROSPECTIVE_RESEARCH_ONLY",
+  "summary": {
+    "canonical_outcome_document_count": 6,
+    "exact_game_binding_count": 3,
+    "frozen_condition_count": 4,
+    "matched_as_of_rows": 0,
+    "model_output_count": 0,
+    "unmatched_cancelled_count": 1
+  },
+  "unmatched_conditions": [
+    {
+      "candidate_native_nflverse_game_id": null,
+      "canonical_outcome_documents": [],
+      "condition_id": "0x80dcb010ea53350c0a67f018c861d11239e5638de7d7c779510a7177cf1a1974",
+      "gamma_market_id": "248295",
+      "hard_binding_created": false,
+      "identity": {
+        "game_date": "2023-01-02",
+        "gamma_full_team_names": [
+          "Buffalo Bills",
+          "Cincinnati Bengals"
+        ],
+        "gamma_outcome_aliases": [
+          "Bills",
+          "Bengals"
+        ],
+        "home_away_orientation_known": false,
+        "nfl_team_abbreviations": [
+          "BUF",
+          "CIN"
+        ]
+      },
+      "nflverse_row_count": 0,
+      "reason": "Gamma is closed 50-50 with no winning outcome and the frozen nflverse season has zero rows for the parsed team/date identity",
+      "resolution_cross_check": {
+        "extract_winning_outcome": null,
+        "gamma_outcome_prices": [
+          "0.5",
+          "0.5"
+        ],
+        "gamma_terminal_winner": null,
+        "status": "CANCELLED_50_50_RETROSPECTIVE"
+      },
+      "status": "UNMATCHED_CANCELLED"
+    }
+  ]
+}
