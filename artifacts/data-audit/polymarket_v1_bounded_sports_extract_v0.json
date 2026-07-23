@@ -1,0 +1,231 @@
+{
+  "artifact_id": "POLYMARKET_V1_BOUNDED_SPORTS_EXTRACT",
+  "artifact_version": "v0",
+  "owner": "C",
+  "due_gate": "2026-07-29_W1",
+  "status": "PRELIMINARY_RESEARCH_ONLY",
+  "captured_at": "2026-07-23T04:26:54.608688Z",
+  "dataset": {
+    "dataset_id": "DS-POLYMARKET-V1",
+    "upstream": "TimeSeventeen/Polymarket-v1",
+    "revision": "66a1d6ddfc3cdab9e2087c1e2e855bab272d3404",
+    "license_id": "CC-BY-4.0",
+    "license_ref": "R-039",
+    "license_status": "approved",
+    "repo_public": true,
+    "repo_gated": false
+  },
+  "access_smoke": {
+    "official_endpoints_captured": [
+      "Hugging Face repository revision metadata",
+      "Hugging Face revision tree page 1",
+      "Hugging Face dataset-server Parquet index",
+      "Hugging Face dataset-server daily_aligned first rows",
+      "Hugging Face exact-revision source Parquet",
+      "Polymarket Gamma exact market metadata for four frozen conditions"
+    ],
+    "parquet_index": {
+      "file_count": 1295,
+      "total_bytes": 49093915945,
+      "configs": [
+        "ctf",
+        "daily_aligned",
+        "orderfilled"
+      ],
+      "response_revision": "66a1d6ddfc3cdab9e2087c1e2e855bab272d3404"
+    },
+    "first_rows": {
+      "row_count": 100,
+      "condition_count": 1,
+      "sample_truncated": true
+    },
+    "tree_page": {
+      "entry_count": 1000,
+      "complete_repository_inventory": false,
+      "selected_path_present": true
+    }
+  },
+  "immutable_source_objects": [
+    {
+      "role": "repo_metadata",
+      "dataset_id": "DS-POLYMARKET-V1",
+      "license_ref": "R-039",
+      "byte_length": 65034,
+      "object_sha256": "sha256:355e91fc6272fcac1cda7e93631aba72ffd04d2d8cd4395405a17f2a2bba688e",
+      "manifest_sha256": "sha256:aa6b5c72dc748c6e13750ab4ac5d2923eeb1f1355d65f189505a62f53f851851",
+      "native_object_path": "raw/source=huggingface/dataset=DS-POLYMARKET-V1/version=66a1d6ddfc3cdab9e2087c1e2e855bab272d3404/partition=repo-metadata/355e91fc6272fcac1cda7e93631aba72ffd04d2d8cd4395405a17f2a2bba688e.json"
+    },
+    {
+      "role": "repo_tree_page_1",
+      "dataset_id": "DS-POLYMARKET-V1",
+      "license_ref": "R-039",
+      "byte_length": 309244,
+      "object_sha256": "sha256:00ba5eec45bb9849197e8edc918a2f7376bc90d2e88d92453e911759f2552f73",
+      "manifest_sha256": "sha256:76a22b1b18e02f450c9deb11ff60d45df25d9ae4ae354094694a76f35d9d1532",
+      "native_object_path": "raw/source=huggingface/dataset=DS-POLYMARKET-V1/version=66a1d6ddfc3cdab9e2087c1e2e855bab272d3404/partition=repo-tree-0001/00ba5eec45bb9849197e8edc918a2f7376bc90d2e88d92453e911759f2552f73.json"
+    },
+    {
+      "role": "parquet_index",
+      "dataset_id": "DS-POLYMARKET-V1",
+      "license_ref": "R-039",
+      "byte_length": 332934,
+      "object_sha256": "sha256:c080c6a511131f7af3e7b7a39e0f5090194fd1dd852ef95e89728119657bdc23",
+      "manifest_sha256": "sha256:82159efa641a787164656a182059194b72547d7654c8f0f179c5d25253684ca5",
+      "native_object_path": "raw/source=huggingface/dataset=DS-POLYMARKET-V1/version=66a1d6ddfc3cdab9e2087c1e2e855bab272d3404/partition=parquet-index/c080c6a511131f7af3e7b7a39e0f5090194fd1dd852ef95e89728119657bdc23.json"
+    },
+    {
+      "role": "daily_aligned_first_rows",
+      "dataset_id": "DS-POLYMARKET-V1",
+      "license_ref": "R-039",
+      "byte_length": 87212,
+      "object_sha256": "sha256:75f723a806bdf3c859fb7ef5d379fad464c9657aa76ab5d7ed9a982e2d979537",
+      "manifest_sha256": "sha256:502bcd0be3f7c7223bc588888b9d5e9772b5fa59cc2e76073621bb7d39b2536c",
+      "native_object_path": "raw/source=huggingface/dataset=DS-POLYMARKET-V1/version=66a1d6ddfc3cdab9e2087c1e2e855bab272d3404/partition=first-rows-daily-aligned/75f723a806bdf3c859fb7ef5d379fad464c9657aa76ab5d7ed9a982e2d979537.json"
+    },
+    {
+      "role": "bounded_daily_aligned_source",
+      "dataset_id": "DS-POLYMARKET-V1",
+      "license_ref": "R-039",
+      "source_path": "daily_aligned/2023-01-01.parquet",
+      "byte_length": 13454,
+      "object_sha256": "sha256:7a5b235e35fbe8c0b431ac88eab3464776f07180ca2f32c59d4ab0da7a493cbe",
+      "manifest_sha256": "sha256:6f32c693f53c978e00da02243e9edc06fb9bda50777f534ec4369cdea8a01aea",
+      "native_object_path": "raw/source=huggingface/dataset=DS-POLYMARKET-V1/version=66a1d6ddfc3cdab9e2087c1e2e855bab272d3404/partition=daily-aligned-2023-01-01/7a5b235e35fbe8c0b431ac88eab3464776f07180ca2f32c59d4ab0da7a493cbe.parquet"
+    }
+  ],
+  "source_shard_audit": {
+    "row_count": 31,
+    "condition_count": 11,
+    "schema_fingerprint": "sha256:14c2ae795c0921ac9c943a7e9093f1c3e5d3ffe384f96ec148829c6b25ffc0b1",
+    "columns": {
+      "asset_id": "large_string",
+      "block_timestamp": "int64",
+      "price": "double",
+      "maker": "large_string",
+      "taker": "large_string",
+      "taker_direction": "large_string",
+      "usdc_amount": "double",
+      "fee_usdc": "double",
+      "condition_id": "large_string",
+      "outcome_seq": "int64",
+      "neg_risk": "large_string",
+      "category": "large_string",
+      "category_refined": "large_string",
+      "outcome_label": "large_string",
+      "winning_outcome_label": "large_string",
+      "resolution_status": "large_string",
+      "taker_base_fee": "double",
+      "maker_base_fee": "double",
+      "opens_at": "timestamp[us, tz=UTC]",
+      "close_at": "timestamp[us, tz=UTC]",
+      "resolved_at": "timestamp[us, tz=UTC]",
+      "market_slug": "large_string",
+      "p_event": "double",
+      "D": "int8"
+    },
+    "timestamp_semantics": {
+      "block_timestamp": "native integer Unix seconds for the on-chain fill event",
+      "block_timestamp_min": 1672551863,
+      "block_timestamp_min_utc": "2023-01-01T05:44:23Z",
+      "block_timestamp_max": 1672613076,
+      "block_timestamp_max_utc": "2023-01-01T22:44:36Z",
+      "opens_at": "metadata timestamp stored as Arrow UTC microseconds",
+      "close_at": "metadata timestamp stored as Arrow UTC microseconds",
+      "resolved_at": "nullable metadata timestamp stored as Arrow UTC microseconds",
+      "local_receive_time_available": false,
+      "pit_feature_eligibility": false,
+      "pit_warning": "daily_aligned includes metadata and resolution fields that may be known only after the fill; no such field is a formal PIT model feature in this POC"
+    }
+  },
+  "frozen_condition_join": {
+    "join_type": "exact_condition_id_inner_join",
+    "join_key": "condition_id",
+    "predicate_fields": [
+      "condition_id"
+    ],
+    "category_or_slug_filter_used": false,
+    "gamma_dataset_id": "DS-POLYMARKET-PUBLIC",
+    "gamma_license_ref": "O-001",
+    "gamma_license_status": "pending",
+    "conditions": [
+      {
+        "gamma_market_id": "248292",
+        "condition_id": "0x86a95921efba50773e078f7b935e0ce94b6bfb35f42fcab86ff63ff226d9237f",
+        "slug": "nfl-sunday-dolphins-vs-patriots",
+        "sport": "NFL",
+        "object_sha256": "sha256:55197647196c4acdd0187befe3db0ebb296b428355e783b894010fd28cc50e53",
+        "manifest_sha256": "sha256:25b00196b675a9e460df972e7c2e92e9b4140e9281fe351115ed315915aab068"
+      },
+      {
+        "gamma_market_id": "248293",
+        "condition_id": "0x9a7209897461d86a93aec03b1f731c338b43ef3a8306f2b8a2b1f295e04f193f",
+        "slug": "nfl-sunday-vikings-vs-packers",
+        "sport": "NFL",
+        "object_sha256": "sha256:4ba866d8991d8754b1e78878548f91549c174a32b9e0e9e0b1d2a48488b40029",
+        "manifest_sha256": "sha256:c5e0bc8b60f6063b154ee1cdb6bcdb368dad66aa10bec8dd76b865628179a8fe"
+      },
+      {
+        "gamma_market_id": "248294",
+        "condition_id": "0x5e5172329111b4ee0c810f2c96f30a5967e9dd283ed8a4f27fff5056246b2141",
+        "slug": "nfl-sunday-steelers-vs-ravens",
+        "sport": "NFL",
+        "object_sha256": "sha256:5af3fc2db280791ef57237fcbbba12973099f7223f232ce15026ecce1eaeb43d",
+        "manifest_sha256": "sha256:8393fc627f640ac68cbbfd86da5f1a1ee9dd267aed44c71af9b40b5c58b766dd"
+      },
+      {
+        "gamma_market_id": "248295",
+        "condition_id": "0x80dcb010ea53350c0a67f018c861d11239e5638de7d7c779510a7177cf1a1974",
+        "slug": "nfl-monday-bills-vs-bengals",
+        "sport": "NFL",
+        "object_sha256": "sha256:247df994a7ef00462e02adb8e329c6558b42002123545557f8d816ce628adec3",
+        "manifest_sha256": "sha256:61b2818cd6201ad8088dc566b8a7e698e2ecf66520f2d1cc158aa5376d268e3d"
+      }
+    ]
+  },
+  "derived_extract": {
+    "object_kind": "source_derived_extract",
+    "row_count": 17,
+    "condition_count": 4,
+    "byte_length": 13813,
+    "object_sha256": "sha256:709cb27a89df201215f75d77da91033844f5db30dcb4311f3e9e93c8994cdb6a",
+    "manifest_sha256": "sha256:2d134425e0098c61a9401136a9ba1da7b5dc779db3ea0b5c1687c816f401473c",
+    "query_sha256": "sha256:0c927ef1754b56a137f81cea65c2dacd9c4bb5d70931cd012e7ea6367c6d19c8",
+    "schema_fingerprint": "sha256:1e72136be0120f4e29302fa3f371147e872d989226acccbda867c3d5a115b441",
+    "native_object_path": "raw/source=huggingface/dataset=DS-POLYMARKET-V1/version=66a1d6ddfc3cdab9e2087c1e2e855bab272d3404/partition=sports-extract-2023-01-01/709cb27a89df201215f75d77da91033844f5db30dcb4311f3e9e93c8994cdb6a.jsonl",
+    "source_manifest_sha256": "sha256:6f32c693f53c978e00da02243e9edc06fb9bda50777f534ec4369cdea8a01aea",
+    "gamma_manifest_sha256": [
+      "sha256:25b00196b675a9e460df972e7c2e92e9b4140e9281fe351115ed315915aab068",
+      "sha256:c5e0bc8b60f6063b154ee1cdb6bcdb368dad66aa10bec8dd76b865628179a8fe",
+      "sha256:8393fc627f640ac68cbbfd86da5f1a1ee9dd267aed44c71af9b40b5c58b766dd",
+      "sha256:61b2818cd6201ad8088dc566b8a7e698e2ecf66520f2d1cc158aa5376d268e3d"
+    ],
+    "source_object_refs": [
+      "sha256:247df994a7ef00462e02adb8e329c6558b42002123545557f8d816ce628adec3",
+      "sha256:4ba866d8991d8754b1e78878548f91549c174a32b9e0e9e0b1d2a48488b40029",
+      "sha256:55197647196c4acdd0187befe3db0ebb296b428355e783b894010fd28cc50e53",
+      "sha256:5af3fc2db280791ef57237fcbbba12973099f7223f232ce15026ecce1eaeb43d",
+      "sha256:7a5b235e35fbe8c0b431ac88eab3464776f07180ca2f32c59d4ab0da7a493cbe"
+    ]
+  },
+  "evidence_boundary": {
+    "supported": [
+      "revision-locked source access",
+      "byte-exact metadata, schema response, and bounded source preservation",
+      "daily_aligned fill schema inspection",
+      "official Gamma condition_id-to-NFL validation",
+      "deterministic condition_id-only bounded sports extract"
+    ],
+    "not_supported": [
+      "historical L2 reconstruction",
+      "order identity or queue position",
+      "queue fill or maker fill inference",
+      "point-in-time safety of enriched metadata",
+      "formal X-01 comparison gate",
+      "a complete 49.1 GB mirror"
+    ],
+    "contains_l2": false,
+    "fills_or_lifecycle_do_not_substitute_for_l2": true,
+    "full_bulk_mirror_performed": false,
+    "gamma_terms_gate": "O-001 remains pending; Gamma records are research validation evidence only"
+  }
+}
