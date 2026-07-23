@@ -78,6 +78,7 @@ def _authorized_card(
     }[scope_name]
     return {
         "id": "X-10",
+        "execution_authorized": True,
         "result_acceptance_not_before": "2026-07-23T00:00:00Z",
         "registration_head_sha256": "sha256:" + "a" * 64,
         "authorization_scopes": {
@@ -105,6 +106,24 @@ def _authorized_card(
             }
         },
     }
+
+
+def test_x10_child_scope_cannot_bypass_top_level_execution_gate() -> None:
+    card = _authorized_card(
+        scope_name="precision_audit",
+        code_sha256="sha256:" + "1" * 64,
+        data_sha256="sha256:" + "2" * 64,
+        evidence={
+            "matched_sample_registered": "sha256:" + "3" * 64,
+            "router_and_taxonomy_available": "sha256:" + "4" * 64,
+            "gold_standard_protocol": "sha256:" + "5" * 64,
+            "h_split_approval": "sha256:" + "6" * 64,
+        },
+    )
+    card["execution_authorized"] = False
+
+    with pytest.raises(X10AuthorizationError, match="execution"):
+        clusters_module._authorized_scope(card, "precision_audit")
 
 
 def test_precision_gate_is_descriptive_and_never_authorizes_research() -> None:
@@ -215,7 +234,7 @@ def test_cluster_csv_import_is_strict(tmp_path: Path) -> None:
 def test_x10_formal_audit_is_blocked_by_current_registry() -> None:
     pairs = _candidate_universe()
 
-    with pytest.raises(X10AuthorizationError, match="unresolved|preregistered"):
+    with pytest.raises(X10AuthorizationError, match="execution"):
         run_x10_precision_audit(
             PROJECT_ROOT,
             candidate_universe=pairs,
@@ -229,7 +248,7 @@ def test_x10_formal_audit_is_blocked_by_current_registry() -> None:
             registration_head_sha256="sha256:" + "0" * 64,
         )
 
-    with pytest.raises(X10AuthorizationError, match="recall.*not authorized"):
+    with pytest.raises(X10AuthorizationError, match="execution"):
         run_x10_recall_audit(
             PROJECT_ROOT,
             candidate_universe=pairs,

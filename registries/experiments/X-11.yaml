@@ -27,17 +27,28 @@ experiment_card:
   due_gate: null
   results_ref: []
   promotion_decision: ''
-  execution_authorized: false
-  completion_required_scopes: [formal_result]
+  execution_authorized: true
+  completion_required_scopes: [preregistered_pipeline]
   authorization_scopes:
     preregistered_pipeline:
       authorized: true
       required_result_label: PRELIMINARY
       required_lock_ids: [nfl_data_manifest_and_version, spread_prior_manifest, pit_feature_contract, model_config_and_seed, bootstrap_parameters, tie_policy, h_split_approval]
+      input_binding: &x11_inputs
+        result_class: poc
+        dataset_ids: [DS-NFLVERSE]
+        model_ids: [MODEL-NFL-DRIVE-TRANSITION, MODEL-NFL-GBDT, MODEL-NFL-LOGISTIC, MODEL-NFL-NFLFASTR-COMPARATOR, MODEL-NFL-SPREAD-PRIOR]
+        synthetic_data_sha256: null
     formal_result:
       authorized: false
+      permanent_no_go: true
       required_result_label: FORMAL
       required_lock_ids: [nfl_data_manifest_and_version, spread_prior_manifest, pit_feature_contract, model_config_and_seed, bootstrap_parameters, tie_policy, h_split_approval]
+      input_binding:
+        result_class: formal
+        dataset_ids: [DS-NFLVERSE]
+        model_ids: [MODEL-NFL-DRIVE-TRANSITION, MODEL-NFL-GBDT, MODEL-NFL-LOGISTIC, MODEL-NFL-NFLFASTR-COMPARATOR, MODEL-NFL-SPREAD-PRIOR]
+        synthetic_data_sha256: null
   registration_locks:
     - {id: nfl_data_manifest_and_version, status: unresolved, reason: nflverse source version partitions and static manifest hash are unset.}
     - {id: spread_prior_manifest, status: unresolved, reason: Historical spread source version and PIT manifest are unset.}
@@ -76,4 +87,4 @@ experiment_card:
     - readme_return_strategy_selection
     - unregistered_quick_backtest
   amendments: []
-  registration_record_sha256: sha256:bd4449592825c677f096079fcab4d24ba4a538662c853763ecb076784ff69924
+  registration_record_sha256: sha256:1706e20201346560f38b4bf1ab3f040c8318f871d809eeff03666827b1b5ec4e

@@ -24,7 +24,8 @@ experiment_card:
   fail_criteria: Uptime <99% triggers reconnect or backpressure repair and a new run; the unresolved band is not a pass.
   unresolved_decision_band: 99% <= uptime < 100%
   prospective_observation:
-    actual_elapsed_days: 7
+    required_elapsed_days: 7
+    observed_elapsed_days: 0
     fixtures_can_satisfy_elapsed_time: false
   cost_estimate: {compute: unresolved, human_days: unresolved}
   dependencies: []
@@ -40,18 +41,38 @@ experiment_card:
       authorized: true
       required_result_label: FORMAL
       required_lock_ids: [archive_audit_input_manifest, h_split_approval]
+      input_binding:
+        result_class: formal
+        dataset_ids: [DS-KALSHI-HISTORICAL]
+        model_ids: []
+        synthetic_data_sha256: null
     polymarket_capture:
       authorized: true
       required_result_label: PRELIMINARY
       required_lock_ids: [recorder_configuration]
+      input_binding:
+        result_class: poc
+        dataset_ids: [DS-POLYMARKET-PUBLIC]
+        model_ids: []
+        synthetic_data_sha256: null
     kalshi_capture:
       authorized: false
       required_result_label: PRELIMINARY
       required_lock_ids: [recorder_configuration, kalshi_credentials]
+      input_binding:
+        result_class: poc
+        dataset_ids: [DS-KALSHI-LIVE-L2]
+        model_ids: []
+        synthetic_data_sha256: null
     dual_venue_result:
       authorized: false
       required_result_label: FORMAL
       required_lock_ids: [archive_audit_input_manifest, recorder_configuration, kalshi_credentials, prospective_window_and_metrics, overlap_definition, h_split_approval]
+      input_binding:
+        result_class: formal
+        dataset_ids: [DS-KALSHI-HISTORICAL, DS-KALSHI-LIVE-L2, DS-POLYMARKET-PUBLIC]
+        model_ids: []
+        synthetic_data_sha256: null
   registration_locks:
     - {id: archive_audit_input_manifest, status: unresolved, reason: 'Stopped-archive source paths, versions, and SHA-256 hashes are not fixed.'}
     - {id: recorder_configuration, status: unresolved, reason: 'Recorder commit, configuration, and market universe are unset.'}
@@ -80,5 +101,17 @@ experiment_card:
     - large_scale_microservices
     - readme_return_strategy_selection
     - unregistered_quick_backtest
-  amendments: []
-  registration_record_sha256: sha256:c29024677af968b41f2c6da746f0850c32cad2d1e8b029f2ded71623b5ef6da4
+  amendments:
+    - sequence: 1
+      amended_at: '2026-07-23T00:00:01Z'
+      prior_sha256: sha256:e4d9f0a72ac6dcb4ad0e78859bf0264eb9a79508987263428678bf4342b97e8e
+      approved_by: H
+      reason: Clarify the official REST supplement without replacing the Charter-aligned stopped-archive reference audit.
+      changes:
+        archive_audit_clarification:
+          stopped_archive_role: reference audit only
+          official_historical_rest_supplement: Kalshi official historical REST candles and trades at fixed fetch cutoff
+          historical_l2_status: no historical L2
+          live_l2_dataset_id: DS-KALSHI-LIVE-L2
+      amendment_sha256: sha256:79fee8b26ba1c7bd961ecabc853e7fe0273176f20951cc2a6106bd63892a12fa
+  registration_record_sha256: sha256:e4d9f0a72ac6dcb4ad0e78859bf0264eb9a79508987263428678bf4342b97e8e

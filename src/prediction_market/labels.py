@@ -411,6 +411,10 @@ def _assert_x05_authorized(
 ) -> X05RuntimeHashes:
     registry = load_experiment_registry(program_root)
     card = registry["X-05"]
+    try:
+        experiments_module.require_execution_authorized(card)
+    except experiments_module.UnauthorizedResultScopeError as error:
+        raise LabelAuthorizationError(str(error)) from error
     scope = card["authorization_scopes"]["label_generation"]
     if not scope["authorized"]:
         raise LabelAuthorizationError("X-05 label_generation is not authorized")

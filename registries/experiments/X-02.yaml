@@ -30,6 +30,11 @@ experiment_card:
       authorized: true
       required_result_label: FORMAL
       required_lock_ids: [timestamp_input_manifest, sampling_and_seed, diff_and_stability_definitions, h_split_approval]
+      input_binding:
+        result_class: formal
+        dataset_ids: [DS-PMXT-V2]
+        model_ids: []
+        synthetic_data_sha256: null
   registration_locks:
     - {id: timestamp_input_manifest, status: unresolved, reason: X-01 and three-day source versions and hashes are not fixed.}
     - {id: sampling_and_seed, status: unresolved, reason: 'Random-day universe, selection procedure, seed, and dates are unset.'}
@@ -53,5 +58,64 @@ experiment_card:
     - large_scale_microservices
     - readme_return_strategy_selection
     - unregistered_quick_backtest
-  amendments: []
-  registration_record_sha256: sha256:e10cfb92cc066c8e7d16475a808187e546ea807cad048f0ade74ae66273147ad
+  amendments:
+    - sequence: 1
+      amended_at: '2026-07-23T05:15:58Z'
+      prior_sha256: sha256:1b6393ef8cca4bf482cc3a167844358c07fda9a97c45cbedbe4ceda3e2033ed1
+      approved_by: H
+      reason: Preregister the X-02 sample, timestamp statistics, downgrade gate, and Charter-approved audit split before formal data inspection.
+      changes:
+        resolve_locks:
+          - {lock_id: sampling_and_seed, evidence_ref: 'sha256:18b3abbf3dd544184b6c22db11a2b84401257c0834dcd1911db00cd78ffa0ff9'}
+          - {lock_id: diff_and_stability_definitions, evidence_ref: 'sha256:aea723308604a00d8a9c5be1b82a9e7347715fc980c8da76685e62bddd3e8de3'}
+          - {lock_id: h_split_approval, evidence_ref: 'sha256:7af68d725dd752554d70bf971c666c1a25b1733ea1bfda209ec6f3f98219afb9'}
+        timestamp_audit_preregistration:
+          sampling_and_seed:
+            selection_seed: 20260722
+            game_day: '2026-05-28'
+            random_days: ['2026-04-22', '2026-06-05', '2026-06-25']
+            selection_inventory_sha256: sha256:74d7e9f21003f595d2d505bc63c89c7eadcd5339d541032bc80704d4b14b3043
+            x01_game_day_manifest_sha256: sha256:e7dfc9e7992f1eb085edc0c67f37100db10c6541533220833dcace2a1e244df3
+            pending_archive_object_count: 72
+          diff_and_stability_definitions:
+            diff_ms: epoch_ms(timestamp_received)-epoch_ms(timestamp)
+            signed_quantiles:
+              estimator: quantile_cont
+              interpolation: linear
+              input_distribution: integer_millisecond_frequency
+              probabilities: ['0.50', '0.95', '0.99']
+            absolute_p99:
+              transform: abs(diff_ms)
+              estimator: quantile_cont
+              interpolation: linear
+              input_distribution: integer_millisecond_frequency
+              probability: '0.99'
+            hourly_drift_ms: median_utc_hour_23_diff_ms-median_utc_hour_00_diff_ms
+            disorder:
+              partition_by: [market, asset_id]
+              canonical_sort: [timestamp_received, timestamp]
+              numerator: adjacent_source_timestamp_strict_descents
+              ordered_comparisons: n_rows-n_unique_market_asset_streams
+            downgrade_gate:
+              negative_rate_gte: '0.001'
+              absolute_p99_ms_gt: 5000
+              decision: downgrade_millisecond_research_to_seconds
+          h_split_approval:
+            split: n.a.
+            basis: charter_section_9_measurement_audit_exemption
+            approved_by: H
+      amendment_sha256: sha256:e0c42e97c8ec12dd99b883d4d81f2252e617cb125a49ad8b1a1f39d5518bf1f7
+    - sequence: 2
+      amended_at: '2026-07-23T05:16:12Z'
+      prior_sha256: sha256:e0c42e97c8ec12dd99b883d4d81f2252e617cb125a49ad8b1a1f39d5518bf1f7
+      approved_by: H
+      reason: Bind the verified four-day X-02 timestamp input bundle without preregistering runner code or evaluated data.
+      changes:
+        resolve_locks:
+          - {lock_id: timestamp_input_manifest, evidence_ref: 'sha256:9477f8d9a224b47b6dda47dd691761d4ca8b5d88be6ad07416217a2bb44c89a4'}
+        timestamp_input_manifest_binding:
+          bundle_path: artifacts/data-audit/x02_timestamp_input_bundle_v1.json
+          bundle_file_sha256: sha256:46c3f23007929ad31b131f3618009810501b6ef06d0ac2645eb3dcfac217bd8d
+          bundle_sha256: sha256:9477f8d9a224b47b6dda47dd691761d4ca8b5d88be6ad07416217a2bb44c89a4
+      amendment_sha256: sha256:40a561b867f25b564bc8da8d97bb1beede71e2224e863e2a2c323d0731a95633
+  registration_record_sha256: sha256:1b6393ef8cca4bf482cc3a167844358c07fda9a97c45cbedbe4ceda3e2033ed1

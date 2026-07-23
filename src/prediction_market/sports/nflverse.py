@@ -279,7 +279,7 @@ def fetch_and_preserve_nflverse_year(
             ";", 1
         )[0],
         schema_fingerprint=audit.schema_fingerprint,
-        license_ref="O-010",
+        license_ref="I-018",
         license_status="approved",
         upstream_partition=partition,
         object_kind="byte_exact_original",

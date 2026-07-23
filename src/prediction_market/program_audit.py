@@ -10,8 +10,12 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from prediction_market.compliance import load_compliance_matrix, may_execute_real_money
-from prediction_market.experiments import load_experiment_registry
+from prediction_market.compliance import (
+    ComplianceRegistryError,
+    load_compliance_matrix,
+    load_data_license_register,
+    may_execute_real_money,
+)
 
 
 _ARTIFACT_COLUMNS = (
@@ -34,6 +38,7 @@ _DATASET_COLUMNS = (
     "auth",
     "license",
     "license_status",
+    "license_review_id",
     "timestamp_semantics",
     "allowed_experiments",
     "manifest_sha256",
@@ -60,6 +65,16 @@ _MODEL_COLUMNS = (
     "owner",
     "due_gate",
 )
+_EXPERIMENT_REGISTRY_COLUMNS = (
+    "experiment_id",
+    "card_path",
+    "owner_team",
+    "status",
+    "execution_authorized",
+    "registered_at",
+    "due_gate",
+    "card_sha256",
+)
 _ARTIFACT_ID = re.compile(r"ART-[A-Z0-9][A-Z0-9-]*")
 _DATASET_ID = re.compile(r"DS-[A-Z0-9][A-Z0-9-]*")
 _MODEL_ID = re.compile(r"MODEL-[A-Z0-9][A-Z0-9-]*")
@@ -68,7 +83,15 @@ _EXPERIMENT_ID = re.compile(r"X-[0-9]{2,}")
 _SHA256 = re.compile(r"sha256:[0-9a-f]{64}")
 _VERSION = re.compile(r"v[0-9]+(?:\.[0-9]+)?")
 _ALLOWED_STATUS = frozenset(
-    {"registered", "complete", "blocked", "in_progress", "harness_pass"}
+    {
+        "registered",
+        "complete",
+        "blocked",
+        "in_progress",
+        "harness_pass",
+        "PRELIMINARY_RESEARCH_ONLY",
+        "POC_ONLY",
+    }
 )
 
 
@@ -107,6 +130,7 @@ class DatasetRegistryRow:
     auth: str
     license: str
     license_status: str
+    license_review_id: str
     timestamp_semantics: str
     allowed_experiments: tuple[str, ...]
     manifest_sha256: str
@@ -290,13 +314,62 @@ def _catalog_ids(root: Path) -> set[str]:
     return {row["catalog_item_id"] for row in rows}
 
 
+def _registered_experiment_ids(root: Path) -> set[str]:
+    path = _safe_artifact(root, "registries/experiment_registry.csv")
+    try:
+        text = path.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise ResearchRegistryError(
+            "experiment registry must be readable UTF-8"
+        ) from error
+    reader = csv.DictReader(io.StringIO(text, newline=""), strict=True)
+    if tuple(reader.fieldnames or ()) != _EXPERIMENT_REGISTRY_COLUMNS:
+        raise ResearchRegistryError("experiment registry columns do not match contract")
+    identifiers: set[str] = set()
+    try:
+        for raw in reader:
+            if (
+                None in raw
+                or set(raw) != set(_EXPERIMENT_REGISTRY_COLUMNS)
+                or any(type(value) is not str for value in raw.values())
+            ):
+                raise ResearchRegistryError("experiment registry has a malformed row")
+            experiment_id = raw.get("experiment_id")
+            if (
+                type(experiment_id) is not str
+                or not _EXPERIMENT_ID.fullmatch(experiment_id)
+                or experiment_id in identifiers
+            ):
+                raise ResearchRegistryError(
+                    "experiment registry has invalid or duplicate experiment_id"
+                )
+            identifiers.add(experiment_id)
+    except csv.Error as error:
+        raise ResearchRegistryError("invalid experiment registry CSV") from error
+    expected = {f"X-{number:02d}" for number in range(1, 13)}
+    if identifiers != expected:
+        raise ResearchRegistryError(
+            "experiment registry must contain exactly X-01 through X-12"
+        )
+    return identifiers
+
+
 def load_dataset_registry(root: str | Path) -> tuple[DatasetRegistryRow, ...]:
     program_root = Path(root).resolve()
     raw_rows = _strict_registry_rows(
         program_root, "registries/dataset_registry.csv", _DATASET_COLUMNS
     )
     known_catalog_ids = _catalog_ids(program_root)
-    known_experiment_ids = set(load_experiment_registry(program_root))
+    known_experiment_ids = _registered_experiment_ids(program_root)
+    try:
+        license_reviews = {
+            row.catalog_item_id: row
+            for row in load_data_license_register(program_root)
+        }
+    except ComplianceRegistryError as error:
+        raise ResearchRegistryError(
+            f"data license register is invalid: {error}"
+        ) from error
     rows: list[DatasetRegistryRow] = []
     seen: set[str] = set()
     for raw in raw_rows:
@@ -332,6 +405,26 @@ def load_dataset_registry(root: str | Path) -> tuple[DatasetRegistryRow, ...]:
             "blocked",
         }:
             raise ResearchRegistryError(f"{dataset_id}: invalid license_status")
+        license_review_id = raw["license_review_id"]
+        review = license_reviews.get(license_review_id)
+        if (
+            not _CATALOG_ID.fullmatch(license_review_id)
+            or license_review_id not in known_catalog_ids
+            or review is None
+        ):
+            raise ResearchRegistryError(
+                f"{dataset_id}: unknown license review foreign key "
+                f"{license_review_id}"
+            )
+        if raw["license_status"] == "approved" and not (
+            review.status == "GREEN"
+            and review.operational_use == "APPROVED"
+            and bool(review.approval_ref)
+        ):
+            raise ResearchRegistryError(
+                f"{dataset_id}: approved license requires {license_review_id} "
+                "to be GREEN with operational approval"
+            )
         if raw["status"] not in {"registered", "blocked"}:
             raise ResearchRegistryError(f"{dataset_id}: invalid status")
         if (raw["use_class"] == "blocked") != (raw["status"] == "blocked"):
@@ -358,6 +451,7 @@ def load_dataset_registry(root: str | Path) -> tuple[DatasetRegistryRow, ...]:
                 auth=raw["auth"],
                 license=raw["license"],
                 license_status=raw["license_status"],
+                license_review_id=license_review_id,
                 timestamp_semantics=raw["timestamp_semantics"],
                 allowed_experiments=experiments,
                 manifest_sha256=manifest,
@@ -376,7 +470,7 @@ def load_model_registry(root: str | Path) -> tuple[ModelRegistryRow, ...]:
         program_root, "registries/model_registry.csv", _MODEL_COLUMNS
     )
     known_catalog_ids = _catalog_ids(program_root)
-    known_experiment_ids = set(load_experiment_registry(program_root))
+    known_experiment_ids = _registered_experiment_ids(program_root)
     rows: list[ModelRegistryRow] = []
     seen: set[str] = set()
     for raw in raw_rows:
@@ -449,7 +543,7 @@ def load_model_registry(root: str | Path) -> tuple[ModelRegistryRow, ...]:
     return tuple(rows)
 
 
-def validate_research_inputs(
+def validate_registered_research_bindings(
     root: str | Path,
     *,
     experiment_id: str,
@@ -457,17 +551,13 @@ def validate_research_inputs(
     model_ids: list[str] | tuple[str, ...],
     result_class: str,
 ) -> tuple[tuple[DatasetRegistryRow, ...], tuple[ModelRegistryRow, ...]]:
-    """Fail closed unless every source, model, scope, and lock is eligible."""
+    """Validate exact registered data/model eligibility without loading experiment cards."""
 
     if result_class not in {"formal", "poc"}:
         raise FormalResearchInputError("result_class must be formal or poc")
 
     program_root = Path(root).resolve()
-    try:
-        experiments = load_experiment_registry(program_root)
-    except Exception as error:
-        raise FormalResearchInputError("experiment registry is not valid") from error
-    if experiment_id not in experiments:
+    if experiment_id not in _registered_experiment_ids(program_root):
         raise FormalResearchInputError(f"experiment {experiment_id} is not registered")
     datasets_by_id = {row.dataset_id: row for row in load_dataset_registry(program_root)}
     models_by_id = {row.model_id: row for row in load_model_registry(program_root)}
@@ -526,23 +616,48 @@ def validate_research_inputs(
                 f"model {model_id} lacks " + ", ".join(missing)
             )
         selected_models.append(row)
-    card = experiments[experiment_id]
-    scope_names = (
-        ("formal_result", "formal_promotion")
-        if result_class == "formal"
-        else ("poc_result",)
+    return tuple(selected_datasets), tuple(selected_models)
+
+
+def validate_research_inputs(
+    root: str | Path,
+    *,
+    experiment_id: str,
+    scope_name: str,
+    dataset_ids: list[str] | tuple[str, ...],
+    model_ids: list[str] | tuple[str, ...],
+) -> tuple[tuple[DatasetRegistryRow, ...], tuple[ModelRegistryRow, ...]]:
+    """Use the same card binding and eligibility rules as result acceptance."""
+
+    from prediction_market.experiments import (
+        load_experiment_registry,
+        require_execution_authorized,
     )
-    scope = next(
-        (
-            card["authorization_scopes"][name]
-            for name in scope_names
-            if name in card["authorization_scopes"]
-        ),
-        None,
-    )
+
+    program_root = Path(root).resolve()
+    experiments = load_experiment_registry(program_root)
+    card = experiments.get(experiment_id)
+    if card is None:
+        raise FormalResearchInputError(f"experiment {experiment_id} is not registered")
+    try:
+        require_execution_authorized(card)
+    except ValueError as error:
+        raise FormalResearchInputError(str(error)) from error
+    scope = card["authorization_scopes"].get(scope_name)
     if scope is None or scope["authorized"] is not True:
         raise FormalResearchInputError(
-            f"experiment {experiment_id} {result_class} scope is not authorized"
+            f"experiment {experiment_id} scope {scope_name} is not authorized"
+        )
+    binding = scope.get("input_binding")
+    if not isinstance(binding, dict) or binding.get("result_class") == "synthetic":
+        raise FormalResearchInputError(
+            f"experiment {experiment_id} scope {scope_name} has no research binding"
+        )
+    if list(dataset_ids) != binding["dataset_ids"] or list(model_ids) != binding[
+        "model_ids"
+    ]:
+        raise FormalResearchInputError(
+            f"experiment {experiment_id} scope {scope_name} input binding mismatch"
         )
     lock_by_id = {lock["id"]: lock for lock in card["registration_locks"]}
     unresolved = [
@@ -555,7 +670,13 @@ def validate_research_inputs(
             f"experiment {experiment_id} has unresolved required locks: "
             + ", ".join(unresolved)
         )
-    return tuple(selected_datasets), tuple(selected_models)
+    return validate_registered_research_bindings(
+        program_root,
+        experiment_id=experiment_id,
+        dataset_ids=dataset_ids,
+        model_ids=model_ids,
+        result_class=binding["result_class"],
+    )
 
 
 def validate_formal_research_inputs(
@@ -570,14 +691,16 @@ def validate_formal_research_inputs(
     return validate_research_inputs(
         root,
         experiment_id=experiment_id,
+        scope_name="formal_result",
         dataset_ids=dataset_ids,
         model_ids=model_ids,
-        result_class="formal",
     )
 
 
 def audit_no_go(root: str | Path) -> NoGoAuditReport:
     """Verify executable surfaces remain inside Charter v0.2 blocked scope."""
+
+    from prediction_market.experiments import load_experiment_registry
 
     program_root = Path(root).resolve()
     violations: list[str] = []
@@ -668,5 +791,6 @@ __all__ = [
     "load_dataset_registry",
     "load_model_registry",
     "validate_formal_research_inputs",
+    "validate_registered_research_bindings",
     "validate_research_inputs",
 ]

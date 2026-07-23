@@ -34,6 +34,12 @@ def _validate_contract(schema_name: str, value: Any):
     contracts = _contracts()
     if schema_name == "model-output/v1.schema.yaml":
         return contracts.validate_contract_v1(PROJECT_ROOT, schema_name, value)
+    if schema_name == "event-envelope/v0.schema.yaml":
+        return contracts.validate_event_envelope_v0(PROJECT_ROOT, value)
+    if schema_name == "static-dataset-manifest/v0.schema.yaml":
+        return contracts.validate_static_dataset_manifest_v0(
+            PROJECT_ROOT, value
+        )
     return contracts.validate_contract_v0(schema_name, value)
 
 
@@ -110,7 +116,7 @@ def _derived_event() -> dict[str, Any]:
     contracts = _contracts()
     event: dict[str, Any] = {
         "envelope_version": "v0",
-        "event_type": "model_output",
+        "event_type": "normalized_observation",
         "payload_schema_version": "v0",
         "source": {
             "system": "nba-baseline",
@@ -143,8 +149,8 @@ def _derived_event() -> dict[str, Any]:
 def _model_output() -> dict[str, Any]:
     return {
         "contract_version": "v1",
-        "model_id": "nba-state-baseline",
-        "model_version": "2026-07-22.1",
+        "model_id": "MODEL-NBA-POSSESSION-TRANSITION",
+        "model_version": "v1",
         "experiment_id": "X-06",
         "run_id": "run_x06_001",
         "game_id": "game_nba_2026_001",
@@ -152,15 +158,18 @@ def _model_output() -> dict[str, Any]:
         "pit_cutoff_at": "2026-07-22T12:00:00Z",
         "output_kind": "state_transition",
         "transition_unit": "possession",
-        "state_space": ["away_possession", "home_possession", "game_over"],
+        "state_space": ["home_score", "away_score", "no_score"],
         "horizon": "next_state_transition",
         "probabilities": {
-            "away_possession": {"atoms": "25", "scale": 2},
-            "home_possession": {"atoms": "50", "scale": 2},
-            "game_over": {"atoms": "25", "scale": 2},
+            "home_score": {"atoms": "25", "scale": 2},
+            "away_score": {"atoms": "50", "scale": 2},
+            "no_score": {"atoms": "25", "scale": 2},
         },
         "feature_sha256": _digest("1"),
-        "data_sha256": _digest("2"),
+        "data_sha256": (
+            "sha256:"
+            "0ebca90ba56b45252c6d310fd176ba2eb1ac615995b3eacf92e2e3f9c962a15f"
+        ),
         "config_sha256": _digest("3"),
         "quality_flags": [],
     }
@@ -552,13 +561,79 @@ def test_derived_events_require_parent_ids_and_registered_experiment(
         EventEnvelopeV0.model_validate(event)
 
 
-@pytest.mark.parametrize("experiment_id", ["X-00", "X-1", "X-11", "R-001", "x-01"])
+@pytest.mark.parametrize("experiment_id", ["X-00", "X-1", "R-001", "x-01"])
 def test_event_rejects_unregistered_experiment_id(experiment_id: str) -> None:
-    EventEnvelopeV0 = _contracts().EventEnvelopeV0
+    contracts = _contracts()
     event = _derived_event()
     event["experiment_id"] = experiment_id
+    event["event_id"] = contracts.event_id_for(event)
 
+    with pytest.raises((ValidationError, contracts.ContractValidationError)):
+        contracts.validate_event_envelope_v0(PROJECT_ROOT, event)
+
+
+def test_event_envelope_accepts_registered_x11_with_v1_model_output() -> None:
+    contracts = _contracts()
+    event = _derived_event()
+    event["event_type"] = "model_output"
+    event["experiment_id"] = "X-11"
+    event["payload_schema_version"] = "v1"
+    event["payload"] = {
+        **_model_output(),
+        "model_id": "MODEL-NFL-DRIVE-TRANSITION",
+        "model_version": "v1",
+        "experiment_id": "X-11",
+        "transition_unit": "drive",
+        "state_space": ["touchdown", "field_goal", "punt", "turnover", "other"],
+        "probabilities": {
+            "touchdown": {"atoms": "20", "scale": 2},
+            "field_goal": {"atoms": "20", "scale": 2},
+            "punt": {"atoms": "20", "scale": 2},
+            "turnover": {"atoms": "20", "scale": 2},
+            "other": {"atoms": "20", "scale": 2},
+        },
+    }
+    event["payload_sha256"] = contracts.payload_sha256(event["payload"])
+    event["event_id"] = contracts.event_id_for(event)
+
+    envelope = contracts.validate_event_envelope_v0(PROJECT_ROOT, event)
+    assert envelope.experiment_id == "X-11"
+    assert envelope.payload_schema_version == "v1"
+
+
+def test_generic_v0_validator_rejects_program_root_governed_event_contract() -> None:
+    contracts = _contracts()
+    schema_name = "event-envelope/v0.schema.yaml"
+    instance = _valid_schema_instances()[schema_name]
+
+    with pytest.raises(ValueError, match="program.root|dedicated"):
+        contracts.validate_contract_v0(schema_name, instance)
+
+
+def test_model_output_event_cannot_bypass_dedicated_payload_validation() -> None:
+    contracts = _contracts()
+    event = _derived_event()
+    event["event_type"] = "model_output"
+    event["payload_schema_version"] = "v1"
+    event["experiment_id"] = "X-06"
+    event["payload"] = {"not_a_model_output": True}
+    event["payload_sha256"] = contracts.payload_sha256(event["payload"])
+    event["event_id"] = contracts.event_id_for(event)
+
+    with pytest.raises(ValueError, match="program.root|dedicated"):
+        contracts.validate_contract_v0(
+            "event-envelope/v0.schema.yaml", event
+        )
     with pytest.raises(ValidationError):
+        contracts.validate_event_envelope_v0(PROJECT_ROOT, event)
+
+
+def test_model_output_event_requires_payload_schema_v1() -> None:
+    EventEnvelopeV0 = _contracts().EventEnvelopeV0
+    event = _derived_event()
+    event["event_type"] = "model_output"
+
+    with pytest.raises(ValidationError, match="payload_schema_version"):
         EventEnvelopeV0.model_validate(event)
 
 
@@ -750,8 +825,8 @@ def test_normative_validation_revalidates_copied_event_into_immutable_instance()
 
     assert isinstance(copied.payload, dict)
 
-    validated = contracts.validate_contract_v0(
-        "event-envelope/v0.schema.yaml", copied
+    validated = contracts.validate_event_envelope_v0(
+        PROJECT_ROOT, copied
     )
     copied_order_key = contracts.replay_order_key(copied)
     copied_frame = contracts.level2_stream_frame([copied])
@@ -855,15 +930,15 @@ def test_normative_validation_rejects_unknown_pydantic_storage_entries(
         else "unexpected_contract_field"
     )
     with pytest.raises(ValueError, match=expected_error):
-        contracts.validate_contract_v0("event-envelope/v0.schema.yaml", copied)
+        contracts.validate_event_envelope_v0(PROJECT_ROOT, copied)
 
 
 @pytest.mark.parametrize("extra_case", ["cycle", "nested_hidden_field"])
 @pytest.mark.parametrize(
     "boundary",
     [
-        lambda contracts, event: contracts.validate_contract_v0(
-            "event-envelope/v0.schema.yaml", event
+        lambda contracts, event: contracts.validate_event_envelope_v0(
+            PROJECT_ROOT, event
         ),
         lambda contracts, event: contracts.replay_order_key(event),
         lambda contracts, event: contracts.level2_stream_frame([event]),
@@ -911,8 +986,8 @@ def test_normative_validation_rejects_declared_name_pydantic_extras(
 @pytest.mark.parametrize(
     "boundary",
     [
-        lambda contracts, event: contracts.validate_contract_v0(
-            "event-envelope/v0.schema.yaml", event
+        lambda contracts, event: contracts.validate_event_envelope_v0(
+            PROJECT_ROOT, event
         ),
         lambda contracts, event: contracts.replay_order_key(event),
         lambda contracts, event: contracts.level2_stream_frame([event]),
@@ -1212,7 +1287,7 @@ def test_controlled_python_enums_are_exact() -> None:
         }
     )
     assert contracts.REGISTERED_EXPERIMENT_IDS == frozenset(
-        f"X-{number:02d}" for number in range(1, 11)
+        f"X-{number:02d}" for number in range(1, 13)
     )
     assert "gap_detected" in contracts.QUALITY_FLAGS
     assert "unknown" not in contracts.QUALITY_FLAGS
@@ -1257,10 +1332,19 @@ def test_every_yaml_contract_requires_one_normative_runtime_validator(
     assert validator["schema_name"] == relative_path
     assert validator["required"] is True
     assert validator["fail_closed_without_runtime"] is True
-    if relative_path == "model-output/v1.schema.yaml":
-        assert validator["callable"] == (
+    program_root_validators = {
+        "event-envelope/v0.schema.yaml": (
+            "prediction_market.contracts.validate_event_envelope_v0"
+        ),
+        "model-output/v1.schema.yaml": (
             "prediction_market.contracts.validate_contract_v1"
-        )
+        ),
+        "static-dataset-manifest/v0.schema.yaml": (
+            "prediction_market.contracts.validate_static_dataset_manifest_v0"
+        ),
+    }
+    if relative_path in program_root_validators:
+        assert validator["callable"] == program_root_validators[relative_path]
         assert validator["requires_program_root"] is True
     else:
         assert validator["callable"] == (
@@ -1272,14 +1356,7 @@ def test_normative_runtime_validator_accepts_registered_contract_families() -> N
     contracts = _contracts()
 
     for schema_name, instance in _valid_schema_instances().items():
-        validator = (
-            lambda name, value: contracts.validate_contract_v1(
-                PROJECT_ROOT, name, value
-            )
-            if schema_name == "model-output/v1.schema.yaml"
-            else contracts.validate_contract_v0
-        )
-        assert validator(schema_name, instance) is not None
+        assert _validate_contract(schema_name, instance) is not None
 
 
 def test_normative_runtime_validator_rejects_cross_type_id_assertion() -> None:
@@ -1296,7 +1373,7 @@ def test_normative_runtime_validator_rejects_cross_type_id_assertion() -> None:
 def test_normative_runtime_validator_rejects_non_unit_probability_sum() -> None:
     contracts = _contracts()
     output = _model_output()
-    output["probabilities"]["game_over"] = {"atoms": "24", "scale": 2}
+    output["probabilities"]["no_score"] = {"atoms": "24", "scale": 2}
 
     with pytest.raises(ValidationError, match="sum exactly to 1"):
         contracts.validate_contract_v1(
@@ -1557,9 +1634,7 @@ def test_all_controlled_yaml_vocabularies_match_python_contract() -> None:
     assert frozenset(event["properties"]["event_type"]["enum"]) == (
         contracts.EVENT_TYPES
     )
-    assert frozenset(event["$defs"]["experiment_id"]["enum"]) == (
-        contracts.REGISTERED_EXPERIMENT_IDS
-    )
+    assert event["$defs"]["experiment_id"]["pattern"] == "^X-[0-9]{2,}$"
     assert frozenset(
         venue["properties"]["start_time_cancel_policy"]["enum"]
     ) == contracts.START_TIME_CANCEL_POLICIES

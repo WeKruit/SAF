@@ -3,9 +3,10 @@ $id: urn:prediction-market:event-envelope:v0
 title: Event Envelope v0
 contract_version: v0
 x-normative-semantic-validator:
-  callable: prediction_market.contracts.validate_contract_v0
+  callable: prediction_market.contracts.validate_event_envelope_v0
   schema_name: event-envelope/v0.schema.yaml
   required: true
+  requires_program_root: true
   fail_closed_without_runtime: true
 description: Canonical append-only event envelope for raw and derived program events.
 type: object
@@ -42,7 +43,7 @@ properties:
       - simulated_fill
       - simulated_pnl
   payload_schema_version:
-    const: v0
+    enum: [v0, v1]
   source:
     $ref: '#/$defs/source'
   time:
@@ -78,6 +79,19 @@ properties:
     $ref: '#/$defs/sha256'
     x-derived-from: canonical payload JSON
 allOf:
+  - if:
+      properties:
+        event_type:
+          const: model_output
+      required: [event_type]
+    then:
+      properties:
+        payload_schema_version:
+          const: v1
+    else:
+      properties:
+        payload_schema_version:
+          const: v0
   - if:
       properties:
         event_type:
@@ -127,7 +141,8 @@ $defs:
     format: date-time
   experiment_id:
     type: string
-    enum: [X-01, X-02, X-03, X-04, X-05, X-06, X-07, X-08, X-09, X-10]
+    pattern: ^X-[0-9]{2,}$
+    x-foreign-key: registries/experiment_registry.csv#experiment_id
   source:
     type: object
     additionalProperties: false

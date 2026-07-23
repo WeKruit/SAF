@@ -1,0 +1,14 @@
+{
+  "data_class": "synthetic_contract_only",
+  "schema": "x06_synthetic_contract_fixture_v0",
+  "transitions": [
+    {
+      "from_state": "no_score",
+      "to_state": "home_score"
+    },
+    {
+      "from_state": "home_score",
+      "to_state": "away_score"
+    }
+  ]
+}

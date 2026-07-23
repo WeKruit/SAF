@@ -287,6 +287,10 @@ def test_formal_entry_reads_registry_and_reports_current_blockers() -> None:
     with pytest.raises(X09ExperimentBlocked) as captured:
         run_x09_formal(PROJECT_ROOT, _fixture())
 
+    assert any(
+        "execution_authorized" in blocker
+        for blocker in captured.value.blockers
+    )
     assert any("x09_input_manifest" in blocker for blocker in captured.value.blockers)
     assert any("X-01" in blocker for blocker in captured.value.blockers)
     assert any("preregistered" in blocker for blocker in captured.value.blockers)

@@ -12,6 +12,9 @@ from prediction_market import contracts
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONTRACTS_ROOT = PROJECT_ROOT / "contracts"
+X06_SYNTHETIC_DATA_SHA256 = (
+    "sha256:0ebca90ba56b45252c6d310fd176ba2eb1ac615995b3eacf92e2e3f9c962a15f"
+)
 
 
 def _digest(fill: str = "0") -> str:
@@ -40,7 +43,7 @@ def _static_manifest(*, object_kind: str = "byte_exact_original") -> dict:
         "media_type": "application/vnd.apache.parquet",
         "schema_fingerprint": _digest("2"),
         "license_ref": "O-006",
-        "license_status": "research_only",
+        "license_status": "approved",
         "upstream_partition": "venue=polymarket/date=2026-07-01",
         "lineage": {
             "source_object_refs": [],
@@ -89,7 +92,7 @@ def _metadata_snapshot() -> dict:
 def _model_output() -> dict:
     return {
         "contract_version": "v1",
-        "model_id": "MODEL-NBA-LOGISTIC",
+        "model_id": "MODEL-NBA-POSSESSION-TRANSITION",
         "model_version": "v1",
         "experiment_id": "X-06",
         "run_id": "run_x06_001",
@@ -98,15 +101,15 @@ def _model_output() -> dict:
         "pit_cutoff_at": "2025-12-01T20:00:00Z",
         "output_kind": "state_transition",
         "transition_unit": "possession",
-        "state_space": ["away_drive", "home_drive", "game_over"],
+        "state_space": ["home_score", "away_score", "no_score"],
         "horizon": "next_state_transition",
         "probabilities": {
-            "away_drive": {"atoms": "25", "scale": 2},
-            "home_drive": {"atoms": "50", "scale": 2},
-            "game_over": {"atoms": "25", "scale": 2},
+            "home_score": {"atoms": "25", "scale": 2},
+            "away_score": {"atoms": "50", "scale": 2},
+            "no_score": {"atoms": "25", "scale": 2},
         },
         "feature_sha256": _digest("5"),
-        "data_sha256": _digest("6"),
+        "data_sha256": X06_SYNTHETIC_DATA_SHA256,
         "config_sha256": _digest("7"),
         "quality_flags": [],
     }
@@ -117,8 +120,8 @@ def test_static_dataset_manifest_validates_byte_exact_original() -> None:
 
     assert manifest.object_kind == "byte_exact_original"
     assert manifest.lineage.source_object_refs == ()
-    assert contracts.validate_contract_v0(
-        "static-dataset-manifest/v0.schema.yaml", manifest
+    assert contracts.validate_static_dataset_manifest_v0(
+        PROJECT_ROOT, manifest
     ) == manifest
 
 
@@ -159,6 +162,14 @@ def test_static_dataset_manifest_hash_covers_all_other_fields() -> None:
         contracts.StaticDatasetManifestV0.model_validate(manifest)
 
 
+def test_generic_v0_validator_rejects_program_root_governed_static_manifest() -> None:
+    with pytest.raises(ValueError, match="program.root|dedicated"):
+        contracts.validate_contract_v0(
+            "static-dataset-manifest/v0.schema.yaml",
+            _static_manifest(),
+        )
+
+
 def test_market_metadata_snapshot_is_point_in_time_and_content_hashed() -> None:
     snapshot = contracts.MarketMetadataSnapshotV0.model_validate(
         _metadata_snapshot()
@@ -189,6 +200,59 @@ def test_market_metadata_snapshot_requires_consistent_resolution_state() -> None
         contracts.MarketMetadataSnapshotV0.model_validate(snapshot)
 
 
+def test_market_metadata_snapshot_requires_canonical_join_mappings() -> None:
+    snapshot = _metadata_snapshot()
+    snapshot["canonical_refs"] = {
+        "competition_id": None,
+        "game_id": None,
+        "participant_ids": [],
+        "venue_event_id": None,
+        "market_id": None,
+        "outcome_id": None,
+        "condition_id": None,
+    }
+    snapshot["snapshot_sha256"] = contracts.market_metadata_snapshot_sha256(snapshot)
+
+    with pytest.raises(ValidationError, match="canonical"):
+        contracts.MarketMetadataSnapshotV0.model_validate(snapshot)
+
+
+@pytest.mark.parametrize(
+    ("dataset_id", "license_ref"),
+    [
+        ("DS-NFLVERSE", "I-018"),
+        ("DS-POLYMARKET-V1", "R-039"),
+    ],
+)
+def test_static_manifest_license_ref_is_a_dataset_catalog_foreign_key(
+    dataset_id: str,
+    license_ref: str,
+) -> None:
+    manifest = _static_manifest()
+    manifest["dataset_id"] = dataset_id
+    manifest["license_ref"] = license_ref
+    manifest["manifest_sha256"] = contracts.static_dataset_manifest_sha256(manifest)
+
+    validated = contracts.validate_static_dataset_manifest_v0(
+        PROJECT_ROOT, manifest
+    )
+    assert validated.license_ref == license_ref
+
+    manifest["license_ref"] = "O-006"
+    manifest["manifest_sha256"] = contracts.static_dataset_manifest_sha256(manifest)
+    with pytest.raises(contracts.ContractValidationError, match="license_ref"):
+        contracts.validate_static_dataset_manifest_v0(PROJECT_ROOT, manifest)
+
+
+def test_static_manifest_license_ref_requires_a_stable_catalog_id_shape() -> None:
+    manifest = _static_manifest()
+    manifest["license_ref"] = "X-013"
+    manifest["manifest_sha256"] = contracts.static_dataset_manifest_sha256(manifest)
+
+    with pytest.raises(ValidationError, match="license_ref"):
+        contracts.StaticDatasetManifestV0.model_validate(manifest)
+
+
 def test_model_output_v1_is_transition_only_and_registry_backed() -> None:
     output = contracts.validate_contract_v1(
         PROJECT_ROOT, "model-output/v1.schema.yaml", _model_output()
@@ -202,6 +266,48 @@ def test_model_output_v1_is_transition_only_and_registry_backed() -> None:
     with pytest.raises(contracts.ContractValidationError, match="not registered"):
         contracts.validate_contract_v1(
             PROJECT_ROOT, "model-output/v1.schema.yaml", unknown
+        )
+
+
+def test_x06_model_output_is_bound_to_the_authorized_synthetic_fixture() -> None:
+    tampered = dict(_model_output(), data_sha256=_digest("6"))
+
+    with pytest.raises(
+        contracts.ContractValidationError,
+        match="synthetic|data_sha256|fixture",
+    ):
+        contracts.validate_contract_v1(
+            PROJECT_ROOT, "model-output/v1.schema.yaml", tampered
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("model_id", "MODEL-NBA-LOGISTIC"),
+        ("model_version", "v0"),
+        ("experiment_id", "X-11"),
+        ("state_space", ["away_win", "home_win"]),
+    ],
+)
+def test_model_output_v1_must_match_model_registry_and_card(
+    field: str,
+    value: object,
+) -> None:
+    output = _model_output()
+    output[field] = value
+    if field == "state_space":
+        output["probabilities"] = {
+            "away_win": {"atoms": "50", "scale": 2},
+            "home_win": {"atoms": "50", "scale": 2},
+        }
+
+    with pytest.raises(
+        contracts.ContractValidationError,
+        match="model|experiment|state_space|transition",
+    ):
+        contracts.validate_contract_v1(
+            PROJECT_ROOT, "model-output/v1.schema.yaml", output
         )
 
 
@@ -226,14 +332,14 @@ def test_model_output_v1_rejects_final_win_only_outputs(
 
 def test_model_output_v1_probability_keys_and_sum_are_exact() -> None:
     output = copy.deepcopy(_model_output())
-    output["probabilities"]["game_over"]["atoms"] = "24"
+    output["probabilities"]["home_score"]["atoms"] = "24"
 
     with pytest.raises(ValidationError, match="sum exactly to 1"):
         contracts.ModelOutputV1.model_validate(output)
 
     output = copy.deepcopy(_model_output())
     output["probabilities"]["wrong_state"] = output["probabilities"].pop(
-        "game_over"
+        "home_score"
     )
     with pytest.raises(ValidationError, match="exactly match state_space"):
         contracts.ModelOutputV1.model_validate(output)

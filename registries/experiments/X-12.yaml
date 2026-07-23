@@ -14,7 +14,7 @@ experiment_card:
     - No revised final-match field is used before its prediction cutoff.
     - No current market price or future point-in-time market prior is synthesized.
   split: expanding-window chronological match evaluation on Premier League 2015/16
-  metrics: [1X2 multiclass Brier score, multiclass log loss, 1X2 calibration, five-minute transition log loss, season-time stability]
+  metrics: [1X2 multiclass Brier score, multiclass log loss, one-vs-rest calibration slope, one-vs-rest calibration intercept, game-cluster bootstrap confidence interval, paired model-minus-prior confidence interval only if a point-in-time prior is registered, five-minute transition log loss, season-time stability]
   pass_criteria: A fully locked reproducible POC report with multiclass 1X2 calibration and five-minute transition metrics; the result remains POC only.
   fail_criteria: Missing StatsBomb manifest license context PIT feature/config/seed lock or chronological isolation invalidates the POC. Formal promotion remains unauthorized regardless of POC metrics.
   cost_estimate: {compute: unresolved, human_days: unresolved}
@@ -24,17 +24,28 @@ experiment_card:
   due_gate: null
   results_ref: []
   promotion_decision: POC_ONLY
-  execution_authorized: false
+  execution_authorized: true
   completion_required_scopes: [poc_result]
   authorization_scopes:
     poc_result:
       authorized: true
       required_result_label: PRELIMINARY
       required_lock_ids: [statsbomb_manifest_and_version, statsbomb_research_license, pit_feature_contract, dixon_coles_config_and_seed, expanding_window_split, transition_definition, h_split_approval]
+      input_binding: &x12_inputs
+        result_class: poc
+        dataset_ids: [DS-STATSBOMB-OPEN]
+        model_ids: [MODEL-SOCCER-DIXON-COLES, MODEL-SOCCER-FIVE-MINUTE-TRANSITION]
+        synthetic_data_sha256: null
     formal_promotion:
       authorized: false
+      permanent_no_go: true
       required_result_label: FORMAL
       required_lock_ids: [statsbomb_manifest_and_version, statsbomb_research_license, pit_feature_contract, dixon_coles_config_and_seed, expanding_window_split, transition_definition, h_split_approval]
+      input_binding:
+        result_class: formal
+        dataset_ids: [DS-STATSBOMB-OPEN]
+        model_ids: [MODEL-SOCCER-DIXON-COLES, MODEL-SOCCER-FIVE-MINUTE-TRANSITION]
+        synthetic_data_sha256: null
   registration_locks:
     - {id: statsbomb_manifest_and_version, status: unresolved, reason: Byte-exact source snapshot and static manifest hash are unset.}
     - {id: statsbomb_research_license, status: unresolved, reason: O-004 permits only the explicitly approved research context after review.}
@@ -75,4 +86,4 @@ experiment_card:
     - readme_return_strategy_selection
     - unregistered_quick_backtest
   amendments: []
-  registration_record_sha256: sha256:7d485dce11d941809ae7354ebd5db54db2bd8b0461052cc0a3e139dd68d96c9b
+  registration_record_sha256: sha256:f1482d5268cbcb556ae8ac8fb37f15d31586cbc2e13565cb05f0341efcabdc96

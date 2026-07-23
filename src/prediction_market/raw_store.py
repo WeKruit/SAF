@@ -120,6 +120,7 @@ class VerifiedSegment:
 
     manifest: SegmentManifest
     payloads: tuple[bytes, ...]
+    receive_times: tuple[str, ...]
 
 
 def _canonical_json_bytes(value: dict[str, Any]) -> bytes:
@@ -1038,12 +1039,13 @@ def _inspect_segment(
     *,
     root: str | Path | None,
     collect_payloads: bool,
-) -> tuple[SegmentVerification, tuple[bytes, ...]]:
+) -> tuple[SegmentVerification, tuple[bytes, ...], tuple[str, ...]]:
     """Verify one segment, optionally retaining payloads from the verified object fd."""
 
     errors: list[str] = []
     manifest: SegmentManifest | None = None
     payloads: list[bytes] = []
+    receive_times: list[str] = []
     root_fd = -1
     manifest_fd = -1
     manifest_parent_fd = -1
@@ -1094,7 +1096,6 @@ def _inspect_segment(
                 f"manifest={manifest.object_sha256}, actual={actual_sha256}"
             )
 
-        receive_times: list[str] = []
         record_count = 0
         try:
             os.lseek(object_fd, 0, os.SEEK_SET)
@@ -1171,7 +1172,7 @@ def _inspect_segment(
         errors=tuple(errors),
         manifest=manifest,
     )
-    return verification, tuple(payloads)
+    return verification, tuple(payloads), tuple(receive_times)
 
 
 def verify_segment(
@@ -1179,7 +1180,7 @@ def verify_segment(
 ) -> SegmentVerification:
     """Verify path safety, manifest invariants, object hash, and every raw record."""
 
-    verification, _ = _inspect_segment(
+    verification, _, _ = _inspect_segment(
         manifest_path,
         root=root,
         collect_payloads=False,
@@ -1192,7 +1193,7 @@ def read_verified_segment(
 ) -> VerifiedSegment:
     """Return exact payloads only when the manifest and object verify in one read."""
 
-    verification, payloads = _inspect_segment(
+    verification, payloads, receive_times = _inspect_segment(
         manifest_path,
         root=root,
         collect_payloads=True,
@@ -1200,7 +1201,11 @@ def read_verified_segment(
     if not verification.valid or verification.manifest is None:
         detail = "; ".join(verification.errors) or "unknown verification failure"
         raise RawStoreError(f"segment verification failed: {detail}")
-    return VerifiedSegment(manifest=verification.manifest, payloads=payloads)
+    return VerifiedSegment(
+        manifest=verification.manifest,
+        payloads=payloads,
+        receive_times=receive_times,
+    )
 
 
 __all__ = [

@@ -3,11 +3,14 @@ from __future__ import annotations
 import csv
 import copy
 import hashlib
+import json
 import os
 import shutil
 import sys
-from pathlib import Path
+from datetime import datetime, timedelta, timezone
+from pathlib import Path, PurePosixPath
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -29,6 +32,9 @@ from prediction_market.experiments import (  # noqa: E402
     load_experiment_registry,
     validate_result_ref,
 )
+import prediction_market.experiments as experiments_module  # noqa: E402
+import prediction_market.raw_store as raw_store_module  # noqa: E402
+from prediction_market.raw_store import RawSegmentWriter  # noqa: E402
 
 
 EXPECTED_EXPERIMENT_IDS = {f"X-{number:02d}" for number in range(1, 13)}
@@ -54,6 +60,142 @@ EXPECTED_TASK_3_PATHS = {
     "tests/test_experiment_registry.py",
     *(f"registries/experiments/X-{number:02d}.yaml" for number in range(1, 13)),
 }
+EXPECTED_X02_PREREGISTRATION = {
+    "sampling_and_seed": {
+        "selection_seed": 20260722,
+        "game_day": "2026-05-28",
+        "random_days": [
+            "2026-04-22",
+            "2026-06-05",
+            "2026-06-25",
+        ],
+        "selection_inventory_sha256": (
+            "sha256:"
+            "74d7e9f21003f595d2d505bc63c89c7eadcd5339d541032bc80704d4b14b3043"
+        ),
+        "x01_game_day_manifest_sha256": (
+            "sha256:"
+            "e7dfc9e7992f1eb085edc0c67f37100db10c6541533220833dcace2a1e244df3"
+        ),
+        "pending_archive_object_count": 72,
+    },
+    "diff_and_stability_definitions": {
+        "diff_ms": "epoch_ms(timestamp_received)-epoch_ms(timestamp)",
+        "signed_quantiles": {
+            "estimator": "quantile_cont",
+            "interpolation": "linear",
+            "input_distribution": "integer_millisecond_frequency",
+            "probabilities": ["0.50", "0.95", "0.99"],
+        },
+        "absolute_p99": {
+            "transform": "abs(diff_ms)",
+            "estimator": "quantile_cont",
+            "interpolation": "linear",
+            "input_distribution": "integer_millisecond_frequency",
+            "probability": "0.99",
+        },
+        "hourly_drift_ms": (
+            "median_utc_hour_23_diff_ms-median_utc_hour_00_diff_ms"
+        ),
+        "disorder": {
+            "partition_by": ["market", "asset_id"],
+            "canonical_sort": ["timestamp_received", "timestamp"],
+            "numerator": "adjacent_source_timestamp_strict_descents",
+            "ordered_comparisons": (
+                "n_rows-n_unique_market_asset_streams"
+            ),
+        },
+        "downgrade_gate": {
+            "negative_rate_gte": "0.001",
+            "absolute_p99_ms_gt": 5000,
+            "decision": "downgrade_millisecond_research_to_seconds",
+        },
+    },
+    "h_split_approval": {
+        "split": "n.a.",
+        "basis": "charter_section_9_measurement_audit_exemption",
+        "approved_by": "H",
+    },
+}
+EXPECTED_X02_INPUT_MANIFEST_BINDING = {
+    "bundle_path": (
+        "artifacts/data-audit/x02_timestamp_input_bundle_v1.json"
+    ),
+    "bundle_file_sha256": (
+        "sha256:"
+        "46c3f23007929ad31b131f3618009810501b6ef06d0ac2645eb3dcfac217bd8d"
+    ),
+    "bundle_sha256": (
+        "sha256:"
+        "9477f8d9a224b47b6dda47dd691761d4ca8b5d88be6ad07416217a2bb44c89a4"
+    ),
+}
+EXPECTED_X02_DAY_MANIFESTS = [
+    {
+        "artifact_file_sha256": (
+            "sha256:"
+            "36d20e073a41ed4cbe0a2e7f37e726c3334075a0ff4017d42b38d5e15d4a5e85"
+        ),
+        "day": "2026-04-22",
+        "full_day_manifest_sha256": (
+            "sha256:"
+            "d01571e413a942c615489bc674560a0abc5a718507d990ad4106c1a90f3f61ed"
+        ),
+        "object_count": 24,
+        "path": (
+            "artifacts/data-audit/"
+            "x02_full_day_input_manifest_2026-04-22_v1.json"
+        ),
+    },
+    {
+        "artifact_file_sha256": (
+            "sha256:"
+            "06f1c0aeadd0a735474756e272fd4f9cccb8d718ca65c316163ff08361ac22c5"
+        ),
+        "day": "2026-05-28",
+        "full_day_manifest_sha256": (
+            "sha256:"
+            "e7dfc9e7992f1eb085edc0c67f37100db10c6541533220833dcace2a1e244df3"
+        ),
+        "object_count": 24,
+        "path": "artifacts/data-audit/x01_full_day_input_manifest_v1.json",
+    },
+    {
+        "artifact_file_sha256": (
+            "sha256:"
+            "ddb609d9bf15550e487caa3e785999340b4fa337ab82036eccec09965aa598f8"
+        ),
+        "day": "2026-06-05",
+        "full_day_manifest_sha256": (
+            "sha256:"
+            "b4f688f1da57827426efd5b0b212b15457282f56a253ceffca74542d11f6419e"
+        ),
+        "object_count": 24,
+        "path": (
+            "artifacts/data-audit/"
+            "x02_full_day_input_manifest_2026-06-05_v1.json"
+        ),
+    },
+    {
+        "artifact_file_sha256": (
+            "sha256:"
+            "94546f473149f31ef75179f8a1e8982fc31d99e712ba9d5c3b94cf603b458850"
+        ),
+        "day": "2026-06-25",
+        "full_day_manifest_sha256": (
+            "sha256:"
+            "0b6e87e6b59035751405b5d87a8b9bde2902f0e5545163e0eb17c30a1f3f956e"
+        ),
+        "object_count": 24,
+        "path": (
+            "artifacts/data-audit/"
+            "x02_full_day_input_manifest_2026-06-25_v1.json"
+        ),
+    },
+]
+X02_STATIC_SIDECAR_ROOT = (
+    "artifacts/data-audit/x02-static-store-v1"
+)
 
 
 @pytest.fixture
@@ -129,21 +271,168 @@ def _rewrite_registered_card(root: Path, experiment_id: str, card: dict) -> None
     _update_registry_card_hash(root, experiment_id)
 
 
+def _update_dataset_registry(
+    root: Path, dataset_id: str, **updates: str
+) -> None:
+    path = root / "registries" / "dataset_registry.csv"
+    with path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = reader.fieldnames
+        rows = list(reader)
+    assert fieldnames is not None
+    row = next(item for item in rows if item["dataset_id"] == dataset_id)
+    row.update(updates)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _update_license_review(
+    root: Path, review_id: str, **updates: str
+) -> None:
+    path = root / "registries" / "data_license_register.csv"
+    with path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = reader.fieldnames
+        rows = list(reader)
+    assert fieldnames is not None
+    row = next(item for item in rows if item["catalog_item_id"] == review_id)
+    row.update(updates)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _canonical_sha256(value: Any) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _write_pretty_json(path: Path, value: dict[str, Any]) -> str:
+    rendered = (
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            indent=2,
+        )
+        + "\n"
+    ).encode("utf-8")
+    path.write_bytes(rendered)
+    return "sha256:" + hashlib.sha256(rendered).hexdigest()
+
+
+def _resign_x02_bundle(
+    root: Path,
+    *,
+    bundle_mutation: tuple[tuple[str, ...], Any] | None = None,
+    day_mutation: tuple[str, tuple[str, ...], Any] | None = None,
+) -> dict[str, str]:
+    bundle_path = root / EXPECTED_X02_INPUT_MANIFEST_BINDING["bundle_path"]
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    if day_mutation is not None:
+        day, path, replacement = day_mutation
+        entry = next(
+            item for item in bundle["day_manifests"] if item["day"] == day
+        )
+        manifest_path = root / entry["path"]
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        _set_nested(manifest, path, replacement)
+        material = dict(manifest)
+        material.pop("manifest_sha256", None)
+        manifest["manifest_sha256"] = _canonical_sha256(material)
+        entry["full_day_manifest_sha256"] = manifest["manifest_sha256"]
+        entry["artifact_file_sha256"] = _write_pretty_json(
+            manifest_path, manifest
+        )
+    if bundle_mutation is not None:
+        path, replacement = bundle_mutation
+        _set_nested(bundle, path, replacement)
+    material = dict(bundle)
+    material.pop("bundle_sha256", None)
+    bundle["bundle_sha256"] = _canonical_sha256(material)
+    return {
+        "bundle_path": EXPECTED_X02_INPUT_MANIFEST_BINDING["bundle_path"],
+        "bundle_file_sha256": _write_pretty_json(bundle_path, bundle),
+        "bundle_sha256": bundle["bundle_sha256"],
+    }
+
+
+def _x02_static_sidecar_path(
+    root: Path,
+    *,
+    day_manifest_index: int = 0,
+    object_index: int = 0,
+) -> Path:
+    entry = EXPECTED_X02_DAY_MANIFESTS[day_manifest_index]
+    day_manifest = json.loads(
+        (root / entry["path"]).read_text(encoding="utf-8")
+    )
+    hourly_object = day_manifest["objects"][object_index]
+    object_parts = PurePosixPath(hourly_object["object_path"]).parts
+    assert object_parts[:4] == (
+        "raw",
+        "source=pmxt",
+        "dataset=DS-PMXT-V2",
+        "version=v2",
+    )
+    static_digest = hourly_object[
+        "static_manifest_sha256"
+    ].removeprefix("sha256:")
+    return (
+        root
+        / X02_STATIC_SIDECAR_ROOT
+        / "manifests"
+        / object_parts[1]
+        / object_parts[2]
+        / object_parts[3]
+        / object_parts[4]
+        / f"{static_digest}.manifest.json"
+    )
+
+
+def _set_nested(
+    value: dict[str, Any],
+    path: tuple[str, ...],
+    replacement: Any,
+) -> None:
+    current = value
+    for key in path[:-1]:
+        current = current[key]
+    current[path[-1]] = replacement
+
+
 def _valid_result_ref(
     *,
     scope: str = "archive_audit",
     result_label: str = "FORMAL",
-    evaluation_started_at: str = "2026-07-23T00:00:02Z",
+    evaluation_started_at: str = "2026-07-23T00:00:03Z",
     registration_head_sha256: str = "sha256:" + "4" * 64,
-) -> dict[str, str]:
+    data_sha256: str = "sha256:" + "2" * 64,
+    dataset_ids: list[str] | None = None,
+    model_ids: list[str] | None = None,
+) -> dict[str, Any]:
     return {
         "scope": scope,
         "result_label": result_label,
         "evaluation_started_at": evaluation_started_at,
         "code_sha256": "sha256:" + "1" * 64,
-        "data_sha256": "sha256:" + "2" * 64,
+        "data_sha256": data_sha256,
         "result_sha256": "sha256:" + "3" * 64,
         "registration_head_sha256": registration_head_sha256,
+        "dataset_ids": (
+            ["DS-KALSHI-HISTORICAL"] if dataset_ids is None else dataset_ids
+        ),
+        "model_ids": [] if model_ids is None else model_ids,
     }
 
 
@@ -227,11 +516,107 @@ def _append_amendment(
     return amendment
 
 
+def _rewrite_seed_amendment(
+    root: Path,
+    experiment_id: str,
+    amendment: dict[str, Any],
+) -> dict[str, Any]:
+    card = _read_card(root, experiment_id)
+    amendment = copy.deepcopy(amendment)
+    amendment["amendment_sha256"] = compute_amendment_sha256(amendment)
+    card["amendments"][0] = amendment
+    _write_card(root, experiment_id, card)
+    _update_registry_card_hash(root, experiment_id)
+
+    ledger_path = root / "registries" / "experiment_amendment_ledger.csv"
+    with ledger_path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = reader.fieldnames
+        rows = list(reader)
+    assert fieldnames is not None
+    ledger = next(
+        row
+        for row in rows
+        if row["experiment_id"] == experiment_id
+        and row["sequence"] == str(amendment["sequence"])
+    )
+    ledger.update(
+        {
+            "record_sha256": amendment["amendment_sha256"],
+            "prior_sha256": amendment["prior_sha256"],
+            "amended_at": amendment["amended_at"],
+            "approved_by": amendment["approved_by"],
+            "reason": amendment["reason"],
+        }
+    )
+    with ledger_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    return amendment
+
+
+def _rewrite_x02_binding_amendment(
+    root: Path,
+    amendment: dict[str, Any],
+) -> dict[str, Any]:
+    card = _read_card(root, "X-02")
+    amendment = copy.deepcopy(amendment)
+    amendment["amendment_sha256"] = compute_amendment_sha256(amendment)
+    card["amendments"][1] = amendment
+    _write_card(root, "X-02", card)
+    _update_registry_card_hash(root, "X-02")
+
+    ledger_path = root / "registries" / "experiment_amendment_ledger.csv"
+    with ledger_path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = reader.fieldnames
+        rows = list(reader)
+    assert fieldnames is not None
+    ledger = next(
+        row
+        for row in rows
+        if row["experiment_id"] == "X-02"
+        and row["sequence"] == "2"
+    )
+    ledger.update(
+        {
+            "record_sha256": amendment["amendment_sha256"],
+            "prior_sha256": amendment["prior_sha256"],
+            "amended_at": amendment["amended_at"],
+            "approved_by": amendment["approved_by"],
+            "reason": amendment["reason"],
+        }
+    )
+    with ledger_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    return amendment
+
+
 def _preregister_x08_inputs(root: Path) -> dict[str, Any]:
+    _update_license_review(
+        root,
+        "O-003",
+        status="GREEN",
+        commercial_use="PERMITTED_WITH_CONDITIONS",
+        redistribution="PERMITTED_WITH_CONDITIONS",
+        attribution_required="YES",
+        operational_use="APPROVED",
+        open_blocker="",
+        approval_ref="I-APPROVAL-O003-TEST",
+    )
+    _update_dataset_registry(
+        root,
+        "DS-KALSHI-HISTORICAL",
+        license_status="approved",
+        manifest_sha256="sha256:" + "7" * 64,
+    )
     return _append_amendment(
         root,
         "X-08",
-        amended_at="2026-07-23T00:00:01Z",
+        amended_at="2026-07-23T00:00:02Z",
         changes={
             "resolve_locks": [
                 {
@@ -248,10 +633,219 @@ def _preregister_x08_inputs(root: Path) -> dict[str, Any]:
                     "scope": "archive_audit",
                     "code_sha256": "sha256:" + "1" * 64,
                     "data_sha256": "sha256:" + "2" * 64,
+                    "dataset_ids": ["DS-KALSHI-HISTORICAL"],
+                    "model_ids": [],
                 }
             ],
         },
     )
+
+
+def _preregister_x08_dual_venue_inputs(root: Path) -> dict[str, Any]:
+    for review_id in ("O-001", "O-003"):
+        _update_license_review(
+            root,
+            review_id,
+            status="GREEN",
+            commercial_use="PERMITTED_WITH_CONDITIONS",
+            redistribution="PERMITTED_WITH_CONDITIONS",
+            attribution_required="YES",
+            operational_use="APPROVED",
+            open_blocker="",
+            approval_ref=f"I-APPROVAL-{review_id[2:]}-TEST",
+        )
+    for dataset_id in (
+        "DS-KALSHI-HISTORICAL",
+        "DS-KALSHI-LIVE-L2",
+        "DS-POLYMARKET-PUBLIC",
+    ):
+        _update_dataset_registry(
+            root,
+            dataset_id,
+            use_class="canonical",
+            license_status="approved",
+            manifest_sha256="sha256:" + "7" * 64,
+            status="registered",
+        )
+    card = _read_card(root, "X-08")
+    return _append_amendment(
+        root,
+        "X-08",
+        amended_at="2026-07-23T00:00:02Z",
+        changes={
+            "resolve_locks": [
+                {
+                    "lock_id": lock["id"],
+                    "evidence_ref": "sha256:" + "8" * 64,
+                }
+                for lock in card["registration_locks"]
+            ],
+            "authorize_scopes": ["dual_venue_result"],
+            "preregistered_inputs": [
+                {
+                    "scope": "dual_venue_result",
+                    "code_sha256": "sha256:" + "1" * 64,
+                    "data_sha256": "sha256:" + "2" * 64,
+                    "dataset_ids": [
+                        "DS-KALSHI-HISTORICAL",
+                        "DS-KALSHI-LIVE-L2",
+                        "DS-POLYMARKET-PUBLIC",
+                    ],
+                    "model_ids": [],
+                }
+            ],
+        },
+    )
+
+
+def _utc_text(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _set_x08_validation_clock(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    instant = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    monkeypatch.setattr(experiments_module, "_utc_now", lambda: instant)
+
+
+def _write_x08_capture_evidence(
+    root: Path,
+    *,
+    capture_session_id: str,
+    started_at: str,
+    ended_at: str,
+    fixtures_used: bool = False,
+    drop_heartbeat_at: str | None = None,
+    sealed_at: str | None = None,
+    include_dataset_ids: tuple[str, ...] = (
+        "DS-KALSHI-LIVE-L2",
+        "DS-POLYMARKET-PUBLIC",
+    ),
+) -> dict[str, str]:
+    started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+    ended = datetime.fromisoformat(ended_at.replace("Z", "+00:00"))
+    segment_sealed_at = (
+        _utc_text(ended + timedelta(milliseconds=500))
+        if sealed_at is None
+        else sealed_at
+    )
+    receive_times: list[datetime] = []
+    instant = started
+    while instant <= ended:
+        receive_times.append(instant)
+        instant += timedelta(seconds=60)
+    if receive_times[-1] != ended:
+        receive_times.append(ended)
+
+    stream_specs = {
+        "DS-KALSHI-LIVE-L2": ("kalshi", "orderbook"),
+        "DS-POLYMARKET-PUBLIC": ("polymarket", "market"),
+    }
+    capture_dir = (
+        root / "artifacts" / "capture-evidence" / capture_session_id
+    )
+    raw_store_root = capture_dir / "raw-store"
+    streams: list[dict[str, Any]] = []
+    for dataset_id in include_dataset_ids:
+        source, stream = stream_specs[dataset_id]
+        manifests: list[str] = []
+        writers: dict[tuple[str, str], RawSegmentWriter] = {}
+        for received_at in receive_times:
+            received_text = _utc_text(received_at)
+            if received_text == drop_heartbeat_at:
+                continue
+            partition = (
+                received_at.date().isoformat(),
+                f"{received_at.hour:02d}",
+            )
+            writer = writers.get(partition)
+            if writer is None:
+                writer = RawSegmentWriter(
+                    raw_store_root,
+                    source=source,
+                    stream=stream,
+                    capture_session_id=capture_session_id,
+                )
+                writers[partition] = writer
+            writer.append(
+                json.dumps(
+                    {
+                        "dataset_id": dataset_id,
+                        "kind": "recorder_heartbeat",
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8"),
+                receive_at=received_text,
+            )
+        with patch.object(
+            raw_store_module,
+            "_utc_now_text",
+            return_value=segment_sealed_at,
+        ):
+            for partition in sorted(writers):
+                segment = writers[partition].seal()
+                manifests.append(
+                    segment.path.relative_to(raw_store_root).as_posix()
+                )
+        streams.append(
+            {
+                "dataset_id": dataset_id,
+                "source": source,
+                "stream": stream,
+                "segment_manifest_paths": manifests,
+            }
+        )
+
+    document = {
+        "schema_version": "x08-capture-evidence/v0",
+        "experiment_id": "X-08",
+        "capture_session_id": capture_session_id,
+        "fixtures_used": fixtures_used,
+        "gap_policy": {
+            "policy_id": "recorder-heartbeat/v0",
+            "maximum_gap_seconds": 60,
+        },
+        "raw_store_root": raw_store_root.relative_to(root).as_posix(),
+        "streams": streams,
+    }
+    capture_dir.mkdir(parents=True, exist_ok=True)
+    capture_manifest = capture_dir / "capture-manifest.json"
+    manifest_bytes = (
+        json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    capture_manifest.write_bytes(manifest_bytes)
+    manifest_ref = capture_manifest.relative_to(root).as_posix()
+
+    artifact_registry = root / "registries" / "artifact_registry.csv"
+    with artifact_registry.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = reader.fieldnames
+        rows = list(reader)
+    assert fieldnames is not None
+    rows.append(
+        {
+            "artifact_id": f"ART-X08-{capture_session_id.upper()}",
+            "path": manifest_ref,
+            "owner_team": "C+B",
+            "version": "v0",
+            "due_gate": "first_round_artifact_gate",
+            "status": "registered",
+        }
+    )
+    with artifact_registry.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    return {
+        "capture_manifest_path": manifest_ref,
+        "capture_manifest_sha256": (
+            "sha256:" + hashlib.sha256(manifest_bytes).hexdigest()
+        ),
+    }
 
 
 def _complete_scope(
@@ -264,6 +858,38 @@ def _complete_scope(
     completed_at: str,
 ) -> dict[str, Any]:
     card = _read_card(root, experiment_id)
+    binding = card["authorization_scopes"][scope]["input_binding"]
+    dataset_path = root / "registries" / "dataset_registry.csv"
+    with dataset_path.open(encoding="utf-8", newline="") as handle:
+        datasets_by_id = {
+            row["dataset_id"]: row for row in csv.DictReader(handle)
+        }
+    for dataset_id in binding["dataset_ids"]:
+        review_id = datasets_by_id[dataset_id]["license_review_id"]
+        _update_license_review(
+            root,
+            review_id,
+            status="GREEN",
+            commercial_use="PERMITTED_WITH_CONDITIONS",
+            redistribution="PERMITTED_WITH_CONDITIONS",
+            attribution_required="YES",
+            operational_use="APPROVED",
+            open_blocker="",
+            approval_ref=f"I-APPROVAL-{review_id[2:]}-TEST",
+        )
+        _update_dataset_registry(
+            root,
+            dataset_id,
+            use_class="canonical",
+            license_status="approved",
+            manifest_sha256="sha256:" + "7" * 64,
+            status="registered",
+        )
+    effective_card = load_experiment_registry(root)[experiment_id]
+    lock_status_by_id = {
+        lock["id"]: lock["status"]
+        for lock in effective_card["registration_locks"]
+    }
     preregistration = _append_amendment(
         root,
         experiment_id,
@@ -277,12 +903,15 @@ def _complete_scope(
                 for lock_id in card["authorization_scopes"][scope][
                     "required_lock_ids"
                 ]
+                if lock_status_by_id[lock_id] == "unresolved"
             ],
             "preregistered_inputs": [
                 {
                     "scope": scope,
                     "code_sha256": "sha256:" + "1" * 64,
                     "data_sha256": "sha256:" + "2" * 64,
+                    "dataset_ids": binding["dataset_ids"],
+                    "model_ids": binding["model_ids"],
                 }
             ],
         },
@@ -292,6 +921,8 @@ def _complete_scope(
         result_label=card["authorization_scopes"][scope]["required_result_label"],
         evaluation_started_at=evaluated_at,
         registration_head_sha256=preregistration["amendment_sha256"],
+        dataset_ids=binding["dataset_ids"],
+        model_ids=binding["model_ids"],
     )
     return _append_amendment(
         root,
@@ -306,6 +937,731 @@ def test_all_seed_experiments_are_registered(program_root: Path) -> None:
 
     assert set(registry) == EXPECTED_EXPERIMENT_IDS
     assert {card["id"] for card in registry.values()} == EXPECTED_EXPERIMENT_IDS
+
+
+def test_x02_seed_preregistration_is_exact_and_does_not_resolve_input_manifest(
+    program_root: Path,
+) -> None:
+    card = _read_card(program_root, "X-02")
+    assert card["registration_record_sha256"] == (
+        "sha256:"
+        "1b6393ef8cca4bf482cc3a167844358c07fda9a97c45cbedbe4ceda3e2033ed1"
+    )
+    assert card["registration_record_sha256"] == (
+        compute_registration_record_sha256(card)
+    )
+    assert len(card["amendments"]) == 2
+    amendment = card["amendments"][0]
+    assert amendment["sequence"] == 1
+    assert amendment["prior_sha256"] == card["registration_record_sha256"]
+    assert amendment["approved_by"] == "H"
+    assert amendment["amendment_sha256"] == compute_amendment_sha256(
+        amendment
+    )
+    assert amendment["changes"]["timestamp_audit_preregistration"] == (
+        EXPECTED_X02_PREREGISTRATION
+    )
+    resolved = {
+        item["lock_id"]: item["evidence_ref"]
+        for item in amendment["changes"]["resolve_locks"]
+    }
+    assert resolved == {
+        lock_id: _canonical_sha256(section)
+        for lock_id, section in EXPECTED_X02_PREREGISTRATION.items()
+    }
+
+    assert {
+        item["lock_id"] for item in amendment["changes"]["resolve_locks"]
+    } == {
+        "sampling_and_seed",
+        "diff_and_stability_definitions",
+        "h_split_approval",
+    }
+    assert "timestamp_input_manifest_binding" not in amendment["changes"]
+    with (
+        program_root / "registries" / "experiment_amendment_ledger.csv"
+    ).open(encoding="utf-8", newline="") as handle:
+        ledger = [
+            row
+            for row in csv.DictReader(handle)
+            if row["experiment_id"] == "X-02"
+        ]
+    assert [row["sequence"] for row in ledger] == ["0", "1", "2"]
+    assert ledger[0]["record_sha256"] == card["registration_record_sha256"]
+    assert ledger[1]["record_sha256"] == amendment["amendment_sha256"]
+
+
+def test_x02_input_manifest_bundle_binding_is_exact_and_keeps_inputs_unregistered(
+    program_root: Path,
+) -> None:
+    card = _read_card(program_root, "X-02")
+    seed, binding_amendment = card["amendments"]
+
+    amendment_times = [
+        datetime.fromisoformat(
+            item["amended_at"].removesuffix("Z") + "+00:00"
+        )
+        for item in card["amendments"]
+    ]
+    assert amendment_times == sorted(amendment_times)
+    assert all(item <= datetime.now(timezone.utc) for item in amendment_times)
+    assert binding_amendment["sequence"] == 2
+    assert binding_amendment["prior_sha256"] == seed["amendment_sha256"]
+    assert binding_amendment["approved_by"] == "H"
+    assert binding_amendment["amendment_sha256"] == (
+        compute_amendment_sha256(binding_amendment)
+    )
+    assert set(binding_amendment["changes"]) == {
+        "resolve_locks",
+        "timestamp_input_manifest_binding",
+    }
+    assert binding_amendment["changes"][
+        "timestamp_input_manifest_binding"
+    ] == EXPECTED_X02_INPUT_MANIFEST_BINDING
+    assert binding_amendment["changes"]["resolve_locks"] == [
+        {
+            "lock_id": "timestamp_input_manifest",
+            "evidence_ref": EXPECTED_X02_INPUT_MANIFEST_BINDING[
+                "bundle_sha256"
+            ],
+        }
+    ]
+
+    effective = load_experiment_registry(program_root)["X-02"]
+    assert effective["timestamp_audit_preregistration"] == (
+        EXPECTED_X02_PREREGISTRATION
+    )
+    assert effective["timestamp_input_manifest_binding"] == (
+        EXPECTED_X02_INPUT_MANIFEST_BINDING
+    )
+    assert {
+        lock["id"]: lock["status"]
+        for lock in effective["registration_locks"]
+    } == {
+        "timestamp_input_manifest": "resolved",
+        "sampling_and_seed": "resolved",
+        "diff_and_stability_definitions": "resolved",
+        "h_split_approval": "resolved",
+    }
+    assert effective["preregistered_inputs"] == {}
+    assert effective["results_ref"] == []
+    assert effective["status"] == "registered"
+
+
+def test_x02_bundle_verifier_checks_all_four_days_and_static_references(
+    program_root: Path,
+) -> None:
+    summary = experiments_module._verify_x02_timestamp_input_bundle(
+        program_root,
+        EXPECTED_X02_INPUT_MANIFEST_BINDING,
+    )
+
+    assert summary == {
+        "bundle_sha256": EXPECTED_X02_INPUT_MANIFEST_BINDING[
+            "bundle_sha256"
+        ],
+        "days": [
+            "2026-04-22",
+            "2026-05-28",
+            "2026-06-05",
+            "2026-06-25",
+        ],
+        "object_count": 96,
+        "static_manifest_reference_count": 96,
+        "verified_static_sidecar_count": 96,
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement", "match"),
+    [
+        (
+            "bundle_path",
+            "../x02_timestamp_input_bundle_v1.json",
+            "path escape|binding",
+        ),
+        (
+            "bundle_file_sha256",
+            "sha256:" + "a" * 64,
+            "bundle file SHA-256",
+        ),
+        (
+            "bundle_sha256",
+            "sha256:" + "b" * 64,
+            "bundle self-hash|binding",
+        ),
+    ],
+)
+def test_x02_bundle_verifier_rejects_binding_tampering(
+    program_root: Path,
+    field: str,
+    replacement: str,
+    match: str,
+) -> None:
+    binding = dict(EXPECTED_X02_INPUT_MANIFEST_BINDING)
+    binding[field] = replacement
+
+    with pytest.raises(ExperimentRegistryError, match=match):
+        experiments_module._verify_x02_timestamp_input_bundle(
+            program_root,
+            binding,
+        )
+
+
+@pytest.mark.parametrize(
+    ("path", "replacement", "match"),
+    [
+        (("selection_seed",), 20260723, "selection|bundle"),
+        (("day_count",), 3, "day|bundle"),
+        (("object_count",), 95, "object|bundle"),
+        (("formal_result",), True, "formal|bundle"),
+        (
+            ("day_manifests", "0", "day"),
+            "2026-04-23",
+            "day|bundle",
+        ),
+    ],
+)
+def test_x02_bundle_verifier_rejects_resigned_semantic_tampering(
+    tmp_path: Path,
+    path: tuple[str, ...],
+    replacement: Any,
+    match: str,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    normalized_path = tuple(
+        int(item) if item.isdigit() else item for item in path
+    )
+    bundle_path = root / EXPECTED_X02_INPUT_MANIFEST_BINDING["bundle_path"]
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    current: Any = bundle
+    for item in normalized_path[:-1]:
+        current = current[item]
+    current[normalized_path[-1]] = replacement
+    material = dict(bundle)
+    material.pop("bundle_sha256", None)
+    bundle["bundle_sha256"] = _canonical_sha256(material)
+    binding = {
+        "bundle_path": EXPECTED_X02_INPUT_MANIFEST_BINDING["bundle_path"],
+        "bundle_file_sha256": _write_pretty_json(bundle_path, bundle),
+        "bundle_sha256": bundle["bundle_sha256"],
+    }
+
+    with pytest.raises(ExperimentRegistryError, match=match):
+        experiments_module._verify_x02_timestamp_input_bundle(root, binding)
+
+
+@pytest.mark.parametrize(
+    ("path", "replacement", "match"),
+    [
+        (
+            ("objects", "0", "static_manifest_sha256"),
+            "sha256:" + "c" * 64,
+            "manifest|day",
+        ),
+        (
+            ("objects", "0", "hour"),
+            "2026-04-22T01:00:00Z",
+            "hour|ordered",
+        ),
+        (
+            ("objects", "0", "static_manifest_sha256"),
+            "not-a-sha256",
+            "static_manifest_sha256",
+        ),
+    ],
+)
+def test_x02_bundle_verifier_rejects_resigned_day_manifest_tampering(
+    tmp_path: Path,
+    path: tuple[str, ...],
+    replacement: Any,
+    match: str,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    normalized_path = tuple(
+        int(item) if item.isdigit() else item for item in path
+    )
+    bundle_path = root / EXPECTED_X02_INPUT_MANIFEST_BINDING["bundle_path"]
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    entry = next(
+        item for item in bundle["day_manifests"]
+        if item["day"] == "2026-04-22"
+    )
+    manifest_path = root / entry["path"]
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    current: Any = manifest
+    for item in normalized_path[:-1]:
+        current = current[item]
+    current[normalized_path[-1]] = replacement
+    material = dict(manifest)
+    material.pop("manifest_sha256", None)
+    manifest["manifest_sha256"] = _canonical_sha256(material)
+    entry["full_day_manifest_sha256"] = manifest["manifest_sha256"]
+    entry["artifact_file_sha256"] = _write_pretty_json(
+        manifest_path, manifest
+    )
+    bundle_material = dict(bundle)
+    bundle_material.pop("bundle_sha256", None)
+    bundle["bundle_sha256"] = _canonical_sha256(bundle_material)
+    binding = {
+        "bundle_path": EXPECTED_X02_INPUT_MANIFEST_BINDING["bundle_path"],
+        "bundle_file_sha256": _write_pretty_json(bundle_path, bundle),
+        "bundle_sha256": bundle["bundle_sha256"],
+    }
+
+    with pytest.raises(ExperimentRegistryError, match=match):
+        experiments_module._verify_x02_timestamp_input_bundle(root, binding)
+
+
+@pytest.mark.parametrize("failure", ["missing", "symlink"])
+def test_x02_bundle_verifier_rejects_missing_or_symlinked_day_manifest(
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    path = (
+        root
+        / "artifacts/data-audit/"
+        "x02_full_day_input_manifest_2026-06-05_v1.json"
+    )
+    if failure == "missing":
+        path.unlink()
+    else:
+        target = path.with_name("x02-day-target.json")
+        path.rename(target)
+        path.symlink_to(target)
+
+    with pytest.raises(ExperimentRegistryError, match="missing|symlink"):
+        experiments_module._verify_x02_timestamp_input_bundle(
+            root,
+            EXPECTED_X02_INPUT_MANIFEST_BINDING,
+        )
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["missing", "symlink", "tampered", "wrong_reference"],
+)
+def test_x02_bundle_verifier_opens_and_validates_every_static_sidecar(
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    sidecar = _x02_static_sidecar_path(root)
+    assert sidecar.is_file()
+    if failure == "missing":
+        sidecar.unlink()
+    elif failure == "symlink":
+        target = sidecar.with_name("sidecar-target.manifest.json")
+        sidecar.rename(target)
+        sidecar.symlink_to(target.name)
+    elif failure == "tampered":
+        document = json.loads(sidecar.read_text(encoding="utf-8"))
+        document["native_object_path"] = (
+            document["native_object_path"] + ".tampered"
+        )
+        _write_pretty_json(sidecar, document)
+    elif failure == "wrong_reference":
+        wrong_sidecar = _x02_static_sidecar_path(
+            root,
+            object_index=1,
+        )
+        sidecar.write_bytes(wrong_sidecar.read_bytes())
+
+    with pytest.raises(
+        ExperimentRegistryError,
+        match="static manifest|sidecar|symlink|missing",
+    ):
+        experiments_module._verify_x02_timestamp_input_bundle(
+            root,
+            EXPECTED_X02_INPUT_MANIFEST_BINDING,
+        )
+
+
+def test_x02_inventory_size_is_documented_as_listing_estimate(
+    program_root: Path,
+) -> None:
+    design = (
+        program_root
+        / "docs/superpowers/specs/"
+        "2026-07-22-x02-timestamp-preregistration-design.md"
+    ).read_text(encoding="utf-8")
+
+    assert (
+        "`inventory_size_bytes` is an archive-listing estimate"
+        in design
+    )
+    assert (
+        "must not be reported as an exact object byte length"
+        in design
+    )
+
+
+@pytest.mark.parametrize(
+    ("path", "replacement"),
+    [
+        (("sampling_and_seed", "selection_seed"), 20260723),
+        (("sampling_and_seed", "game_day"), "2026-05-29"),
+        (
+            ("sampling_and_seed", "random_days"),
+            ["2026-04-22", "2026-06-05", "2026-06-26"],
+        ),
+        (
+            ("sampling_and_seed", "selection_inventory_sha256"),
+            "sha256:" + "a" * 64,
+        ),
+        (
+            ("sampling_and_seed", "x01_game_day_manifest_sha256"),
+            "sha256:" + "b" * 64,
+        ),
+        (("sampling_and_seed", "pending_archive_object_count"), 71),
+        (
+            ("diff_and_stability_definitions", "diff_ms"),
+            "epoch_ms(timestamp)-epoch_ms(timestamp_received)",
+        ),
+        (
+            (
+                "diff_and_stability_definitions",
+                "signed_quantiles",
+                "estimator",
+            ),
+            "quantile_disc",
+        ),
+        (
+            (
+                "diff_and_stability_definitions",
+                "signed_quantiles",
+                "interpolation",
+            ),
+            "nearest",
+        ),
+        (
+            (
+                "diff_and_stability_definitions",
+                "signed_quantiles",
+                "input_distribution",
+            ),
+            "raw_float_rows",
+        ),
+        (
+            (
+                "diff_and_stability_definitions",
+                "signed_quantiles",
+                "probabilities",
+            ),
+            ["0.50", "0.90", "0.99"],
+        ),
+        (
+            (
+                "diff_and_stability_definitions",
+                "absolute_p99",
+                "transform",
+            ),
+            "diff_ms",
+        ),
+        (
+            (
+                "diff_and_stability_definitions",
+                "absolute_p99",
+                "probability",
+            ),
+            "0.95",
+        ),
+        (
+            ("diff_and_stability_definitions", "hourly_drift_ms"),
+            "median_utc_hour_00_diff_ms-median_utc_hour_23_diff_ms",
+        ),
+        (
+            (
+                "diff_and_stability_definitions",
+                "disorder",
+                "partition_by",
+            ),
+            ["asset_id"],
+        ),
+        (
+            (
+                "diff_and_stability_definitions",
+                "disorder",
+                "canonical_sort",
+            ),
+            ["timestamp", "timestamp_received"],
+        ),
+        (
+            (
+                "diff_and_stability_definitions",
+                "disorder",
+                "numerator",
+            ),
+            "adjacent_source_timestamp_nonincreasing_pairs",
+        ),
+        (
+            (
+                "diff_and_stability_definitions",
+                "disorder",
+                "ordered_comparisons",
+            ),
+            "n_rows",
+        ),
+        (
+            (
+                "diff_and_stability_definitions",
+                "downgrade_gate",
+                "negative_rate_gte",
+            ),
+            "0.01",
+        ),
+        (
+            (
+                "diff_and_stability_definitions",
+                "downgrade_gate",
+                "absolute_p99_ms_gt",
+            ),
+            5001,
+        ),
+        (
+            (
+                "diff_and_stability_definitions",
+                "downgrade_gate",
+                "decision",
+            ),
+            "continue_millisecond_research",
+        ),
+        (("h_split_approval", "split"), "walk_forward"),
+        (
+            ("h_split_approval", "basis"),
+            "unregistered_exception",
+        ),
+        (("h_split_approval", "approved_by"), "C"),
+    ],
+)
+def test_x02_preregistration_rejects_any_definition_mutation(
+    tmp_path: Path,
+    path: tuple[str, ...],
+    replacement: Any,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    card = _read_card(root, "X-02")
+    amendment = copy.deepcopy(card["amendments"][0])
+    preregistration = amendment["changes"][
+        "timestamp_audit_preregistration"
+    ]
+    _set_nested(preregistration, path, replacement)
+    for resolved in amendment["changes"]["resolve_locks"]:
+        resolved["evidence_ref"] = _canonical_sha256(
+            preregistration[resolved["lock_id"]]
+        )
+    _rewrite_seed_amendment(root, "X-02", amendment)
+
+    with pytest.raises(
+        ExperimentRegistryError,
+        match="timestamp audit preregistration.*exact",
+    ):
+        load_experiment_registry(root)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_structured_change",
+        "missing_lock_resolution",
+        "extra_input_manifest_resolution",
+        "wrong_section_evidence_hash",
+        "status_co_mutation",
+        "results_co_mutation",
+        "preregistered_inputs_co_mutation",
+    ],
+)
+def test_x02_preregistration_is_coupled_to_exact_lock_resolution(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    card = _read_card(root, "X-02")
+    amendment = copy.deepcopy(card["amendments"][0])
+    changes = amendment["changes"]
+    if mutation == "missing_structured_change":
+        changes.pop("timestamp_audit_preregistration")
+    elif mutation == "missing_lock_resolution":
+        changes["resolve_locks"].pop()
+    elif mutation == "extra_input_manifest_resolution":
+        changes["resolve_locks"].append(
+            {
+                "lock_id": "timestamp_input_manifest",
+                "evidence_ref": "sha256:" + "c" * 64,
+            }
+        )
+    elif mutation == "wrong_section_evidence_hash":
+        changes["resolve_locks"][0]["evidence_ref"] = "sha256:" + "d" * 64
+    elif mutation == "status_co_mutation":
+        changes["status"] = "running"
+    elif mutation == "results_co_mutation":
+        changes["results_ref"] = _valid_result_ref(
+            scope="formal_result",
+            registration_head_sha256=amendment["prior_sha256"],
+            dataset_ids=["DS-PMXT-V2"],
+        )
+    elif mutation == "preregistered_inputs_co_mutation":
+        changes["preregistered_inputs"] = [
+            {
+                "scope": "formal_result",
+                "code_sha256": "sha256:" + "1" * 64,
+                "data_sha256": "sha256:" + "2" * 64,
+                "dataset_ids": ["DS-PMXT-V2"],
+                "model_ids": [],
+            }
+        ]
+    _rewrite_seed_amendment(root, "X-02", amendment)
+
+    with pytest.raises(
+        ExperimentRegistryError,
+        match="X-02.*preregistration|preregistration.*lock",
+    ):
+        load_experiment_registry(root)
+
+
+def test_x02_timestamp_audit_preregistration_is_append_once(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    _append_amendment(
+        root,
+        "X-02",
+        amended_at="2026-07-24T00:00:01Z",
+        changes={
+            "resolve_locks": [
+                {
+                    "lock_id": lock_id,
+                    "evidence_ref": _canonical_sha256(section),
+                }
+                for lock_id, section in (
+                    EXPECTED_X02_PREREGISTRATION.items()
+                )
+            ],
+            "timestamp_audit_preregistration": copy.deepcopy(
+                EXPECTED_X02_PREREGISTRATION
+            )
+        },
+    )
+
+    with pytest.raises(ExperimentRegistryError, match="append-once"):
+        load_experiment_registry(root)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_binding",
+        "missing_lock_resolution",
+        "wrong_evidence",
+        "extra_lock_resolution",
+        "status_co_mutation",
+        "result_co_mutation",
+        "preregistered_inputs_co_mutation",
+    ],
+)
+def test_x02_input_manifest_binding_is_coupled_to_only_its_lock(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    amendment = copy.deepcopy(
+        _read_card(root, "X-02")["amendments"][1]
+    )
+    changes = amendment["changes"]
+    if mutation == "missing_binding":
+        changes.pop("timestamp_input_manifest_binding")
+    elif mutation == "missing_lock_resolution":
+        changes["resolve_locks"] = []
+    elif mutation == "wrong_evidence":
+        changes["resolve_locks"][0]["evidence_ref"] = (
+            "sha256:" + "d" * 64
+        )
+    elif mutation == "extra_lock_resolution":
+        changes["resolve_locks"].append(
+            {
+                "lock_id": "sampling_and_seed",
+                "evidence_ref": "sha256:" + "e" * 64,
+            }
+        )
+    elif mutation == "status_co_mutation":
+        changes["status"] = "running"
+    elif mutation == "result_co_mutation":
+        changes["results_ref"] = _valid_result_ref(
+            scope="formal_result",
+            registration_head_sha256=amendment["prior_sha256"],
+            dataset_ids=["DS-PMXT-V2"],
+        )
+    elif mutation == "preregistered_inputs_co_mutation":
+        changes["preregistered_inputs"] = [
+            {
+                "scope": "formal_result",
+                "code_sha256": "sha256:" + "1" * 64,
+                "data_sha256": "sha256:" + "2" * 64,
+                "dataset_ids": ["DS-PMXT-V2"],
+                "model_ids": [],
+            }
+        ]
+    _rewrite_x02_binding_amendment(root, amendment)
+
+    with pytest.raises(
+        ExperimentRegistryError,
+        match="X-02.*input manifest|input manifest.*binding|controlled",
+    ):
+        load_experiment_registry(root)
+
+
+def test_x02_timestamp_input_manifest_binding_is_append_once(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    _append_amendment(
+        root,
+        "X-02",
+        amended_at="2026-07-24T00:00:01Z",
+        changes={
+            "resolve_locks": [
+                {
+                    "lock_id": "timestamp_input_manifest",
+                    "evidence_ref": EXPECTED_X02_INPUT_MANIFEST_BINDING[
+                        "bundle_sha256"
+                    ],
+                }
+            ],
+            "timestamp_input_manifest_binding": copy.deepcopy(
+                EXPECTED_X02_INPUT_MANIFEST_BINDING
+            ),
+        },
+    )
+
+    with pytest.raises(ExperimentRegistryError, match="append-once|already resolved"):
+        load_experiment_registry(root)
+
+
+def test_x02_formal_result_remains_blocked_until_code_and_data_preregistration(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    effective = load_experiment_registry(root)["X-02"]
+    assert next(
+        lock for lock in effective["registration_locks"]
+        if lock["id"] == "timestamp_input_manifest"
+    )["status"] == "resolved"
+    assert effective["preregistered_inputs"] == {}
+    result = _valid_result_ref(
+        scope="formal_result",
+        evaluation_started_at="2026-07-24T00:00:00Z",
+        registration_head_sha256=effective[
+            "registration_head_sha256"
+        ],
+        dataset_ids=["DS-PMXT-V2"],
+    )
+
+    with pytest.raises(
+        InvalidResultReferenceError,
+        match="no preregistered inputs",
+    ):
+        validate_result_ref(root, "X-02", result)
 
 
 def test_registry_filename_card_and_csv_ids_are_identical(program_root: Path) -> None:
@@ -342,18 +1698,6 @@ def test_catalog_first_artifact_gates_use_stable_catalog_ids(
         catalog_rows = list(csv.DictReader(handle))
 
     for experiment_id, card in registry.items():
-        if experiment_id in {"X-11", "X-12"}:
-            catalog_by_id = {
-                row["catalog_item_id"]: row for row in catalog_rows
-            }
-            assert card["linked_first_artifact_due_gates"] == [
-                {
-                    "catalog_item_id": catalog_id,
-                    "due_gate": catalog_by_id[catalog_id]["due_gate"],
-                }
-                for catalog_id in card["source_lineage"]["catalog_item_ids"]
-            ]
-            continue
         expected = [
             {
                 "catalog_item_id": row["catalog_item_id"],
@@ -473,6 +1817,88 @@ def test_x06_uses_prior_as_model_input_and_is_license_blocked(
     }
 
 
+def test_x06_contract_harness_is_bound_to_registered_synthetic_fixture(
+    program_root: Path,
+) -> None:
+    x06 = load_experiment_registry(program_root)["X-06"]
+    fixture = x06["synthetic_fixture"]
+    fixture_path = program_root / fixture["path"]
+
+    assert fixture["data_class"] == "synthetic_contract_only"
+    assert fixture_path.is_file()
+    assert fixture["sha256"] == (
+        "sha256:" + hashlib.sha256(fixture_path.read_bytes()).hexdigest()
+    )
+    assert x06["authorization_scopes"]["contract_harness"]["input_binding"] == {
+        "result_class": "synthetic",
+        "dataset_ids": [],
+        "model_ids": ["MODEL-NBA-POSSESSION-TRANSITION"],
+        "synthetic_data_sha256": fixture["sha256"],
+    }
+
+
+def test_x06_synthetic_contract_harness_accepts_the_exact_fixture_end_to_end(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    fixture_hash = (
+        "sha256:"
+        "0ebca90ba56b45252c6d310fd176ba2eb1ac615995b3eacf92e2e3f9c962a15f"
+    )
+    model_ids = ["MODEL-NBA-POSSESSION-TRANSITION"]
+    preregistration = _append_amendment(
+        root,
+        "X-06",
+        amended_at="2026-07-23T00:00:01Z",
+        changes={
+            "preregistered_inputs": [
+                {
+                    "scope": "contract_harness",
+                    "code_sha256": "sha256:" + "1" * 64,
+                    "data_sha256": fixture_hash,
+                    "dataset_ids": [],
+                    "model_ids": model_ids,
+                }
+            ]
+        },
+    )
+    result = _valid_result_ref(
+        scope="contract_harness",
+        result_label="PRELIMINARY",
+        registration_head_sha256=preregistration["amendment_sha256"],
+        data_sha256=fixture_hash,
+        dataset_ids=[],
+        model_ids=model_ids,
+    )
+
+    assert validate_result_ref(root, "X-06", result) == result
+
+
+def test_x06_synthetic_contract_harness_rejects_arbitrary_data_hash(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    _append_amendment(
+        root,
+        "X-06",
+        amended_at="2026-07-23T00:00:01Z",
+        changes={
+            "preregistered_inputs": [
+                {
+                    "scope": "contract_harness",
+                    "code_sha256": "sha256:" + "1" * 64,
+                    "data_sha256": "sha256:" + "2" * 64,
+                    "dataset_ids": [],
+                    "model_ids": ["MODEL-NBA-POSSESSION-TRANSITION"],
+                }
+            ]
+        },
+    )
+
+    with pytest.raises(ExperimentRegistryError, match="fixture|synthetic"):
+        load_experiment_registry(root)
+
+
 def test_x11_preregisters_nfl_walk_forward_ties_and_required_locks(
     program_root: Path,
 ) -> None:
@@ -491,6 +1917,13 @@ def test_x11_preregisters_nfl_walk_forward_ties_and_required_locks(
         for name in ("spread", "logistic", "gbdt", "nflfastr")
     )
     assert "ties" in combined and "binary" in combined
+    assert x11["execution_authorized"] is True
+    assert x11["completion_required_scopes"] == [
+        "preregistered_pipeline"
+    ]
+    assert x11["authorization_scopes"]["preregistered_pipeline"]["authorized"] is True
+    assert x11["authorization_scopes"]["formal_result"]["authorized"] is False
+    assert x11["authorization_scopes"]["formal_result"]["permanent_no_go"] is True
     assert x11["dataset_ids"] == ["DS-NFLVERSE"]
     assert x11["output_contract"]["transition_unit"] == "drive"
     lock_ids = {lock["id"] for lock in x11["registration_locks"]}
@@ -500,6 +1933,22 @@ def test_x11_preregisters_nfl_walk_forward_ties_and_required_locks(
         "model_config_and_seed",
         "bootstrap_parameters",
     } <= lock_ids
+
+
+def test_x11_completion_can_only_use_the_pipeline_scope(
+    program_root: Path,
+) -> None:
+    x11 = _read_card(program_root, "X-11")
+
+    assert x11["completion_required_scopes"] == [
+        "preregistered_pipeline"
+    ]
+    assert x11["authorization_scopes"]["preregistered_pipeline"][
+        "authorized"
+    ] is True
+    assert x11["authorization_scopes"]["formal_result"][
+        "permanent_no_go"
+    ] is True
 
 
 def test_x12_is_statsbomb_poc_without_market_prior_or_formal_promotion(
@@ -516,8 +1965,15 @@ def test_x12_is_statsbomb_poc_without_market_prior_or_formal_promotion(
     assert "dixon-coles" in combined
     assert "1x2" in combined and "multiclass" in combined
     assert "no point-in-time market prior" in combined
+    assert "one-vs-rest calibration slope" in combined
+    assert "one-vs-rest calibration intercept" in combined
+    assert "game-cluster bootstrap confidence interval" in combined
+    assert "paired" in combined and "point-in-time prior" in combined
+    assert x12["execution_authorized"] is True
+    assert x12["completion_required_scopes"] == ["poc_result"]
     assert x12["authorization_scopes"]["poc_result"]["authorized"] is True
     assert x12["authorization_scopes"]["formal_promotion"]["authorized"] is False
+    assert x12["authorization_scopes"]["formal_promotion"]["permanent_no_go"] is True
     assert x12["promotion_restriction"] == "POC_ONLY_FORMAL_PROMOTION_UNAUTHORIZED"
     assert x12["dataset_ids"] == ["DS-STATSBOMB-OPEN"]
     assert x12["output_contract"]["transition_unit"] == "five_minute_interval"
@@ -533,7 +1989,15 @@ def test_phase_execution_authorization_is_exact_and_fail_closed(
         if card["execution_authorized"]
     }
 
-    assert authorized == {"X-01", "X-02", "X-03", "X-06", "X-08"}
+    assert authorized == {
+        "X-01",
+        "X-02",
+        "X-03",
+        "X-06",
+        "X-08",
+        "X-11",
+        "X-12",
+    }
     assert registry["X-04"]["authorization_scopes"]["formal_result"][
         "authorized"
     ] is False
@@ -542,17 +2006,686 @@ def test_phase_execution_authorization_is_exact_and_fail_closed(
     ] is False
 
 
+def test_research_scopes_declare_exact_input_bindings(
+    program_root: Path,
+) -> None:
+    registry = load_experiment_registry(program_root)
+    expected = {
+        ("X-01", "formal_result"): (
+            ["DS-PMXT-V2", "DS-POLYMARKET-PUBLIC"],
+            [],
+            "formal",
+        ),
+        ("X-02", "formal_result"): (["DS-PMXT-V2"], [], "formal"),
+        ("X-03", "formal_result"): (
+            [
+                "DS-KALSHI-HISTORICAL",
+                "DS-PMXT-V2",
+                "DS-POLYMARKET-PUBLIC",
+            ],
+            [],
+            "formal",
+        ),
+        ("X-06", "formal_result"): (
+            ["DS-NBA-CANDIDATE"],
+            [
+                "MODEL-NBA-GBDT",
+                "MODEL-NBA-LOGISTIC",
+                "MODEL-NBA-POSSESSION-TRANSITION",
+                "MODEL-NBA-PRIOR",
+            ],
+            "formal",
+        ),
+        ("X-06", "contract_harness"): (
+            [],
+            ["MODEL-NBA-POSSESSION-TRANSITION"],
+            "synthetic",
+        ),
+        ("X-08", "archive_audit"): (
+            ["DS-KALSHI-HISTORICAL"],
+            [],
+            "formal",
+        ),
+        ("X-08", "polymarket_capture"): (
+            ["DS-POLYMARKET-PUBLIC"],
+            [],
+            "poc",
+        ),
+        ("X-08", "kalshi_capture"): (
+            ["DS-KALSHI-LIVE-L2"],
+            [],
+            "poc",
+        ),
+        ("X-08", "dual_venue_result"): (
+            [
+                "DS-KALSHI-HISTORICAL",
+                "DS-KALSHI-LIVE-L2",
+                "DS-POLYMARKET-PUBLIC",
+            ],
+            [],
+            "formal",
+        ),
+        ("X-11", "formal_result"): (
+            ["DS-NFLVERSE"],
+            [
+                "MODEL-NFL-DRIVE-TRANSITION",
+                "MODEL-NFL-GBDT",
+                "MODEL-NFL-LOGISTIC",
+                "MODEL-NFL-NFLFASTR-COMPARATOR",
+                "MODEL-NFL-SPREAD-PRIOR",
+            ],
+            "formal",
+        ),
+        ("X-12", "poc_result"): (
+            ["DS-STATSBOMB-OPEN"],
+            [
+                "MODEL-SOCCER-DIXON-COLES",
+                "MODEL-SOCCER-FIVE-MINUTE-TRANSITION",
+            ],
+            "poc",
+        ),
+    }
+    for (experiment_id, scope_name), (
+        dataset_ids,
+        model_ids,
+        result_class,
+    ) in expected.items():
+        binding = registry[experiment_id]["authorization_scopes"][scope_name][
+            "input_binding"
+        ]
+        assert binding["dataset_ids"] == dataset_ids
+        assert binding["model_ids"] == model_ids
+        assert binding["result_class"] == result_class
+
+
+def test_execution_authorized_false_is_a_hard_result_gate(
+    program_root: Path,
+) -> None:
+    x10 = load_experiment_registry(program_root)["X-10"]
+    result = _valid_result_ref(
+        scope="precision_audit",
+        registration_head_sha256=x10["registration_head_sha256"],
+        dataset_ids=[],
+        model_ids=[],
+    )
+
+    with pytest.raises(UnauthorizedResultScopeError, match="execution"):
+        validate_result_ref(program_root, "X-10", result)
+
+
 def test_x08_is_prospective_and_preserves_the_decision_band(program_root: Path) -> None:
+    base = _read_card(program_root, "X-08")
+    assert base["data"][0]["source"] == "Kalshi pre-stop archive sample"
+    assert "stopped archive" in base["method"].lower()
+    assert (
+        base["registration_record_sha256"]
+        == "sha256:e4d9f0a72ac6dcb4ad0e78859bf0264eb9a79508987263428678bf4342b97e8e"
+    )
+    clarification = base["amendments"][0]
     x08 = load_experiment_registry(program_root)["X-08"]
     hypothesis = x08["hypothesis"].lower()
+    historical = " ".join(
+        str(value)
+        for value in clarification["changes"][
+            "archive_audit_clarification"
+        ].values()
+    ).lower()
 
     assert "prospective" in hypothesis
     assert "already" not in hypothesis
-    assert x08["prospective_observation"]["actual_elapsed_days"] == 7
+    assert clarification["sequence"] == 1
+    assert (
+        clarification["prior_sha256"]
+        == base["registration_record_sha256"]
+    )
+    assert (
+        clarification["amendment_sha256"]
+        == compute_amendment_sha256(clarification)
+    )
+    with (
+        program_root / "registries" / "experiment_amendment_ledger.csv"
+    ).open(encoding="utf-8", newline="") as handle:
+        x08_ledger = [
+            row
+            for row in csv.DictReader(handle)
+            if row["experiment_id"] == "X-08"
+        ]
+    assert [row["sequence"] for row in x08_ledger] == ["0", "1"]
+    assert x08_ledger[0]["record_sha256"] == base[
+        "registration_record_sha256"
+    ]
+    assert x08_ledger[1]["prior_sha256"] == base[
+        "registration_record_sha256"
+    ]
+    assert (
+        x08_ledger[1]["record_sha256"]
+        == clarification["amendment_sha256"]
+        == x08["registration_head_sha256"]
+    )
+    assert "official historical rest" in historical
+    assert "candle" in historical and "trade" in historical
+    assert "cutoff" in historical
+    assert "no historical l2" in historical
+    assert "reference audit only" in historical
+    assert (
+        clarification["changes"]["archive_audit_clarification"][
+            "live_l2_dataset_id"
+        ]
+        == "DS-KALSHI-LIVE-L2"
+    )
+    assert x08["prospective_observation"] == {
+        "required_elapsed_days": 7,
+        "observed_elapsed_days": 0,
+        "fixtures_can_satisfy_elapsed_time": False,
+    }
     assert x08["prospective_observation"]["fixtures_can_satisfy_elapsed_time"] is False
     assert "no gaps" in x08["pass_criteria"].lower()
     assert "<99%" in x08["fail_criteria"].replace(" ", "")
     assert "99% <= uptime < 100%" in x08["unresolved_decision_band"]
+
+
+def test_x08_completion_rejects_result_without_seven_elapsed_days(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    preregistration = _preregister_x08_dual_venue_inputs(root)
+    result = _valid_result_ref(
+        scope="dual_venue_result",
+        evaluation_started_at="2026-07-24T00:00:00Z",
+        registration_head_sha256=preregistration["amendment_sha256"],
+        dataset_ids=[
+            "DS-KALSHI-HISTORICAL",
+            "DS-KALSHI-LIVE-L2",
+            "DS-POLYMARKET-PUBLIC",
+        ],
+    )
+    _append_amendment(
+        root,
+        "X-08",
+        amended_at="2026-07-24T00:00:01Z",
+        changes={"results_ref": result, "status": "done"},
+    )
+
+    with pytest.raises(ExperimentRegistryError, match="elapsed|prospective"):
+        load_experiment_registry(root)
+
+
+def test_x08_elapsed_evidence_is_immutable_derived_time_and_unlocks_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    _set_x08_validation_clock(monkeypatch, "2026-07-30T00:00:06Z")
+    _preregister_x08_dual_venue_inputs(root)
+    evidence = _write_x08_capture_evidence(
+        root,
+        capture_session_id="x08-seven-day",
+        started_at="2026-07-23T00:00:02Z",
+        ended_at="2026-07-30T00:00:02Z",
+    )
+    observation = _append_amendment(
+        root,
+        "X-08",
+        amended_at="2026-07-30T00:00:03Z",
+        changes={"observed_elapsed_evidence": evidence},
+    )
+    effective = load_experiment_registry(root)["X-08"]
+    assert effective["prospective_observation"]["required_elapsed_days"] == 7
+    assert effective["prospective_observation"]["observed_elapsed_days"] == 7
+
+    result = _valid_result_ref(
+        scope="dual_venue_result",
+        evaluation_started_at="2026-07-30T00:00:04Z",
+        registration_head_sha256=observation["amendment_sha256"],
+        dataset_ids=[
+            "DS-KALSHI-HISTORICAL",
+            "DS-KALSHI-LIVE-L2",
+            "DS-POLYMARKET-PUBLIC",
+        ],
+    )
+    _append_amendment(
+        root,
+        "X-08",
+        amended_at="2026-07-30T00:00:05Z",
+        changes={"results_ref": result, "status": "done"},
+    )
+
+    assert load_experiment_registry(root)["X-08"]["status"] == "done"
+
+
+def test_x08_elapsed_evidence_rejects_fixtures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    _set_x08_validation_clock(monkeypatch, "2026-07-30T00:00:04Z")
+    _preregister_x08_dual_venue_inputs(root)
+    evidence = _write_x08_capture_evidence(
+        root,
+        capture_session_id="x08-fixture",
+        started_at="2026-07-23T00:00:02Z",
+        ended_at="2026-07-30T00:00:02Z",
+        fixtures_used=True,
+    )
+    _append_amendment(
+        root,
+        "X-08",
+        amended_at="2026-07-30T00:00:03Z",
+        changes={"observed_elapsed_evidence": evidence},
+    )
+
+    with pytest.raises(ExperimentRegistryError, match="fixture"):
+        load_experiment_registry(root)
+
+
+def test_x08_disjoint_observation_windows_cannot_accumulate_to_seven_days(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    _set_x08_validation_clock(monkeypatch, "2026-08-01T00:00:05Z")
+    _preregister_x08_dual_venue_inputs(root)
+    first_evidence = _write_x08_capture_evidence(
+        root,
+        capture_session_id="x08-first-window",
+        started_at="2026-07-23T00:00:02Z",
+        ended_at="2026-07-27T00:00:02Z",
+    )
+    _append_amendment(
+        root,
+        "X-08",
+        amended_at="2026-07-27T00:00:03Z",
+        changes={"observed_elapsed_evidence": first_evidence},
+    )
+    second_evidence = _write_x08_capture_evidence(
+        root,
+        capture_session_id="x08-second-window",
+        started_at="2026-07-28T00:00:02Z",
+        ended_at="2026-08-01T00:00:02Z",
+    )
+    second = _append_amendment(
+        root,
+        "X-08",
+        amended_at="2026-08-01T00:00:03Z",
+        changes={"observed_elapsed_evidence": second_evidence},
+    )
+    result = _valid_result_ref(
+        scope="dual_venue_result",
+        evaluation_started_at="2026-08-01T00:00:04Z",
+        registration_head_sha256=second["amendment_sha256"],
+        dataset_ids=[
+            "DS-KALSHI-HISTORICAL",
+            "DS-KALSHI-LIVE-L2",
+            "DS-POLYMARKET-PUBLIC",
+        ],
+    )
+
+    with pytest.raises(InvalidResultReferenceError, match="elapsed|prospective"):
+        validate_result_ref(root, "X-08", result)
+
+
+def test_x08_capture_manifest_must_be_registered(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    _set_x08_validation_clock(monkeypatch, "2026-07-24T00:00:04Z")
+    _preregister_x08_dual_venue_inputs(root)
+    evidence = _write_x08_capture_evidence(
+        root,
+        capture_session_id="x08-unregistered",
+        started_at="2026-07-23T00:00:02Z",
+        ended_at="2026-07-24T00:00:02Z",
+    )
+    artifact_registry = root / "registries" / "artifact_registry.csv"
+    with artifact_registry.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = reader.fieldnames
+        rows = [
+            row
+            for row in reader
+            if row["path"] != evidence["capture_manifest_path"]
+        ]
+    assert fieldnames is not None
+    with artifact_registry.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    _append_amendment(
+        root,
+        "X-08",
+        amended_at="2026-07-24T00:00:03Z",
+        changes={"observed_elapsed_evidence": evidence},
+    )
+
+    with pytest.raises(ExperimentRegistryError, match="registered artifact"):
+        load_experiment_registry(root)
+
+
+def test_x08_capture_manifest_hash_is_verified(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    _set_x08_validation_clock(monkeypatch, "2026-07-24T00:00:04Z")
+    _preregister_x08_dual_venue_inputs(root)
+    evidence = _write_x08_capture_evidence(
+        root,
+        capture_session_id="x08-manifest-hash",
+        started_at="2026-07-23T00:00:02Z",
+        ended_at="2026-07-24T00:00:02Z",
+    )
+    evidence["capture_manifest_sha256"] = "sha256:" + "a" * 64
+    _append_amendment(
+        root,
+        "X-08",
+        amended_at="2026-07-24T00:00:03Z",
+        changes={"observed_elapsed_evidence": evidence},
+    )
+
+    with pytest.raises(ExperimentRegistryError, match="manifest SHA-256"):
+        load_experiment_registry(root)
+
+
+def test_x08_capture_manifest_must_exist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    _set_x08_validation_clock(monkeypatch, "2026-07-24T00:00:04Z")
+    _preregister_x08_dual_venue_inputs(root)
+    evidence = _write_x08_capture_evidence(
+        root,
+        capture_session_id="x08-missing-manifest",
+        started_at="2026-07-23T00:00:02Z",
+        ended_at="2026-07-24T00:00:02Z",
+    )
+    (root / evidence["capture_manifest_path"]).unlink()
+    _append_amendment(
+        root,
+        "X-08",
+        amended_at="2026-07-24T00:00:03Z",
+        changes={"observed_elapsed_evidence": evidence},
+    )
+
+    with pytest.raises(ExperimentRegistryError, match="missing X-08 capture manifest"):
+        load_experiment_registry(root)
+
+
+def test_x08_capture_manifest_symlink_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    _set_x08_validation_clock(monkeypatch, "2026-07-24T00:00:04Z")
+    _preregister_x08_dual_venue_inputs(root)
+    evidence = _write_x08_capture_evidence(
+        root,
+        capture_session_id="x08-symlink-manifest",
+        started_at="2026-07-23T00:00:02Z",
+        ended_at="2026-07-24T00:00:02Z",
+    )
+    manifest_path = root / evidence["capture_manifest_path"]
+    target = manifest_path.with_name("capture-manifest-target.json")
+    manifest_path.rename(target)
+    manifest_path.symlink_to(target)
+    _append_amendment(
+        root,
+        "X-08",
+        amended_at="2026-07-24T00:00:03Z",
+        changes={"observed_elapsed_evidence": evidence},
+    )
+
+    with pytest.raises(ExperimentRegistryError, match="symlink"):
+        load_experiment_registry(root)
+
+
+def test_x08_capture_manifest_path_cannot_escape_program_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    _set_x08_validation_clock(monkeypatch, "2026-07-24T00:00:04Z")
+    _preregister_x08_dual_venue_inputs(root)
+    evidence = _write_x08_capture_evidence(
+        root,
+        capture_session_id="x08-path-escape",
+        started_at="2026-07-23T00:00:02Z",
+        ended_at="2026-07-24T00:00:02Z",
+    )
+    artifact_registry = root / "registries" / "artifact_registry.csv"
+    with artifact_registry.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = reader.fieldnames
+        rows = list(reader)
+    assert fieldnames is not None
+    row = next(
+        item
+        for item in rows
+        if item["path"] == evidence["capture_manifest_path"]
+    )
+    escaped_path = "../escaped-x08-capture-manifest.json"
+    row["path"] = escaped_path
+    escaped_manifest = root.parent / "escaped-x08-capture-manifest.json"
+    escaped_manifest.write_bytes(
+        (root / evidence["capture_manifest_path"]).read_bytes()
+    )
+    evidence["capture_manifest_path"] = escaped_path
+    with artifact_registry.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    _append_amendment(
+        root,
+        "X-08",
+        amended_at="2026-07-24T00:00:03Z",
+        changes={"observed_elapsed_evidence": evidence},
+    )
+
+    with pytest.raises(ExperimentRegistryError, match="path escape"):
+        load_experiment_registry(root)
+
+
+def test_x08_capture_manifest_cannot_be_reused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    _set_x08_validation_clock(monkeypatch, "2026-07-24T00:00:06Z")
+    _preregister_x08_dual_venue_inputs(root)
+    evidence = _write_x08_capture_evidence(
+        root,
+        capture_session_id="x08-reused",
+        started_at="2026-07-23T00:00:02Z",
+        ended_at="2026-07-24T00:00:02Z",
+    )
+    _append_amendment(
+        root,
+        "X-08",
+        amended_at="2026-07-24T00:00:03Z",
+        changes={"observed_elapsed_evidence": evidence},
+    )
+    _append_amendment(
+        root,
+        "X-08",
+        amended_at="2026-07-24T00:00:05Z",
+        changes={"observed_elapsed_evidence": evidence},
+    )
+
+    with pytest.raises(ExperimentRegistryError, match="duplicate"):
+        load_experiment_registry(root)
+
+
+def test_x08_capture_segment_object_hash_is_verified(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    _set_x08_validation_clock(monkeypatch, "2026-07-24T00:00:04Z")
+    _preregister_x08_dual_venue_inputs(root)
+    evidence = _write_x08_capture_evidence(
+        root,
+        capture_session_id="x08-object-hash",
+        started_at="2026-07-23T00:00:02Z",
+        ended_at="2026-07-24T00:00:02Z",
+    )
+    capture_manifest = json.loads(
+        (root / evidence["capture_manifest_path"]).read_text(encoding="utf-8")
+    )
+    raw_store_root = root / capture_manifest["raw_store_root"]
+    first_segment = (
+        raw_store_root
+        / capture_manifest["streams"][0]["segment_manifest_paths"][0]
+    )
+    sidecar = json.loads(first_segment.read_text(encoding="utf-8"))
+    object_path = raw_store_root / sidecar["object_path"]
+    object_path.chmod(0o600)
+    object_path.write_bytes(object_path.read_bytes() + b"tampered")
+    _append_amendment(
+        root,
+        "X-08",
+        amended_at="2026-07-24T00:00:03Z",
+        changes={"observed_elapsed_evidence": evidence},
+    )
+
+    with pytest.raises(
+        ExperimentRegistryError,
+        match="segment verification|SHA-256",
+    ):
+        load_experiment_registry(root)
+
+
+def test_x08_capture_rejects_heartbeat_gap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    _set_x08_validation_clock(monkeypatch, "2026-07-23T00:10:04Z")
+    _preregister_x08_dual_venue_inputs(root)
+    evidence = _write_x08_capture_evidence(
+        root,
+        capture_session_id="x08-gap",
+        started_at="2026-07-23T00:00:02Z",
+        ended_at="2026-07-23T00:10:02Z",
+        drop_heartbeat_at="2026-07-23T00:05:02Z",
+    )
+    _append_amendment(
+        root,
+        "X-08",
+        amended_at="2026-07-23T00:10:03Z",
+        changes={"observed_elapsed_evidence": evidence},
+    )
+
+    with pytest.raises(ExperimentRegistryError, match="gap"):
+        load_experiment_registry(root)
+
+
+def test_x08_capture_requires_both_live_venue_streams(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    _set_x08_validation_clock(monkeypatch, "2026-07-23T00:10:04Z")
+    _preregister_x08_dual_venue_inputs(root)
+    evidence = _write_x08_capture_evidence(
+        root,
+        capture_session_id="x08-one-leg",
+        started_at="2026-07-23T00:00:02Z",
+        ended_at="2026-07-23T00:10:02Z",
+        include_dataset_ids=("DS-KALSHI-LIVE-L2",),
+    )
+    _append_amendment(
+        root,
+        "X-08",
+        amended_at="2026-07-23T00:10:03Z",
+        changes={"observed_elapsed_evidence": evidence},
+    )
+
+    with pytest.raises(ExperimentRegistryError, match="both registered live streams"):
+        load_experiment_registry(root)
+
+
+def test_x08_capture_segment_must_be_sealed_after_last_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    _set_x08_validation_clock(monkeypatch, "2026-07-23T00:10:04Z")
+    _preregister_x08_dual_venue_inputs(root)
+    evidence = _write_x08_capture_evidence(
+        root,
+        capture_session_id="x08-early-seal",
+        started_at="2026-07-23T00:00:02Z",
+        ended_at="2026-07-23T00:10:02Z",
+        sealed_at="2026-07-23T00:00:02Z",
+    )
+    _append_amendment(
+        root,
+        "X-08",
+        amended_at="2026-07-23T00:10:03Z",
+        changes={"observed_elapsed_evidence": evidence},
+    )
+
+    with pytest.raises(ExperimentRegistryError, match="sealed after"):
+        load_experiment_registry(root)
+
+
+def test_x08_capture_evidence_amendment_cannot_be_future_dated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    _set_x08_validation_clock(monkeypatch, "2026-07-23T00:10:02Z")
+    _preregister_x08_dual_venue_inputs(root)
+    evidence = _write_x08_capture_evidence(
+        root,
+        capture_session_id="x08-future",
+        started_at="2026-07-23T00:00:02Z",
+        ended_at="2026-07-23T00:10:02Z",
+    )
+    _append_amendment(
+        root,
+        "X-08",
+        amended_at="2026-07-23T00:10:03Z",
+        changes={"observed_elapsed_evidence": evidence},
+    )
+
+    with pytest.raises(ExperimentRegistryError, match="future-dated"):
+        load_experiment_registry(root)
+
+
+def test_x08_fifteen_second_smoke_capture_cannot_unlock_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    _set_x08_validation_clock(monkeypatch, "2026-07-23T00:00:21Z")
+    _preregister_x08_dual_venue_inputs(root)
+    evidence = _write_x08_capture_evidence(
+        root,
+        capture_session_id="x08-smoke",
+        started_at="2026-07-23T00:00:02Z",
+        ended_at="2026-07-23T00:00:17Z",
+    )
+    observation = _append_amendment(
+        root,
+        "X-08",
+        amended_at="2026-07-23T00:00:18Z",
+        changes={"observed_elapsed_evidence": evidence},
+    )
+    result = _valid_result_ref(
+        scope="dual_venue_result",
+        evaluation_started_at="2026-07-23T00:00:19Z",
+        registration_head_sha256=observation["amendment_sha256"],
+        dataset_ids=[
+            "DS-KALSHI-HISTORICAL",
+            "DS-KALSHI-LIVE-L2",
+            "DS-POLYMARKET-PUBLIC",
+        ],
+    )
+
+    with pytest.raises(InvalidResultReferenceError, match="elapsed|prospective"):
+        validate_result_ref(root, "X-08", result)
 
 
 def test_charter_specific_gates_are_preserved(program_root: Path) -> None:
@@ -592,6 +2725,84 @@ def test_artifact_registry_covers_task_3_without_completion_claims(
     assert all(row["due_gate"] for row in rows)
     task_3_rows = [row for row in rows if row["path"] in EXPECTED_TASK_3_PATHS]
     assert {row["status"] for row in task_3_rows} == {"registered"}
+
+
+def test_x02_input_artifacts_are_registered_without_formal_result_claims(
+    program_root: Path,
+) -> None:
+    with (program_root / "registries" / "artifact_registry.csv").open(
+        encoding="utf-8", newline=""
+    ) as handle:
+        rows = list(csv.DictReader(handle))
+    expected_paths = {
+        item["path"]
+        for item in EXPECTED_X02_DAY_MANIFESTS
+        if item["day"] != "2026-05-28"
+    } | {EXPECTED_X02_INPUT_MANIFEST_BINDING["bundle_path"]}
+    selected = {
+        row["path"]: row
+        for row in rows
+        if row["path"] in expected_paths
+    }
+
+    assert set(selected) == expected_paths
+    assert {
+        (
+            row["owner_team"],
+            row["version"],
+            row["due_gate"],
+            row["status"],
+        )
+        for row in selected.values()
+    } == {
+        ("C+H", "v1", "2026-08-05_W2_review", "registered")
+    }
+    assert all("result" not in row["status"].lower() for row in selected.values())
+
+
+def test_polymarket_v1_poc_artifact_is_preliminary_and_license_bound(
+    program_root: Path,
+) -> None:
+    artifact_path = (
+        "artifacts/data-audit/"
+        "polymarket_v1_bounded_sports_extract_v0.json"
+    )
+    with (program_root / "registries" / "artifact_registry.csv").open(
+        encoding="utf-8", newline=""
+    ) as handle:
+        artifact = next(
+            row for row in csv.DictReader(handle)
+            if row["path"] == artifact_path
+        )
+    assert artifact == {
+        "artifact_id": "ART-C-015",
+        "path": artifact_path,
+        "owner_team": "C",
+        "version": "v0",
+        "due_gate": "2026-07-29_W1",
+        "status": "PRELIMINARY_RESEARCH_ONLY",
+    }
+    raw = (program_root / artifact_path).read_bytes()
+    assert "sha256:" + hashlib.sha256(raw).hexdigest() == (
+        "sha256:"
+        "8bae8f1509ae852afcb7a0c8e1bf6d1a892aa96c34ba9d6e15f96b059bf8c759"
+    )
+    document = json.loads(raw)
+    assert document["status"] == "PRELIMINARY_RESEARCH_ONLY"
+    assert "formal X-01 comparison gate" in document["evidence_boundary"][
+        "not_supported"
+    ]
+
+    with (program_root / "registries" / "dataset_registry.csv").open(
+        encoding="utf-8", newline=""
+    ) as handle:
+        datasets = {
+            row["dataset_id"]: row for row in csv.DictReader(handle)
+        }
+    assert datasets["DS-POLYMARKET-V1"]["license_status"] == "approved"
+    assert datasets["DS-POLYMARKET-V1"]["license_review_id"] == "R-039"
+    assert datasets["DS-POLYMARKET-PUBLIC"]["license_status"] == "pending"
+    assert datasets["DS-POLYMARKET-PUBLIC"]["license_review_id"] == "O-001"
 
 
 def test_result_is_rejected_without_preexisting_registration(tmp_path: Path) -> None:
@@ -657,6 +2868,8 @@ def test_result_rejects_unresolved_registration_locks(tmp_path: Path) -> None:
                     "scope": "formal_result",
                     "code_sha256": "sha256:" + "1" * 64,
                     "data_sha256": "sha256:" + "2" * 64,
+                    "dataset_ids": ["DS-PMXT-V2", "DS-POLYMARKET-PUBLIC"],
+                    "model_ids": [],
                 }
             ]
         },
@@ -664,6 +2877,7 @@ def test_result_rejects_unresolved_registration_locks(tmp_path: Path) -> None:
     result_ref = _valid_result_ref(
         scope="formal_result",
         registration_head_sha256=amendment["amendment_sha256"],
+        dataset_ids=["DS-PMXT-V2", "DS-POLYMARKET-PUBLIC"],
     )
     with pytest.raises(UnresolvedRegistrationLockError):
         validate_result_ref(root, "X-01", result_ref)
@@ -671,31 +2885,33 @@ def test_result_rejects_unresolved_registration_locks(tmp_path: Path) -> None:
 
 def test_result_rejects_unfinished_dependencies(tmp_path: Path) -> None:
     root = _copy_program_fixture(tmp_path)
-    x02 = _read_card(root, "X-02")
+    _update_dataset_registry(
+        root,
+        "DS-PMXT-V2",
+        license_status="approved",
+        manifest_sha256="sha256:" + "7" * 64,
+    )
     amendment = _append_amendment(
         root,
         "X-02",
-        amended_at="2026-07-23T00:00:01Z",
+        amended_at="2026-07-24T00:00:01Z",
         changes={
-            "resolve_locks": [
-                {
-                    "lock_id": lock["id"],
-                    "evidence_ref": "sha256:" + "8" * 64,
-                }
-                for lock in x02["registration_locks"]
-            ],
             "preregistered_inputs": [
                 {
                     "scope": "formal_result",
                     "code_sha256": "sha256:" + "1" * 64,
                     "data_sha256": "sha256:" + "2" * 64,
+                    "dataset_ids": ["DS-PMXT-V2"],
+                    "model_ids": [],
                 }
             ],
         },
     )
     result_ref = _valid_result_ref(
         scope="formal_result",
+        evaluation_started_at="2026-07-24T00:00:02Z",
         registration_head_sha256=amendment["amendment_sha256"],
+        dataset_ids=["DS-PMXT-V2"],
     )
     with pytest.raises(UnresolvedDependencyError):
         validate_result_ref(root, "X-02", result_ref)
@@ -1018,6 +3234,33 @@ def test_amendment_cannot_authorize_permanent_no_go(tmp_path: Path) -> None:
         load_experiment_registry(root)
 
 
+@pytest.mark.parametrize(
+    ("experiment_id", "scope_name"),
+    [
+        ("X-11", "formal_result"),
+        ("X-12", "formal_promotion"),
+    ],
+)
+def test_amendment_cannot_promote_pipeline_or_poc_to_formal_scope(
+    tmp_path: Path,
+    experiment_id: str,
+    scope_name: str,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    _append_amendment(
+        root,
+        experiment_id,
+        amended_at="2026-07-23T00:00:01Z",
+        changes={"authorize_scopes": [scope_name]},
+    )
+
+    with pytest.raises(
+        ExperimentRegistryError,
+        match="permanent NO-GO|formal promotion|formal scope",
+    ):
+        load_experiment_registry(root)
+
+
 def test_amendment_ledger_and_card_chain_must_match_both_directions(
     tmp_path: Path,
 ) -> None:
@@ -1063,7 +3306,9 @@ def test_effective_amendment_applies_status_locks_and_inputs(tmp_path: Path) -> 
     assert x08["preregistered_inputs"]["archive_audit"] == {
         "code_sha256": "sha256:" + "1" * 64,
         "data_sha256": "sha256:" + "2" * 64,
-        "registered_at": "2026-07-23T00:00:01Z",
+        "dataset_ids": ["DS-KALSHI-HISTORICAL"],
+        "model_ids": [],
+        "registered_at": "2026-07-23T00:00:02Z",
     }
 
 
@@ -1156,8 +3401,12 @@ def test_seed_cards_reject_results_until_scope_inputs_are_preregistered(
             result_label=scope["required_result_label"],
             registration_head_sha256=card["registration_head_sha256"],
         )
-        with pytest.raises(InvalidResultReferenceError, match="preregistered"):
-            validate_result_ref(program_root, experiment_id, result_ref)
+        if card["execution_authorized"] is False:
+            with pytest.raises(UnauthorizedResultScopeError, match="execution"):
+                validate_result_ref(program_root, experiment_id, result_ref)
+        else:
+            with pytest.raises(InvalidResultReferenceError, match="preregistered"):
+                validate_result_ref(program_root, experiment_id, result_ref)
 
 
 def test_valid_result_requires_matching_preregistered_inputs_and_head(
@@ -1178,6 +3427,55 @@ def test_valid_result_requires_matching_preregistered_inputs_and_head(
     wrong_head = dict(result_ref, registration_head_sha256="sha256:" + "b" * 64)
     with pytest.raises(InvalidResultReferenceError, match="registration head"):
         validate_result_ref(root, "X-08", wrong_head)
+
+
+@pytest.mark.parametrize(
+    ("dataset_ids", "model_ids"),
+    [
+        ([], []),
+        (["DS-KALSHI-HISTORICAL", "DS-PMXT-V2"], []),
+        (["DS-KALSHI-HISTORICAL"], ["MODEL-NFL-LOGISTIC"]),
+    ],
+)
+def test_result_requires_exact_scope_dataset_and_model_bindings(
+    tmp_path: Path,
+    dataset_ids: list[str],
+    model_ids: list[str],
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    amendment = _preregister_x08_inputs(root)
+    result = _valid_result_ref(
+        registration_head_sha256=amendment["amendment_sha256"],
+        dataset_ids=dataset_ids,
+        model_ids=model_ids,
+    )
+
+    with pytest.raises(InvalidResultReferenceError, match="binding"):
+        validate_result_ref(root, "X-08", result)
+
+
+def test_appended_result_runs_dataset_license_eligibility_gate(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    preregistration = _preregister_x08_inputs(root)
+    _update_dataset_registry(
+        root,
+        "DS-KALSHI-HISTORICAL",
+        license_status="pending",
+    )
+    result = _valid_result_ref(
+        registration_head_sha256=preregistration["amendment_sha256"]
+    )
+    _append_amendment(
+        root,
+        "X-08",
+        amended_at="2026-07-23T00:00:04Z",
+        changes={"results_ref": result},
+    )
+
+    with pytest.raises(ExperimentRegistryError, match="license"):
+        load_experiment_registry(root)
 
 
 def test_evaluation_must_follow_input_preregistration_amendment(tmp_path: Path) -> None:
@@ -1203,7 +3501,7 @@ def test_generated_result_can_be_appended_only_against_its_evaluation_head(
     _append_amendment(
         root,
         "X-08",
-        amended_at="2026-07-23T00:00:03Z",
+        amended_at="2026-07-23T00:00:04Z",
         changes={"results_ref": result_ref, "status": "running"},
     )
 
@@ -1217,7 +3515,7 @@ def test_generated_result_can_be_appended_only_against_its_evaluation_head(
     _append_amendment(
         root,
         "X-08",
-        amended_at="2026-07-23T00:00:03Z",
+        amended_at="2026-07-23T00:00:04Z",
         changes={"results_ref": wrong_head},
     )
     with pytest.raises(ExperimentRegistryError, match="evaluation head"):
@@ -1232,11 +3530,11 @@ def test_result_cannot_use_a_registration_head_created_after_evaluation(
     later_head = _append_amendment(
         root,
         "X-08",
-        amended_at="2026-07-23T00:00:03Z",
+        amended_at="2026-07-23T00:00:04Z",
         changes={"status": "running"},
     )
     result_ref = _valid_result_ref(
-        evaluation_started_at="2026-07-23T00:00:02Z",
+        evaluation_started_at="2026-07-23T00:00:03Z",
         registration_head_sha256=later_head["amendment_sha256"],
     )
 
@@ -1248,37 +3546,61 @@ def test_result_cannot_retroactively_resolve_locks_or_authorize_scope(
     tmp_path: Path,
 ) -> None:
     root = _copy_program_fixture(tmp_path)
+    _update_dataset_registry(
+        root,
+        "DS-KALSHI-LIVE-L2",
+        use_class="canonical",
+        license_status="approved",
+        manifest_sha256="sha256:" + "7" * 64,
+        status="registered",
+    )
+    _update_license_review(
+        root,
+        "O-003",
+        status="GREEN",
+        commercial_use="PERMITTED_WITH_CONDITIONS",
+        redistribution="PERMITTED_WITH_CONDITIONS",
+        attribution_required="YES",
+        operational_use="APPROVED",
+        open_blocker="",
+        approval_ref="I-APPROVAL-O003-TEST",
+    )
     preregistration = _append_amendment(
         root,
-        "X-10",
-        amended_at="2026-07-23T00:00:01Z",
+        "X-08",
+        amended_at="2026-07-23T00:00:02Z",
         changes={
             "preregistered_inputs": [
                 {
-                    "scope": "precision_audit",
+                    "scope": "kalshi_capture",
                     "code_sha256": "sha256:" + "1" * 64,
                     "data_sha256": "sha256:" + "2" * 64,
+                    "dataset_ids": ["DS-KALSHI-LIVE-L2"],
+                    "model_ids": [],
                 }
             ]
         },
     )
-    card = _read_card(root, "X-10")
+    card = _read_card(root, "X-08")
     result_ref = _valid_result_ref(
-        scope="precision_audit",
-        evaluation_started_at="2026-07-23T00:00:02Z",
+        scope="kalshi_capture",
+        result_label="PRELIMINARY",
+        evaluation_started_at="2026-07-23T00:00:03Z",
         registration_head_sha256=preregistration["amendment_sha256"],
+        dataset_ids=["DS-KALSHI-LIVE-L2"],
     )
     _append_amendment(
         root,
-        "X-10",
-        amended_at="2026-07-23T00:00:03Z",
+        "X-08",
+        amended_at="2026-07-23T00:00:04Z",
         changes={
             "resolve_locks": [
                 {"lock_id": lock_id, "evidence_ref": "sha256:" + "8" * 64}
-                for lock_id in card["authorization_scopes"]["precision_audit"][
+                for lock_id in card["authorization_scopes"]["kalshi_capture"][
                     "required_lock_ids"
                 ]
             ],
+            "authorize_scopes": ["kalshi_capture"],
             "results_ref": result_ref,
         },
     )
@@ -1296,7 +3618,7 @@ def test_partial_scope_result_cannot_complete_whole_experiment(tmp_path: Path) -
     _append_amendment(
         root,
         "X-08",
-        amended_at="2026-07-23T00:00:03Z",
+        amended_at="2026-07-23T00:00:04Z",
         changes={"results_ref": result_ref, "status": "done"},
     )
 
@@ -1310,17 +3632,17 @@ def test_dependency_must_be_ready_before_dependent_evaluation(tmp_path: Path) ->
         root,
         "X-01",
         "formal_result",
-        preregistered_at="2026-07-23T00:00:03Z",
-        evaluated_at="2026-07-23T00:00:05Z",
-        completed_at="2026-07-23T00:00:06Z",
+        preregistered_at="2026-07-24T00:00:03Z",
+        evaluated_at="2026-07-24T00:00:05Z",
+        completed_at="2026-07-24T00:00:06Z",
     )
     _complete_scope(
         root,
         "X-02",
         "formal_result",
-        preregistered_at="2026-07-23T00:00:01Z",
-        evaluated_at="2026-07-23T00:00:02Z",
-        completed_at="2026-07-23T00:00:07Z",
+        preregistered_at="2026-07-24T00:00:01Z",
+        evaluated_at="2026-07-24T00:00:04Z",
+        completed_at="2026-07-24T00:00:07Z",
     )
 
     with pytest.raises(ExperimentRegistryError, match="dependency.*before evaluation"):

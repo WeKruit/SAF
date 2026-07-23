@@ -49,7 +49,7 @@ experiment_card:
   falsified_direction_is_valid_measurement: false
   midpoint_allowed: false
   artifact_dependencies:
-    - {path: artifacts/validation/validation_standard_v0.md, version: v0, sha256: 'sha256:ce067f0fcb0b480c2bcaaa28c066147a060fbd999b6e9584f973f583d0a747ab'}
+    - {path: artifacts/validation/validation_standard_v0.md, version: v0, sha256: 'sha256:29201f473f5b87554954fc7bf67f0bd1c5f27280f11f09277dc72ac309bb8605'}
   linked_first_artifact_due_gates:
     - {catalog_item_id: R-022, due_gate: 2026-08-05_W2_review}
   source_lineage:
@@ -68,4 +68,4 @@ experiment_card:
     - readme_return_strategy_selection
     - unregistered_quick_backtest
   amendments: []
-  registration_record_sha256: sha256:ab0dc941408c59ea5f509e2ef1650c515fba19374223ef8827d48ef04b99e10a
+  registration_record_sha256: sha256:174e6422e4531aaff8a28daa9a7ff254b177f6685e895cf8fb286d21081f463b

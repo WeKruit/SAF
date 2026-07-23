@@ -34,18 +34,30 @@ experiment_card:
       authorized: true
       required_result_label: PRELIMINARY
       required_lock_ids: []
+      input_binding:
+        result_class: synthetic
+        dataset_ids: []
+        model_ids: [MODEL-NBA-POSSESSION-TRANSITION]
+        synthetic_data_sha256: sha256:0ebca90ba56b45252c6d310fd176ba2eb1ac615995b3eacf92e2e3f9c962a15f
     formal_result:
       authorized: false
       required_result_label: FORMAL
       required_lock_ids: [nba_pbp_manifest, pregame_prior_manifest, nba_license_clearance, seasons_features_and_models, calibration_and_bootstrap_parameters]
+      input_binding: &x06_formal_inputs
+        result_class: formal
+        dataset_ids: [DS-NBA-CANDIDATE]
+        model_ids: [MODEL-NBA-GBDT, MODEL-NBA-LOGISTIC, MODEL-NBA-POSSESSION-TRANSITION, MODEL-NBA-PRIOR]
+        synthetic_data_sha256: null
     gate_1_reaction_model:
       authorized: false
       required_result_label: FORMAL
       required_lock_ids: [nba_pbp_manifest, pregame_prior_manifest, nba_license_clearance, seasons_features_and_models, calibration_and_bootstrap_parameters]
+      input_binding: *x06_formal_inputs
     gate_2_trading_relevance:
       authorized: false
       required_result_label: FORMAL
       required_lock_ids: [nba_pbp_manifest, pregame_prior_manifest, nba_license_clearance, seasons_features_and_models, calibration_and_bootstrap_parameters, x07_cost_comparability]
+      input_binding: *x06_formal_inputs
   registration_locks:
     - {id: nba_pbp_manifest, status: unresolved, reason: Byte-exact source or derived-extract manifest and hashes are unset.}
     - {id: pregame_prior_manifest, status: unresolved, reason: Historical prior source and PIT manifest are unset.}
@@ -64,6 +76,10 @@ experiment_card:
     output_kind: state_transition
     transition_unit: possession
     state_space: [home_score, away_score, no_score]
+  synthetic_fixture:
+    path: artifacts/game-state/nba/x06_contract_fixture_v0.json
+    sha256: sha256:0ebca90ba56b45252c6d310fd176ba2eb1ac615995b3eacf92e2e3f9c962a15f
+    data_class: synthetic_contract_only
   linked_first_artifact_due_gates:
     - {catalog_item_id: R-009, due_gate: 2026-08-05_W2_review}
     - {catalog_item_id: R-010, due_gate: 2026-08-05_W2_review}
@@ -87,4 +103,4 @@ experiment_card:
     - readme_return_strategy_selection
     - unregistered_quick_backtest
   amendments: []
-  registration_record_sha256: sha256:a3547b65f22a6ddac0fb127025c5decd77d3c912ed59993dd8f57d0866fc6452
+  registration_record_sha256: sha256:8e487785dc877f70fbdb8b7bdb3825e70ebdd950af474512635429cc6b6c1c34

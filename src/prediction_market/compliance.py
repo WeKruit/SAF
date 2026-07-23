@@ -51,8 +51,29 @@ USE_STATUSES = frozenset(
 )
 ATTRIBUTION_STATUSES = frozenset({"UNKNOWN", "YES", "NO"})
 OPERATIONAL_USE_STATUSES = frozenset({"UNKNOWN", "RESEARCH_ONLY", "BLOCKED", "APPROVED"})
-EXPECTED_OPERATIONAL_IDS = tuple(f"O-{number:03d}" for number in range(1, 9))
+EXPECTED_LICENSE_REVIEW_IDS = (
+    *(f"O-{number:03d}" for number in range(1, 9)),
+    "R-039",
+    "I-018",
+    "R-042",
+    "R-043",
+)
+CATALOG_COLUMNS = (
+    "catalog_item_id",
+    "source_catalog_id",
+    "catalog",
+    "title",
+    "primary_team",
+    "secondary_teams",
+    "priority",
+    "program_stage",
+    "first_artifact",
+    "linked_experiments",
+    "status",
+    "due_gate",
+)
 _MATRIX_ID = re.compile(r"CM-[0-9]{3}")
+_CATALOG_ID = re.compile(r"(?:R|I|O)-[0-9]{3}")
 _APPROVAL_REF = re.compile(r"I-APPROVAL-[A-Z0-9][A-Z0-9._-]*")
 _VERSION = re.compile(r"v[0-9]+(?:\.[0-9]+)?")
 
@@ -112,6 +133,48 @@ def _safe_registry_path(root: str | Path, filename: str) -> Path:
     if not resolved.is_file():
         raise ComplianceRegistryError(f"registry is not a regular file: {filename}")
     return resolved
+
+
+def _stable_catalog_ids(root: str | Path) -> set[str]:
+    program_root = Path(root).resolve()
+    charter_root = (program_root / "charter").resolve()
+    path = program_root / "charter" / "catalog_registry.csv"
+    if path.is_symlink():
+        raise ComplianceRegistryError(
+            "catalog_registry.csv must not be a symlink"
+        )
+    try:
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(charter_root)
+        text = resolved.read_bytes().decode("utf-8")
+    except (FileNotFoundError, OSError, UnicodeDecodeError, ValueError) as error:
+        raise ComplianceRegistryError(
+            "unsafe or unreadable stable catalog registry"
+        ) from error
+    reader = csv.DictReader(io.StringIO(text, newline=""), strict=True)
+    if tuple(reader.fieldnames or ()) != CATALOG_COLUMNS:
+        raise ComplianceRegistryError(
+            "stable catalog registry columns do not match contract"
+        )
+    identifiers: set[str] = set()
+    try:
+        for row in reader:
+            identifier = row.get("catalog_item_id")
+            if (
+                None in row
+                or type(identifier) is not str
+                or not _CATALOG_ID.fullmatch(identifier)
+                or identifier in identifiers
+            ):
+                raise ComplianceRegistryError(
+                    "stable catalog registry has invalid or duplicate IDs"
+                )
+            identifiers.add(identifier)
+    except csv.Error as error:
+        raise ComplianceRegistryError(
+            "stable catalog registry is malformed"
+        ) from error
+    return identifiers
 
 
 def _read_csv(
@@ -234,13 +297,21 @@ def load_compliance_matrix(root: str | Path) -> tuple[ComplianceRow, ...]:
 
 
 def load_data_license_register(root: str | Path) -> tuple[DataLicenseRow, ...]:
-    """Load the exact O-001..O-008 evidence set without implying approval."""
+    """Load license reviews keyed only by existing stable catalog IDs."""
 
     raw_rows = _read_csv(root, "data_license_register.csv", LICENSE_COLUMNS)
     ids = [row["catalog_item_id"] for row in raw_rows]
-    if tuple(ids) != EXPECTED_OPERATIONAL_IDS:
+    if tuple(ids) != EXPECTED_LICENSE_REVIEW_IDS:
         raise ComplianceRegistryError(
-            "catalog_item_id rows must be exactly O-001 through O-008 in order"
+            "catalog_item_id rows must be exactly O-001 through O-008, "
+            "R-039, I-018, R-042, and R-043 in order"
+        )
+    stable_catalog_ids = _stable_catalog_ids(root)
+    missing_from_catalog = sorted(set(ids) - stable_catalog_ids)
+    if missing_from_catalog:
+        raise ComplianceRegistryError(
+            "license review IDs are absent from the stable catalog: "
+            + ", ".join(missing_from_catalog)
         )
     rows: list[DataLicenseRow] = []
     for raw in raw_rows:

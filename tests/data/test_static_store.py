@@ -59,7 +59,7 @@ def _preserve(
         "last_modified": "Tue, 21 Jul 2026 23:59:59 GMT",
         "media_type": "application/vnd.apache.parquet",
         "schema_fingerprint": SCHEMA_FINGERPRINT,
-        "license_ref": "O-009",
+        "license_ref": "R-039",
         "license_status": "approved",
         "upstream_partition": "2024",
         "object_kind": "byte_exact_original",

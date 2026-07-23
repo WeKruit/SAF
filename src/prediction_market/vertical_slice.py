@@ -628,6 +628,10 @@ def _formal_blockers(
     if not isinstance(card, dict):
         return ("X-09 registration is missing",)
     blockers: list[str] = []
+    try:
+        experiments_module.require_execution_authorized(card)
+    except experiments_module.UnauthorizedResultScopeError:
+        blockers.append("X-09 execution_authorized is false")
     scopes = card.get("authorization_scopes")
     scope = scopes.get("formal_result") if isinstance(scopes, dict) else None
     if not isinstance(scope, dict):

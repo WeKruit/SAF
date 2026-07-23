@@ -9,18 +9,209 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import yaml
+
+from prediction_market.raw_store import RawStoreError, read_verified_segment
 
 
 EXPERIMENT_IDS = tuple(f"X-{number:02d}" for number in range(1, 13))
 _EXPERIMENT_ID_SET = frozenset(EXPERIMENT_IDS)
 _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_DATASET_ID_RE = re.compile(r"^DS-[A-Z0-9][A-Z0-9-]*$")
+_MODEL_ID_RE = re.compile(r"^MODEL-[A-Z0-9][A-Z0-9-]*$")
 _UTC_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 _DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 _RESULT_ACCEPTANCE_NOT_BEFORE = "2026-07-23T00:00:00Z"
+_X08_CAPTURE_STREAMS = {
+    "DS-KALSHI-LIVE-L2": ("kalshi", "orderbook"),
+    "DS-POLYMARKET-PUBLIC": ("polymarket", "market"),
+}
+_X08_GAP_POLICY = {
+    "policy_id": "recorder-heartbeat/v0",
+    "maximum_gap_seconds": 60,
+}
+_X02_PREREGISTRATION_LOCK_IDS = frozenset(
+    {
+        "sampling_and_seed",
+        "diff_and_stability_definitions",
+        "h_split_approval",
+    }
+)
+_X02_TIMESTAMP_AUDIT_PREREGISTRATION = {
+    "sampling_and_seed": {
+        "selection_seed": 20260722,
+        "game_day": "2026-05-28",
+        "random_days": [
+            "2026-04-22",
+            "2026-06-05",
+            "2026-06-25",
+        ],
+        "selection_inventory_sha256": (
+            "sha256:"
+            "74d7e9f21003f595d2d505bc63c89c7eadcd5339d541032bc80704d4b14b3043"
+        ),
+        "x01_game_day_manifest_sha256": (
+            "sha256:"
+            "e7dfc9e7992f1eb085edc0c67f37100db10c6541533220833dcace2a1e244df3"
+        ),
+        "pending_archive_object_count": 72,
+    },
+    "diff_and_stability_definitions": {
+        "diff_ms": "epoch_ms(timestamp_received)-epoch_ms(timestamp)",
+        "signed_quantiles": {
+            "estimator": "quantile_cont",
+            "interpolation": "linear",
+            "input_distribution": "integer_millisecond_frequency",
+            "probabilities": ["0.50", "0.95", "0.99"],
+        },
+        "absolute_p99": {
+            "transform": "abs(diff_ms)",
+            "estimator": "quantile_cont",
+            "interpolation": "linear",
+            "input_distribution": "integer_millisecond_frequency",
+            "probability": "0.99",
+        },
+        "hourly_drift_ms": (
+            "median_utc_hour_23_diff_ms-median_utc_hour_00_diff_ms"
+        ),
+        "disorder": {
+            "partition_by": ["market", "asset_id"],
+            "canonical_sort": ["timestamp_received", "timestamp"],
+            "numerator": "adjacent_source_timestamp_strict_descents",
+            "ordered_comparisons": (
+                "n_rows-n_unique_market_asset_streams"
+            ),
+        },
+        "downgrade_gate": {
+            "negative_rate_gte": "0.001",
+            "absolute_p99_ms_gt": 5000,
+            "decision": "downgrade_millisecond_research_to_seconds",
+        },
+    },
+    "h_split_approval": {
+        "split": "n.a.",
+        "basis": "charter_section_9_measurement_audit_exemption",
+        "approved_by": "H",
+    },
+}
+_X02_TIMESTAMP_INPUT_MANIFEST_BINDING = {
+    "bundle_path": (
+        "artifacts/data-audit/x02_timestamp_input_bundle_v1.json"
+    ),
+    "bundle_file_sha256": (
+        "sha256:"
+        "46c3f23007929ad31b131f3618009810501b6ef06d0ac2645eb3dcfac217bd8d"
+    ),
+    "bundle_sha256": (
+        "sha256:"
+        "9477f8d9a224b47b6dda47dd691761d4ca8b5d88be6ad07416217a2bb44c89a4"
+    ),
+}
+_X02_DAY_MANIFEST_BINDINGS = [
+    {
+        "artifact_file_sha256": (
+            "sha256:"
+            "36d20e073a41ed4cbe0a2e7f37e726c3334075a0ff4017d42b38d5e15d4a5e85"
+        ),
+        "day": "2026-04-22",
+        "full_day_manifest_sha256": (
+            "sha256:"
+            "d01571e413a942c615489bc674560a0abc5a718507d990ad4106c1a90f3f61ed"
+        ),
+        "object_count": 24,
+        "path": (
+            "artifacts/data-audit/"
+            "x02_full_day_input_manifest_2026-04-22_v1.json"
+        ),
+    },
+    {
+        "artifact_file_sha256": (
+            "sha256:"
+            "06f1c0aeadd0a735474756e272fd4f9cccb8d718ca65c316163ff08361ac22c5"
+        ),
+        "day": "2026-05-28",
+        "full_day_manifest_sha256": (
+            "sha256:"
+            "e7dfc9e7992f1eb085edc0c67f37100db10c6541533220833dcace2a1e244df3"
+        ),
+        "object_count": 24,
+        "path": "artifacts/data-audit/x01_full_day_input_manifest_v1.json",
+    },
+    {
+        "artifact_file_sha256": (
+            "sha256:"
+            "ddb609d9bf15550e487caa3e785999340b4fa337ab82036eccec09965aa598f8"
+        ),
+        "day": "2026-06-05",
+        "full_day_manifest_sha256": (
+            "sha256:"
+            "b4f688f1da57827426efd5b0b212b15457282f56a253ceffca74542d11f6419e"
+        ),
+        "object_count": 24,
+        "path": (
+            "artifacts/data-audit/"
+            "x02_full_day_input_manifest_2026-06-05_v1.json"
+        ),
+    },
+    {
+        "artifact_file_sha256": (
+            "sha256:"
+            "94546f473149f31ef75179f8a1e8982fc31d99e712ba9d5c3b94cf603b458850"
+        ),
+        "day": "2026-06-25",
+        "full_day_manifest_sha256": (
+            "sha256:"
+            "0b6e87e6b59035751405b5d87a8b9bde2902f0e5545163e0eb17c30a1f3f956e"
+        ),
+        "object_count": 24,
+        "path": (
+            "artifacts/data-audit/"
+            "x02_full_day_input_manifest_2026-06-25_v1.json"
+        ),
+    },
+]
+_X02_TIMESTAMP_INPUT_BUNDLE = {
+    "additional_days": [
+        "2026-04-22",
+        "2026-06-05",
+        "2026-06-25",
+    ],
+    "bundle_sha256": _X02_TIMESTAMP_INPUT_MANIFEST_BINDING[
+        "bundle_sha256"
+    ],
+    "day_count": 4,
+    "day_manifests": _X02_DAY_MANIFEST_BINDINGS,
+    "formal_result": False,
+    "inventory_path": "artifacts/data-audit/phase0_inventory.json",
+    "inventory_sha256": (
+        "sha256:"
+        "74d7e9f21003f595d2d505bc63c89c7eadcd5339d541032bc80704d4b14b3043"
+    ),
+    "object_count": 96,
+    "purpose": "frozen_input_only_before_X02_evaluation",
+    "selection_procedure": (
+        "x01_day_plus_random.Random(seed).sample("
+        "sorted_exact_complete_utc_days_excluding_x01,3);"
+        "additional_days_sorted"
+    ),
+    "selection_seed": 20260722,
+    "version": "x02-timestamp-input-bundle-v1",
+    "x01_day": "2026-05-28",
+}
+_X02_REGISTERED_INPUT_ARTIFACTS = {
+    _X02_TIMESTAMP_INPUT_MANIFEST_BINDING["bundle_path"],
+    *(
+        item["path"]
+        for item in _X02_DAY_MANIFEST_BINDINGS
+        if item["day"] != "2026-05-28"
+    ),
+}
+_X02_STATIC_SIDECAR_ROOT = (
+    "artifacts/data-audit/x02-static-store-v1"
+)
 _ALLOWED_STATUSES = frozenset(
     {"registered", "running", "done", "failed", "abandoned"}
 )
@@ -42,18 +233,18 @@ _PROGRAM_NO_GOS = frozenset(
 # This mapping is the in-runtime trust anchor for the initial program registration.
 # The append-only Git history is the external monotonic anchor for later ledger rows.
 _TRUSTED_BASE_REGISTRATIONS = {
-    "X-01": "sha256:d1cea6987540e3889cb81dd896a01a1d8267e80fbd0356a6721115c1d0bc1b30",
-    "X-02": "sha256:e10cfb92cc066c8e7d16475a808187e546ea807cad048f0ade74ae66273147ad",
-    "X-03": "sha256:404dd65a81bb12ff6cd0bd8ad631d495c1e64c093e3fcf533a492e674ff45fd7",
+    "X-01": "sha256:da901afeac387a054c4e8f64cb928bb96df45919af5b5b696639b44ccbd860d3",
+    "X-02": "sha256:1b6393ef8cca4bf482cc3a167844358c07fda9a97c45cbedbe4ceda3e2033ed1",
+    "X-03": "sha256:7634916448695c08bf66826c217cce0b8d1f67f32bc85c163c5de433bcd07962",
     "X-04": "sha256:5e2265e8d9d992a27024a4af5914fd94bdb172efb97b2a9d819b9b4f7aafedb9",
-    "X-05": "sha256:ab0dc941408c59ea5f509e2ef1650c515fba19374223ef8827d48ef04b99e10a",
-    "X-06": "sha256:a3547b65f22a6ddac0fb127025c5decd77d3c912ed59993dd8f57d0866fc6452",
+    "X-05": "sha256:174e6422e4531aaff8a28daa9a7ff254b177f6685e895cf8fb286d21081f463b",
+    "X-06": "sha256:8e487785dc877f70fbdb8b7bdb3825e70ebdd950af474512635429cc6b6c1c34",
     "X-07": "sha256:44acdd9db4be6dd50b375384fe419dcaef631f381d37a054152f85e26a3295d5",
-    "X-08": "sha256:c29024677af968b41f2c6da746f0850c32cad2d1e8b029f2ded71623b5ef6da4",
-    "X-09": "sha256:645beda90eaf30ba770ec57e889e5fccfbdfaeecab24d4c80129b416c72da567",
+    "X-08": "sha256:e4d9f0a72ac6dcb4ad0e78859bf0264eb9a79508987263428678bf4342b97e8e",
+    "X-09": "sha256:b72b5395b37a189150c00f2b278c713942fe78b41da4b68dd5beef8d3cc0160b",
     "X-10": "sha256:bb1fc8aca25e10250bdef744b682788afab1b83357855b7c6a6231086623911a",
-    "X-11": "sha256:bd4449592825c677f096079fcab4d24ba4a538662c853763ecb076784ff69924",
-    "X-12": "sha256:7d485dce11d941809ae7354ebd5db54db2bd8b0461052cc0a3e139dd68d96c9b",
+    "X-11": "sha256:1706e20201346560f38b4bf1ab3f040c8318f871d809eeff03666827b1b5ec4e",
+    "X-12": "sha256:f1482d5268cbcb556ae8ac8fb37f15d31586cbc2e13565cb05f0341efcabdc96",
 }
 
 _COMMON_CARD_FIELDS = frozenset(
@@ -96,7 +287,12 @@ _OPTIONAL_CARD_FIELDS = {
     "X-03": set(),
     "X-04": set(),
     "X-05": {"artifact_dependencies", "midpoint_allowed"},
-    "X-06": {"decision_gates", "dataset_ids", "output_contract"},
+    "X-06": {
+        "decision_gates",
+        "dataset_ids",
+        "output_contract",
+        "synthetic_fixture",
+    },
     "X-07": {"midpoint_allowed"},
     "X-08": {"prospective_observation", "unresolved_decision_band"},
     "X-09": {"artifact_dependencies", "deterministic_replay_required_levels", "signal"},
@@ -168,7 +364,12 @@ _RESULT_FIELDS = frozenset(
         "data_sha256",
         "result_sha256",
         "registration_head_sha256",
+        "dataset_ids",
+        "model_ids",
     }
+)
+_INPUT_BOUND_EXPERIMENT_IDS = frozenset(
+    {"X-01", "X-02", "X-03", "X-06", "X-08", "X-11", "X-12"}
 )
 
 
@@ -326,6 +527,30 @@ def _safe_file(root: Path, relative: str, purpose: str) -> Path:
     return resolved
 
 
+def _safe_directory(root: Path, relative: str, purpose: str) -> Path:
+    if not relative or Path(relative).is_absolute():
+        raise ExperimentRegistryError(f"invalid {purpose} path")
+    lexical = root / relative
+    try:
+        root_resolved = root.resolve(strict=True)
+        current = root_resolved
+        relative_parts = Path(relative).parts
+        if ".." in relative_parts:
+            raise ExperimentRegistryError(f"{purpose} path escape")
+        for part in relative_parts:
+            current = current / part
+            if current.is_symlink():
+                raise ExperimentRegistryError(f"{purpose} path is a symlink")
+        resolved = lexical.resolve(strict=True)
+    except ExperimentRegistryError:
+        raise
+    except OSError as exc:
+        raise ExperimentRegistryError(f"missing {purpose}: {relative}") from exc
+    if not resolved.is_relative_to(root_resolved) or not resolved.is_dir():
+        raise ExperimentRegistryError(f"{purpose} path escape or non-directory")
+    return resolved
+
+
 def _validate_card_inventory(root: Path) -> None:
     directory = root / "registries" / "experiments"
     try:
@@ -401,6 +626,415 @@ def _sha256(value: Any, label: str, result_error: bool = False) -> str:
     return value
 
 
+def _decode_json_object(raw: bytes, label: str) -> dict[str, Any]:
+    def unique_object(
+        pairs: list[tuple[str, Any]],
+    ) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ExperimentRegistryError(
+                    f"{label} contains duplicate JSON key {key!r}"
+                )
+            value[key] = item
+        return value
+
+    try:
+        document = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=unique_object,
+        )
+    except ExperimentRegistryError:
+        raise
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ExperimentRegistryError(
+            f"{label} is not valid UTF-8 JSON"
+        ) from exc
+    if type(document) is not dict:
+        raise ExperimentRegistryError(f"{label} must be a JSON object")
+    return document
+
+
+def _verify_x02_static_manifest_sidecar(
+    program_root: Path,
+    hourly_object: Any,
+) -> str:
+    object_parts = PurePosixPath(hourly_object.object_path).parts
+    object_digest = hourly_object.object_sha256.removeprefix("sha256:")
+    expected_partition = f"partition=hour-{hourly_object.hour[:13]}"
+    if (
+        len(object_parts) != 6
+        or object_parts[:4]
+        != (
+            "raw",
+            "source=pmxt",
+            "dataset=DS-PMXT-V2",
+            "version=v2",
+        )
+        or object_parts[4] != expected_partition
+        or object_parts[5] != f"{object_digest}.parquet"
+    ):
+        raise ExperimentRegistryError(
+            "X-02: hourly object path/digest/partition cannot derive a "
+            "canonical static manifest sidecar"
+        )
+    sidecar_digest = hourly_object.static_manifest_sha256.removeprefix(
+        "sha256:"
+    )
+    sidecar_ref = (
+        PurePosixPath(_X02_STATIC_SIDECAR_ROOT)
+        / "manifests"
+        / object_parts[1]
+        / object_parts[2]
+        / object_parts[3]
+        / object_parts[4]
+        / f"{sidecar_digest}.manifest.json"
+    ).as_posix()
+    sidecar_path = _safe_file(
+        program_root,
+        sidecar_ref,
+        "X-02 static manifest sidecar",
+    )
+    sidecar_raw = sidecar_path.read_bytes()
+    document = _decode_json_object(
+        sidecar_raw,
+        "X-02 static manifest sidecar",
+    )
+    from prediction_market.contracts import (
+        StaticDatasetManifestV0,
+        canonical_json_bytes,
+        validate_static_dataset_manifest_v0,
+    )
+
+    try:
+        canonical = canonical_json_bytes(document) + b"\n"
+    except (TypeError, ValueError) as exc:
+        raise ExperimentRegistryError(
+            "X-02: static manifest sidecar is not canonical JSON"
+        ) from exc
+    if sidecar_raw != canonical:
+        raise ExperimentRegistryError(
+            "X-02: static manifest sidecar is not canonical JSON"
+        )
+    try:
+        sidecar = validate_static_dataset_manifest_v0(
+            program_root,
+            document,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ExperimentRegistryError(
+            f"X-02: static manifest sidecar contract is invalid: {exc}"
+        ) from exc
+    if not isinstance(sidecar, StaticDatasetManifestV0):
+        raise ExperimentRegistryError(
+            "X-02: static manifest sidecar validator returned invalid data"
+        )
+    if (
+        sidecar.manifest_sha256
+        != hourly_object.static_manifest_sha256
+        or sidecar.native_object_path != hourly_object.object_path
+        or sidecar.object_sha256 != hourly_object.object_sha256
+        or sidecar.source_url != hourly_object.source_url
+        or sidecar.dataset_id != "DS-PMXT-V2"
+        or sidecar.license_ref != "O-006"
+        or sidecar.license_status != "approved"
+        or sidecar.upstream_partition
+        != expected_partition.removeprefix("partition=")
+        or sidecar.object_kind != "byte_exact_original"
+    ):
+        raise ExperimentRegistryError(
+            "X-02: static manifest sidecar does not match its day-manifest "
+            "object, dataset, or license binding"
+        )
+    return sidecar_ref
+
+
+def _verify_x02_timestamp_input_bundle(
+    program_root: str | Path,
+    binding: Any,
+) -> dict[str, Any]:
+    """Verify X-02's frozen four-day bundle without evaluating its data."""
+
+    binding = _exact_keys(
+        binding,
+        {
+            "bundle_path",
+            "bundle_file_sha256",
+            "bundle_sha256",
+        },
+        "X-02 timestamp input manifest binding",
+    )
+    bundle_ref = _nonempty_string(
+        binding["bundle_path"],
+        "X-02 timestamp input bundle path",
+    )
+    _sha256(
+        binding["bundle_file_sha256"],
+        "X-02 timestamp input bundle file SHA-256",
+    )
+    _sha256(
+        binding["bundle_sha256"],
+        "X-02 timestamp input bundle self-hash",
+    )
+    root = Path(program_root)
+    bundle_path = _safe_file(
+        root,
+        bundle_ref,
+        "X-02 timestamp input bundle",
+    )
+    bundle_raw = bundle_path.read_bytes()
+    actual_file_sha256 = (
+        "sha256:" + hashlib.sha256(bundle_raw).hexdigest()
+    )
+    if actual_file_sha256 != binding["bundle_file_sha256"]:
+        raise ExperimentRegistryError(
+            "X-02: timestamp input bundle file SHA-256 mismatch"
+        )
+    document = _decode_json_object(
+        bundle_raw,
+        "X-02 timestamp input bundle",
+    )
+    document = _exact_keys(
+        document,
+        set(_X02_TIMESTAMP_INPUT_BUNDLE),
+        "X-02 timestamp input bundle",
+    )
+    material = dict(document)
+    material.pop("bundle_sha256")
+    actual_bundle_sha256 = (
+        "sha256:" + hashlib.sha256(_canonical_bytes(material)).hexdigest()
+    )
+    if (
+        document["bundle_sha256"] != actual_bundle_sha256
+        or binding["bundle_sha256"] != actual_bundle_sha256
+    ):
+        raise ExperimentRegistryError(
+            "X-02: timestamp input bundle self-hash mismatch"
+        )
+
+    for key, expected in _X02_TIMESTAMP_INPUT_BUNDLE.items():
+        if key in {"bundle_sha256", "day_manifests"}:
+            continue
+        if document[key] != expected:
+            raise ExperimentRegistryError(
+                "X-02: timestamp input bundle selection/day/object/formal "
+                "contract mismatch"
+            )
+
+    day_entries = document["day_manifests"]
+    if type(day_entries) is not list or len(day_entries) != 4:
+        raise ExperimentRegistryError(
+            "X-02: timestamp input bundle must contain four day manifests"
+        )
+    expected_by_path = {
+        item["path"]: item for item in _X02_DAY_MANIFEST_BINDINGS
+    }
+    if [
+        item.get("path") if type(item) is dict else None
+        for item in day_entries
+    ] != [item["path"] for item in _X02_DAY_MANIFEST_BINDINGS]:
+        raise ExperimentRegistryError(
+            "X-02: timestamp input day manifest paths or order mismatch"
+        )
+
+    artifact_rows = _strict_csv(
+        _safe_file(
+            root,
+            "registries/artifact_registry.csv",
+            "artifact registry",
+        ),
+        _ARTIFACT_REGISTRY_FIELDS,
+    )
+    registered_by_path = {row["path"]: row for row in artifact_rows}
+    for artifact_ref in _X02_REGISTERED_INPUT_ARTIFACTS:
+        row = registered_by_path.get(artifact_ref)
+        if row is None or {
+            "owner_team": row["owner_team"],
+            "version": row["version"],
+            "due_gate": row["due_gate"],
+            "status": row["status"],
+        } != {
+            "owner_team": "C+H",
+            "version": "v1",
+            "due_gate": "2026-08-05_W2_review",
+            "status": "registered",
+        }:
+            raise ExperimentRegistryError(
+                "X-02: input bundle and three new day manifests must be "
+                "registered C+H v1 input artifacts"
+            )
+
+    from prediction_market.pmxt.full_day import (
+        FullDayInputError,
+        FullDayManifest,
+        LockedHourlyObject,
+        validate_full_day_manifest,
+    )
+
+    days: list[str] = []
+    static_manifest_refs: list[str] = []
+    verified_static_sidecar_refs: list[str] = []
+    for entry_value in day_entries:
+        entry = _exact_keys(
+            entry_value,
+            {
+                "artifact_file_sha256",
+                "day",
+                "full_day_manifest_sha256",
+                "object_count",
+                "path",
+            },
+            "X-02 timestamp input day manifest binding",
+        )
+        day_ref = _nonempty_string(
+            entry["path"],
+            "X-02 timestamp input day manifest path",
+        )
+        expected_entry = expected_by_path[day_ref]
+        day_path = _safe_file(
+            root,
+            day_ref,
+            "X-02 timestamp input day manifest",
+        )
+        day_raw = day_path.read_bytes()
+        actual_day_file_sha256 = (
+            "sha256:" + hashlib.sha256(day_raw).hexdigest()
+        )
+        if actual_day_file_sha256 != entry["artifact_file_sha256"]:
+            raise ExperimentRegistryError(
+                "X-02: timestamp input day manifest file SHA-256 mismatch"
+            )
+        day_document = _decode_json_object(
+            day_raw,
+            "X-02 timestamp input day manifest",
+        )
+        day_document = _exact_keys(
+            day_document,
+            {
+                "canonicalization_version",
+                "day",
+                "inventory_sha256",
+                "manifest_sha256",
+                "objects",
+                "version",
+            },
+            "X-02 timestamp input day manifest",
+        )
+        object_values = day_document["objects"]
+        if type(object_values) is not list:
+            raise ExperimentRegistryError(
+                "X-02: timestamp input day objects must be a list"
+            )
+        locked_objects: list[LockedHourlyObject] = []
+        for object_value in object_values:
+            item = _exact_keys(
+                object_value,
+                {
+                    "hour",
+                    "inventory_size_bytes",
+                    "object_path",
+                    "object_sha256",
+                    "source_url",
+                    "static_manifest_sha256",
+                },
+                "X-02 timestamp input hourly object",
+            )
+            locked_objects.append(LockedHourlyObject(**item))
+        manifest = FullDayManifest(
+            version=day_document["version"],
+            day=day_document["day"],
+            inventory_sha256=day_document["inventory_sha256"],
+            canonicalization_version=day_document[
+                "canonicalization_version"
+            ],
+            objects=tuple(locked_objects),
+            manifest_sha256=day_document["manifest_sha256"],
+        )
+        try:
+            validate_full_day_manifest(manifest)
+        except (FullDayInputError, TypeError) as exc:
+            raise ExperimentRegistryError(
+                f"X-02: invalid timestamp input day manifest: {exc}"
+            ) from exc
+        verified_static_sidecar_refs.extend(
+            _verify_x02_static_manifest_sidecar(root, item)
+            for item in manifest.objects
+        )
+        if (
+            manifest.day != entry["day"]
+            or manifest.manifest_sha256
+            != entry["full_day_manifest_sha256"]
+            or len(manifest.objects) != entry["object_count"]
+            or manifest.inventory_sha256
+            != _X02_TIMESTAMP_INPUT_BUNDLE["inventory_sha256"]
+        ):
+            raise ExperimentRegistryError(
+                "X-02: timestamp input day manifest binding mismatch"
+            )
+        if entry != expected_entry:
+            raise ExperimentRegistryError(
+                "X-02: timestamp input day manifest does not match the "
+                "preregistered four-day bundle"
+            )
+        days.append(manifest.day)
+        static_manifest_refs.extend(
+            item.static_manifest_sha256 for item in manifest.objects
+        )
+
+    if (
+        days
+        != [
+            "2026-04-22",
+            "2026-05-28",
+            "2026-06-05",
+            "2026-06-25",
+        ]
+        or len(static_manifest_refs) != 96
+        or len(set(static_manifest_refs)) != 96
+        or len(verified_static_sidecar_refs) != 96
+        or len(set(verified_static_sidecar_refs)) != 96
+        or any(
+            _SHA256_RE.fullmatch(reference) is None
+            for reference in static_manifest_refs
+        )
+    ):
+        raise ExperimentRegistryError(
+            "X-02: timestamp input bundle must bind 96 distinct valid "
+            "static manifest references across the exact four days"
+        )
+    return {
+        "bundle_sha256": actual_bundle_sha256,
+        "days": days,
+        "object_count": sum(
+            entry["object_count"] for entry in day_entries
+        ),
+        "static_manifest_reference_count": len(static_manifest_refs),
+        "verified_static_sidecar_count": len(
+            verified_static_sidecar_refs
+        ),
+    }
+
+
+def _canonical_id_list(
+    value: Any,
+    *,
+    pattern: re.Pattern[str],
+    label: str,
+    result_error: bool = False,
+) -> list[str]:
+    error_type = (
+        InvalidResultReferenceError if result_error else ExperimentRegistryError
+    )
+    if (
+        type(value) is not list
+        or any(type(item) is not str or pattern.fullmatch(item) is None for item in value)
+        or len(value) != len(set(value))
+        or value != sorted(value)
+    ):
+        raise error_type(f"{label} must be a canonical sorted unique ID list")
+    return list(value)
+
+
 def _canonical_utc(
     value: Any, label: str, *, result_error: bool = False
 ) -> datetime:
@@ -413,6 +1047,20 @@ def _canonical_utc(
         )
     except ValueError as exc:
         raise error_type(f"{label} must be a canonical UTC timestamp") from exc
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _verified_utc(value: str, label: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.removesuffix("Z") + "+00:00")
+    except ValueError as exc:
+        raise ExperimentRegistryError(f"{label} is not a valid UTC instant") from exc
+    if not value.endswith("Z") or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+        raise ExperimentRegistryError(f"{label} is not a valid UTC instant")
+    return parsed
 
 
 def _lock_map(card: dict[str, Any], experiment_id: str) -> dict[str, dict[str, Any]]:
@@ -442,7 +1090,13 @@ def _validate_scopes(
         _nonempty_string(scope_name, f"{experiment_id} scope")
         if type(raw_scope) is not dict:
             raise ExperimentRegistryError(f"{experiment_id}: invalid scope {scope_name}")
-        allowed = {"authorized", "required_result_label", "required_lock_ids"}
+        allowed = {
+            "authorized",
+            "required_result_label",
+            "required_lock_ids",
+        }
+        if "input_binding" in raw_scope:
+            allowed.add("input_binding")
         if "permanent_no_go" in raw_scope:
             allowed.add("permanent_no_go")
         scope = _exact_keys(raw_scope, allowed, f"{experiment_id} scope {scope_name}")
@@ -471,6 +1125,50 @@ def _validate_scopes(
         if permanent and scope["authorized"]:
             raise ExperimentRegistryError(
                 f"{experiment_id}: permanent NO-GO scope cannot be authorized"
+            )
+        binding = scope.get("input_binding")
+        if experiment_id in _INPUT_BOUND_EXPERIMENT_IDS:
+            binding = _exact_keys(
+                binding,
+                {
+                    "result_class",
+                    "dataset_ids",
+                    "model_ids",
+                    "synthetic_data_sha256",
+                },
+                f"{experiment_id} scope {scope_name} input_binding",
+            )
+            if binding["result_class"] not in {"formal", "poc", "synthetic"}:
+                raise ExperimentRegistryError(
+                    f"{experiment_id}: scope {scope_name} invalid result_class"
+                )
+            datasets = _canonical_id_list(
+                binding["dataset_ids"],
+                pattern=_DATASET_ID_RE,
+                label=f"{experiment_id} scope {scope_name} dataset_ids",
+            )
+            models = _canonical_id_list(
+                binding["model_ids"],
+                pattern=_MODEL_ID_RE,
+                label=f"{experiment_id} scope {scope_name} model_ids",
+            )
+            synthetic_hash = binding["synthetic_data_sha256"]
+            if binding["result_class"] == "synthetic":
+                if datasets:
+                    raise ExperimentRegistryError(
+                        f"{experiment_id}: synthetic scope cannot bind datasets"
+                    )
+                _sha256(
+                    synthetic_hash,
+                    f"{experiment_id} scope {scope_name} synthetic_data_sha256",
+                )
+            elif synthetic_hash is not None:
+                raise ExperimentRegistryError(
+                    f"{experiment_id}: non-synthetic scope cannot bind synthetic data"
+                )
+        elif binding is not None:
+            raise ExperimentRegistryError(
+                f"{experiment_id}: unexpected input_binding"
             )
 
 
@@ -585,13 +1283,31 @@ def _validate_card_structure(card: dict[str, Any], experiment_id: str) -> None:
     if "prospective_observation" in card:
         observation = _exact_keys(
             card["prospective_observation"],
-            {"actual_elapsed_days", "fixtures_can_satisfy_elapsed_time"},
+            {
+                "required_elapsed_days",
+                "observed_elapsed_days",
+                "fixtures_can_satisfy_elapsed_time",
+            },
             f"{experiment_id} prospective observation",
         )
-        if type(observation["actual_elapsed_days"]) is not int or type(
-            observation["fixtures_can_satisfy_elapsed_time"]
-        ) is not bool:
+        if (
+            observation["required_elapsed_days"] != 7
+            or observation["observed_elapsed_days"] != 0
+            or type(observation["fixtures_can_satisfy_elapsed_time"]) is not bool
+        ):
             raise ExperimentRegistryError(f"{experiment_id}: invalid prospective observation")
+    if "synthetic_fixture" in card:
+        fixture = _exact_keys(
+            card["synthetic_fixture"],
+            {"path", "sha256", "data_class"},
+            f"{experiment_id} synthetic fixture",
+        )
+        _nonempty_string(fixture["path"], f"{experiment_id} synthetic fixture path")
+        _sha256(fixture["sha256"], f"{experiment_id} synthetic fixture SHA-256")
+        if fixture["data_class"] != "synthetic_contract_only":
+            raise ExperimentRegistryError(
+                f"{experiment_id}: invalid synthetic fixture data_class"
+            )
     if "dataset_ids" in card:
         dataset_ids = card["dataset_ids"]
         if (
@@ -628,10 +1344,25 @@ def _validate_card_structure(card: dict[str, Any], experiment_id: str) -> None:
             )
     if "tie_policy" in card:
         _nonempty_string(card["tie_policy"], f"{experiment_id} tie_policy")
-    if "promotion_restriction" in card and card["promotion_restriction"] != (
-        "POC_ONLY_FORMAL_PROMOTION_UNAUTHORIZED"
-    ):
-        raise ExperimentRegistryError(f"{experiment_id}: invalid promotion restriction")
+    if "promotion_restriction" in card:
+        if card["promotion_restriction"] != (
+            "POC_ONLY_FORMAL_PROMOTION_UNAUTHORIZED"
+        ):
+            raise ExperimentRegistryError(
+                f"{experiment_id}: invalid promotion restriction"
+            )
+        formal_promotion = card["authorization_scopes"].get(
+            "formal_promotion"
+        )
+        if (
+            not isinstance(formal_promotion, dict)
+            or formal_promotion["authorized"] is not False
+            or formal_promotion.get("permanent_no_go") is not True
+        ):
+            raise ExperimentRegistryError(
+                f"{experiment_id}: formal promotion restriction must be "
+                "a permanent NO-GO"
+            )
     if type(card["amendments"]) is not list:
         raise ExperimentRegistryError(f"{experiment_id}: amendments must be a list")
 
@@ -665,19 +1396,6 @@ def _catalog_gates(root: Path) -> dict[str, list[dict[str, str]]]:
             result[experiment_id].append(
                 {"catalog_item_id": catalog_id, "due_gate": row["due_gate"]}
             )
-    row_by_id = {row["catalog_item_id"]: row for row in rows}
-    expansion_catalog_ids = {
-        "X-11": ["R-014", "R-017", "R-018", "I-018"],
-        "X-12": ["R-006", "R-007", "R-017", "R-018", "I-019", "O-004"],
-    }
-    for experiment_id, catalog_ids in expansion_catalog_ids.items():
-        result[experiment_id] = [
-            {
-                "catalog_item_id": catalog_id,
-                "due_gate": row_by_id[catalog_id]["due_gate"],
-            }
-            for catalog_id in catalog_ids
-        ]
     return result
 
 
@@ -706,17 +1424,29 @@ def _check_dependency_graph(cards: dict[str, dict[str, Any]]) -> None:
         visit(experiment_id)
 
 
-def _validate_result_shape(value: Any) -> dict[str, str]:
+def _validate_result_shape(value: Any) -> dict[str, Any]:
     if type(value) is not dict:
         raise InvalidResultReferenceError("result_ref must be a plain dict")
     if set(value) != _RESULT_FIELDS:
         raise InvalidResultReferenceError("result_ref has unexpected or missing fields")
-    snapshot: dict[str, str] = {}
-    for field_name in _RESULT_FIELDS:
+    snapshot: dict[str, Any] = {}
+    for field_name in _RESULT_FIELDS - {"dataset_ids", "model_ids"}:
         field_value = value[field_name]
         if type(field_value) is not str:
             raise InvalidResultReferenceError(f"{field_name} must be a string")
         snapshot[field_name] = field_value
+    snapshot["dataset_ids"] = _canonical_id_list(
+        value["dataset_ids"],
+        pattern=_DATASET_ID_RE,
+        label="result dataset_ids",
+        result_error=True,
+    )
+    snapshot["model_ids"] = _canonical_id_list(
+        value["model_ids"],
+        pattern=_MODEL_ID_RE,
+        label="result model_ids",
+        result_error=True,
+    )
     if not snapshot["scope"]:
         raise InvalidResultReferenceError("scope must be non-empty")
     if snapshot["result_label"] not in {"FORMAL", "PRELIMINARY"}:
@@ -741,6 +1471,10 @@ def _validate_changes(changes: Any, experiment_id: str) -> dict[str, Any]:
         "authorize_scopes",
         "preregistered_inputs",
         "results_ref",
+        "observed_elapsed_evidence",
+        "archive_audit_clarification",
+        "timestamp_audit_preregistration",
+        "timestamp_input_manifest_binding",
     }
     if not set(changes).issubset(allowed):
         raise ExperimentRegistryError(f"{experiment_id}: uncontrolled amendment changes")
@@ -771,7 +1505,15 @@ def _validate_changes(changes: Any, experiment_id: str) -> dict[str, Any]:
         seen_inputs: set[str] = set()
         for item in inputs:
             item = _exact_keys(
-                item, {"scope", "code_sha256", "data_sha256"}, f"{experiment_id} preregistered input"
+                item,
+                {
+                    "scope",
+                    "code_sha256",
+                    "data_sha256",
+                    "dataset_ids",
+                    "model_ids",
+                },
+                f"{experiment_id} preregistered input",
             )
             scope = _nonempty_string(item["scope"], f"{experiment_id} input scope")
             if scope in seen_inputs:
@@ -779,11 +1521,176 @@ def _validate_changes(changes: Any, experiment_id: str) -> dict[str, Any]:
             seen_inputs.add(scope)
             _sha256(item["code_sha256"], f"{experiment_id} code_sha256")
             _sha256(item["data_sha256"], f"{experiment_id} data_sha256")
+            _canonical_id_list(
+                item["dataset_ids"],
+                pattern=_DATASET_ID_RE,
+                label=f"{experiment_id} preregistered dataset_ids",
+            )
+            _canonical_id_list(
+                item["model_ids"],
+                pattern=_MODEL_ID_RE,
+                label=f"{experiment_id} preregistered model_ids",
+            )
     if "results_ref" in changes:
         try:
             _validate_result_shape(changes["results_ref"])
         except InvalidResultReferenceError as exc:
             raise ExperimentRegistryError(f"{experiment_id}: invalid appended results_ref: {exc}") from exc
+    if "observed_elapsed_evidence" in changes:
+        if experiment_id != "X-08":
+            raise ExperimentRegistryError(
+                f"{experiment_id}: observed elapsed evidence is only valid for X-08"
+            )
+        if "results_ref" in changes or "status" in changes:
+            raise ExperimentRegistryError(
+                "X-08: observed elapsed evidence must be appended before "
+                "result or terminal status amendments"
+            )
+        evidence = _exact_keys(
+            changes["observed_elapsed_evidence"],
+            {
+                "capture_manifest_path",
+                "capture_manifest_sha256",
+            },
+            "X-08 observed elapsed evidence",
+        )
+        _nonempty_string(
+            evidence["capture_manifest_path"],
+            "X-08 capture manifest path",
+        )
+        _sha256(
+            evidence["capture_manifest_sha256"],
+            "X-08 capture manifest SHA-256",
+        )
+    if "archive_audit_clarification" in changes:
+        if experiment_id != "X-08":
+            raise ExperimentRegistryError(
+                f"{experiment_id}: archive audit clarification is only "
+                "valid for X-08"
+            )
+        clarification = _exact_keys(
+            changes["archive_audit_clarification"],
+            {
+                "stopped_archive_role",
+                "official_historical_rest_supplement",
+                "historical_l2_status",
+                "live_l2_dataset_id",
+            },
+            "X-08 archive audit clarification",
+        )
+        if clarification != {
+            "stopped_archive_role": "reference audit only",
+            "official_historical_rest_supplement": (
+                "Kalshi official historical REST candles and trades at "
+                "fixed fetch cutoff"
+            ),
+            "historical_l2_status": "no historical L2",
+            "live_l2_dataset_id": "DS-KALSHI-LIVE-L2",
+        }:
+            raise ExperimentRegistryError(
+                "X-08: archive audit clarification must preserve the "
+                "stopped archive and prohibit historical L2 claims"
+            )
+    if "timestamp_audit_preregistration" in changes:
+        if experiment_id != "X-02":
+            raise ExperimentRegistryError(
+                f"{experiment_id}: timestamp audit preregistration is only "
+                "valid for X-02"
+            )
+        if (
+            changes["timestamp_audit_preregistration"]
+            != _X02_TIMESTAMP_AUDIT_PREREGISTRATION
+        ):
+            raise ExperimentRegistryError(
+                "X-02: timestamp audit preregistration must match the exact "
+                "H-approved sample and definitions"
+            )
+        if set(changes) != {
+            "resolve_locks",
+            "timestamp_audit_preregistration",
+        }:
+            raise ExperimentRegistryError(
+                "X-02: timestamp audit preregistration amendment must "
+                "contain only its exact structured change and lock evidence"
+            )
+    if "timestamp_input_manifest_binding" in changes:
+        if experiment_id != "X-02":
+            raise ExperimentRegistryError(
+                f"{experiment_id}: timestamp input manifest binding is only "
+                "valid for X-02"
+            )
+        if (
+            changes["timestamp_input_manifest_binding"]
+            != _X02_TIMESTAMP_INPUT_MANIFEST_BINDING
+        ):
+            raise ExperimentRegistryError(
+                "X-02: timestamp input manifest binding must match the exact "
+                "H-approved four-day bundle"
+            )
+        if set(changes) != {
+            "resolve_locks",
+            "timestamp_input_manifest_binding",
+        }:
+            raise ExperimentRegistryError(
+                "X-02: timestamp input manifest binding amendment must "
+                "contain only its exact structured change and lock evidence"
+            )
+    if experiment_id == "X-02":
+        resolved_items = changes.get("resolve_locks", [])
+        resolved_by_id = {
+            item["lock_id"]: item["evidence_ref"]
+            for item in resolved_items
+        }
+        targeted_lock_ids = (
+            set(resolved_by_id) & _X02_PREREGISTRATION_LOCK_IDS
+        )
+        has_preregistration = "timestamp_audit_preregistration" in changes
+        has_input_binding = "timestamp_input_manifest_binding" in changes
+        if has_preregistration:
+            if set(resolved_by_id) != _X02_PREREGISTRATION_LOCK_IDS:
+                raise ExperimentRegistryError(
+                    "X-02: timestamp audit preregistration lock resolution "
+                    "must contain exactly the three preregistration locks"
+                )
+            preregistration = changes["timestamp_audit_preregistration"]
+            expected_evidence = {
+                lock_id: "sha256:"
+                + hashlib.sha256(
+                    _canonical_bytes(preregistration[lock_id])
+                ).hexdigest()
+                for lock_id in _X02_PREREGISTRATION_LOCK_IDS
+            }
+            if resolved_by_id != expected_evidence:
+                raise ExperimentRegistryError(
+                    "X-02: preregistration lock evidence must hash the exact "
+                    "approved sections"
+                )
+        elif targeted_lock_ids and not has_input_binding:
+            raise ExperimentRegistryError(
+                "X-02: preregistration locks require the structured "
+                "timestamp audit preregistration"
+            )
+        targets_input_manifest = (
+            "timestamp_input_manifest" in resolved_by_id
+        )
+        if has_input_binding:
+            if set(resolved_by_id) != {"timestamp_input_manifest"}:
+                raise ExperimentRegistryError(
+                    "X-02: timestamp input manifest binding must resolve "
+                    "only timestamp_input_manifest"
+                )
+            if resolved_by_id["timestamp_input_manifest"] != (
+                _X02_TIMESTAMP_INPUT_MANIFEST_BINDING["bundle_sha256"]
+            ):
+                raise ExperimentRegistryError(
+                    "X-02: timestamp input manifest lock evidence must equal "
+                    "the verified bundle self-hash"
+                )
+        elif targets_input_manifest:
+            raise ExperimentRegistryError(
+                "X-02: timestamp_input_manifest requires the structured "
+                "input manifest binding"
+            )
     return changes
 
 
@@ -791,18 +1698,268 @@ def _validate_changes(changes: Any, experiment_id: str) -> dict[str, Any]:
 class _RegistrationMeta:
     head: str
     head_at: str = _RESULT_ACCEPTANCE_NOT_BEFORE
-    preregistered_inputs: dict[str, dict[str, str]] = field(default_factory=dict)
-    stored_results: list[dict[str, str]] = field(default_factory=list)
+    preregistered_inputs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    stored_results: list[dict[str, Any]] = field(default_factory=list)
     result_appended_at: list[str] = field(default_factory=list)
     lock_resolved_at: dict[str, str] = field(default_factory=dict)
     scope_authorized_at: dict[str, str] = field(default_factory=dict)
     ready_at: str | None = None
     completion_evaluated_at: str | None = None
+    observed_elapsed_evidence: list[dict[str, Any]] = field(default_factory=list)
+    archive_audit_clarified: bool = False
+    timestamp_audit_preregistered: bool = False
+    timestamp_input_manifest_bound: bool = False
+
+
+def _observed_elapsed_days(meta: _RegistrationMeta) -> int:
+    """Return whole days in the longest continuous immutable X-08 window."""
+
+    windows = sorted(
+        (
+            _verified_utc(item["window_started_at"], "X-08 observation start"),
+            _verified_utc(item["window_ended_at"], "X-08 observation end"),
+        )
+        for item in meta.observed_elapsed_evidence
+    )
+    if not windows:
+        return 0
+    merged: list[tuple[datetime, datetime]] = []
+    for started_at, ended_at in windows:
+        if not merged or started_at > merged[-1][1]:
+            merged.append((started_at, ended_at))
+            continue
+        prior_started_at, prior_ended_at = merged[-1]
+        if ended_at > prior_ended_at:
+            merged[-1] = (prior_started_at, ended_at)
+    elapsed_seconds = max(
+        (ended_at - started_at).total_seconds()
+        for started_at, ended_at in merged
+    )
+    return int(elapsed_seconds // 86_400)
+
+
+def _x08_capture_window(
+    program_root: Path,
+    evidence: dict[str, str],
+    *,
+    amended_at: datetime,
+) -> dict[str, str]:
+    manifest_ref = evidence["capture_manifest_path"]
+    artifact_rows = _strict_csv(
+        _safe_file(
+            program_root,
+            "registries/artifact_registry.csv",
+            "artifact registry",
+        ),
+        _ARTIFACT_REGISTRY_FIELDS,
+    )
+    artifact = next(
+        (row for row in artifact_rows if row["path"] == manifest_ref),
+        None,
+    )
+    if artifact is None or artifact["status"] != "registered":
+        raise ExperimentRegistryError(
+            "X-08: capture manifest must be a registered artifact"
+        )
+    manifest_path = _safe_file(
+        program_root,
+        manifest_ref,
+        "X-08 capture manifest",
+    )
+    raw = manifest_path.read_bytes()
+    actual_sha256 = "sha256:" + hashlib.sha256(raw).hexdigest()
+    if actual_sha256 != evidence["capture_manifest_sha256"]:
+        raise ExperimentRegistryError(
+            "X-08: capture manifest SHA-256 mismatch"
+        )
+    try:
+        document = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ExperimentRegistryError(
+            "X-08: capture manifest is not canonical JSON"
+        ) from exc
+    if type(document) is not dict or raw != _canonical_bytes(document) + b"\n":
+        raise ExperimentRegistryError(
+            "X-08: capture manifest is not canonical JSON"
+        )
+    document = _exact_keys(
+        document,
+        {
+            "schema_version",
+            "experiment_id",
+            "capture_session_id",
+            "fixtures_used",
+            "gap_policy",
+            "raw_store_root",
+            "streams",
+        },
+        "X-08 capture manifest",
+    )
+    if (
+        document["schema_version"] != "x08-capture-evidence/v0"
+        or document["experiment_id"] != "X-08"
+    ):
+        raise ExperimentRegistryError(
+            "X-08: capture manifest identity is invalid"
+        )
+    capture_session_id = _nonempty_string(
+        document["capture_session_id"],
+        "X-08 capture session id",
+    )
+    if document["fixtures_used"] is not False:
+        raise ExperimentRegistryError(
+            "X-08: fixtures cannot satisfy observed elapsed time"
+        )
+    if document["gap_policy"] != _X08_GAP_POLICY:
+        raise ExperimentRegistryError(
+            "X-08: capture manifest must use the registered gap policy"
+        )
+    raw_store_ref = _nonempty_string(
+        document["raw_store_root"],
+        "X-08 raw store root",
+    )
+    raw_store_root = _safe_directory(
+        program_root,
+        raw_store_ref,
+        "X-08 raw store root",
+    )
+    streams = document["streams"]
+    if type(streams) is not list:
+        raise ExperimentRegistryError("X-08: capture streams must be a list")
+    stream_ids = [
+        item.get("dataset_id") if type(item) is dict else None
+        for item in streams
+    ]
+    if stream_ids != sorted(_X08_CAPTURE_STREAMS):
+        raise ExperimentRegistryError(
+            "X-08: capture manifest must contain both registered live streams"
+        )
+
+    all_manifest_refs: set[str] = set()
+    stream_windows: list[tuple[datetime, datetime]] = []
+    for stream_document in streams:
+        stream_document = _exact_keys(
+            stream_document,
+            {
+                "dataset_id",
+                "source",
+                "stream",
+                "segment_manifest_paths",
+            },
+            "X-08 capture stream",
+        )
+        dataset_id = stream_document["dataset_id"]
+        expected_source, expected_stream = _X08_CAPTURE_STREAMS[dataset_id]
+        if (
+            stream_document["source"] != expected_source
+            or stream_document["stream"] != expected_stream
+        ):
+            raise ExperimentRegistryError(
+                f"X-08: capture stream identity mismatch for {dataset_id}"
+            )
+        manifest_refs = stream_document["segment_manifest_paths"]
+        if (
+            type(manifest_refs) is not list
+            or not manifest_refs
+            or any(type(item) is not str or not item for item in manifest_refs)
+            or len(manifest_refs) != len(set(manifest_refs))
+        ):
+            raise ExperimentRegistryError(
+                f"X-08: {dataset_id} segment manifest paths are invalid"
+            )
+        receive_times: list[datetime] = []
+        for segment_ref in manifest_refs:
+            if segment_ref in all_manifest_refs:
+                raise ExperimentRegistryError(
+                    "X-08: duplicate capture segment manifest"
+                )
+            all_manifest_refs.add(segment_ref)
+            try:
+                verified = read_verified_segment(
+                    raw_store_root / segment_ref,
+                    root=raw_store_root,
+                )
+            except RawStoreError as exc:
+                raise ExperimentRegistryError(
+                    f"X-08: capture segment verification failed: {exc}"
+                ) from exc
+            segment = verified.manifest
+            if (
+                segment.source != expected_source
+                or segment.stream != expected_stream
+                or segment.capture_session_id != capture_session_id
+                or not verified.receive_times
+            ):
+                raise ExperimentRegistryError(
+                    f"X-08: {dataset_id} segment binding is invalid"
+                )
+            segment_times = [
+                _verified_utc(value, "X-08 segment receive_at")
+                for value in verified.receive_times
+            ]
+            if any(
+                later <= earlier
+                for earlier, later in zip(segment_times, segment_times[1:])
+            ):
+                raise ExperimentRegistryError(
+                    f"X-08: {dataset_id} segment records are not monotonic"
+                )
+            sealed_at = _verified_utc(
+                segment.sealed_at,
+                "X-08 segment sealed_at",
+            )
+            if sealed_at <= segment_times[-1] or sealed_at >= amended_at:
+                raise ExperimentRegistryError(
+                    "X-08: segment must be sealed after its last record "
+                    "and before the evidence amendment"
+                )
+            receive_times.extend(segment_times)
+        if any(
+            later <= earlier
+            for earlier, later in zip(receive_times, receive_times[1:])
+        ):
+            raise ExperimentRegistryError(
+                f"X-08: {dataset_id} segment sequence is not monotonic"
+            )
+        if any(
+            (later - earlier).total_seconds()
+            > _X08_GAP_POLICY["maximum_gap_seconds"]
+            for earlier, later in zip(receive_times, receive_times[1:])
+        ):
+            raise ExperimentRegistryError(
+                f"X-08: {dataset_id} capture contains a gap"
+            )
+        stream_windows.append((receive_times[0], receive_times[-1]))
+
+    started_at = max(window[0] for window in stream_windows)
+    ended_at = min(window[1] for window in stream_windows)
+    if ended_at <= started_at:
+        raise ExperimentRegistryError(
+            "X-08: live capture streams have no overlapping coverage"
+        )
+    return {
+        "capture_manifest_path": manifest_ref,
+        "capture_manifest_sha256": evidence["capture_manifest_sha256"],
+        "window_started_at": (
+            started_at.isoformat().replace("+00:00", "Z")
+        ),
+        "window_ended_at": ended_at.isoformat().replace("+00:00", "Z"),
+    }
+
+
+def require_execution_authorized(card: dict[str, Any]) -> None:
+    """Enforce the experiment-level runtime kill switch before child scopes."""
+
+    if card.get("execution_authorized") is not True:
+        raise UnauthorizedResultScopeError(
+            f"{card.get('id', 'experiment')}: execution is not authorized"
+        )
 
 
 def _scope_and_locks(
     card: dict[str, Any], scope_name: str
 ) -> tuple[dict[str, Any], list[str]]:
+    require_execution_authorized(card)
     scopes = card["authorization_scopes"]
     if scope_name not in scopes:
         raise UnauthorizedResultScopeError(f"{card['id']}: unknown result scope {scope_name!r}")
@@ -818,10 +1975,107 @@ def _scope_and_locks(
     return scope, unresolved
 
 
+def _validate_bound_result_inputs(
+    program_root: Path,
+    card: dict[str, Any],
+    scope: dict[str, Any],
+    registered_inputs: dict[str, Any],
+    result: dict[str, Any],
+) -> None:
+    experiment_id = card["id"]
+    binding = scope.get("input_binding")
+    if binding is None:
+        if result["dataset_ids"] or result["model_ids"]:
+            raise InvalidResultReferenceError(
+                f"{experiment_id}: unbound scope cannot claim datasets or models"
+            )
+        if registered_inputs["dataset_ids"] or registered_inputs["model_ids"]:
+            raise InvalidResultReferenceError(
+                f"{experiment_id}: unbound scope cannot preregister datasets or models"
+            )
+        return
+
+    for field_name in ("dataset_ids", "model_ids"):
+        expected = binding[field_name]
+        if registered_inputs[field_name] != expected:
+            raise InvalidResultReferenceError(
+                f"{experiment_id}: preregistered {field_name} do not match scope binding"
+            )
+        if result[field_name] != expected:
+            raise InvalidResultReferenceError(
+                f"{experiment_id}: result {field_name} do not match scope binding"
+            )
+
+    if binding["result_class"] == "synthetic":
+        fixture_hash = binding["synthetic_data_sha256"]
+        if (
+            registered_inputs["data_sha256"] != fixture_hash
+            or result["data_sha256"] != fixture_hash
+        ):
+            raise InvalidResultReferenceError(
+                f"{experiment_id}: synthetic result is not bound to its registered fixture"
+            )
+        from prediction_market.program_audit import (
+            ResearchRegistryError,
+            load_model_registry,
+        )
+
+        try:
+            models_by_id = {
+                row.model_id: row
+                for row in load_model_registry(program_root)
+            }
+        except ResearchRegistryError as exc:
+            raise InvalidResultReferenceError(
+                f"{experiment_id}: model registry is invalid: {exc}"
+            ) from exc
+        for model_id in result["model_ids"]:
+            model = models_by_id.get(model_id)
+            if model is None or model.experiment_id != experiment_id:
+                raise InvalidResultReferenceError(
+                    f"{experiment_id}: synthetic result model {model_id} "
+                    "is not registered to the experiment"
+                )
+        return
+
+    from prediction_market.program_audit import (
+        FormalResearchInputError,
+        ResearchRegistryError,
+        validate_registered_research_bindings,
+    )
+
+    try:
+        validate_registered_research_bindings(
+            program_root,
+            experiment_id=experiment_id,
+            dataset_ids=result["dataset_ids"],
+            model_ids=result["model_ids"],
+            result_class=binding["result_class"],
+        )
+    except (FormalResearchInputError, ResearchRegistryError) as exc:
+        raise InvalidResultReferenceError(
+            f"{experiment_id}: research input eligibility failed: {exc}"
+        ) from exc
+
+
 def _validate_result_against_state(
-    card: dict[str, Any], meta: _RegistrationMeta, result: dict[str, str]
+    program_root: Path,
+    card: dict[str, Any],
+    meta: _RegistrationMeta,
+    result: dict[str, Any],
 ) -> None:
     scope, unresolved = _scope_and_locks(card, result["scope"])
+    if (
+        card["id"] == "X-08"
+        and result["scope"] in card["completion_required_scopes"]
+    ):
+        required_days = card["prospective_observation"]["required_elapsed_days"]
+        observed_days = _observed_elapsed_days(meta)
+        if observed_days < required_days:
+            raise InvalidResultReferenceError(
+                "X-08: completion result requires seven actual elapsed "
+                f"prospective days; observed {observed_days} of {required_days}"
+            )
     if result["result_label"] != scope["required_result_label"]:
         raise UnauthorizedResultScopeError(
             f"{card['id']}: scope {result['scope']} requires {scope['required_result_label']} label"
@@ -843,6 +2097,13 @@ def _validate_result_against_state(
         raise UnresolvedRegistrationLockError(
             f"{card['id']}: unresolved registration locks: {', '.join(unresolved)}"
         )
+    _validate_bound_result_inputs(
+        program_root,
+        card,
+        scope,
+        registered_inputs,
+        result,
+    )
     evaluation_at = _canonical_utc(
         result["evaluation_started_at"], "evaluation_started_at", result_error=True
     )
@@ -887,7 +2148,9 @@ def _validate_result_against_state(
 
 
 def _apply_amendments(
-    base_card: dict[str, Any], ledger_rows: list[dict[str, str]]
+    program_root: Path,
+    base_card: dict[str, Any],
+    ledger_rows: list[dict[str, str]],
 ) -> tuple[dict[str, Any], _RegistrationMeta]:
     experiment_id = base_card["id"]
     for expected_sequence, amendment in enumerate(base_card["amendments"], start=1):
@@ -953,6 +2216,25 @@ def _apply_amendments(
         if ledger != expected_ledger:
             raise ExperimentRegistryError(f"{experiment_id}: ledger and card chain record mismatch")
         changes = _validate_changes(amendment["changes"], experiment_id)
+        if (
+            "timestamp_audit_preregistration" in changes
+            and meta.timestamp_audit_preregistered
+        ):
+            raise ExperimentRegistryError(
+                "X-02: timestamp audit preregistration is append-once"
+            )
+        if (
+            "timestamp_input_manifest_binding" in changes
+            and meta.timestamp_input_manifest_bound
+        ):
+            raise ExperimentRegistryError(
+                "X-02: timestamp input manifest binding is append-once"
+            )
+        if "timestamp_input_manifest_binding" in changes:
+            _verify_x02_timestamp_input_bundle(
+                program_root,
+                changes["timestamp_input_manifest_binding"],
+            )
         if "resolve_locks" in changes:
             lock_by_id = {lock["id"]: lock for lock in effective["registration_locks"]}
             for item in changes["resolve_locks"]:
@@ -977,15 +2259,92 @@ def _apply_amendments(
             for item in changes["preregistered_inputs"]:
                 if item["scope"] not in effective["authorization_scopes"]:
                     raise ExperimentRegistryError(f"{experiment_id}: unknown input scope")
+                scope_binding = effective["authorization_scopes"][
+                    item["scope"]
+                ].get("input_binding")
+                if (
+                    isinstance(scope_binding, dict)
+                    and scope_binding["result_class"] == "synthetic"
+                    and (
+                        item["dataset_ids"] != scope_binding["dataset_ids"]
+                        or item["model_ids"] != scope_binding["model_ids"]
+                        or item["data_sha256"]
+                        != scope_binding["synthetic_data_sha256"]
+                    )
+                ):
+                    raise ExperimentRegistryError(
+                        f"{experiment_id}: synthetic preregistration must bind "
+                        "the exact fixture and registered models"
+                    )
                 meta.preregistered_inputs[item["scope"]] = {
                     "code_sha256": item["code_sha256"],
                     "data_sha256": item["data_sha256"],
+                    "dataset_ids": list(item["dataset_ids"]),
+                    "model_ids": list(item["model_ids"]),
                     "registered_at": amendment["amended_at"],
                 }
+        if "observed_elapsed_evidence" in changes:
+            if amended_time > _utc_now():
+                raise ExperimentRegistryError(
+                    "X-08: observed elapsed evidence amendment cannot be "
+                    "future-dated"
+                )
+            evidence = _x08_capture_window(
+                program_root,
+                changes["observed_elapsed_evidence"],
+                amended_at=amended_time,
+            )
+            boundary = _canonical_utc(
+                effective["result_acceptance_not_before"],
+                "X-08 result acceptance boundary",
+            )
+            started_at = _verified_utc(
+                evidence["window_started_at"], "X-08 observation start"
+            )
+            ended_at = _verified_utc(
+                evidence["window_ended_at"], "X-08 observation end"
+            )
+            if started_at < boundary:
+                raise ExperimentRegistryError(
+                    "X-08: observed elapsed evidence predates the "
+                    "prospective registration boundary"
+                )
+            if ended_at >= amended_time:
+                raise ExperimentRegistryError(
+                    "X-08: observed elapsed evidence must end before its amendment"
+                )
+            if any(
+                item["capture_manifest_sha256"]
+                == evidence["capture_manifest_sha256"]
+                for item in meta.observed_elapsed_evidence
+            ):
+                raise ExperimentRegistryError(
+                    "X-08: duplicate observed elapsed evidence"
+                )
+            meta.observed_elapsed_evidence.append(evidence)
+            effective["prospective_observation"]["observed_elapsed_days"] = (
+                _observed_elapsed_days(meta)
+            )
+        if "archive_audit_clarification" in changes:
+            if meta.archive_audit_clarified:
+                raise ExperimentRegistryError(
+                    "X-08: archive audit clarification is append-once"
+                )
+            meta.archive_audit_clarified = True
+        if "timestamp_audit_preregistration" in changes:
+            meta.timestamp_audit_preregistered = True
+            effective["timestamp_audit_preregistration"] = copy.deepcopy(
+                changes["timestamp_audit_preregistration"]
+            )
+        if "timestamp_input_manifest_binding" in changes:
+            meta.timestamp_input_manifest_bound = True
+            effective["timestamp_input_manifest_binding"] = copy.deepcopy(
+                changes["timestamp_input_manifest_binding"]
+            )
         if "results_ref" in changes:
             result = _validate_result_shape(changes["results_ref"])
             try:
-                _validate_result_against_state(effective, meta, result)
+                _validate_result_against_state(program_root, effective, meta, result)
             except ExperimentRegistryError as exc:
                 raise ExperimentRegistryError(
                     f"{experiment_id}: appended result does not match evaluation head: {exc}"
@@ -1018,6 +2377,17 @@ def _apply_amendments(
                     raise ExperimentRegistryError(
                         f"{experiment_id}: terminal done status lacks completion scope evidence"
                     )
+                if experiment_id == "X-08":
+                    required_days = effective["prospective_observation"][
+                        "required_elapsed_days"
+                    ]
+                    observed_days = _observed_elapsed_days(meta)
+                    if observed_days < required_days:
+                        raise ExperimentRegistryError(
+                            "X-08: terminal done status requires seven actual "
+                            f"elapsed prospective days; observed {observed_days} "
+                            f"of {required_days}"
+                        )
                 meta.ready_at = amendment["amended_at"]
                 completion_results = [
                     result
@@ -1101,6 +2471,20 @@ def _load_registry_internal(
             raise ExperimentRegistryError(f"{experiment_id}: card SHA-256 mismatch")
         card = _load_yaml_card(raw, experiment_id)
         _validate_card_structure(card, experiment_id)
+        if "synthetic_fixture" in card:
+            fixture = card["synthetic_fixture"]
+            fixture_path = _safe_file(
+                root,
+                fixture["path"],
+                f"{experiment_id} synthetic fixture",
+            )
+            fixture_digest = "sha256:" + hashlib.sha256(
+                fixture_path.read_bytes()
+            ).hexdigest()
+            if fixture_digest != fixture["sha256"]:
+                raise ExperimentRegistryError(
+                    f"{experiment_id}: synthetic fixture SHA-256 mismatch"
+                )
         if card["registration_record_sha256"] != compute_registration_record_sha256(card):
             raise ExperimentRegistryError(
                 f"{experiment_id}: immutable registration record SHA-256 mismatch"
@@ -1146,7 +2530,11 @@ def _load_registry_internal(
     registry: dict[str, dict[str, Any]] = {}
     metadata: dict[str, _RegistrationMeta] = {}
     for experiment_id in EXPERIMENT_IDS:
-        effective, meta = _apply_amendments(base_cards[experiment_id], ledger_by_id[experiment_id])
+        effective, meta = _apply_amendments(
+            root,
+            base_cards[experiment_id],
+            ledger_by_id[experiment_id],
+        )
         registry[experiment_id] = effective
         metadata[experiment_id] = meta
     for experiment_id, card in registry.items():
@@ -1172,7 +2560,7 @@ def validate_result_ref(
     program_root: str | Path,
     experiment_id: str,
     result_ref: Any,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     root = Path(program_root)
     if experiment_id not in _EXPERIMENT_ID_SET or not (
         root / "registries" / "experiment_registry.csv"
@@ -1184,7 +2572,7 @@ def validate_result_ref(
     registry, metadata = _load_registry_internal(root)
     card = registry[experiment_id]
     meta = metadata[experiment_id]
-    _validate_result_against_state(card, meta, result)
+    _validate_result_against_state(root, card, meta, result)
     incomplete = [
         dependency
         for dependency in card["dependencies"]
@@ -1213,5 +2601,6 @@ __all__ = [
     "compute_amendment_sha256",
     "compute_registration_record_sha256",
     "load_experiment_registry",
+    "require_execution_authorized",
     "validate_result_ref",
 ]

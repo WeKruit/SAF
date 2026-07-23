@@ -21,8 +21,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 def _copy_registries(tmp_path: Path) -> Path:
     root = tmp_path / "program"
     (root / "registries").mkdir(parents=True)
+    (root / "charter").mkdir()
     for name in ("compliance_matrix.csv", "data_license_register.csv"):
         shutil.copy2(PROJECT_ROOT / "registries" / name, root / "registries" / name)
+    shutil.copy2(
+        PROJECT_ROOT / "charter" / "catalog_registry.csv",
+        root / "charter" / "catalog_registry.csv",
+    )
     return root
 
 
@@ -114,14 +119,62 @@ def test_green_matrix_row_cannot_retain_an_open_blocker(tmp_path: Path) -> None:
         load_compliance_matrix(root)
 
 
-def test_operational_evidence_ids_are_exactly_o001_through_o008() -> None:
+def test_license_review_ids_are_exactly_the_stable_catalog_ids() -> None:
     register = load_data_license_register(PROJECT_ROOT)
 
     assert {row.catalog_item_id for row in register} == {
-        f"O-{number:03d}" for number in range(1, 9)
+        *(f"O-{number:03d}" for number in range(1, 9)),
+        "R-039",
+        "I-018",
+        "R-042",
+        "R-043",
     }
-    assert len(register) == 8
-    assert all(row.status != "GREEN" for row in register)
+    assert len(register) == 12
+    by_id = {row.catalog_item_id: row for row in register}
+    for review_id in ("O-006", "R-039", "I-018"):
+        assert by_id[review_id].status == "GREEN"
+        assert by_id[review_id].operational_use == "APPROVED"
+        assert by_id[review_id].approval_ref
+    assert all(
+        row.status != "GREEN"
+        for row in register
+        if row.catalog_item_id not in {"O-006", "R-039", "I-018"}
+    )
+
+
+def test_every_license_review_id_is_a_stable_catalog_id() -> None:
+    register = load_data_license_register(PROJECT_ROOT)
+    with (PROJECT_ROOT / "charter" / "catalog_registry.csv").open(
+        encoding="utf-8",
+        newline="",
+    ) as handle:
+        catalog_ids = {
+            row["catalog_item_id"] for row in csv.DictReader(handle)
+        }
+
+    assert {row.catalog_item_id for row in register} <= catalog_ids
+
+
+def test_license_register_rejects_review_id_missing_from_stable_catalog(
+    tmp_path: Path,
+) -> None:
+    root = _copy_registries(tmp_path)
+    catalog_path = root / "charter" / "catalog_registry.csv"
+    with catalog_path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = reader.fieldnames
+        rows = list(reader)
+    assert fieldnames is not None
+    next(
+        row for row in rows if row["catalog_item_id"] == "R-039"
+    )["catalog_item_id"] = "R-099"
+    with catalog_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    with pytest.raises(ComplianceRegistryError, match="stable catalog|R-039"):
+        load_data_license_register(root)
 
 
 def test_license_rows_are_evidence_dated_and_have_due_gate() -> None:

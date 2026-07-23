@@ -42,6 +42,11 @@ experiment_card:
       authorized: true
       required_result_label: FORMAL
       required_lock_ids: [nba_game_and_contracts, input_file_manifest, independent_crosscheck_source, as_of_age_and_latency_estimator, canonicalization_version, h_split_approval]
+      input_binding:
+        result_class: formal
+        dataset_ids: [DS-PMXT-V2, DS-POLYMARKET-PUBLIC]
+        model_ids: []
+        synthetic_data_sha256: null
   registration_locks:
     - {id: nba_game_and_contracts, status: unresolved, reason: Exact NBA game-day and contract universe are not selected.}
     - {id: input_file_manifest, status: unresolved, reason: 'Input paths, versions, and SHA-256 hashes are not fixed.'}
@@ -74,4 +79,4 @@ experiment_card:
     - readme_return_strategy_selection
     - unregistered_quick_backtest
   amendments: []
-  registration_record_sha256: sha256:d1cea6987540e3889cb81dd896a01a1d8267e80fbd0356a6721115c1d0bc1b30
+  registration_record_sha256: sha256:da901afeac387a054c4e8f64cb928bb96df45919af5b5b696639b44ccbd860d3

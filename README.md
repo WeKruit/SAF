@@ -44,6 +44,6 @@ uv run record-markets --help
 
 ## Evidence boundary
 
-Passing repository tests establishes contract and harness behavior only. It does not complete X-01 through X-10, authorize a formal result, satisfy a promotion gate, establish legal eligibility, or authorize real-money execution. Synthetic fixtures are never empirical evidence. Numerical X-07 outputs remain `PRELIMINARY`; the X-09 fixture may establish `HARNESS_PASS` while the formal experiment remains `EXPERIMENT_BLOCKED`.
+Passing repository tests establishes contract and harness behavior only. It does not complete X-01 through X-12, authorize a formal result, satisfy a promotion gate, establish legal eligibility, or authorize real-money execution. Synthetic fixtures are never empirical evidence. Numerical X-07 outputs remain `PRELIMINARY`; the X-09 fixture may establish `HARNESS_PASS` while the formal experiment remains `EXPERIMENT_BLOCKED`.
 
 The following remain prohibited: real-money trading, live maker, exact queue-fill claims from PMXT L2, multi-venue simultaneous live arbitrage, live copy trading, LLMs in the hot path, reinforcement learning, large-scale microservices, unregistered quick backtests, and using README returns as evidence.

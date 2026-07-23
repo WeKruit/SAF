@@ -30,6 +30,11 @@ experiment_card:
       authorized: true
       required_result_label: FORMAL
       required_lock_ids: [census_input_manifest, window_and_universe, metric_and_score_definitions, h_split_approval]
+      input_binding:
+        result_class: formal
+        dataset_ids: [DS-KALSHI-HISTORICAL, DS-PMXT-V2, DS-POLYMARKET-PUBLIC]
+        model_ids: []
+        synthetic_data_sha256: null
   registration_locks:
     - {id: census_input_manifest, status: unresolved, reason: Point-in-time metadata and book source versions and hashes are unset.}
     - {id: window_and_universe, status: unresolved, reason: 'Four-week endpoints, venue, sport, and contract universe are unset.'}
@@ -55,4 +60,4 @@ experiment_card:
     - readme_return_strategy_selection
     - unregistered_quick_backtest
   amendments: []
-  registration_record_sha256: sha256:404dd65a81bb12ff6cd0bd8ad631d495c1e64c093e3fcf533a492e674ff45fd7
+  registration_record_sha256: sha256:7634916448695c08bf66826c217cce0b8d1f67f32bc85c163c5de433bcd07962

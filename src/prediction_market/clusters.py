@@ -671,6 +671,10 @@ def _authorized_scope(
     card: Mapping[str, Any], scope_name: str
 ) -> tuple[Mapping[str, Any], dict[str, Mapping[str, Any]], Mapping[str, str]]:
     try:
+        experiments_module.require_execution_authorized(card)  # type: ignore[arg-type]
+    except experiments_module.UnauthorizedResultScopeError as error:
+        raise X10AuthorizationError(str(error)) from error
+    try:
         scope = card["authorization_scopes"][scope_name]
     except (KeyError, TypeError) as error:
         raise X10AuthorizationError(f"X-10 {scope_name} scope is absent") from error
@@ -754,6 +758,8 @@ def _validate_result_reference(
         "data_sha256": data_sha256,
         "result_sha256": result_sha256,
         "registration_head_sha256": registration_head_sha256,
+        "dataset_ids": [],
+        "model_ids": [],
     }
     try:
         experiments_module.validate_result_ref(program_root, "X-10", result_ref)

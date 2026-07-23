@@ -3,9 +3,10 @@ $id: urn:prediction-market:static-dataset-manifest:v0
 title: Static Dataset Manifest v0
 contract_version: v0
 x-normative-semantic-validator:
-  callable: prediction_market.contracts.validate_contract_v0
+  callable: prediction_market.contracts.validate_static_dataset_manifest_v0
   schema_name: static-dataset-manifest/v0.schema.yaml
   required: true
+  requires_program_root: true
   fail_closed_without_runtime: true
 description: Byte-exact provenance for a static upstream object or an explicitly source-derived extract.
 type: object
@@ -74,7 +75,7 @@ properties:
     $ref: '#/$defs/sha256'
   license_ref:
     type: string
-    pattern: ^O-[0-9]{3}$
+    pattern: ^[RIO]-[0-9]{3}$
   license_status:
     enum: [approved, research_only, pending, unknown, blocked]
   upstream_partition:

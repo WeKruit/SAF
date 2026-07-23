@@ -71,7 +71,7 @@ QUALITY_FLAGS = frozenset(
 )
 
 REGISTERED_EXPERIMENT_IDS = frozenset(
-    f"X-{number:02d}" for number in range(1, 11)
+    f"X-{number:02d}" for number in range(1, 13)
 )
 
 EVENT_TYPES = frozenset(
@@ -396,17 +396,9 @@ PayloadHashV0 = Sha256V0
 RawObjectHashV0 = Sha256V0
 RuleSnapshotRefV0 = Sha256V0
 
-ExperimentIdV0 = Literal[
-    "X-01",
-    "X-02",
-    "X-03",
-    "X-04",
-    "X-05",
-    "X-06",
-    "X-07",
-    "X-08",
-    "X-09",
-    "X-10",
+ExperimentIdV0 = Annotated[
+    str,
+    StringConstraints(strict=True, pattern=r"^X-[0-9]{2,}$"),
 ]
 ExperimentIdV1 = Annotated[
     str,
@@ -776,7 +768,7 @@ class EventEnvelopeV0(_ContractModel):
     envelope_version: Literal["v0"]
     event_id: EventIdV0
     event_type: EventTypeV0
-    payload_schema_version: Literal["v0"]
+    payload_schema_version: Literal["v0", "v1"]
     source: EventSourceV0
     time: EventTimeV0
     canonical_refs: CanonicalReferencesV0
@@ -831,6 +823,12 @@ class EventEnvelopeV0(_ContractModel):
 
     @model_validator(mode="after")
     def _validate_hash_and_conditional_contract(self) -> "EventEnvelopeV0":
+        required_payload_version = "v1" if self.event_type == "model_output" else "v0"
+        if self.payload_schema_version != required_payload_version:
+            raise ValueError(
+                f"{self.event_type} requires payload_schema_version="
+                f"{required_payload_version}"
+            )
         expected_payload_hash = payload_sha256(self.payload)
         if self.payload_sha256 != expected_payload_hash:
             raise ValueError(
@@ -933,7 +931,7 @@ class StaticDatasetManifestV0(_ContractModel):
     schema_fingerprint: Sha256V0
     license_ref: Annotated[
         str,
-        StringConstraints(strict=True, pattern=r"^O-[0-9]{3}$"),
+        StringConstraints(strict=True, pattern=r"^[RIO]-[0-9]{3}$"),
     ]
     license_status: Literal[
         "approved", "research_only", "pending", "unknown", "blocked"
@@ -990,6 +988,46 @@ class StaticDatasetManifestV0(_ContractModel):
         if self.manifest_sha256 != expected:
             raise ValueError(f"manifest_sha256 mismatch: expected {expected}")
         return self
+
+
+def validate_static_dataset_manifest_v0(
+    program_root: str | Path,
+    instance: Any,
+) -> StaticDatasetManifestV0:
+    """Validate a static manifest and its dataset/license registry bindings."""
+
+    validated = StaticDatasetManifestV0.model_validate(
+        _untrusted_round_trip_input(instance)
+    )
+    from prediction_market.program_audit import (
+        ResearchRegistryError,
+        load_dataset_registry,
+    )
+
+    try:
+        datasets = {
+            row.dataset_id: row for row in load_dataset_registry(program_root)
+        }
+    except ResearchRegistryError as exc:
+        raise ContractValidationError(
+            f"dataset registry is invalid: {exc}"
+        ) from exc
+    dataset = datasets.get(validated.dataset_id)
+    if dataset is None:
+        raise ContractValidationError(
+            f"dataset {validated.dataset_id} is not registered"
+        )
+    if validated.license_ref != dataset.license_review_id:
+        raise ContractValidationError(
+            f"license_ref {validated.license_ref} does not match dataset "
+            f"{validated.dataset_id} license review {dataset.license_review_id}"
+        )
+    if validated.license_status != dataset.license_status:
+        raise ContractValidationError(
+            f"license_status {validated.license_status} does not match "
+            f"dataset {validated.dataset_id}"
+        )
+    return validated
 
 
 def market_metadata_snapshot_sha256(value: Any) -> str:
@@ -1050,6 +1088,18 @@ class MarketMetadataSnapshotV0(_ContractModel):
     def _point_in_time_and_hash_are_consistent(
         self,
     ) -> "MarketMetadataSnapshotV0":
+        if (
+            self.canonical_refs.competition_id is None
+            or self.canonical_refs.game_id is None
+            or not self.canonical_refs.participant_ids
+            or self.canonical_refs.venue_event_id is None
+            or self.canonical_refs.market_id is None
+            or self.canonical_refs.outcome_id is None
+            or self.canonical_refs.condition_id is None
+        ):
+            raise ValueError(
+                "market metadata snapshot requires all canonical join mappings"
+            )
         if _timestamp_order_value(self.source_updated_at) > _timestamp_order_value(
             self.captured_at
         ):
@@ -1431,15 +1481,19 @@ class RelationAssertionV0(_EvidenceAssertionV0):
 
 
 _MODEL_BY_SCHEMA_NAME: dict[str, type[BaseModel]] = {
-    "event-envelope/v0.schema.yaml": EventEnvelopeV0,
     "id-registry/v0/entity.schema.yaml": EntityAssertionV0,
     "id-registry/v0/native-assertion.schema.yaml": NativeAssertionV0,
     "id-registry/v0/relation-assertion.schema.yaml": RelationAssertionV0,
     "market-metadata-snapshot/v0.schema.yaml": MarketMetadataSnapshotV0,
-    "static-dataset-manifest/v0.schema.yaml": StaticDatasetManifestV0,
     "tca/v0.schema.yaml": TcaRecordV0,
     "venue-rule-snapshot/v0.schema.yaml": VenueRuleSnapshotV0,
 }
+_PROGRAM_ROOT_V0_SCHEMAS = frozenset(
+    {
+        "event-envelope/v0.schema.yaml",
+        "static-dataset-manifest/v0.schema.yaml",
+    }
+)
 _V1_MODEL_BY_SCHEMA_NAME: dict[str, type[BaseModel]] = {
     "model-output/v1.schema.yaml": ModelOutputV1,
 }
@@ -1450,6 +1504,10 @@ _MARKET_RELATION_ADAPTER = TypeAdapter(MarketRelationV0)
 def validate_contract_v0(schema_name: str, instance: Any) -> Any:
     """Run the normative v0 semantic validator for one contract schema."""
 
+    if schema_name in _PROGRAM_ROOT_V0_SCHEMAS:
+        raise ValueError(
+            f"{schema_name} requires its dedicated program-root validator"
+        )
     model = _MODEL_BY_SCHEMA_NAME.get(schema_name)
     if model is not None:
         return model.model_validate(_untrusted_round_trip_input(instance))
@@ -1470,14 +1528,147 @@ def validate_contract_v1(
         raise ValueError(f"unknown v1 contract schema: {schema_name}")
     validated = model.model_validate(_untrusted_round_trip_input(instance))
     if isinstance(validated, ModelOutputV1):
-        from prediction_market.experiments import load_experiment_registry
+        from prediction_market.experiments import (
+            ExperimentRegistryError,
+            load_experiment_registry,
+            require_execution_authorized,
+        )
+        from prediction_market.program_audit import (
+            ResearchRegistryError,
+            load_model_registry,
+        )
 
-        registered = load_experiment_registry(program_root)
-        if validated.experiment_id not in registered:
+        try:
+            registered = load_experiment_registry(program_root)
+            models = {
+                row.model_id: row for row in load_model_registry(program_root)
+            }
+        except (ExperimentRegistryError, ResearchRegistryError) as exc:
+            raise ContractValidationError(
+                f"model/experiment registry is invalid: {exc}"
+            ) from exc
+        card = registered.get(validated.experiment_id)
+        if card is None:
             raise ContractValidationError(
                 f"experiment {validated.experiment_id} is not registered"
             )
+        try:
+            require_execution_authorized(card)
+        except ExperimentRegistryError as exc:
+            raise ContractValidationError(str(exc)) from exc
+        model_row = models.get(validated.model_id)
+        if model_row is None:
+            raise ContractValidationError(
+                f"model {validated.model_id} is not registered"
+            )
+        if model_row.model_version != validated.model_version:
+            raise ContractValidationError(
+                f"model {validated.model_id} version does not match registry"
+            )
+        if model_row.experiment_id != validated.experiment_id:
+            raise ContractValidationError(
+                f"model {validated.model_id} is owned by experiment "
+                f"{model_row.experiment_id}, not {validated.experiment_id}"
+            )
+        if model_row.horizon != validated.horizon:
+            raise ContractValidationError(
+                f"model {validated.model_id} horizon does not match registry"
+            )
+        if tuple(sorted(model_row.state_space)) != validated.state_space:
+            raise ContractValidationError(
+                f"model {validated.model_id} state_space does not match registry"
+            )
+        output_contract = card.get("output_contract")
+        if not isinstance(output_contract, dict):
+            raise ContractValidationError(
+                f"experiment {validated.experiment_id} has no model output contract"
+            )
+        expected_output = {
+            "contract": "model-output/v1.schema.yaml",
+            "output_kind": validated.output_kind,
+            "transition_unit": validated.transition_unit,
+            "state_space": list(validated.state_space),
+        }
+        actual_output = {
+            "contract": output_contract.get("contract"),
+            "output_kind": output_contract.get("output_kind"),
+            "transition_unit": output_contract.get("transition_unit"),
+            "state_space": sorted(output_contract.get("state_space", [])),
+        }
+        if actual_output != expected_output:
+            raise ContractValidationError(
+                f"model output transition contract does not match "
+                f"experiment {validated.experiment_id}"
+            )
+        authorized_bindings = [
+            scope["input_binding"]
+            for scope in card["authorization_scopes"].values()
+            if scope["authorized"] is True
+            and not scope.get("permanent_no_go", False)
+            and isinstance(scope.get("input_binding"), dict)
+        ]
+        matching_bindings = [
+            binding
+            for binding in authorized_bindings
+            if validated.model_id in binding["model_ids"]
+        ]
+        if not matching_bindings:
+            raise ContractValidationError(
+                f"model {validated.model_id} is not bound to a currently "
+                f"authorized scope for experiment {validated.experiment_id}"
+            )
+        if all(
+            binding["result_class"] == "synthetic"
+            for binding in matching_bindings
+        ):
+            fixture_hashes = {
+                binding["synthetic_data_sha256"]
+                for binding in matching_bindings
+            }
+            if validated.data_sha256 not in fixture_hashes:
+                raise ContractValidationError(
+                    f"model {validated.model_id} synthetic data_sha256 does "
+                    "not match its authorized fixture"
+                )
     return validated
+
+
+def validate_event_envelope_v0(
+    program_root: str | Path,
+    instance: Any,
+) -> EventEnvelopeV0:
+    """Validate an event envelope and all program-root-backed payload FKs."""
+
+    envelope = EventEnvelopeV0.model_validate(
+        _untrusted_round_trip_input(instance)
+    )
+    if envelope.experiment_id is not None:
+        from prediction_market.experiments import (
+            ExperimentRegistryError,
+            load_experiment_registry,
+        )
+
+        try:
+            registered = load_experiment_registry(program_root)
+        except ExperimentRegistryError as exc:
+            raise ContractValidationError(
+                f"experiment registry is invalid: {exc}"
+            ) from exc
+        if envelope.experiment_id not in registered:
+            raise ContractValidationError(
+                f"experiment {envelope.experiment_id} is not registered"
+            )
+    if envelope.event_type == "model_output":
+        payload = validate_contract_v1(
+            program_root,
+            "model-output/v1.schema.yaml",
+            thaw_contract_v0(envelope.payload),
+        )
+        if payload.experiment_id != envelope.experiment_id:
+            raise ContractValidationError(
+                "model output payload experiment does not match event envelope"
+            )
+    return envelope
 
 
 # Short aliases keep consumers from inventing parallel v0 names.
@@ -1539,7 +1730,9 @@ __all__ = [
     "payload_sha256",
     "replay_order_key",
     "static_dataset_manifest_sha256",
+    "validate_static_dataset_manifest_v0",
     "thaw_contract_v0",
     "validate_contract_v0",
     "validate_contract_v1",
+    "validate_event_envelope_v0",
 ]

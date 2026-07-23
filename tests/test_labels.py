@@ -197,7 +197,7 @@ def test_x05_generation_is_blocked_by_current_registry() -> None:
         _quote("horizon", 60, "0.49", "0.50"),
     ]
 
-    with pytest.raises(LabelAuthorizationError, match="X-05.*not authorized"):
+    with pytest.raises(LabelAuthorizationError, match="execution"):
         generate_x05_long_labels(
             PROJECT_ROOT,
             quotes=quotes,
@@ -235,6 +235,7 @@ def test_authorized_x05_run_is_bound_to_preregistered_runtime_hashes(
     ]
     fake_registry = {
         "X-05": {
+            "execution_authorized": True,
             "authorization_scopes": {
                 "label_generation": {
                     "authorized": True,
@@ -326,6 +327,7 @@ def test_generator_freezes_quote_sequence_before_hash_and_label(
     ]
     fake_registry = {
         "X-05": {
+            "execution_authorized": True,
             "authorization_scopes": {
                 "label_generation": {
                     "authorized": True,
