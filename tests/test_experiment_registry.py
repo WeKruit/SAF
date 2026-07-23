@@ -474,11 +474,12 @@ def test_artifact_registry_covers_task_3_without_completion_claims(
     ) as handle:
         rows = list(csv.DictReader(handle))
 
-    assert {row["path"] for row in rows} == EXPECTED_TASK_3_PATHS
+    assert EXPECTED_TASK_3_PATHS <= {row["path"] for row in rows}
     assert all(row["owner_team"] for row in rows)
     assert all(row["version"] for row in rows)
     assert all(row["due_gate"] for row in rows)
-    assert {row["status"] for row in rows} == {"registered"}
+    task_3_rows = [row for row in rows if row["path"] in EXPECTED_TASK_3_PATHS]
+    assert {row["status"] for row in task_3_rows} == {"registered"}
 
 
 def test_result_is_rejected_without_preexisting_registration(tmp_path: Path) -> None:

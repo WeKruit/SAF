@@ -21,6 +21,10 @@ dependencies = [
     "zstandard",
 ]
 
+[project.scripts]
+audit-pmxt = "prediction_market.cli.audit_pmxt:main"
+record-markets = "prediction_market.cli.record_markets:main"
+
 [dependency-groups]
 dev = [
     "pytest",

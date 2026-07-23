@@ -1,0 +1,20 @@
+backlog_id,team,work_item,deliverable,status,blocker,owner,version,due_gate
+W1-001,A,Publish event envelope and deterministic ordering,contracts/event-envelope/v0.schema.yaml,COMPLETE,-,A,v0,first_round_artifact_gate
+W1-002,A,Publish canonical ID registry and native boundary,contracts/id-registry/v0/entity.schema.yaml,COMPLETE,-,A,v0,first_round_artifact_gate
+W1-003,A,Publish model output contract and ADR set,contracts/model-output/v0.schema.yaml,COMPLETE,-,A,v0,first_round_artifact_gate
+W1-004,H,Create strict append-only experiment registry,registries/experiment_registry.csv,COMPLETE,-,H,v0,first_round_artifact_gate
+W1-005,H,Preregister X-01 through X-10 and validation standard,artifacts/validation/validation_standard_v0.md,COMPLETE,-,H,v0,first_round_artifact_gate
+W1-006,C,Publish immutable raw capture store,contracts/raw-capture/v0.schema.yaml,COMPLETE,Production WORM ACL remains deployment work,C,v0,X01_L2_reconstruction
+W1-007,C,Run PMXT Phase 0 and Phase 1 archive audit,artifacts/data-audit/phase1_schema_timestamp_v0.md,IN_PROGRESS,Phase 0 still lacks NBA-specific TB dollar and full-query cost; Phase 1 lacks a full game day and frozen metadata,C,v0,X01_L2_reconstruction
+W1-008,C,Implement deterministic PMXT L2 reconstruction,artifacts/data-audit/l2_reconstructor_v0.md,COMPLETE,X-01 locks full-day comparison and independent source remain unresolved,C,v0,X01_L2_reconstruction
+W1-009,B+C,Start bounded Polymarket public WS recording,artifacts/venue-connectivity/capability_matrix_v0.csv,COMPLETE,Seven-day X-08 continuity still requires a persistent recorder host and monitoring,B+C,v0,X08_prospective_recorder_continuity
+W1-010,B+C,Prepare Kalshi recorder and authentication framework,artifacts/venue-connectivity/kalshi_credentials.md,COMPLETE,Runtime activation requires a Kalshi API key ID and RSA private key path,B+C,v0,X08_prospective_recorder_continuity
+W1-011,D1,Build X-06 prior logistic GBDT validation POC,artifacts/game-state/nba/baseline_v0.md,COMPLETE,Empirical run remains blocked by NBA.com gambling-use restriction and X-06 data locks,D1,v0,X06_calibration_gate
+W1-012,D2,Build NFL classic evidence and pipeline POC,artifacts/game-state/nfl/evidence_pipeline_poc_v0.md,COMPLETE,Empirical result requires Team H experiment ID,D2,v0,2026-08-05_W2_review
+W1-013,D3,Build soccer classic evidence and pipeline POC,artifacts/game-state/soccer/evidence_pipeline_poc_v0.md,COMPLETE,Empirical result requires Team H experiment ID and O-004 review,D3,v0,2026-08-05_W2_review
+W1-014,E,Draft executable X-05 barrier label specification,artifacts/reaction-labels/x05_barrier_label_spec_v0.md,COMPLETE,Generation remains blocked by X-05 locks and X-01,E,v0,X05_label_approval
+W1-015,F,Publish taker simulator TCA and maker bounds,artifacts/execution-tca/taker_simulator_spec_v0.md,COMPLETE,All X-07 numerical outputs remain PRELIMINARY,F,v0,2026-08-05_W2_review
+W1-016,G,Build X-10 queue gate and eight module reports,artifacts/strategy-reports/x10_matched_cluster_audit_v0.md,COMPLETE,Formal audit sample Router version protocol and H approval unresolved,G,v0,2026-08-05_W2_review
+W1-017,I,Create compliance matrix and data license register,registries/compliance_matrix.csv,COMPLETE,No operating context is green,I,v0,Team_I_compliance_green
+W1-018,B+A+H,Build deterministic X-09 vertical-slice harness,artifacts/architecture/x09_vertical_slice_v0.md,COMPLETE,Harness passes but formal X-09 locks and X-01 dependency remain unresolved,B+A+H,v0,X09_deterministic_vertical_slice
+W1-019,A,Integrate artifact backlog risk and NO-GO audits,artifacts/architecture/program_status_v0.md,COMPLETE,-,A,v0,first_round_artifact_gate

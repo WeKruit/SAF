@@ -1,0 +1,14 @@
+risk_id,owner,severity,status,blocked_scope,required_input,version,due_gate
+RB-001,B+C,CRITICAL,OPEN,Kalshi recorder activation,Kalshi API key ID and RSA private key path with read-only market-data authority,v0,X08_prospective_recorder_continuity
+RB-002,I,CRITICAL,OPEN,All real-money activity,Intended operating jurisdiction legal entity or individual account type and selected venue platform,v0,Team_I_compliance_green
+RB-003,B+C,CRITICAL,OPEN,Continuous prospective market capture,persistent recorder host durable storage monitoring and on-call owner; every missed night is permanent data loss,v0,X08_prospective_recorder_continuity
+RB-004,C,HIGH,OPEN,Full PMXT Phase 0 and X-01 comparison,Approved download bandwidth storage budget and retention location,v0,X01_L2_reconstruction
+RB-005,C,HIGH,OPEN,Production immutability,Deployment WORM or object-lock policy with ACL and retention evidence,v0,X01_L2_reconstruction
+RB-006,D1+I,CRITICAL,BLOCKED,NBA empirical X-06 result,Licensed NBA point-in-time data feed or written permission compatible with gambling research,v0,X06_calibration_gate
+RB-007,D2+H,HIGH,OPEN,NFL empirical calibration result,Team H experiment ID preregistered dataset split features and seed,v0,2026-08-05_W2_review
+RB-008,D3+H+I,HIGH,OPEN,Soccer empirical calibration result,Team H experiment ID and cleared StatsBomb license context with pinned data manifest,v0,2026-08-05_W2_review
+RB-009,E+H,HIGH,OPEN,X-05 label generation,X-01 quote manifest U L h purge embargo touch rule code data hashes and H approval,v0,X05_label_approval
+RB-010,F+H,HIGH,OPEN,X-07 formal conclusion,Versioned venue-rule replay event-depth manifest order-size policy markout horizons and H authorization,v0,2026-08-05_W2_review
+RB-011,B+A+H,CRITICAL,OPEN,X-09 formal gate,Frozen X-01 stream rule stream risk-fill config serializer seed lockfile hashes and H approval,v0,X09_deterministic_vertical_slice
+RB-012,G+A+H,HIGH,OPEN,X-10 formal precision audit,Frozen candidate universe selection method and seed Router query and version selected 50 pairs taxonomy bytes gold protocol confidence bins and H approval,v0,2026-08-05_W2_review
+RB-013,I,HIGH,OPEN,Secret operations,Approved external secret manager inventory rotation policy and incident owner,v0,Team_I_compliance_green
