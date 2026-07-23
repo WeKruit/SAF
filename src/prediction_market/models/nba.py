@@ -68,6 +68,8 @@ def _validate_frame(
         raise BaselineInputError(
             "pregame prior availability must be timezone-aware UTC"
         )
+    if (prior_availability > prediction).any():
+        raise BaselineInputError("pregame prior must be available by prediction_at")
     if (prior_availability > game_start).any():
         raise BaselineInputError("pregame prior must be frozen by game_start_at")
     numeric = frame.loc[:, [*features, prior]].to_numpy(dtype=float)
@@ -95,6 +97,10 @@ def fit_predict_nba_baselines(
     features = tuple(feature_columns)
     if not features or len(set(features)) != len(features):
         raise BaselineInputError("feature_columns must be nonempty and unique")
+    if target_column == market_prior_column:
+        raise BaselineInputError(
+            "target and market prior columns must be distinct roles"
+        )
     reserved = {
         "game_id",
         "prediction_at",

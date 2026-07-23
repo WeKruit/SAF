@@ -123,6 +123,45 @@ def test_nba_rejects_prior_that_was_not_frozen_before_game_start() -> None:
         )
 
 
+def test_nba_rejects_prior_that_was_unavailable_at_prediction_time() -> None:
+    train, test = _nba_frames()
+    row = test.index[0]
+    test.loc[row, "game_start_at"] = test.loc[row, "prediction_at"] + pd.Timedelta(
+        hours=2
+    )
+    test.loc[row, "market_prior__available_at"] = test.loc[
+        row, "prediction_at"
+    ] + pd.Timedelta(hours=1)
+
+    with pytest.raises(BaselineInputError, match="prediction_at"):
+        fit_predict_nba_baselines(
+            train,
+            test,
+            feature_columns=("score_diff", "seconds_remaining"),
+            target_column="target",
+            market_prior_column="market_prior",
+            seed=7,
+        )
+
+
+def test_nba_rejects_target_and_market_prior_role_collision() -> None:
+    train, test = _nba_frames()
+    for frame in (train, test):
+        frame["target__available_at"] = frame["game_start_at"] - pd.Timedelta(
+            seconds=1
+        )
+
+    with pytest.raises(BaselineInputError, match="distinct"):
+        fit_predict_nba_baselines(
+            train,
+            test,
+            feature_columns=("score_diff", "seconds_remaining"),
+            target_column="target",
+            market_prior_column="target",
+            seed=7,
+        )
+
+
 @pytest.mark.parametrize(
     "leaking_feature",
     [

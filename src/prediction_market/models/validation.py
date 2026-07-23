@@ -77,8 +77,16 @@ def _arrays(
         raise ValidationInputError("targets must be binary 0/1")
     if not np.all(np.isfinite(p)) or np.any((p < 0) | (p > 1)):
         raise ValidationInputError("probabilities must be finite in [0, 1]")
-    if any(value is None for value in cluster):
-        raise ValidationInputError("groups must be present for every row")
+    for value in cluster:
+        missing = pd.isna(value)
+        if isinstance(missing, (bool, np.bool_)) and missing:
+            raise ValidationInputError(
+                "groups must be present and finite for every row"
+            )
+        if isinstance(value, (float, np.floating)) and not np.isfinite(value):
+            raise ValidationInputError(
+                "groups must be present and finite for every row"
+            )
     return y.astype(int), p, cluster
 
 
