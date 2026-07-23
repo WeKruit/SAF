@@ -1,0 +1,66 @@
+{
+  "artifact_id": "F1-SOURCE-INVENTORY-V0",
+  "artifact_version": "v0",
+  "owner": "Team D5+I",
+  "due_gate": "2026-08-05_W2_review",
+  "status": "INVENTORY_ONLY_RESEARCH_ONLY",
+  "model_trained": false,
+  "jolpica": {
+    "dataset_id": "DS-F1-JOLPICA",
+    "license_review_id": "O-008",
+    "license_status": "research_only",
+    "registered_version_status": "unresolved_release",
+    "fetched_at": "2026-07-23T04:20:40.635588Z",
+    "observations": {
+      "results": {
+        "coverage": "2025 winner result for each of 24 completed rounds",
+        "race_count": 24,
+        "native_record_count": 24,
+        "byte_length": 23547,
+        "manifest_sha256": "sha256:e5e1c4c2d54daa3d5732f84a5882cf4ee887510c3f4bf06c6b0727a21ba0dfa1",
+        "object_sha256": "sha256:cdc74e1fe5bbd42ebc4831c298892475ee0d52fd5ffc9ab216d6b244c0f6e864",
+        "schema_fingerprint": "sha256:b0dbed7fdb45af93f83ff2c7ea9949a71d650280f1ebaf56af10471915e0d3b5"
+      },
+      "laps": {
+        "coverage": "2025 round 1 lap 1 bounded timing sample",
+        "race_count": 1,
+        "native_record_count": 1,
+        "byte_length": 1591,
+        "manifest_sha256": "sha256:51e76d3569784a5d8bdd874718996fd23c1a3bf43bc1a2dd2878895012ce1963",
+        "object_sha256": "sha256:76948886ec0757afe7027ceb7414810ff1d5b60a94ca49201ba5ed6e2c54483f",
+        "schema_fingerprint": "sha256:04241822af7c19887e7926a03f5322b702ecc74fbcacc7d89fc112ee80965419"
+      },
+      "pitstops": {
+        "coverage": "2025 round 1 pit-stop records",
+        "race_count": 1,
+        "native_record_count": 82,
+        "byte_length": 7384,
+        "manifest_sha256": "sha256:320e55ccc88f7eb1d4ddfb3c7010f243ca312a17780a1a4508542d1af4a31dc1",
+        "object_sha256": "sha256:b5fc3ba097d83d82a7bdf5139bfd53635f1543780be5ac9960031a4516e6685e",
+        "schema_fingerprint": "sha256:76593c3eec7bae84adc44b3de189bf7d9637f81ae3bb38873a66708c8ac1e254"
+      }
+    },
+    "safety_car_assessment": "No dedicated safety-car event stream was established by these bounded Jolpica observations."
+  },
+  "fastf1": {
+    "dataset_id": "DS-F1-FASTF1-TIMING",
+    "registered_version": "FastF1-3.8.3",
+    "license_review_id": "O-008",
+    "license_status": "blocked",
+    "access_executed": false,
+    "documented_feasibility": [
+      "session results",
+      "laps and lap timing",
+      "pit information",
+      "track/session status",
+      "race-control messages",
+      "weather",
+      "car data and telemetry"
+    ]
+  },
+  "limitations": [
+    "Jolpica is suitable for bounded historical metadata/results/lap/pit source work, but its release and correction semantics remain unresolved.",
+    "FastF1 upstream Formula 1 timing rights are unresolved, so no timing or telemetry object was downloaded or promoted.",
+    "No live SLA, safety-car completeness, model, calibration result, production conclusion, or trading conclusion is claimed."
+  ]
+}

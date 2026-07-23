@@ -1,0 +1,61 @@
+{
+  "artifact_id": "MLB-SOURCE-INVENTORY-V0",
+  "artifact_version": "v0",
+  "owner": "Team D4+I",
+  "due_gate": "2026-08-05_W2_review",
+  "status": "INVENTORY_ONLY_RESEARCH_ONLY",
+  "model_trained": false,
+  "dataset": {
+    "dataset_id": "DS-RETROSHEET",
+    "license_review_id": "O-007",
+    "license_status": "research_only",
+    "source_url": "https://www.retrosheet.org/events/2025eve.zip",
+    "fetched_at": "2026-07-23T04:18:40.552231Z",
+    "etag": "\"2691d5-644fad77f5e16\"",
+    "last_modified": "Tue, 02 Dec 2025 16:46:48 GMT",
+    "byte_length": 2527701,
+    "object_sha256": "sha256:30592120e807f7b2e073ddee544ac615a7194db43e551956e22f4a98bf722b7a",
+    "manifest_sha256": "sha256:15eda81cfe06c8c742536fd9a8df6717215998d529755ff90049007315b6bc91",
+    "schema_fingerprint": "sha256:9257f9b1d4fa40acc4d650239f13d35b0dbe4491880e1e59a53b146695df798b"
+  },
+  "inventory": {
+    "season": 2025,
+    "event_file_count": 30,
+    "game_count": 2430,
+    "play_record_count": 216845,
+    "first_game_id": "ANA202504040",
+    "last_game_id": "WAS202509280",
+    "record_type_counts": {
+      "badj": 25,
+      "com": 2398,
+      "data": 20868,
+      "id": 2430,
+      "info": 77760,
+      "padj": 4,
+      "play": 216845,
+      "radj": 602,
+      "start": 48600,
+      "sub": 27535,
+      "version": 2430
+    }
+  },
+  "bevent_state_mapping": {
+    "game_id": "GAME_ID",
+    "event_index": "EVENT_ID",
+    "inning": "INN_CT",
+    "batting_home": "BAT_HOME_ID",
+    "outs_before": "OUTS_CT",
+    "base_state_before": "START_BASES_CD",
+    "score_before": ["AWAY_SCORE_CT", "HOME_SCORE_CT"],
+    "event_code": "EVENT_CD",
+    "batter_destination": "BAT_DEST_ID",
+    "runner_destinations": ["RUN1_DEST_ID", "RUN2_DEST_ID", "RUN3_DEST_ID"],
+    "requires_chadwick_bevent": true,
+    "executed_in_inventory": false
+  },
+  "limitations": [
+    "This deliverable inventories the native Retrosheet archive and declares the BEVENT mapping; the Chadwick bevent executable was not installed and no derived state table was produced.",
+    "Retrosheet states that supplied information can be corrected later and disclaims accuracy guarantees, so release bytes and hashes must remain frozen.",
+    "No MLB model, calibration result, production conclusion, or trading conclusion is included."
+  ]
+}
