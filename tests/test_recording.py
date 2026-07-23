@@ -688,6 +688,8 @@ def test_polymarket_cli_fails_explicitly_when_no_active_sports_market(
         [
             "polymarket",
             "--discover-sports",
+            "--run-seconds",
+            "1",
             "--max-frames",
             "1",
             "--raw-root",
@@ -712,15 +714,33 @@ def test_polymarket_cli_writes_reproducible_operational_evidence(
 
     async def capture(asset_ids: tuple[str, ...], raw_root: Path, **kwargs: object):
         captured.update(asset_ids=asset_ids, raw_root=raw_root, **kwargs)
-        object_path = raw_root / "raw" / "object.jsonl.zst"
-        manifest_path = raw_root / "manifests" / "object.manifest.json"
-        object_path.parent.mkdir(parents=True)
-        manifest_path.parent.mkdir(parents=True)
-        object_path.write_bytes(b"sealed raw object")
-        manifest_path.write_bytes(b'{"sealed":true}\n')
+        writer = recording_module.RawSegmentWriter(
+            raw_root, source="polymarket", stream="market"
+        )
+        writer.append(
+            b'{"event_type":"book","asset_id":"asset-1"}',
+            receive_at=UTC_TIME,
+        )
+        manifest = writer.seal()
         return SimpleNamespace(
             complete=True,
             terminal_reason="max_frames reached",
+            connection_attempts=1,
+            started_at="2026-07-22T14:03:04.000000Z",
+            finished_at="2026-07-22T14:03:05.000000Z",
+            requested_run_seconds=3.0,
+            asset_ids=("asset-1",),
+            max_frames=1,
+            max_reconnects=2,
+            reconnect_backoff_seconds=(0.25, 0.5, 1.0, 2.0, 5.0),
+            receive_timeout_seconds=2.0,
+            observed_elapsed_seconds=1.0,
+            connected_elapsed_seconds=1.0,
+            required_elapsed_days=7,
+            observed_elapsed_days=1 / 86_400,
+            duration_gate_met=False,
+            formal_x08_result=False,
+            uptime_ratio=1.0,
             counters=SimpleNamespace(
                 frames=1,
                 parse_errors=0,
@@ -729,17 +749,7 @@ def test_polymarket_cli_writes_reproducible_operational_evidence(
                 continuity_unknown=0,
                 out_of_order=0,
             ),
-            manifests=(
-                SimpleNamespace(
-                    path=manifest_path,
-                    object_path=object_path,
-                    object_sha256=(
-                        "sha256:" + hashlib.sha256(object_path.read_bytes()).hexdigest()
-                    ),
-                    record_count=1,
-                    capture_session_id="capture-public-smoke",
-                ),
-            ),
+            manifests=(manifest,),
         )
 
     monkeypatch.setattr(record_markets, "discover_active_sports_assets", assets)
@@ -751,12 +761,16 @@ def test_polymarket_cli_writes_reproducible_operational_evidence(
         [
             "polymarket",
             "--discover-sports",
+            "--run-seconds",
+            "3",
             "--max-frames",
             "1",
             "--max-assets",
             "2",
-            "--timeout-seconds",
-            "3",
+            "--receive-timeout-seconds",
+            "2",
+            "--max-reconnects",
+            "2",
             "--raw-root",
             str(raw_root),
             "--output",
@@ -769,9 +783,13 @@ def test_polymarket_cli_writes_reproducible_operational_evidence(
     assert captured["asset_ids"] == ("asset-1",)
     assert captured["raw_root"] == raw_root
     assert captured["max_frames"] == 1
-    assert captured["timeout_seconds"] == 3.0
-    assert report["report_version"] == "v0"
-    assert report["evidence_scope"] == "operational_observation_not_x08_evidence"
+    assert captured["run_seconds"] == 3.0
+    assert captured["receive_timeout_seconds"] == 2.0
+    assert report["report_version"] == "v1"
+    assert report["evidence_scope"] == (
+        "operational_observation_not_formal_x08_result"
+    )
+    assert report["formal_x08_result"] is False
     assert report["source"] == "polymarket"
     assert report["endpoint"] == (
         "wss://ws-subscriptions-clob.polymarket.com/ws/market"
@@ -784,31 +802,34 @@ def test_polymarket_cli_writes_reproducible_operational_evidence(
         "discover_sports": True,
         "market_limit": 100,
         "max_assets": 2,
+        "run_seconds": 3.0,
         "max_frames": 1,
         "max_reconnects": 2,
-        "timeout_seconds": 3.0,
+        "receive_timeout_seconds": 2.0,
+        "reconnect_backoff_seconds": [0.25, 0.5, 1.0, 2.0, 5.0],
     }
-    assert report["counters"] == {
-        "continuity_unknown": 0,
-        "frames": 1,
-        "gaps": 0,
-        "out_of_order": 0,
-        "parse_errors": 0,
-        "reconnects": 0,
+    assert report["prospective_observation"] == {
+        "required_elapsed_days": 7,
+        "observed_elapsed_days": 1 / 86_400,
+        "observed_elapsed_seconds": 1.0,
+        "duration_gate_met": False,
+        "fixtures_can_satisfy_elapsed_time": False,
     }
-    assert report["segments"] == [
-        {
-            "capture_session_id": "capture-public-smoke",
-            "manifest_path": "manifests/object.manifest.json",
-            "manifest_sha256": (
-                "sha256:" + hashlib.sha256(b'{"sealed":true}\n').hexdigest()
-            ),
-            "object_path": "raw/object.jsonl.zst",
-            "object_sha256": (
-                "sha256:" + hashlib.sha256(b"sealed raw object").hexdigest()
-            ),
-            "record_count": 1,
-        }
-    ]
+    assert report["health"]["continuity_unknown"] == 0
+    assert report["health"]["frames"] == 1
+    assert report["health"]["gaps"] == 0
+    assert report["health"]["parse_errors"] == 0
+    assert report["health"]["reconnects"] == 0
+    assert report["health"]["connection_attempts"] == 1
+    assert report["segments"][0]["capture_session_id"].startswith("capture-")
+    assert report["segments"][0]["record_count"] == 1
+    manifest_path = raw_root / report["segments"][0]["manifest_path"]
+    object_path = raw_root / report["segments"][0]["object_path"]
+    assert report["segments"][0]["manifest_sha256"] == (
+        "sha256:" + hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    )
+    assert report["segments"][0]["object_sha256"] == (
+        "sha256:" + hashlib.sha256(object_path.read_bytes()).hexdigest()
+    )
     assert "manifest_paths" not in report
     assert "wrote" in capsys.readouterr().out

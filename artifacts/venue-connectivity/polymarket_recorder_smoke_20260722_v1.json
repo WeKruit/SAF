@@ -1,0 +1,79 @@
+{
+  "complete": true,
+  "configuration": {
+    "discover_sports": true,
+    "market_limit": 20,
+    "max_assets": 2,
+    "max_frames": null,
+    "max_reconnects": 3,
+    "receive_timeout_seconds": 5.0,
+    "run_seconds": 15.0
+  },
+  "endpoint": "wss://ws-subscriptions-clob.polymarket.com/ws/market",
+  "evidence_scope": "operational_observation_not_formal_x08_result",
+  "finished_at": "2026-07-23T04:10:30.453358Z",
+  "formal_x08_result": false,
+  "health": {
+    "compressed_bytes": 10395,
+    "connected_elapsed_seconds": 14.00694854100584,
+    "connection_attempts": 2,
+    "continuity_unknown": 1,
+    "frames": 5,
+    "gaps": 1,
+    "observed_gb_per_day": 0.059875199999999996,
+    "out_of_order": 0,
+    "parse_errors": 0,
+    "reconnects": 1,
+    "sealed_segments": 2,
+    "uptime_ratio": 0.9337965694003894,
+    "utc_hour_partitions": [
+      "2026-07-23T04"
+    ]
+  },
+  "prospective_observation": {
+    "duration_gate_met": false,
+    "fixtures_can_satisfy_elapsed_time": false,
+    "observed_elapsed_days": 0.00017361111111111112,
+    "observed_elapsed_seconds": 15.0,
+    "required_elapsed_days": 7
+  },
+  "report_version": "v1",
+  "segments": [
+    {
+      "capture_session_id": "capture-ac5e19dc51c849b9a6c4d715cd7feee2",
+      "first_receive_at": "2026-07-23T04:10:15.816397Z",
+      "last_receive_at": "2026-07-23T04:10:16.943667Z",
+      "manifest_path": "manifests/source=polymarket/stream=market/date=2026-07-23/hour=04/8f8394e9bfe1c293874b18f9070eb6fe5fe537b37c801f838a62cfab5b6369c0.manifest.json",
+      "manifest_sha256": "sha256:52736b506deb616817fae2a89e939a6ab46cf3281f8822a733a2ddf737f62052",
+      "object_path": "raw/source=polymarket/stream=market/date=2026-07-23/hour=04/8f8394e9bfe1c293874b18f9070eb6fe5fe537b37c801f838a62cfab5b6369c0.jsonl.zst",
+      "object_sha256": "sha256:8f8394e9bfe1c293874b18f9070eb6fe5fe537b37c801f838a62cfab5b6369c0",
+      "object_size_bytes": 4331,
+      "partition_date": "2026-07-23",
+      "partition_hour": "04",
+      "record_count": 2
+    },
+    {
+      "capture_session_id": "capture-e8025ffce2784c66aed7faaa77ab515f",
+      "first_receive_at": "2026-07-23T04:10:22.867086Z",
+      "last_receive_at": "2026-07-23T04:10:26.774479Z",
+      "manifest_path": "manifests/source=polymarket/stream=market/date=2026-07-23/hour=04/b006ba51f916a10db8cd3c3b24e8259cd32d9a7363c4d811afc7a30b7a660da6.manifest.json",
+      "manifest_sha256": "sha256:873aadf739e32eb64de2aa171ae75bc63bdf991c6123d685e7369c570a348a57",
+      "object_path": "raw/source=polymarket/stream=market/date=2026-07-23/hour=04/b006ba51f916a10db8cd3c3b24e8259cd32d9a7363c4d811afc7a30b7a660da6.jsonl.zst",
+      "object_sha256": "sha256:b006ba51f916a10db8cd3c3b24e8259cd32d9a7363c4d811afc7a30b7a660da6",
+      "object_size_bytes": 6064,
+      "partition_date": "2026-07-23",
+      "partition_hour": "04",
+      "record_count": 3
+    }
+  ],
+  "source": "polymarket",
+  "started_at": "2026-07-23T04:10:15.294015Z",
+  "subscription": {
+    "asset_ids": [
+      "64778757908501179476331390591326653229579537200061619395979045269181713848562",
+      "69222761152567422456550754954182616722608546823277879350969354961713727175064"
+    ],
+    "channel": "market"
+  },
+  "terminal_reason": "requested run window elapsed"
+}

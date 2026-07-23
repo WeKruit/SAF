@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
-import hashlib
 import json
 import os
 import sys
@@ -22,7 +21,11 @@ from prediction_market.adapters.polymarket import (
     DiscoveryError,
     discover_active_sports_assets,
 )
-from prediction_market.recording import CaptureResult, record_polymarket_with_reconnect
+from prediction_market.recorder_supervisor import (
+    SupervisorResult,
+    build_polymarket_health_report,
+    supervise_polymarket,
+)
 
 
 def _positive_integer(value: str) -> int:
@@ -70,90 +73,43 @@ async def capture_public_polymarket(
     asset_ids: Sequence[str],
     raw_root: Path,
     *,
-    max_frames: int,
-    timeout_seconds: float,
-    max_reconnects: int = 2,
-) -> CaptureResult:
-    """Run one overall-time-bounded public capture with bounded reconnects."""
+    run_seconds: float,
+    max_frames: int | None,
+    receive_timeout_seconds: float,
+    max_reconnects: int | None = None,
+) -> SupervisorResult:
+    """Run one real-time-bounded public supervisor with durable segments."""
 
-    if not 0 <= max_reconnects <= 3:
-        raise ValueError("max_reconnects must be between zero and three")
-    backoff = (0.25, 0.5, 1.0)[:max_reconnects]
-    connector = _public_connector(open_timeout=min(timeout_seconds, 10.0))
-    async with asyncio.timeout(timeout_seconds):
-        return await record_polymarket_with_reconnect(
-            connector,
-            asset_ids,
-            raw_root,
-            max_frames=max_frames,
-            max_reconnects=max_reconnects,
-            backoff_seconds=backoff,
-            receive_timeout_seconds=min(timeout_seconds, 15.0),
-        )
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return "sha256:" + digest.hexdigest()
-
-
-def _relative_artifact_path(path: Path, raw_root: Path) -> str:
-    return path.resolve(strict=True).relative_to(raw_root.resolve(strict=True)).as_posix()
+    connector = _public_connector(open_timeout=min(run_seconds, 10.0))
+    return await supervise_polymarket(
+        connector,
+        asset_ids,
+        raw_root,
+        run_seconds=run_seconds,
+        max_frames=max_frames,
+        max_reconnects=max_reconnects,
+        receive_timeout_seconds=receive_timeout_seconds,
+    )
 
 
 def _report(
-    result: CaptureResult,
+    result: SupervisorResult,
     *,
-    asset_ids: Sequence[str],
     raw_root: Path,
     market_limit: int,
     max_assets: int,
-    max_frames: int,
-    max_reconnects: int,
-    timeout_seconds: float,
 ) -> dict[str, object]:
-    return {
-        "report_version": "v0",
-        "evidence_scope": "operational_observation_not_x08_evidence",
-        "source": "polymarket",
-        "endpoint": MARKET_WS_URL,
-        "subscription": {
-            "channel": "market",
-            "asset_ids": list(asset_ids),
-        },
-        "configuration": {
-            "discover_sports": True,
-            "market_limit": market_limit,
-            "max_assets": max_assets,
-            "max_frames": max_frames,
-            "max_reconnects": max_reconnects,
-            "timeout_seconds": timeout_seconds,
-        },
-        "complete": result.complete,
-        "terminal_reason": result.terminal_reason,
-        "counters": {
-            "frames": result.counters.frames,
-            "parse_errors": result.counters.parse_errors,
-            "reconnects": result.counters.reconnects,
-            "gaps": result.counters.gaps,
-            "continuity_unknown": result.counters.continuity_unknown,
-            "out_of_order": result.counters.out_of_order,
-        },
-        "segments": [
-            {
-                "capture_session_id": manifest.capture_session_id,
-                "manifest_path": _relative_artifact_path(manifest.path, raw_root),
-                "manifest_sha256": _sha256_file(manifest.path),
-                "object_path": _relative_artifact_path(manifest.object_path, raw_root),
-                "object_sha256": manifest.object_sha256,
-                "record_count": manifest.record_count,
-            }
-            for manifest in result.manifests
-        ],
+    report = build_polymarket_health_report(
+        result,
+        raw_root=raw_root,
+    )
+    report["configuration"] = {
+        "discover_sports": True,
+        "market_limit": market_limit,
+        "max_assets": max_assets,
+        **report["configuration"],
     }
+    return report
 
 
 def _write_report(report: dict[str, object], output: Path | None) -> None:
@@ -193,7 +149,7 @@ async def _run_polymarket(args: argparse.Namespace) -> tuple[int, dict[str, obje
     assets = await discover_active_sports_assets(
         market_limit=args.market_limit,
         max_assets=args.max_assets,
-        timeout_seconds=min(args.timeout_seconds, 15.0),
+        timeout_seconds=min(args.run_seconds, 15.0),
     )
     if not assets:
         raise DiscoveryError(
@@ -202,19 +158,16 @@ async def _run_polymarket(args: argparse.Namespace) -> tuple[int, dict[str, obje
     result = await capture_public_polymarket(
         assets,
         args.raw_root,
+        run_seconds=args.run_seconds,
         max_frames=args.max_frames,
-        timeout_seconds=args.timeout_seconds,
+        receive_timeout_seconds=args.receive_timeout_seconds,
         max_reconnects=args.max_reconnects,
     )
     report = _report(
         result,
-        asset_ids=assets,
         raw_root=args.raw_root,
         market_limit=args.market_limit,
         max_assets=args.max_assets,
-        max_frames=args.max_frames,
-        max_reconnects=args.max_reconnects,
-        timeout_seconds=args.timeout_seconds,
     )
     return (0 if result.complete else 2), report
 
@@ -229,11 +182,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "polymarket", help="capture the unauthenticated public market channel"
     )
     polymarket.add_argument("--discover-sports", action="store_true")
-    polymarket.add_argument("--max-frames", type=_positive_integer, required=True)
+    polymarket.add_argument("--run-seconds", type=_positive_float, required=True)
+    polymarket.add_argument("--max-frames", type=_positive_integer)
     polymarket.add_argument("--max-assets", type=_positive_integer, default=20)
     polymarket.add_argument("--market-limit", type=_positive_integer, default=100)
-    polymarket.add_argument("--max-reconnects", type=int, default=2)
-    polymarket.add_argument("--timeout-seconds", type=_positive_float, default=45.0)
+    polymarket.add_argument("--max-reconnects", type=int)
+    polymarket.add_argument(
+        "--receive-timeout-seconds",
+        type=_positive_float,
+        default=30.0,
+    )
     polymarket.add_argument("--raw-root", type=Path, required=True)
     polymarket.add_argument("--output", type=Path)
     return parser
