@@ -1,0 +1,508 @@
+{
+  "artifact_type": "model_inference_latency",
+  "benchmarks": [
+    {
+      "accuracy_reference": {
+        "evidence_file_sha256": "sha256:1d0c033459c69778e265be3fca16ae2c87f650d5003a61ffdea4c020a4fd0b05",
+        "evidence_path": "artifacts/game-state/nfl/x11_real_data_pipeline_evidence_v0.json",
+        "evidence_sha256": "sha256:bde6d9271c960dde4bfef7a4391fd8f053e3967b64da7975d888f652d7f8dacc",
+        "metric_pointer": "/outcome_evaluation/models/logistic",
+        "reported_metrics": {
+          "brier": 0.15348040231326837,
+          "calibration_intercept": 0.04233598701755438,
+          "calibration_slope": 0.9425513489174732,
+          "log_loss": 0.4652709860466307,
+          "observations": 36734
+        },
+        "status": "referenced_existing_evidence_not_recomputed"
+      },
+      "experiment_id": "X-11",
+      "lineage": {
+        "dataset_id": "DS-NFLVERSE",
+        "feature_names": [
+          "home_score_differential",
+          "game_seconds_remaining",
+          "possession_home",
+          "home_timeouts_remaining",
+          "away_timeouts_remaining",
+          "spread_prior"
+        ],
+        "feature_vector_sha256": "sha256:41be3e9ded2fbc8b04ea2ed953062c1a851e943347bafe8e660f3826fc1bd179",
+        "input_inventory_sha256": "sha256:c3e0a6faf3ced30fb94572fd8e488026c52984d55d5c03a497400f11c96b3646",
+        "source_kind": "frozen_real_data_last_fold_fit",
+        "timed_observation": {
+          "drive_number": 1,
+          "game_id": "2025_22_SEA_NE",
+          "play_id": "40.0"
+        },
+        "training_cutoff_exclusive": "2026-02-08T00:00:00+00:00",
+        "training_games": 2995,
+        "training_observations": 66777,
+        "training_time_included": false
+      },
+      "model_id": "MODEL-NFL-LOGISTIC",
+      "model_version": "v0",
+      "sport": "nfl",
+      "stages": {
+        "end_to_end": {
+          "max_ns": 136166,
+          "measurement": "single_observation_warm_inference",
+          "p50_ns": 84833,
+          "p95_ns": 88000,
+          "p99_ns": 94584,
+          "timed_iterations": 1000,
+          "timer": "time.perf_counter_ns",
+          "unit": "nanoseconds",
+          "warmup_iterations": 100
+        },
+        "feature_binding": {
+          "max_ns": 6500,
+          "measurement": "single_observation_warm_inference",
+          "p50_ns": 459,
+          "p95_ns": 500,
+          "p99_ns": 583,
+          "timed_iterations": 1000,
+          "timer": "time.perf_counter_ns",
+          "unit": "nanoseconds",
+          "warmup_iterations": 100
+        },
+        "model_inference": {
+          "max_ns": 518125,
+          "measurement": "single_observation_warm_inference",
+          "p50_ns": 85292,
+          "p95_ns": 130625,
+          "p99_ns": 216791,
+          "timed_iterations": 1000,
+          "timer": "time.perf_counter_ns",
+          "unit": "nanoseconds",
+          "warmup_iterations": 100
+        },
+        "output_validation": {
+          "max_ns": 8667,
+          "measurement": "single_observation_warm_inference",
+          "p50_ns": 2625,
+          "p95_ns": 2709,
+          "p99_ns": 2792,
+          "timed_iterations": 1000,
+          "timer": "time.perf_counter_ns",
+          "unit": "nanoseconds",
+          "warmup_iterations": 100
+        }
+      }
+    },
+    {
+      "accuracy_reference": {
+        "evidence_file_sha256": "sha256:1d0c033459c69778e265be3fca16ae2c87f650d5003a61ffdea4c020a4fd0b05",
+        "evidence_path": "artifacts/game-state/nfl/x11_real_data_pipeline_evidence_v0.json",
+        "evidence_sha256": "sha256:bde6d9271c960dde4bfef7a4391fd8f053e3967b64da7975d888f652d7f8dacc",
+        "metric_pointer": "/outcome_evaluation/models/gbdt",
+        "reported_metrics": {
+          "brier": 0.1601355194838822,
+          "calibration_intercept": -0.08030661653975636,
+          "calibration_slope": 1.648707244068044,
+          "log_loss": 0.4947853948419903,
+          "observations": 36734
+        },
+        "status": "referenced_existing_evidence_not_recomputed"
+      },
+      "experiment_id": "X-11",
+      "lineage": {
+        "dataset_id": "DS-NFLVERSE",
+        "feature_names": [
+          "home_score_differential",
+          "game_seconds_remaining",
+          "possession_home",
+          "home_timeouts_remaining",
+          "away_timeouts_remaining",
+          "spread_prior"
+        ],
+        "feature_vector_sha256": "sha256:41be3e9ded2fbc8b04ea2ed953062c1a851e943347bafe8e660f3826fc1bd179",
+        "input_inventory_sha256": "sha256:c3e0a6faf3ced30fb94572fd8e488026c52984d55d5c03a497400f11c96b3646",
+        "source_kind": "frozen_real_data_last_fold_fit",
+        "timed_observation": {
+          "drive_number": 1,
+          "game_id": "2025_22_SEA_NE",
+          "play_id": "40.0"
+        },
+        "training_cutoff_exclusive": "2026-02-08T00:00:00+00:00",
+        "training_games": 2995,
+        "training_observations": 66777,
+        "training_time_included": false
+      },
+      "model_id": "MODEL-NFL-GBDT",
+      "model_version": "v0",
+      "sport": "nfl",
+      "stages": {
+        "end_to_end": {
+          "max_ns": 3794875,
+          "measurement": "single_observation_warm_inference",
+          "p50_ns": 756625,
+          "p95_ns": 1990000,
+          "p99_ns": 2482708,
+          "timed_iterations": 1000,
+          "timer": "time.perf_counter_ns",
+          "unit": "nanoseconds",
+          "warmup_iterations": 100
+        },
+        "feature_binding": {
+          "max_ns": 542,
+          "measurement": "single_observation_warm_inference",
+          "p50_ns": 500,
+          "p95_ns": 541,
+          "p99_ns": 542,
+          "timed_iterations": 1000,
+          "timer": "time.perf_counter_ns",
+          "unit": "nanoseconds",
+          "warmup_iterations": 100
+        },
+        "model_inference": {
+          "max_ns": 8351084,
+          "measurement": "single_observation_warm_inference",
+          "p50_ns": 753834,
+          "p95_ns": 2089000,
+          "p99_ns": 3082000,
+          "timed_iterations": 1000,
+          "timer": "time.perf_counter_ns",
+          "unit": "nanoseconds",
+          "warmup_iterations": 100
+        },
+        "output_validation": {
+          "max_ns": 3125,
+          "measurement": "single_observation_warm_inference",
+          "p50_ns": 2833,
+          "p95_ns": 2917,
+          "p99_ns": 2958,
+          "timed_iterations": 1000,
+          "timer": "time.perf_counter_ns",
+          "unit": "nanoseconds",
+          "warmup_iterations": 100
+        }
+      }
+    },
+    {
+      "accuracy_reference": {
+        "evidence_file_sha256": "sha256:1d0c033459c69778e265be3fca16ae2c87f650d5003a61ffdea4c020a4fd0b05",
+        "evidence_path": "artifacts/game-state/nfl/x11_real_data_pipeline_evidence_v0.json",
+        "evidence_sha256": "sha256:bde6d9271c960dde4bfef7a4391fd8f053e3967b64da7975d888f652d7f8dacc",
+        "metric_pointer": "/transition_evaluation/metrics",
+        "reported_metrics": {
+          "brier": 0.7309619793187239,
+          "log_loss": 1.440647066541783,
+          "observations": 36867
+        },
+        "status": "referenced_existing_evidence_not_recomputed"
+      },
+      "experiment_id": "X-11",
+      "lineage": {
+        "dataset_id": "DS-NFLVERSE",
+        "feature_names": [
+          "home_score_differential",
+          "game_seconds_remaining",
+          "possession_home",
+          "home_timeouts_remaining",
+          "away_timeouts_remaining",
+          "spread_prior"
+        ],
+        "feature_vector_sha256": "sha256:41be3e9ded2fbc8b04ea2ed953062c1a851e943347bafe8e660f3826fc1bd179",
+        "input_inventory_sha256": "sha256:c3e0a6faf3ced30fb94572fd8e488026c52984d55d5c03a497400f11c96b3646",
+        "source_kind": "frozen_real_data_last_fold_fit",
+        "timed_observation": {
+          "drive_number": 1,
+          "game_id": "2025_22_SEA_NE",
+          "play_id": "40.0"
+        },
+        "training_cutoff_exclusive": "2026-02-08T00:00:00+00:00",
+        "training_games": 2995,
+        "training_observations": 66777,
+        "training_time_included": false
+      },
+      "model_id": "MODEL-NFL-DRIVE-TRANSITION",
+      "model_version": "v1",
+      "sport": "nfl",
+      "stages": {
+        "end_to_end": {
+          "max_ns": 1566875,
+          "measurement": "single_observation_warm_inference",
+          "p50_ns": 107792,
+          "p95_ns": 116459,
+          "p99_ns": 342750,
+          "timed_iterations": 1000,
+          "timer": "time.perf_counter_ns",
+          "unit": "nanoseconds",
+          "warmup_iterations": 100
+        },
+        "feature_binding": {
+          "max_ns": 9916,
+          "measurement": "single_observation_warm_inference",
+          "p50_ns": 459,
+          "p95_ns": 500,
+          "p99_ns": 583,
+          "timed_iterations": 1000,
+          "timer": "time.perf_counter_ns",
+          "unit": "nanoseconds",
+          "warmup_iterations": 100
+        },
+        "model_inference": {
+          "max_ns": 366500,
+          "measurement": "single_observation_warm_inference",
+          "p50_ns": 109959,
+          "p95_ns": 115709,
+          "p99_ns": 124333,
+          "timed_iterations": 1000,
+          "timer": "time.perf_counter_ns",
+          "unit": "nanoseconds",
+          "warmup_iterations": 100
+        },
+        "output_validation": {
+          "max_ns": 3959,
+          "measurement": "single_observation_warm_inference",
+          "p50_ns": 3125,
+          "p95_ns": 3208,
+          "p99_ns": 3250,
+          "timed_iterations": 1000,
+          "timer": "time.perf_counter_ns",
+          "unit": "nanoseconds",
+          "warmup_iterations": 100
+        }
+      }
+    },
+    {
+      "accuracy_reference": {
+        "evidence_file_sha256": "sha256:34b80e999885f3c44c0a9366b7595ed24080623e42fc2e4e4ed2c264fceb61eb",
+        "evidence_path": "artifacts/game-state/soccer/x12_real_data_poc_v0.json",
+        "evidence_sha256": "sha256:c455191f2d619ce68ac2b2059a5e2739a7823b4940e8c21f1b2a554bbd7887b1",
+        "metric_pointer": "/outcome_evaluation/metrics",
+        "reported_metrics": {
+          "brier": 0.6333086250422754,
+          "log_loss": 1.0566358383349692,
+          "observations": 280
+        },
+        "status": "referenced_existing_evidence_not_recomputed"
+      },
+      "experiment_id": "X-12",
+      "lineage": {
+        "dataset_id": "DS-STATSBOMB-OPEN",
+        "feature_names": [
+          "home_team_id",
+          "away_team_id"
+        ],
+        "feature_vector_sha256": "sha256:59265cbbc5ab0f2678098fece4c5a67f8b9a3e7432806c879eed19545c3e985f",
+        "input_inventory_sha256": "sha256:f45bca3335610821e1d49783d274c80c6b532be1c43002a1406393316f1a54cf",
+        "source_kind": "frozen_real_data_last_fold_fit",
+        "timed_observation": {
+          "away_team_id": 28,
+          "home_team_id": 39,
+          "match_id": 3754159
+        },
+        "training_cutoff_exclusive": "2016-05-17T00:00:00+00:00",
+        "training_matches": 379,
+        "training_time_included": false
+      },
+      "model_id": "MODEL-SOCCER-DIXON-COLES",
+      "model_version": "v0",
+      "sport": "soccer",
+      "stages": {
+        "end_to_end": {
+          "max_ns": 28417,
+          "measurement": "single_observation_warm_inference",
+          "p50_ns": 19250,
+          "p95_ns": 19458,
+          "p99_ns": 19625,
+          "timed_iterations": 1000,
+          "timer": "time.perf_counter_ns",
+          "unit": "nanoseconds",
+          "warmup_iterations": 100
+        },
+        "feature_binding": {
+          "max_ns": 292,
+          "measurement": "single_observation_warm_inference",
+          "p50_ns": 83,
+          "p95_ns": 84,
+          "p99_ns": 84,
+          "timed_iterations": 1000,
+          "timer": "time.perf_counter_ns",
+          "unit": "nanoseconds",
+          "warmup_iterations": 100
+        },
+        "model_inference": {
+          "max_ns": 30000,
+          "measurement": "single_observation_warm_inference",
+          "p50_ns": 19250,
+          "p95_ns": 19500,
+          "p99_ns": 20083,
+          "timed_iterations": 1000,
+          "timer": "time.perf_counter_ns",
+          "unit": "nanoseconds",
+          "warmup_iterations": 100
+        },
+        "output_validation": {
+          "max_ns": 3167,
+          "measurement": "single_observation_warm_inference",
+          "p50_ns": 3041,
+          "p95_ns": 3084,
+          "p99_ns": 3125,
+          "timed_iterations": 1000,
+          "timer": "time.perf_counter_ns",
+          "unit": "nanoseconds",
+          "warmup_iterations": 100
+        }
+      }
+    },
+    {
+      "accuracy_reference": {
+        "evidence_file_sha256": "sha256:34b80e999885f3c44c0a9366b7595ed24080623e42fc2e4e4ed2c264fceb61eb",
+        "evidence_path": "artifacts/game-state/soccer/x12_real_data_poc_v0.json",
+        "evidence_sha256": "sha256:c455191f2d619ce68ac2b2059a5e2739a7823b4940e8c21f1b2a554bbd7887b1",
+        "metric_pointer": "/transition_output/metrics",
+        "reported_metrics": {
+          "brier": 0.24552780282114847,
+          "log_loss": 0.49219732711024167,
+          "observations": 5040
+        },
+        "status": "referenced_existing_evidence_not_recomputed"
+      },
+      "experiment_id": "X-12",
+      "lineage": {
+        "dataset_id": "DS-STATSBOMB-OPEN",
+        "feature_names": [
+          "home_team_id",
+          "away_team_id"
+        ],
+        "feature_vector_sha256": "sha256:59265cbbc5ab0f2678098fece4c5a67f8b9a3e7432806c879eed19545c3e985f",
+        "input_inventory_sha256": "sha256:f45bca3335610821e1d49783d274c80c6b532be1c43002a1406393316f1a54cf",
+        "source_kind": "frozen_real_data_last_fold_fit",
+        "timed_observation": {
+          "away_team_id": 28,
+          "home_team_id": 39,
+          "match_id": 3754159
+        },
+        "training_cutoff_exclusive": "2016-05-17T00:00:00+00:00",
+        "training_matches": 379,
+        "training_time_included": false
+      },
+      "model_id": "MODEL-SOCCER-FIVE-MINUTE-TRANSITION",
+      "model_version": "v1",
+      "sport": "soccer",
+      "stages": {
+        "end_to_end": {
+          "max_ns": 12125,
+          "measurement": "single_observation_warm_inference",
+          "p50_ns": 5667,
+          "p95_ns": 5792,
+          "p99_ns": 5875,
+          "timed_iterations": 1000,
+          "timer": "time.perf_counter_ns",
+          "unit": "nanoseconds",
+          "warmup_iterations": 100
+        },
+        "feature_binding": {
+          "max_ns": 125,
+          "measurement": "single_observation_warm_inference",
+          "p50_ns": 83,
+          "p95_ns": 84,
+          "p99_ns": 84,
+          "timed_iterations": 1000,
+          "timer": "time.perf_counter_ns",
+          "unit": "nanoseconds",
+          "warmup_iterations": 100
+        },
+        "model_inference": {
+          "max_ns": 14541,
+          "measurement": "single_observation_warm_inference",
+          "p50_ns": 5625,
+          "p95_ns": 5750,
+          "p99_ns": 5833,
+          "timed_iterations": 1000,
+          "timer": "time.perf_counter_ns",
+          "unit": "nanoseconds",
+          "warmup_iterations": 100
+        },
+        "output_validation": {
+          "max_ns": 3208,
+          "measurement": "single_observation_warm_inference",
+          "p50_ns": 3000,
+          "p95_ns": 3083,
+          "p99_ns": 3125,
+          "timed_iterations": 1000,
+          "timer": "time.perf_counter_ns",
+          "unit": "nanoseconds",
+          "warmup_iterations": 100
+        }
+      }
+    }
+  ],
+  "generated_at": "2026-07-23T16:16:26.431404Z",
+  "limitations": [
+    "engineering benchmark only; no live SLA or production claim",
+    "accuracy is referenced from existing evidence and is not recomputed",
+    "wall-clock results are machine- and load-specific",
+    "prediction-market transport, joins, and execution are out of scope"
+  ],
+  "live_sla_claimed": false,
+  "protocol": {
+    "minimum_timed_iterations": 1000,
+    "percentile_method": "nearest_rank",
+    "single_observation": true,
+    "stages": [
+      "feature_binding",
+      "model_inference",
+      "output_validation",
+      "end_to_end"
+    ],
+    "timed_iterations": 1000,
+    "timer": "time.perf_counter_ns",
+    "training_timed": false,
+    "warmup_iterations": 100
+  },
+  "report_sha256": "sha256:5c4a2198b62b1ab22e31c588237393abf1d8d80eebeefe6e04de5338f4ac78be",
+  "result_label": "PRELIMINARY_ENGINEERING_BENCHMARK",
+  "runtime": {
+    "clock": {
+      "adjustable": false,
+      "implementation": "mach_absolute_time()",
+      "monotonic": true,
+      "name": "perf_counter",
+      "resolution_ns": 42
+    },
+    "logical_cpu_count": 10,
+    "machine": "arm64",
+    "packages": {
+      "numpy": "2.5.1",
+      "pandas": "3.0.3",
+      "scikit-learn": "1.9.0",
+      "scipy": "1.18.0"
+    },
+    "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+    "processor": "arm",
+    "python_implementation": "CPython",
+    "python_version": "3.13.12",
+    "thread_environment": {
+      "MKL_NUM_THREADS": "unset",
+      "OMP_NUM_THREADS": "unset",
+      "OPENBLAS_NUM_THREADS": "unset",
+      "VECLIB_MAXIMUM_THREADS": "unset"
+    }
+  },
+  "scope": "warm single-observation inference on fitted last-fold models; training, data loading, network, and market joins are excluded",
+  "unavailable_sports": [
+    {
+      "latency": null,
+      "models": [],
+      "sport": "nba",
+      "status": "not_measured_no_eligible_model"
+    },
+    {
+      "latency": null,
+      "models": [],
+      "sport": "mlb",
+      "status": "not_measured_no_eligible_model"
+    },
+    {
+      "latency": null,
+      "models": [],
+      "sport": "f1",
+      "status": "not_measured_no_eligible_model"
+    }
+  ],
+  "version": "v0"
+}
