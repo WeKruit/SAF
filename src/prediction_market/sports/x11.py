@@ -9,6 +9,7 @@ from collections.abc import Iterable
 from dataclasses import asdict, dataclass, replace
 from io import BytesIO
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import pandas as pd
@@ -20,15 +21,19 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
+from prediction_market import contracts
 from prediction_market.models.validation import (
     ValidationInputError,
     evaluate_model_vs_prior,
     evaluate_probabilities,
 )
 from prediction_market.sports.nflverse import (
+    NFLVERSE_RELEASE_ID,
     NFLVERSE_RELEASE_VERSION,
+    NFLVERSE_YEAR_ASSET_IDS,
     NFLVerseSourceError,
     inspect_nflverse_partition,
+    nflverse_partition_url,
 )
 from prediction_market.static_store import read_verified_static_object
 
@@ -37,8 +42,60 @@ X11_YEARS = tuple(range(2015, 2026))
 X11_NFLVERSE_VERSION = NFLVERSE_RELEASE_VERSION
 X11_DATASET_ID = "DS-NFLVERSE"
 X11_SOURCE = "nflverse"
+X11_LICENSE_REF = "I-018"
+X11_LICENSE_STATUS = "approved"
 X11_SEED = 20260722
-X11_RESULT_LABEL = "PRELIMINARY_PIT_UNPROVEN"
+X11_RESULT_LABEL = "PRELIMINARY"
+X11_PIT_STATUS = "PIT_UNPROVEN"
+X11_EXPERIMENT_ID = "X-11"
+X11_TRANSITION_MODEL_ID = "MODEL-NFL-DRIVE-TRANSITION"
+X11_TRANSITION_MODEL_VERSION = "v1"
+X11_FROZEN_PARTITION_ALLOWLIST = MappingProxyType({
+    2015: (
+        "sha256:01b5ae7d06633a2e66b418404461a3d4ff055ad2f3a87d453cebcc8d3fda7ed9",
+        "sha256:879e24069b394aeb76267515b2bd8201b75927293e5e0a5c99f0b017648d7c1f",
+    ),
+    2016: (
+        "sha256:95eba04e2145e3c1c8ca502f2a3a76cfb0a5990680c3fb480f02a74a45f54a3b",
+        "sha256:879e24069b394aeb76267515b2bd8201b75927293e5e0a5c99f0b017648d7c1f",
+    ),
+    2017: (
+        "sha256:84eacd963c1fdd45965f6222c62e9329a7f3412f029d92c1ac5e34a1bb4d3710",
+        "sha256:879e24069b394aeb76267515b2bd8201b75927293e5e0a5c99f0b017648d7c1f",
+    ),
+    2018: (
+        "sha256:2e6f2dce7c7ebd46e985cabe0c17eb72b39a77f98cb4478409294f50b5820150",
+        "sha256:879e24069b394aeb76267515b2bd8201b75927293e5e0a5c99f0b017648d7c1f",
+    ),
+    2019: (
+        "sha256:60c3067017db2d28a78f66a79b657268be8578d9a5288e6a827efdcd7fe42540",
+        "sha256:879e24069b394aeb76267515b2bd8201b75927293e5e0a5c99f0b017648d7c1f",
+    ),
+    2020: (
+        "sha256:73b7dbf66fa8cb9356f58bf6b1f15a0fee197ecc10cf4983b640cb9679b15cb4",
+        "sha256:879e24069b394aeb76267515b2bd8201b75927293e5e0a5c99f0b017648d7c1f",
+    ),
+    2021: (
+        "sha256:333ad34378e5339d5172717cc83378e908daf02c8699416ab3e17c2ec10f78d8",
+        "sha256:879e24069b394aeb76267515b2bd8201b75927293e5e0a5c99f0b017648d7c1f",
+    ),
+    2022: (
+        "sha256:931121d8897779d7944e2a293e92ed8799c8e5cceef84096ac42339003fedc09",
+        "sha256:879e24069b394aeb76267515b2bd8201b75927293e5e0a5c99f0b017648d7c1f",
+    ),
+    2023: (
+        "sha256:bd3484731408def6b0ec93225bba2bd7b2c65769ca707a2b9444d891abdc6776",
+        "sha256:879e24069b394aeb76267515b2bd8201b75927293e5e0a5c99f0b017648d7c1f",
+    ),
+    2024: (
+        "sha256:6d432dd4308329bfddaef633309ea119f9ca46d52cbb3c09f47172a2e8efcd01",
+        "sha256:879e24069b394aeb76267515b2bd8201b75927293e5e0a5c99f0b017648d7c1f",
+    ),
+    2025: (
+        "sha256:3730c4db2ab99d2dfc4017de975b7610c46c35301b9280b65c03de1b1c74265a",
+        "sha256:879e24069b394aeb76267515b2bd8201b75927293e5e0a5c99f0b017648d7c1f",
+    ),
+})
 
 TRANSITION_CLASSES = (
     "touchdown",
@@ -123,6 +180,7 @@ class X11LoadedDataset:
     inventory: X11InputInventory
     drive_starts: pd.DataFrame
     chronology_sha256: str
+    normalized_frame_sha256: str
     adapter_audit: X11AdapterAudit
 
 
@@ -149,7 +207,15 @@ class X11Evaluation:
     outcome_metrics: dict[str, dict[str, object]]
     transition_metrics: dict[str, object]
     tie_report: dict[str, object]
+    season_stability: dict[str, object]
     model_features: dict[str, tuple[str, ...]]
+    normalized_frame_sha256: str
+    evaluation_input_sha256: str
+    predictions_sha256: str
+    transition_predictions_sha256: str
+    transition_outputs: tuple[dict[str, object], ...]
+    transition_outputs_sha256: str
+    evaluation_sha256: str
     bootstrap_samples: int
     minimum_valid_bootstrap_samples: int
     confidence_level: float
@@ -234,6 +300,75 @@ def evidence_sha256(evidence: dict[str, object]) -> str:
     return _sha256(_json_ready(material))
 
 
+def evaluation_sha256(evaluation: X11Evaluation) -> str:
+    """Hash every frozen X-11 evaluation result and its content hashes."""
+
+    if not isinstance(evaluation, X11Evaluation):
+        raise TypeError("evaluation must be an X11Evaluation")
+    material = {
+        "result_label": evaluation.result_label,
+        "seed": evaluation.seed,
+        "normalized_frame_sha256": evaluation.normalized_frame_sha256,
+        "evaluation_input_sha256": evaluation.evaluation_input_sha256,
+        "predictions_sha256": evaluation.predictions_sha256,
+        "transition_predictions_sha256": (
+            evaluation.transition_predictions_sha256
+        ),
+        "transition_outputs_sha256": evaluation.transition_outputs_sha256,
+        "folds": [asdict(fold) for fold in evaluation.folds],
+        "outcome_metrics": evaluation.outcome_metrics,
+        "transition_metrics": evaluation.transition_metrics,
+        "tie_report": evaluation.tie_report,
+        "season_stability": evaluation.season_stability,
+        "model_features": {
+            name: list(features)
+            for name, features in evaluation.model_features.items()
+        },
+        "bootstrap_samples": evaluation.bootstrap_samples,
+        "minimum_valid_bootstrap_samples": (
+            evaluation.minimum_valid_bootstrap_samples
+        ),
+        "confidence_level": evaluation.confidence_level,
+        "evaluation_game_limit": evaluation.evaluation_game_limit,
+        "minimum_prior_train_games": evaluation.minimum_prior_train_games,
+        "gbdt_max_iter": evaluation.gbdt_max_iter,
+    }
+    return _sha256(_json_ready(material))
+
+
+def expected_nflverse_source_cursor(year: int) -> str:
+    """Return the frozen official release/asset cursor for one X-11 season."""
+
+    if year not in X11_YEARS:
+        raise X11DataError("X-11 source cursor year must be in 2015-2025")
+    return (
+        f"github_release_id:{NFLVERSE_RELEASE_ID};"
+        f"asset_id:{NFLVERSE_YEAR_ASSET_IDS[year]}"
+    )
+
+
+def _matches_frozen_partition_source(
+    manifest: Any,
+    *,
+    year: int,
+) -> bool:
+    expected_object, expected_schema = X11_FROZEN_PARTITION_ALLOWLIST[year]
+    get = manifest.get if isinstance(manifest, dict) else lambda key: getattr(
+        manifest, key, None
+    )
+    return (
+        get("license_ref") == X11_LICENSE_REF
+        and get("license_status") == X11_LICENSE_STATUS
+        and get("dataset_id") == X11_DATASET_ID
+        and get("upstream_partition") == f"season-{year}"
+        and get("object_kind") == "byte_exact_original"
+        and get("source_url") == nflverse_partition_url(year)
+        and get("source_cursor") == expected_nflverse_source_cursor(year)
+        and get("object_sha256") == expected_object
+        and get("schema_fingerprint") == expected_schema
+    )
+
+
 def _discover_manifest_paths(store_root: Path) -> tuple[Path, ...]:
     base = (
         store_root
@@ -244,13 +379,29 @@ def _discover_manifest_paths(store_root: Path) -> tuple[Path, ...]:
     )
     paths: list[Path] = []
     for year in X11_YEARS:
-        matches = tuple(
+        observed = tuple(
             sorted((base / f"partition=season-{year}").glob("*.manifest.json"))
         )
+        matches: list[Path] = []
+        for path in observed:
+            try:
+                document = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError) as error:
+                raise X11DataError(
+                    f"cannot classify X-11 manifest observation: {path}"
+                ) from error
+            if not isinstance(document, dict):
+                raise X11DataError(
+                    f"X-11 manifest observation must be an object: {path}"
+                )
+            if _matches_frozen_partition_source(document, year=year):
+                matches.append(path)
         if len(matches) != 1:
             raise X11DataError(
-                "X-11 requires exactly one manifest for "
-                f"season-{year}; found {len(matches)}"
+                "X-11 requires exactly one governed "
+                f"{X11_LICENSE_REF}/{X11_LICENSE_STATUS} manifest for "
+                f"season-{year}; found {len(matches)} among {len(observed)} "
+                "append-only observations"
             )
         paths.append(matches[0])
     return tuple(paths)
@@ -521,6 +672,94 @@ def chronology_sha256(frame: pd.DataFrame) -> str:
     return _sha256(_chronology_material(frame))
 
 
+_NORMALIZED_FRAME_COLUMNS = (
+    "game_order",
+    "game_id",
+    "season",
+    "season_type",
+    "week",
+    "game_date",
+    "home_team",
+    "away_team",
+    "drive_number",
+    "play_id",
+    "home_score_differential",
+    "game_seconds_remaining",
+    "possession_home",
+    "home_timeouts_remaining",
+    "away_timeouts_remaining",
+    "spread_line",
+    "home_wp",
+    "final_outcome",
+    "home_win",
+    "next_drive_outcome",
+    "manifest_sha256",
+    "object_sha256",
+    "schema_fingerprint",
+)
+
+
+def _frame_scalar(value: object) -> object:
+    try:
+        missing = pd.isna(value)
+    except (TypeError, ValueError):
+        missing = False
+    if isinstance(missing, (bool, np.bool_)) and missing:
+        return None
+    return _json_ready(value)
+
+
+def _frame_sha256(
+    frame: pd.DataFrame,
+    *,
+    columns: tuple[str, ...],
+    context: str,
+) -> str:
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        raise X11DataError(f"{context} must be a nonempty DataFrame")
+    missing = sorted(set(columns) - set(frame.columns))
+    if missing:
+        raise X11DataError(f"{context} is missing columns: {missing}")
+    digest = hashlib.sha256()
+    digest.update(_canonical_bytes({"columns": list(columns)}))
+    digest.update(b"\n")
+    for row in frame.loc[:, columns].itertuples(index=False, name=None):
+        digest.update(_canonical_bytes([_frame_scalar(value) for value in row]))
+        digest.update(b"\n")
+    return _HASH_PREFIX + digest.hexdigest()
+
+
+def normalized_frame_sha256(frame: pd.DataFrame) -> str:
+    """Hash every canonical normalized row consumed by the X-11 runner."""
+
+    return _frame_sha256(
+        frame,
+        columns=_NORMALIZED_FRAME_COLUMNS,
+        context="normalized X-11 frame",
+    )
+
+
+_EVALUATION_INPUT_COLUMNS = (
+    *_NORMALIZED_FRAME_COLUMNS,
+    "spread_prior",
+    "prior_train_game_count",
+    "prior_train_max_game_date",
+    "prior_pit_cutoff",
+    "prior_method",
+    "prior_pit_status",
+)
+
+
+def evaluation_input_sha256(frame: pd.DataFrame) -> str:
+    """Hash the exact normalized plus derived PIT frame consumed by model fitting."""
+
+    return _frame_sha256(
+        frame,
+        columns=_EVALUATION_INPUT_COLUMNS,
+        context="X-11 evaluation input frame",
+    )
+
+
 def attach_point_in_time_spread_prior(
     frame: pd.DataFrame,
     *,
@@ -601,7 +840,7 @@ def attach_point_in_time_spread_prior(
     )
     games["prior_pit_cutoff"] = games["game_date"]
     games["prior_method"] = "logistic_spread_line_strict_prior_game_dates"
-    games["prior_pit_status"] = X11_RESULT_LABEL
+    games["prior_pit_status"] = X11_PIT_STATUS
     for cutoff in games["game_date"].drop_duplicates().sort_values():
         train = games.loc[
             (games["game_date"] < cutoff) & (games["final_outcome"] != "tie")
@@ -821,6 +1060,319 @@ def _evaluate_transitions(
     }
 
 
+def _dataframe_content_sha256(frame: pd.DataFrame, context: str) -> str:
+    return _frame_sha256(
+        frame,
+        columns=tuple(str(column) for column in frame.columns),
+        context=context,
+    )
+
+
+def _fixed_point_probabilities(
+    probabilities: dict[str, float],
+    *,
+    scale: int = 15,
+) -> dict[str, dict[str, object]]:
+    if set(probabilities) != set(TRANSITION_CLASSES):
+        raise X11DataError("fixed-point probabilities must match transition classes")
+    values = np.asarray(
+        [probabilities[label] for label in TRANSITION_CLASSES],
+        dtype=float,
+    )
+    if (
+        not np.all(np.isfinite(values))
+        or np.any(values < 0)
+        or not math.isclose(float(values.sum()), 1.0, rel_tol=0.0, abs_tol=1e-12)
+    ):
+        raise X11DataError("transition probabilities cannot be fixed-point encoded")
+    denominator = 10**scale
+    scaled = values * denominator
+    atoms = np.floor(scaled).astype(object)
+    remainder = denominator - int(sum(int(value) for value in atoms))
+    order = sorted(
+        range(len(TRANSITION_CLASSES)),
+        key=lambda index: (-(scaled[index] - math.floor(scaled[index])), index),
+    )
+    for index in order[:remainder]:
+        atoms[index] = int(atoms[index]) + 1
+    if sum(int(value) for value in atoms) != denominator:
+        raise X11DataError("fixed-point transition probabilities are not exact")
+    return {
+        label: {"atoms": str(int(atoms[index])), "scale": scale}
+        for index, label in enumerate(TRANSITION_CLASSES)
+    }
+
+
+def _nominal_pit_cutoff_at(row: Any) -> str:
+    remaining = float(row.game_seconds_remaining)
+    if not math.isfinite(remaining) or not 0 <= remaining <= 3600:
+        raise X11DataError("game_seconds_remaining cannot define a PIT cutoff")
+    game_date = pd.Timestamp(row.game_date)
+    if game_date.tzinfo is None or str(game_date.tz) != "UTC":
+        raise X11DataError("transition game_date must be timezone-aware UTC")
+    cutoff = game_date + pd.Timedelta(seconds=3600.0 - remaining)
+    return cutoff.isoformat().replace("+00:00", "Z")
+
+
+def _transition_config_sha256(*, minimum_prior_train_games: int) -> str:
+    return _sha256(
+        {
+            "model_id": X11_TRANSITION_MODEL_ID,
+            "model_version": X11_TRANSITION_MODEL_VERSION,
+            "estimator": "StandardScaler+LogisticRegression",
+            "solver": "lbfgs",
+            "max_iter": 1000,
+            "features": list(GAME_STATE_FEATURES),
+            "state_space": list(TRANSITION_CLASSES),
+            "training_rule": "game_date_strictly_less_than_test_game_date",
+            "minimum_prior_train_games": minimum_prior_train_games,
+            "seed": X11_SEED,
+        }
+    )
+
+
+def _transition_contract_document(
+    row: Any,
+    *,
+    data_sha256: str,
+    config_sha256: str,
+) -> dict[str, object]:
+    pit_cutoff_at = str(row.pit_cutoff_at)
+    features = {
+        name: float(getattr(row, name))
+        for name in GAME_STATE_FEATURES
+    }
+    feature_sha256 = _sha256(
+        {
+            "native_game_id": str(row.game_id),
+            "drive_number": int(row.drive_number),
+            "play_id": float(row.play_id),
+            "pit_cutoff_at": pit_cutoff_at,
+            "features": features,
+            "manifest_sha256": str(row.manifest_sha256),
+            "object_sha256": str(row.object_sha256),
+            "schema_fingerprint": str(row.schema_fingerprint),
+        }
+    )
+    event_digest = hashlib.sha256(
+        _canonical_bytes(
+            {
+                "experiment_id": X11_EXPERIMENT_ID,
+                "native_game_id": str(row.game_id),
+                "drive_number": int(row.drive_number),
+                "play_id": float(row.play_id),
+                "pit_cutoff_at": pit_cutoff_at,
+                "data_sha256": data_sha256,
+                "config_sha256": config_sha256,
+            }
+        )
+    ).hexdigest()
+    probabilities = {
+        label: float(getattr(row, f"probability_{label}"))
+        for label in TRANSITION_CLASSES
+    }
+    return {
+        "contract_version": "v1",
+        "model_id": X11_TRANSITION_MODEL_ID,
+        "model_version": X11_TRANSITION_MODEL_VERSION,
+        "experiment_id": X11_EXPERIMENT_ID,
+        "run_id": (
+            "run_x11_"
+            + data_sha256.removeprefix(_HASH_PREFIX)[:16]
+            + "_"
+            + config_sha256.removeprefix(_HASH_PREFIX)[:16]
+        ),
+        "game_id": f"game_nflverse_{row.game_id}",
+        "state_event_id": f"evt_{event_digest}",
+        "pit_cutoff_at": pit_cutoff_at,
+        "output_kind": "state_transition",
+        "transition_unit": "drive",
+        "state_space": list(TRANSITION_CLASSES),
+        "horizon": "next_state_transition",
+        "probabilities": _fixed_point_probabilities(probabilities),
+        "feature_sha256": feature_sha256,
+        "data_sha256": data_sha256,
+        "config_sha256": config_sha256,
+        "quality_flags": [
+            "preliminary_rules",
+            "source_clock_unverified",
+        ],
+    }
+
+
+def _transition_contract_output(
+    row: Any,
+    *,
+    program_root: Path,
+    data_sha256: str,
+    config_sha256: str,
+) -> dict[str, object]:
+    document = _transition_contract_document(
+        row,
+        data_sha256=data_sha256,
+        config_sha256=config_sha256,
+    )
+    try:
+        validated = contracts.validate_contract_v1(
+            program_root,
+            "model-output/v1.schema.yaml",
+            document,
+        )
+    except (TypeError, ValueError) as error:
+        raise X11DataError(
+            "drive transition failed the registry-backed model-output v1 contract"
+        ) from error
+    if not isinstance(validated, contracts.ModelOutputV1):
+        raise X11DataError("model-output v1 validator returned an invalid type")
+    return validated.model_dump(mode="json")
+
+
+def _season_stability(
+    predictions: pd.DataFrame,
+    transitions: pd.DataFrame,
+    *,
+    bootstrap_samples: int,
+    minimum_valid_bootstrap_samples: int,
+    confidence_level: float,
+) -> dict[str, object]:
+    model_columns = {
+        "spread_prior": "spread_prior_probability",
+        "logistic": "logistic_probability",
+        "gbdt": "gbdt_probability",
+        "nflfastr_home_wp": "nflfastr_home_wp_probability",
+    }
+    reports: dict[str, object] = {}
+    for season in sorted(int(value) for value in predictions["season"].unique()):
+        season_predictions = predictions.loc[predictions["season"] == season]
+        binary = season_predictions.loc[
+            season_predictions["home_win"].notna()
+        ].copy()
+        if binary["game_id"].nunique() < 2 or binary["home_win"].nunique() != 2:
+            raise X11DataError(
+                f"season {season} cannot support registered stability metrics"
+            )
+        y_true = binary["home_win"].to_numpy(dtype=int)
+        groups = binary["game_id"].to_numpy(dtype=object)
+        prior = binary["spread_prior_probability"].to_numpy(dtype=float)
+        models: dict[str, object] = {}
+        try:
+            for model_name, column in model_columns.items():
+                probabilities = binary[column].to_numpy(dtype=float)
+                report = evaluate_probabilities(
+                    y_true,
+                    probabilities,
+                    groups=groups,
+                    bootstrap_samples=bootstrap_samples,
+                    confidence_level=confidence_level,
+                    minimum_valid_samples=minimum_valid_bootstrap_samples,
+                    seed=X11_SEED,
+                )
+                if model_name != "spread_prior":
+                    report["paired_model_minus_prior"] = evaluate_model_vs_prior(
+                        y_true,
+                        probabilities,
+                        prior,
+                        groups=groups,
+                        bootstrap_samples=bootstrap_samples,
+                        confidence_level=confidence_level,
+                        minimum_valid_samples=minimum_valid_bootstrap_samples,
+                        seed=X11_SEED,
+                    )
+                models[model_name] = report
+        except ValidationInputError as error:
+            raise X11DataError(
+                f"season {season} stability evaluation failed closed"
+            ) from error
+        season_transitions = transitions.loc[transitions["season"] == season]
+        transition_report = _evaluate_transitions(
+            season_transitions,
+            bootstrap_samples=bootstrap_samples,
+            confidence_level=confidence_level,
+        )
+        transition_report["games"] = int(
+            season_transitions["game_id"].nunique()
+        )
+        reports[str(season)] = {
+            "outcome_models": models,
+            "binary_games": int(binary["game_id"].nunique()),
+            "binary_observations": len(binary),
+            "transition": transition_report,
+        }
+    return reports
+
+
+def _outcome_metrics_from_predictions(
+    predictions: pd.DataFrame,
+    *,
+    bootstrap_samples: int,
+    minimum_valid_bootstrap_samples: int,
+    confidence_level: float,
+) -> dict[str, dict[str, object]]:
+    binary = predictions.loc[predictions["home_win"].notna()].copy()
+    if binary["game_id"].nunique() < 2 or binary["home_win"].nunique() != 2:
+        raise X11DataError(
+            "evaluation must contain at least two games and both outcomes"
+        )
+    y_true = binary["home_win"].to_numpy(dtype=int)
+    groups = binary["game_id"].to_numpy(dtype=object)
+    model_columns = {
+        "spread_prior": "spread_prior_probability",
+        "logistic": "logistic_probability",
+        "gbdt": "gbdt_probability",
+        "nflfastr_home_wp": "nflfastr_home_wp_probability",
+    }
+    prior_probability = binary["spread_prior_probability"].to_numpy(dtype=float)
+    metrics: dict[str, dict[str, object]] = {}
+    try:
+        for model_name, column in model_columns.items():
+            probabilities = binary[column].to_numpy(dtype=float)
+            report = evaluate_probabilities(
+                y_true,
+                probabilities,
+                groups=groups,
+                bootstrap_samples=bootstrap_samples,
+                confidence_level=confidence_level,
+                minimum_valid_samples=minimum_valid_bootstrap_samples,
+                seed=X11_SEED,
+            )
+            if model_name != "spread_prior":
+                report["paired_model_minus_prior"] = evaluate_model_vs_prior(
+                    y_true,
+                    probabilities,
+                    prior_probability,
+                    groups=groups,
+                    bootstrap_samples=bootstrap_samples,
+                    confidence_level=confidence_level,
+                    minimum_valid_samples=minimum_valid_bootstrap_samples,
+                    seed=X11_SEED,
+                )
+            metrics[model_name] = report
+    except ValidationInputError as error:
+        raise X11DataError("X-11 calibration evaluation failed closed") from error
+    return metrics
+
+
+def _tie_report_from_predictions(
+    predictions: pd.DataFrame,
+) -> dict[str, object]:
+    tie_ids = tuple(
+        sorted(
+            predictions.loc[
+                predictions["final_outcome"] == "tie",
+                "game_id",
+            ].unique()
+        )
+    )
+    return {
+        "games_reported": len(tie_ids),
+        "game_ids": tie_ids,
+        "drive_rows_excluded": int(
+            (predictions["final_outcome"] == "tie").sum()
+        ),
+        "excluded_from_binary_calibration": True,
+    }
+
+
 def _validate_walk_forward_parameters(
     *,
     evaluation_game_limit: int | None,
@@ -855,6 +1407,7 @@ def _validate_walk_forward_parameters(
 def run_x11_walk_forward(
     loaded: X11LoadedDataset,
     *,
+    program_root: str | Path,
     evaluation_game_limit: int | None = None,
     minimum_prior_train_games: int = 32,
     bootstrap_samples: int = 200,
@@ -880,6 +1433,11 @@ def run_x11_walk_forward(
         loaded.chronology_sha256, "chronology_sha256"
     ) != chronology_sha256(loaded.drive_starts):
         raise X11DataError("frozen game chronology SHA-256 is invalid")
+    if _validate_digest(
+        loaded.normalized_frame_sha256,
+        "normalized_frame_sha256",
+    ) != normalized_frame_sha256(loaded.drive_starts):
+        raise X11DataError("frozen normalized frame SHA-256 is invalid")
     frame = attach_point_in_time_spread_prior(
         loaded.drive_starts,
         minimum_train_games=minimum_prior_train_games,
@@ -891,6 +1449,7 @@ def run_x11_walk_forward(
         )
     for feature in GAME_STATE_FEATURES:
         frame[feature] = pd.to_numeric(frame[feature], errors="coerce")
+    evaluation_input_hash = evaluation_input_sha256(frame)
     evaluation_games = (
         frame.loc[frame["season"].between(2020, 2025)][["game_id", "game_date"]]
         .drop_duplicates()
@@ -951,6 +1510,7 @@ def run_x11_walk_forward(
                 "game_date",
                 "drive_number",
                 "play_id",
+                *GAME_STATE_FEATURES,
                 "next_drive_outcome",
                 "manifest_sha256",
                 "object_sha256",
@@ -958,18 +1518,14 @@ def run_x11_walk_forward(
                 "inventory_sha256",
             ]
         ].copy()
-        transition["pit_cutoff"] = [
-            f"{date.strftime('%Y-%m-%d')}/native_preplay/play_id={play_id:g}"
-            for date, play_id in zip(
-                transition["game_date"],
-                transition["play_id"],
-                strict=True,
-            )
+        transition["pit_cutoff_at"] = [
+            _nominal_pit_cutoff_at(row)
+            for row in transition.itertuples(index=False)
         ]
         transition["pit_cutoff_basis"] = (
             "native_preplay_state_at_play_id;training_game_date_strictly_less"
         )
-        transition["pit_status"] = X11_RESULT_LABEL
+        transition["pit_status"] = X11_PIT_STATUS
         for class_index, label in enumerate(TRANSITION_CLASSES):
             transition[f"probability_{label}"] = transition_matrix[:, class_index]
         transition_predictions.append(transition)
@@ -1013,53 +1569,42 @@ def run_x11_walk_forward(
         )
         .reset_index(drop=True)
     )
-    binary = predictions.loc[predictions["home_win"].notna()].copy()
-    if binary["game_id"].nunique() < 2 or binary["home_win"].nunique() != 2:
-        raise X11DataError(
-            "bounded evaluation must contain at least two games and both outcomes"
-        )
-    y_true = binary["home_win"].to_numpy(dtype=int)
-    groups = binary["game_id"].to_numpy(dtype=object)
-    model_columns = {
-        "spread_prior": "spread_prior_probability",
-        "logistic": "logistic_probability",
-        "gbdt": "gbdt_probability",
-        "nflfastr_home_wp": "nflfastr_home_wp_probability",
-    }
-    metrics: dict[str, dict[str, object]] = {}
-    prior_probability = binary[model_columns["spread_prior"]].to_numpy(dtype=float)
-    try:
-        for model_name, column in model_columns.items():
-            probabilities = binary[column].to_numpy(dtype=float)
-            report = evaluate_probabilities(
-                y_true,
-                probabilities,
-                groups=groups,
-                bootstrap_samples=bootstrap_samples,
-                confidence_level=confidence_level,
-                minimum_valid_samples=minimum_valid_bootstrap_samples,
-                seed=X11_SEED,
-            )
-            if model_name != "spread_prior":
-                report["paired_model_minus_prior"] = evaluate_model_vs_prior(
-                    y_true,
-                    probabilities,
-                    prior_probability,
-                    groups=groups,
-                    bootstrap_samples=bootstrap_samples,
-                    confidence_level=confidence_level,
-                    minimum_valid_samples=minimum_valid_bootstrap_samples,
-                    seed=X11_SEED,
-                )
-            metrics[model_name] = report
-    except ValidationInputError as error:
-        raise X11DataError("X-11 calibration evaluation failed closed") from error
-    tie_ids = tuple(
-        sorted(
-            predictions.loc[predictions["final_outcome"] == "tie", "game_id"].unique()
-        )
+    transition_config_hash = _transition_config_sha256(
+        minimum_prior_train_games=minimum_prior_train_games
     )
-    return X11Evaluation(
+    transition_outputs = tuple(
+        _transition_contract_output(
+            row,
+            program_root=Path(program_root),
+            data_sha256=evaluation_input_hash,
+            config_sha256=transition_config_hash,
+        )
+        for row in transitions.itertuples(index=False)
+    )
+    predictions_hash = _dataframe_content_sha256(
+        predictions,
+        "X-11 outcome predictions",
+    )
+    transition_predictions_hash = _dataframe_content_sha256(
+        transitions,
+        "X-11 transition predictions",
+    )
+    transition_outputs_hash = _sha256(list(transition_outputs))
+    metrics = _outcome_metrics_from_predictions(
+        predictions,
+        bootstrap_samples=bootstrap_samples,
+        minimum_valid_bootstrap_samples=minimum_valid_bootstrap_samples,
+        confidence_level=confidence_level,
+    )
+    tie_report = _tie_report_from_predictions(predictions)
+    season_stability = _season_stability(
+        predictions,
+        transitions,
+        bootstrap_samples=bootstrap_samples,
+        minimum_valid_bootstrap_samples=minimum_valid_bootstrap_samples,
+        confidence_level=confidence_level,
+    )
+    evaluation_without_hash = X11Evaluation(
         result_label=X11_RESULT_LABEL,
         seed=X11_SEED,
         predictions=predictions,
@@ -1071,23 +1616,30 @@ def run_x11_walk_forward(
             bootstrap_samples=bootstrap_samples,
             confidence_level=confidence_level,
         ),
-        tie_report={
-            "games_reported": len(tie_ids),
-            "game_ids": tie_ids,
-            "drive_rows_excluded": int((predictions["final_outcome"] == "tie").sum()),
-            "excluded_from_binary_calibration": True,
-        },
+        tie_report=tie_report,
+        season_stability=season_stability,
         model_features={
             "logistic": GAME_STATE_FEATURES,
             "gbdt": GAME_STATE_FEATURES,
             "drive_transition": GAME_STATE_FEATURES,
         },
+        normalized_frame_sha256=loaded.normalized_frame_sha256,
+        evaluation_input_sha256=evaluation_input_hash,
+        predictions_sha256=predictions_hash,
+        transition_predictions_sha256=transition_predictions_hash,
+        transition_outputs=transition_outputs,
+        transition_outputs_sha256=transition_outputs_hash,
+        evaluation_sha256="",
         bootstrap_samples=bootstrap_samples,
         minimum_valid_bootstrap_samples=minimum_valid_bootstrap_samples,
         confidence_level=confidence_level,
         evaluation_game_limit=evaluation_game_limit,
         minimum_prior_train_games=minimum_prior_train_games,
         gbdt_max_iter=gbdt_max_iter,
+    )
+    return replace(
+        evaluation_without_hash,
+        evaluation_sha256=evaluation_sha256(evaluation_without_hash),
     )
 
 
@@ -1102,10 +1654,145 @@ _REGISTRATION_LOCK_IDS = (
 )
 
 
+def _validate_evaluation_integrity(
+    loaded: X11LoadedDataset,
+    evaluation: X11Evaluation,
+    *,
+    program_root: Path,
+) -> None:
+    if inventory_sha256(loaded.inventory) != loaded.inventory.inventory_sha256:
+        raise X11DataError("input inventory self-hash is invalid")
+    if chronology_sha256(loaded.drive_starts) != loaded.chronology_sha256:
+        raise X11DataError("loaded chronology integrity check failed")
+    if normalized_frame_sha256(loaded.drive_starts) != (
+        loaded.normalized_frame_sha256
+    ):
+        raise X11DataError("loaded normalized-frame integrity check failed")
+    if evaluation.result_label != X11_RESULT_LABEL:
+        raise X11DataError("evaluation result label differs from registration")
+    if evaluation.normalized_frame_sha256 != loaded.normalized_frame_sha256:
+        raise X11DataError("evaluation is not bound to the normalized frame")
+
+    derived = attach_point_in_time_spread_prior(
+        loaded.drive_starts,
+        minimum_train_games=evaluation.minimum_prior_train_games,
+    )
+    for feature in GAME_STATE_FEATURES:
+        derived[feature] = pd.to_numeric(derived[feature], errors="coerce")
+    if evaluation_input_sha256(derived) != evaluation.evaluation_input_sha256:
+        raise X11DataError("evaluation input integrity check failed")
+    if _dataframe_content_sha256(
+        evaluation.predictions,
+        "X-11 outcome predictions",
+    ) != evaluation.predictions_sha256:
+        raise X11DataError("outcome prediction integrity check failed")
+    if _dataframe_content_sha256(
+        evaluation.transition_predictions,
+        "X-11 transition predictions",
+    ) != evaluation.transition_predictions_sha256:
+        raise X11DataError("transition prediction integrity check failed")
+    if _sha256(list(evaluation.transition_outputs)) != (
+        evaluation.transition_outputs_sha256
+    ):
+        raise X11DataError("transition output integrity check failed")
+    if len(evaluation.transition_outputs) != len(
+        evaluation.transition_predictions
+    ):
+        raise X11DataError("transition output count integrity check failed")
+    config_sha256 = _transition_config_sha256(
+        minimum_prior_train_games=evaluation.minimum_prior_train_games
+    )
+    expected_outputs = tuple(
+        contracts.ModelOutputV1.model_validate(
+            _transition_contract_document(
+                row,
+                data_sha256=evaluation.evaluation_input_sha256,
+                config_sha256=config_sha256,
+            )
+        ).model_dump(mode="json")
+        for row in evaluation.transition_predictions.itertuples(index=False)
+    )
+    if expected_outputs != evaluation.transition_outputs:
+        raise X11DataError(
+            "transition model-output v1 documents fail integrity comparison"
+        )
+    try:
+        registry_validated = contracts.validate_contract_v1(
+            program_root,
+            "model-output/v1.schema.yaml",
+            evaluation.transition_outputs[0],
+        )
+    except (TypeError, ValueError) as error:
+        raise X11DataError(
+            "transition output registry binding integrity check failed"
+        ) from error
+    if registry_validated.model_dump(mode="json") != (
+        evaluation.transition_outputs[0]
+    ):
+        raise X11DataError("transition output registry validation changed data")
+    expected_outcome_metrics = _outcome_metrics_from_predictions(
+        evaluation.predictions,
+        bootstrap_samples=evaluation.bootstrap_samples,
+        minimum_valid_bootstrap_samples=(
+            evaluation.minimum_valid_bootstrap_samples
+        ),
+        confidence_level=evaluation.confidence_level,
+    )
+    if _json_ready(expected_outcome_metrics) != _json_ready(
+        evaluation.outcome_metrics
+    ):
+        raise X11DataError("outcome metric integrity check failed")
+    expected_transition_metrics = _evaluate_transitions(
+        evaluation.transition_predictions,
+        bootstrap_samples=evaluation.bootstrap_samples,
+        confidence_level=evaluation.confidence_level,
+    )
+    if _json_ready(expected_transition_metrics) != _json_ready(
+        evaluation.transition_metrics
+    ):
+        raise X11DataError("transition metric integrity check failed")
+    if _json_ready(_tie_report_from_predictions(evaluation.predictions)) != (
+        _json_ready(evaluation.tie_report)
+    ):
+        raise X11DataError("tie-report integrity check failed")
+    expected_season_stability = _season_stability(
+        evaluation.predictions,
+        evaluation.transition_predictions,
+        bootstrap_samples=evaluation.bootstrap_samples,
+        minimum_valid_bootstrap_samples=(
+            evaluation.minimum_valid_bootstrap_samples
+        ),
+        confidence_level=evaluation.confidence_level,
+    )
+    if _json_ready(expected_season_stability) != _json_ready(
+        evaluation.season_stability
+    ):
+        raise X11DataError("season-stability integrity check failed")
+    expected_game_ids = tuple(
+        evaluation.predictions[
+            ["game_id", "game_date"]
+        ]
+        .drop_duplicates()
+        .sort_values(["game_date", "game_id"], kind="mergesort")["game_id"]
+        .astype(str)
+    )
+    if tuple(fold.test_game_id for fold in evaluation.folds) != expected_game_ids:
+        raise X11DataError("walk-forward fold integrity check failed")
+    if evaluation.model_features != {
+        "logistic": GAME_STATE_FEATURES,
+        "gbdt": GAME_STATE_FEATURES,
+        "drive_transition": GAME_STATE_FEATURES,
+    }:
+        raise X11DataError("model feature-contract integrity check failed")
+    if evaluation_sha256(evaluation) != evaluation.evaluation_sha256:
+        raise X11DataError("evaluation result integrity check failed")
+
+
 def build_x11_evidence(
     loaded: X11LoadedDataset,
     evaluation: X11Evaluation,
     *,
+    program_root: str | Path,
     execution_mode: str,
 ) -> dict[str, object]:
     """Build non-formal, self-hashed evidence for a real-data pipeline run."""
@@ -1116,10 +1803,16 @@ def build_x11_evidence(
         raise TypeError("evaluation must be an X11Evaluation")
     if execution_mode not in {"bounded_smoke", "full"}:
         raise X11DataError("execution_mode must be bounded_smoke or full")
-    if evaluation.result_label != X11_RESULT_LABEL:
-        raise X11DataError("X-11 evidence cannot upgrade its result label")
-    if inventory_sha256(loaded.inventory) != loaded.inventory.inventory_sha256:
-        raise X11DataError("input inventory self-hash is invalid")
+    try:
+        _validate_evaluation_integrity(
+            loaded,
+            evaluation,
+            program_root=Path(program_root),
+        )
+    except (TypeError, ValueError) as error:
+        raise X11DataError(
+            "X-11 evaluation integrity validation failed"
+        ) from error
     for frame in (
         evaluation.predictions,
         evaluation.transition_predictions,
@@ -1132,38 +1825,25 @@ def build_x11_evidence(
                 "evaluation predictions do not bind to the input inventory"
             )
 
-    distributions: list[dict[str, object]] = []
-    for row in evaluation.transition_predictions.itertuples(index=False):
-        probabilities = {
-            label: float(getattr(row, f"probability_{label}"))
-            for label in TRANSITION_CLASSES
-        }
-        if not math.isclose(
-            sum(probabilities.values()),
-            1.0,
-            rel_tol=0.0,
-            abs_tol=1e-12,
+    if execution_mode == "full":
+        expected_games = set(
+            loaded.drive_starts.loc[
+                loaded.drive_starts["season"].between(2020, 2025),
+                "game_id",
+            ].unique()
+        )
+        evaluated_games = {fold.test_game_id for fold in evaluation.folds}
+        observed_seasons = set(
+            int(value) for value in evaluation.predictions["season"].unique()
+        )
+        if (
+            evaluation.evaluation_game_limit is not None
+            or evaluated_games != expected_games
+            or observed_seasons != set(range(2020, 2026))
         ):
             raise X11DataError(
-                "transition evidence contains a non-normalized distribution"
+                "full X-11 evidence requires every 2020-2025 game and season"
             )
-        distributions.append(
-            {
-                "game_id": row.game_id,
-                "drive_number": int(row.drive_number),
-                "play_id": float(row.play_id),
-                "pit_cutoff": row.pit_cutoff,
-                "pit_cutoff_basis": row.pit_cutoff_basis,
-                "observed_next_drive_outcome": row.next_drive_outcome,
-                "probabilities": probabilities,
-                "lineage": {
-                    "inventory_sha256": row.inventory_sha256,
-                    "manifest_sha256": row.manifest_sha256,
-                    "object_sha256": row.object_sha256,
-                    "schema_fingerprint": row.schema_fingerprint,
-                },
-            }
-        )
     inventory_document = {
         **_inventory_material(loaded.inventory),
         "inventory_sha256": loaded.inventory.inventory_sha256,
@@ -1180,6 +1860,14 @@ def build_x11_evidence(
         "seed": X11_SEED,
         "input_inventory": inventory_document,
         "chronology_sha256": loaded.chronology_sha256,
+        "normalized_frame_sha256": loaded.normalized_frame_sha256,
+        "evaluation_input_sha256": evaluation.evaluation_input_sha256,
+        "predictions_sha256": evaluation.predictions_sha256,
+        "transition_predictions_sha256": (
+            evaluation.transition_predictions_sha256
+        ),
+        "transition_outputs_sha256": evaluation.transition_outputs_sha256,
+        "evaluation_sha256": evaluation.evaluation_sha256,
         "adapter_audit": asdict(loaded.adapter_audit),
         "pit_assessment": {
             "spread_observation_timestamp_proven": False,
@@ -1188,9 +1876,14 @@ def build_x11_evidence(
                 "the train-only mapping is chronological, but source availability "
                 "before each game cannot be proven from this object"
             ),
-            "method_status": X11_RESULT_LABEL,
+            "method_status": X11_PIT_STATUS,
             "prior_method": ("logistic_spread_line_strict_prior_game_dates"),
             "same_date_games_allowed_in_training": False,
+            "transition_cutoff_semantics": (
+                "nominal UTC game_date midnight plus elapsed regulation-clock "
+                "seconds; not an observed wall-clock timestamp"
+            ),
+            "transition_cutoff_quality_flag": "source_clock_unverified",
         },
         "registration_locks": [
             {"id": lock_id, "status": "registry_unresolved"}
@@ -1267,11 +1960,32 @@ def build_x11_evidence(
                 ].nunique()
             ),
         },
+        "season_stability": _json_ready(evaluation.season_stability),
         "transition_evaluation": {
             "state_space": list(TRANSITION_CLASSES),
-            "normalization_tolerance": 1e-12,
+            "output_contract": "model-output/v1.schema.yaml",
             "metrics": _json_ready(evaluation.transition_metrics),
-            "distributions": distributions,
+            "model_outputs": _json_ready(list(evaluation.transition_outputs)),
+            "observed_targets": [
+                {
+                    "state_event_id": output["state_event_id"],
+                    "native_game_id": row.game_id,
+                    "drive_number": int(row.drive_number),
+                    "play_id": float(row.play_id),
+                    "observed_next_drive_outcome": row.next_drive_outcome,
+                    "lineage": {
+                        "inventory_sha256": row.inventory_sha256,
+                        "manifest_sha256": row.manifest_sha256,
+                        "object_sha256": row.object_sha256,
+                        "schema_fingerprint": row.schema_fingerprint,
+                    },
+                }
+                for row, output in zip(
+                    evaluation.transition_predictions.itertuples(index=False),
+                    evaluation.transition_outputs,
+                    strict=True,
+                )
+            ],
         },
     }
     ready = _json_ready(evidence_without_hash)
@@ -1356,6 +2070,11 @@ def load_x11_dataset(
         ):
             raise X11DataError("verified object is outside the frozen X-11 source")
         manifest = record.manifest
+        if not _matches_frozen_partition_source(manifest, year=year):
+            raise X11DataError(
+                f"verified season-{year} manifest does not match the frozen source "
+                "URL, release asset, object SHA-256, schema SHA-256, and license"
+            )
         manifest_hash = _validate_digest(manifest.manifest_sha256, "manifest_sha256")
         object_hash = _validate_digest(manifest.object_sha256, "object_sha256")
         schema_hash = _validate_digest(
@@ -1437,10 +2156,12 @@ def load_x11_dataset(
         raise X11DataError("canonical game count differs from verified inventory")
     tie_games = int(frame.loc[frame["final_outcome"] == "tie", "game_id"].nunique())
     chronology_hash = chronology_sha256(frame)
+    normalized_hash = normalized_frame_sha256(frame)
     return X11LoadedDataset(
         inventory=inventory,
         drive_starts=frame,
         chronology_sha256=chronology_hash,
+        normalized_frame_sha256=normalized_hash,
         adapter_audit=X11AdapterAudit(
             native_drives=native_drives,
             canonical_drive_starts=len(frame),
@@ -1463,16 +2184,27 @@ __all__ = [
     "X11LoadedDataset",
     "X11PartitionInventory",
     "X11_DATASET_ID",
+    "X11_EXPERIMENT_ID",
+    "X11_FROZEN_PARTITION_ALLOWLIST",
+    "X11_LICENSE_REF",
+    "X11_LICENSE_STATUS",
     "X11_NFLVERSE_VERSION",
+    "X11_PIT_STATUS",
     "X11_RESULT_LABEL",
     "X11_SEED",
+    "X11_TRANSITION_MODEL_ID",
+    "X11_TRANSITION_MODEL_VERSION",
     "X11_YEARS",
     "attach_point_in_time_spread_prior",
     "build_x11_evidence",
     "chronology_sha256",
+    "evaluation_input_sha256",
+    "evaluation_sha256",
     "evidence_sha256",
+    "expected_nflverse_source_cursor",
     "inventory_sha256",
     "load_x11_dataset",
+    "normalized_frame_sha256",
     "run_x11_walk_forward",
     "write_x11_evidence",
 ]

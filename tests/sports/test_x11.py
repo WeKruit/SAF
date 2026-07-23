@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import math
@@ -13,12 +14,14 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+from prediction_market import contracts
 from prediction_market.sports import x11
 from prediction_market.sports.nflverse import inspect_nflverse_partition
 from prediction_market.static_store import StaticStoreError
 
 
 YEARS = tuple(range(2015, 2026))
+PROGRAM_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _native_partition(
@@ -78,7 +81,15 @@ def _native_partition(
     return sink.getvalue().to_pybytes()
 
 
-def _verified(year: int, payload: bytes) -> SimpleNamespace:
+def _verified(
+    year: int,
+    payload: bytes,
+    *,
+    license_ref: str = "I-018",
+    license_status: str = "approved",
+    source_url: str | None = None,
+    source_cursor: str | None = None,
+) -> SimpleNamespace:
     audit = inspect_nflverse_partition(payload, expected_year=year)
     manifest_digest = hashlib.sha256(f"manifest-{year}".encode()).hexdigest()
     manifest = SimpleNamespace(
@@ -89,6 +100,10 @@ def _verified(year: int, payload: bytes) -> SimpleNamespace:
         upstream_partition=f"season-{year}",
         coverage=f"season={year};season_type=REG,POST",
         object_kind="byte_exact_original",
+        license_ref=license_ref,
+        license_status=license_status,
+        source_url=source_url or x11.nflverse_partition_url(year),
+        source_cursor=source_cursor or x11.expected_nflverse_source_cursor(year),
     )
     record = SimpleNamespace(
         source="nflverse",
@@ -105,6 +120,23 @@ def _install_reader(
     monkeypatch: pytest.MonkeyPatch,
     payloads: dict[int, bytes],
 ) -> tuple[list[Path], list[Path]]:
+    monkeypatch.setattr(
+        x11,
+        "X11_FROZEN_PARTITION_ALLOWLIST",
+        {
+            year: (
+                inspect_nflverse_partition(
+                    payloads[year],
+                    expected_year=year,
+                ).object_sha256,
+                inspect_nflverse_partition(
+                    payloads[year],
+                    expected_year=year,
+                ).schema_fingerprint,
+            )
+            for year in YEARS
+        },
+    )
     paths = [Path(f"/fake/season-{year}.manifest.json") for year in YEARS]
     by_path = {
         path: _verified(year, payloads[year])
@@ -131,6 +163,7 @@ def _state_frame(
     *,
     warmup_games: int = 30,
     evaluation_games: int = 12,
+    evaluation_across_all_seasons: bool = False,
 ) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     transition_classes = list(x11.TRANSITION_CLASSES)
@@ -157,10 +190,15 @@ def _state_frame(
             )
         )
     for game_index in range(evaluation_games):
+        season = (
+            2020 + min(5, game_index * 6 // evaluation_games)
+            if evaluation_across_all_seasons
+            else 2020
+        )
         game_specs.append(
             (
-                2020,
-                pd.Timestamp("2020-09-01T00:00:00Z")
+                season,
+                pd.Timestamp(f"{season}-09-01T00:00:00Z")
                 + pd.Timedelta(days=game_index + 1),
                 (
                     "tie"
@@ -256,6 +294,7 @@ def _loaded_state_frame(frame: pd.DataFrame) -> x11.X11LoadedDataset:
         inventory=inventory,
         drive_starts=frame,
         chronology_sha256=x11.chronology_sha256(frame),
+        normalized_frame_sha256=x11.normalized_frame_sha256(frame),
         adapter_audit=x11.X11AdapterAudit(
             native_drives=len(frame),
             canonical_drive_starts=len(frame),
@@ -288,6 +327,188 @@ def test_inventory_reads_exactly_one_verified_manifest_per_year_and_self_hashes(
     assert loaded.inventory.inventory_sha256.startswith("sha256:")
     with pytest.raises(FrozenInstanceError):
         loaded.inventory.total_rows = 0  # type: ignore[misc]
+
+
+def test_default_discovery_ignores_append_only_legacy_license_observations(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    payloads = {year: _native_partition(year) for year in YEARS}
+    audits = {
+        year: inspect_nflverse_partition(payloads[year], expected_year=year)
+        for year in YEARS
+    }
+    monkeypatch.setattr(
+        x11,
+        "X11_FROZEN_PARTITION_ALLOWLIST",
+        {
+            year: (audit.object_sha256, audit.schema_fingerprint)
+            for year, audit in audits.items()
+        },
+    )
+    valid_by_path: dict[Path, SimpleNamespace] = {}
+    expected_paths: list[Path] = []
+    base = (
+        tmp_path
+        / "manifests"
+        / "source=nflverse"
+        / "dataset=DS-NFLVERSE"
+        / f"version={x11.X11_NFLVERSE_VERSION}"
+    )
+    for year in YEARS:
+        partition = base / f"partition=season-{year}"
+        partition.mkdir(parents=True)
+        legacy = partition / f"{year:064x}.manifest.json"
+        governed = partition / f"{year + 100:064x}.manifest.json"
+        legacy.write_text(
+            json.dumps(
+                {"license_ref": "O-099", "license_status": "approved"}
+            ),
+            encoding="utf-8",
+        )
+        governed.write_text(
+            json.dumps(
+                {
+                    "dataset_id": "DS-NFLVERSE",
+                    "license_ref": "I-018",
+                    "license_status": "approved",
+                    "object_kind": "byte_exact_original",
+                    "object_sha256": audits[year].object_sha256,
+                    "schema_fingerprint": audits[year].schema_fingerprint,
+                    "source_cursor": x11.expected_nflverse_source_cursor(year),
+                    "source_url": x11.nflverse_partition_url(year),
+                    "upstream_partition": f"season-{year}",
+                }
+            ),
+            encoding="utf-8",
+        )
+        valid_by_path[governed] = _verified(year, payloads[year])
+        expected_paths.append(governed)
+
+    calls: list[Path] = []
+
+    def reader(
+        manifest_path: str | Path,
+        *,
+        store_root: str | Path,
+        program_root: str | Path,
+    ) -> SimpleNamespace:
+        del store_root, program_root
+        path = Path(manifest_path)
+        calls.append(path)
+        return valid_by_path[path]
+
+    monkeypatch.setattr(x11, "read_verified_static_object", reader)
+
+    loaded = x11.load_x11_dataset(
+        store_root=tmp_path,
+        program_root=tmp_path,
+    )
+
+    assert calls == expected_paths
+    assert tuple(partition.year for partition in loaded.inventory.partitions) == YEARS
+    assert all(
+        partition.manifest_sha256.startswith("sha256:")
+        for partition in loaded.inventory.partitions
+    )
+
+
+@pytest.mark.parametrize(
+    ("license_ref", "license_status"),
+    [("O-099", "approved"), ("I-018", "research_only")],
+)
+def test_explicit_manifest_paths_reject_non_governed_license_binding(
+    license_ref: str,
+    license_status: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    payloads = {year: _native_partition(year) for year in YEARS}
+    paths, _ = _install_reader(monkeypatch, payloads)
+    invalid = _verified(
+        2015,
+        payloads[2015],
+        license_ref=license_ref,
+        license_status=license_status,
+    )
+    original_reader = x11.read_verified_static_object
+
+    def reader(
+        manifest_path: str | Path,
+        *,
+        store_root: str | Path,
+        program_root: str | Path,
+    ) -> SimpleNamespace:
+        if Path(manifest_path) == paths[0]:
+            return invalid
+        return original_reader(
+            manifest_path,
+            store_root=store_root,
+            program_root=program_root,
+        )
+
+    monkeypatch.setattr(x11, "read_verified_static_object", reader)
+
+    with pytest.raises(x11.X11DataError, match="license"):
+        x11.load_x11_dataset(
+            store_root=tmp_path,
+            program_root=tmp_path,
+            manifest_paths=paths,
+        )
+
+
+@pytest.mark.parametrize("failure", ["source_url", "source_cursor", "object_allowlist"])
+def test_explicit_manifest_paths_reject_self_consistent_noncanonical_sources(
+    failure: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    payloads = {year: _native_partition(year) for year in YEARS}
+    paths, _ = _install_reader(monkeypatch, payloads)
+    if failure == "object_allowlist":
+        replacement_rows = pq.read_table(pa.BufferReader(payloads[2015])).to_pylist()
+        replacement_rows[0]["home_wp"] = 0.99
+        replacement = _native_partition(2015, rows=replacement_rows)
+        invalid = _verified(2015, replacement)
+    else:
+        invalid = _verified(
+            2015,
+            payloads[2015],
+            source_url=(
+                "https://example.com/self-consistent.parquet"
+                if failure == "source_url"
+                else None
+            ),
+            source_cursor=(
+                "github_release_id:58152862;asset_id:999999999"
+                if failure == "source_cursor"
+                else None
+            ),
+        )
+    original_reader = x11.read_verified_static_object
+
+    def reader(
+        manifest_path: str | Path,
+        *,
+        store_root: str | Path,
+        program_root: str | Path,
+    ) -> SimpleNamespace:
+        if Path(manifest_path) == paths[0]:
+            return invalid
+        return original_reader(
+            manifest_path,
+            store_root=store_root,
+            program_root=program_root,
+        )
+
+    monkeypatch.setattr(x11, "read_verified_static_object", reader)
+
+    with pytest.raises(x11.X11DataError, match="frozen source"):
+        x11.load_x11_dataset(
+            store_root=tmp_path,
+            program_root=tmp_path,
+            manifest_paths=paths,
+        )
 
 
 @pytest.mark.parametrize("failure", ["missing", "duplicate", "year_mismatch", "tamper"])
@@ -462,6 +683,7 @@ def test_adapter_selects_first_valid_drive_state_and_freezes_chronology(
         kind="mergesort",
     ).index.equals(frame.index)
     assert loaded.chronology_sha256.startswith("sha256:")
+    assert loaded.normalized_frame_sha256 == x11.normalized_frame_sha256(frame)
     assert set(x11.GAME_STATE_FEATURES).isdisjoint(
         {
             "home_score",
@@ -524,6 +746,7 @@ def test_walk_forward_models_and_transition_distribution_are_strictly_pit() -> N
 
     evaluation = x11.run_x11_walk_forward(
         loaded,
+        program_root=PROGRAM_ROOT,
         evaluation_game_limit=10,
         minimum_prior_train_games=8,
         bootstrap_samples=40,
@@ -532,7 +755,7 @@ def test_walk_forward_models_and_transition_distribution_are_strictly_pit() -> N
         gbdt_max_iter=10,
     )
 
-    assert evaluation.result_label == "PRELIMINARY_PIT_UNPROVEN"
+    assert evaluation.result_label == "PRELIMINARY"
     assert evaluation.seed == 20260722
     assert len(evaluation.folds) == 10
     assert all(
@@ -587,7 +810,8 @@ def test_walk_forward_models_and_transition_distribution_are_strictly_pit() -> N
     )
     assert transitions[probability_columns].ge(0).all().all()
     assert transitions[probability_columns].le(1).all().all()
-    assert transitions["pit_cutoff"].str.contains("/play_id=").all()
+    assert transitions["pit_cutoff_at"].str.endswith("Z").all()
+    assert transitions["pit_status"].eq("PIT_UNPROVEN").all()
     assert transitions["inventory_sha256"].eq(loaded.inventory.inventory_sha256).all()
     assert (
         transitions[["manifest_sha256", "object_sha256", "schema_fingerprint"]]
@@ -598,6 +822,73 @@ def test_walk_forward_models_and_transition_distribution_are_strictly_pit() -> N
     assert evaluation.transition_metrics["classes"] == x11.TRANSITION_CLASSES
     assert evaluation.transition_metrics["bootstrap_samples_requested"] == 40
     assert evaluation.transition_metrics["bootstrap_samples_valid"] == 40
+    assert set(evaluation.season_stability) == {"2020"}
+    assert set(evaluation.season_stability["2020"]["outcome_models"]) == {
+        "spread_prior",
+        "logistic",
+        "gbdt",
+        "nflfastr_home_wp",
+    }
+    assert {
+        "brier",
+        "log_loss",
+        "games",
+        "observations",
+    } <= evaluation.season_stability["2020"]["transition"].keys()
+
+
+def test_transition_outputs_pass_the_dedicated_registry_backed_v1_validator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loaded = _loaded_state_frame(_state_frame())
+    calls: list[dict[str, object]] = []
+    original = contracts.validate_contract_v1
+
+    def validator(
+        program_root: str | Path,
+        schema_name: str,
+        instance: object,
+    ) -> object:
+        assert Path(program_root) == PROGRAM_ROOT
+        assert schema_name == "model-output/v1.schema.yaml"
+        calls.append(dict(instance))  # type: ignore[arg-type]
+        return original(program_root, schema_name, instance)
+
+    monkeypatch.setattr(x11.contracts, "validate_contract_v1", validator)
+
+    evaluation = x11.run_x11_walk_forward(
+        loaded,
+        program_root=PROGRAM_ROOT,
+        evaluation_game_limit=10,
+        minimum_prior_train_games=8,
+        bootstrap_samples=40,
+        minimum_valid_bootstrap_samples=20,
+        confidence_level=0.90,
+        gbdt_max_iter=10,
+    )
+
+    assert len(evaluation.transition_outputs) == len(
+        evaluation.transition_predictions
+    )
+    assert len(calls) == len(evaluation.transition_outputs)
+    for output in evaluation.transition_outputs:
+        validated = original(
+            PROGRAM_ROOT,
+            "model-output/v1.schema.yaml",
+            output,
+        )
+        assert validated.experiment_id == "X-11"
+        assert validated.model_id == "MODEL-NFL-DRIVE-TRANSITION"
+        assert validated.model_version == "v1"
+        assert validated.game_id.startswith("game_nflverse_")
+        assert validated.state_event_id.startswith("evt_")
+        assert validated.transition_unit == "drive"
+        assert validated.horizon == "next_state_transition"
+        assert set(validated.quality_flags) == {
+            "preliminary_rules",
+            "source_clock_unverified",
+        }
+        assert validated.data_sha256 == evaluation.evaluation_input_sha256
 
 
 def test_walk_forward_rejects_a_mutated_frozen_chronology() -> None:
@@ -611,6 +902,38 @@ def test_walk_forward_rejects_a_mutated_frozen_chronology() -> None:
     with pytest.raises(x11.X11DataError, match="chronology"):
         x11.run_x11_walk_forward(
             mutated,
+            program_root=PROGRAM_ROOT,
+            evaluation_game_limit=10,
+            minimum_prior_train_games=8,
+            bootstrap_samples=40,
+            minimum_valid_bootstrap_samples=20,
+            confidence_level=0.90,
+            gbdt_max_iter=10,
+        )
+
+
+@pytest.mark.parametrize(
+    ("column", "replacement"),
+    [
+        ("home_wp", 0.123456),
+        ("next_drive_outcome", "other"),
+        ("manifest_sha256", "sha256:" + "f" * 64),
+        ("home_score_differential", 999.0),
+    ],
+)
+def test_walk_forward_rejects_any_mutated_normalized_runner_input(
+    column: str,
+    replacement: object,
+) -> None:
+    loaded = _loaded_state_frame(_state_frame())
+    mutated_frame = loaded.drive_starts.copy()
+    mutated_frame.loc[0, column] = replacement
+    mutated = replace(loaded, drive_starts=mutated_frame)
+
+    with pytest.raises(x11.X11DataError, match="normalized"):
+        x11.run_x11_walk_forward(
+            mutated,
+            program_root=PROGRAM_ROOT,
             evaluation_game_limit=10,
             minimum_prior_train_games=8,
             bootstrap_samples=40,
@@ -626,6 +949,7 @@ def test_evidence_is_machine_readable_self_hashed_and_never_formal(
     loaded = _loaded_state_frame(_state_frame())
     evaluation = x11.run_x11_walk_forward(
         loaded,
+        program_root=PROGRAM_ROOT,
         evaluation_game_limit=10,
         minimum_prior_train_games=8,
         bootstrap_samples=40,
@@ -637,6 +961,7 @@ def test_evidence_is_machine_readable_self_hashed_and_never_formal(
     evidence = x11.build_x11_evidence(
         loaded,
         evaluation,
+        program_root=PROGRAM_ROOT,
         execution_mode="bounded_smoke",
     )
     evidence_path = tmp_path / "x11-evidence.json"
@@ -644,7 +969,7 @@ def test_evidence_is_machine_readable_self_hashed_and_never_formal(
     persisted = json.loads(evidence_path.read_text(encoding="utf-8"))
 
     assert persisted == evidence
-    assert evidence["result_label"] == "PRELIMINARY_PIT_UNPROVEN"
+    assert evidence["result_label"] == "PRELIMINARY"
     assert evidence["is_formal_result"] is False
     assert evidence["formal_result_eligible"] is False
     assert evidence["pit_assessment"]["spread_observation_timestamp_proven"] is False
@@ -653,6 +978,12 @@ def test_evidence_is_machine_readable_self_hashed_and_never_formal(
         loaded.inventory.inventory_sha256
     )
     assert evidence["chronology_sha256"] == loaded.chronology_sha256
+    assert evidence["normalized_frame_sha256"] == (
+        loaded.normalized_frame_sha256
+    )
+    assert evidence["evaluation_input_sha256"] == (
+        evaluation.evaluation_input_sha256
+    )
     assert evidence["evidence_sha256"] == x11.evidence_sha256(evidence)
     assert {lock["id"] for lock in evidence["registration_locks"]} == {
         "nfl_data_manifest_and_version",
@@ -675,15 +1006,100 @@ def test_evidence_is_machine_readable_self_hashed_and_never_formal(
     assert evidence["transition_evaluation"]["state_space"] == list(
         x11.TRANSITION_CLASSES
     )
-    assert evidence["transition_evaluation"]["distributions"]
-    for distribution in evidence["transition_evaluation"]["distributions"]:
-        assert sum(distribution["probabilities"].values()) == pytest.approx(
-            1.0, abs=1e-12
+    assert evidence["transition_evaluation"]["model_outputs"]
+    for output in evidence["transition_evaluation"]["model_outputs"]:
+        validated = contracts.validate_contract_v1(
+            PROGRAM_ROOT,
+            "model-output/v1.schema.yaml",
+            output,
         )
-        assert distribution["pit_cutoff"]
-        assert set(distribution["lineage"]) == {
-            "inventory_sha256",
-            "manifest_sha256",
-            "object_sha256",
-            "schema_fingerprint",
-        }
+        assert validated.data_sha256 == evaluation.evaluation_input_sha256
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "outcome_prediction",
+        "transition_prediction",
+        "outcome_metrics",
+        "transition_output",
+    ],
+)
+def test_evidence_builder_rejects_mutated_evaluation_results(
+    mutation: str,
+) -> None:
+    loaded = _loaded_state_frame(_state_frame())
+    evaluation = x11.run_x11_walk_forward(
+        loaded,
+        program_root=PROGRAM_ROOT,
+        evaluation_game_limit=10,
+        minimum_prior_train_games=8,
+        bootstrap_samples=40,
+        minimum_valid_bootstrap_samples=20,
+        confidence_level=0.90,
+        gbdt_max_iter=10,
+    )
+    if mutation == "outcome_prediction":
+        frame = evaluation.predictions.copy()
+        frame.loc[0, "logistic_probability"] = 0.999999
+        mutated = replace(evaluation, predictions=frame)
+    elif mutation == "transition_prediction":
+        frame = evaluation.transition_predictions.copy()
+        frame.loc[0, "probability_touchdown"] = 0.999999
+        mutated = replace(evaluation, transition_predictions=frame)
+    elif mutation == "outcome_metrics":
+        metrics = copy.deepcopy(evaluation.outcome_metrics)
+        metrics["logistic"]["brier"] = 0.0
+        mutated = replace(evaluation, outcome_metrics=metrics)
+    else:
+        outputs = copy.deepcopy(evaluation.transition_outputs)
+        outputs[0]["feature_sha256"] = "sha256:" + "f" * 64
+        mutated = replace(evaluation, transition_outputs=outputs)
+
+    with pytest.raises(x11.X11DataError, match="integrity"):
+        x11.build_x11_evidence(
+            loaded,
+            mutated,
+            program_root=PROGRAM_ROOT,
+            execution_mode="bounded_smoke",
+        )
+
+
+def test_full_evidence_requires_and_reports_every_2020_to_2025_game() -> None:
+    loaded = _loaded_state_frame(
+        _state_frame(
+            evaluation_games=18,
+            evaluation_across_all_seasons=True,
+        )
+    )
+    evaluation = x11.run_x11_walk_forward(
+        loaded,
+        program_root=PROGRAM_ROOT,
+        evaluation_game_limit=None,
+        minimum_prior_train_games=8,
+        bootstrap_samples=100,
+        minimum_valid_bootstrap_samples=20,
+        confidence_level=0.90,
+        gbdt_max_iter=10,
+    )
+
+    evidence = x11.build_x11_evidence(
+        loaded,
+        evaluation,
+        program_root=PROGRAM_ROOT,
+        execution_mode="full",
+    )
+
+    assert evaluation.evaluation_game_limit is None
+    assert len(evaluation.folds) == 18
+    assert set(evaluation.season_stability) == {
+        "2020",
+        "2021",
+        "2022",
+        "2023",
+        "2024",
+        "2025",
+    }
+    assert evidence["execution_mode"] == "full"
+    assert evidence["walk_forward"]["evaluated_games"] == 18
+    assert evidence["result_label"] == "PRELIMINARY"
