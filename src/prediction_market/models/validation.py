@@ -392,13 +392,11 @@ def _validate_feature_availability(
     observations: int,
     prediction_at: Sequence[object] | pd.Series | None,
     feature_available_at: Sequence[object] | pd.Series | None,
-) -> None:
-    if (prediction_at is None) != (feature_available_at is None):
+) -> pd.Series:
+    if prediction_at is None or feature_available_at is None:
         raise ValidationInputError(
             "prediction_at and feature_available_at must be provided together"
         )
-    if prediction_at is None:
-        return
     predictions = pd.Series(prediction_at).reset_index(drop=True)
     availability = pd.Series(feature_available_at).reset_index(drop=True)
     if len(predictions) != observations or len(availability) != observations:
@@ -408,6 +406,27 @@ def _validate_feature_availability(
     if (availability > predictions).any():
         raise ValidationInputError(
             "point-in-time feature availability cannot follow prediction_at"
+        )
+    return predictions
+
+
+def _validate_prior_availability(
+    *,
+    observations: int,
+    prediction_at: pd.Series,
+    prior_available_at: Sequence[object] | pd.Series | None,
+) -> None:
+    if prior_available_at is None:
+        raise ValidationInputError(
+            "prior_available_at is required when prior_probabilities are provided"
+        )
+    availability = pd.Series(prior_available_at).reset_index(drop=True)
+    if len(availability) != observations:
+        raise ValidationInputError("prior point-in-time availability length mismatch")
+    _validate_utc_series(availability, "prior_available_at")
+    if (availability > prediction_at).any():
+        raise ValidationInputError(
+            "prior point-in-time availability cannot follow prediction_at"
         )
 
 
@@ -421,9 +440,10 @@ def evaluate_multiclass_probabilities(
     confidence_level: float,
     minimum_valid_samples: int,
     seed: int,
+    prediction_at: Sequence[object] | pd.Series,
+    feature_available_at: Sequence[object] | pd.Series,
     prior_probabilities: Sequence[Sequence[float]] | np.ndarray | None = None,
-    prediction_at: Sequence[object] | pd.Series | None = None,
-    feature_available_at: Sequence[object] | pd.Series | None = None,
+    prior_available_at: Sequence[object] | pd.Series | None = None,
 ) -> dict[str, object]:
     """Evaluate one joint multiclass distribution with game-cluster inference.
 
@@ -444,7 +464,7 @@ def evaluate_multiclass_probabilities(
         classes=classes,
         groups=groups,
     )
-    _validate_feature_availability(
+    predictions = _validate_feature_availability(
         observations=len(y),
         prediction_at=prediction_at,
         feature_available_at=feature_available_at,
@@ -465,6 +485,11 @@ def evaluate_multiclass_probabilities(
             or prior_classes != class_order
         ):
             raise ValidationInputError("prior inputs must align exactly with model inputs")
+        _validate_prior_availability(
+            observations=len(y),
+            prediction_at=predictions,
+            prior_available_at=prior_available_at,
+        )
         prior_point = _multiclass_point_metrics(y, prior_matrix, class_order)
 
     try:
