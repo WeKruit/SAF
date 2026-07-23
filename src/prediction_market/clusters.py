@@ -10,11 +10,17 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
+
+import yaml
 
 import prediction_market.contracts as contracts_module
 import prediction_market.experiments as experiments_module
-from prediction_market.contracts import canonical_sha256, validate_contract_v0
+from prediction_market.contracts import (
+    canonical_json_bytes,
+    canonical_sha256,
+    validate_contract_v0,
+)
 from prediction_market.experiments import load_experiment_registry
 
 
@@ -23,6 +29,9 @@ _MARKET_ID = re.compile(r"market_[A-Za-z0-9][A-Za-z0-9._:-]*")
 _UTC = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z")
 _SHA256 = re.compile(r"sha256:[0-9a-f]{64}")
 _CONFIDENCE_TEXT = re.compile(r"(?:0(?:\.[0-9]+)?|1(?:\.0+)?)")
+_X10_SELECTION_METHOD = "sha256_seeded_rank_v0"
+_MARKET_RELATIONS_CONTRACT = Path("contracts/market-relations/v0.yaml")
+_GOLD_PROTOCOL_CONTRACT = Path("contracts/x10-gold-adjudication/v0.yaml")
 _CSV_COLUMNS = (
     "pair_id",
     "left_market_id",
@@ -36,10 +45,6 @@ _CSV_COLUMNS = (
 
 class ClusterInputError(ValueError):
     """Cluster evidence is malformed or cannot support the requested metric."""
-
-
-class MissingRecallDenominatorError(ClusterInputError):
-    """Recall was requested without a registered candidate universe."""
 
 
 class X10AuthorizationError(PermissionError):
@@ -100,6 +105,7 @@ class ReviewQueueItemV0:
 
 @dataclass(frozen=True, slots=True)
 class ClusterGateDecision:
+    numeric_threshold_met: bool
     may_advance: bool
     live_arbitrage_authorized: bool
     correct: int
@@ -129,6 +135,89 @@ class ConfidenceBinV0:
 class ConfidenceCalibrationV0:
     bins: tuple[ConfidenceBinV0, ...]
     expected_calibration_error: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticAdjudicationV0:
+    is_correct: bool
+    semantic_difference_category: str
+
+    def __post_init__(self) -> None:
+        if type(self.is_correct) is not bool:
+            raise ClusterInputError("is_correct must be a boolean")
+        if (
+            not isinstance(self.semantic_difference_category, str)
+            or not self.semantic_difference_category
+            or self.semantic_difference_category
+            != self.semantic_difference_category.strip()
+        ):
+            raise ClusterInputError("semantic_difference_category must be explicit")
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticDifferenceCountV0:
+    category: str
+    count: int
+
+
+@dataclass(frozen=True, slots=True)
+class X10PrecisionPreregistrationV0:
+    selected_pairs: tuple[ClusterPairV0, ...]
+    selection_method: str
+    selection_seed: int
+    router_query: str
+    router_version: str
+    confidence_bin_edges: tuple[Decimal, ...]
+    semantic_difference_categories: tuple[str, ...]
+    code_manifest_bytes: bytes
+    sample_manifest_bytes: bytes
+    router_taxonomy_evidence_bytes: bytes
+    code_sha256: str
+    data_sha256: str
+    router_taxonomy_evidence_sha256: str
+    gold_protocol_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class X10RecallPreregistrationV0:
+    candidate_universe: tuple[ClusterPairV0, ...]
+    router_query: str
+    router_version: str
+    code_manifest_bytes: bytes
+    denominator_manifest_bytes: bytes
+    router_taxonomy_evidence_bytes: bytes
+    code_sha256: str
+    data_sha256: str
+    router_taxonomy_evidence_sha256: str
+    gold_protocol_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class X10PrecisionAuditReportV0:
+    preregistration: X10PrecisionPreregistrationV0
+    precision: PrecisionReportV0
+    calibration: ConfidenceCalibrationV0
+    semantic_differences: tuple[SemanticDifferenceCountV0, ...]
+    review_queue: tuple[ReviewQueueItemV0, ...]
+    g1_research_decision: str
+    live_arbitrage_authorized: bool
+    h_approval_sha256: str
+    evaluation_started_at: str
+    registration_head_sha256: str
+    result_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class X10RecallAuditReportV0:
+    preregistration: X10RecallPreregistrationV0
+    recalled: int
+    denominator: int
+    recall: Decimal
+    live_arbitrage_authorized: bool
+    h_approval_sha256: str
+    evaluation_started_at: str
+    registration_head_sha256: str
+    result_sha256: str
 
 
 def _validate_pair_set(pairs: Iterable[ClusterPairV0]) -> tuple[ClusterPairV0, ...]:
@@ -174,13 +263,14 @@ def cluster_gate(*, correct: int, reviewed: int) -> ClusterGateDecision:
     exact_sample = reviewed == 50
     passed = exact_sample and correct >= 45
     if not exact_sample:
-        reason = "X-10 gate requires exactly 50 preregistered reviewed pairs"
+        reason = "descriptive threshold requires exactly 50 reviewed pairs"
     elif passed:
-        reason = "precision gate passed for further G1 research only"
+        reason = "descriptive numeric threshold met; no authorization was evaluated"
     else:
-        reason = "precision below 90%; every cluster requires manual review"
+        reason = "descriptive numeric threshold not met"
     return ClusterGateDecision(
-        may_advance=passed,
+        numeric_threshold_met=passed,
+        may_advance=False,
         live_arbitrage_authorized=False,
         correct=correct,
         reviewed=reviewed,
@@ -208,22 +298,6 @@ def compute_precision(
         precision=Decimal(correct) / Decimal(reviewed),
         gate=cluster_gate(correct=correct, reviewed=reviewed),
     )
-
-
-def compute_recall(
-    reviewed_matches: set[str],
-    *,
-    candidate_universe: set[str] | None,
-) -> Decimal:
-    if candidate_universe is None:
-        raise MissingRecallDenominatorError(
-            "recall requires a preregistered candidate universe denominator"
-        )
-    if not candidate_universe:
-        raise MissingRecallDenominatorError("candidate universe must not be empty")
-    if not reviewed_matches <= candidate_universe:
-        raise ClusterInputError("reviewed match is outside candidate universe")
-    return Decimal(len(reviewed_matches)) / Decimal(len(candidate_universe))
 
 
 def confidence_calibration(
@@ -334,79 +408,648 @@ def load_cluster_pairs_csv(path: str | Path) -> tuple[ClusterPairV0, ...]:
     return _validate_pair_set(pairs)
 
 
-def _x10_hashes(pairs: Sequence[ClusterPairV0]) -> tuple[str, str]:
-    material = [
+def _raw_sha256(raw: bytes) -> str:
+    return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+def _read_regular_bytes(path: Path, label: str) -> bytes:
+    if path.is_symlink() or not path.is_file():
+        raise X10AuthorizationError(f"X-10 {label} must be a regular non-symlink file")
+    try:
+        return path.read_bytes()
+    except OSError as error:
+        raise X10AuthorizationError(f"X-10 {label} is unreadable") from error
+
+
+def _pair_material(pair: ClusterPairV0) -> dict[str, str]:
+    return {
+        "pair_id": pair.pair_id,
+        "left_market_id": pair.left_market_id,
+        "right_market_id": pair.right_market_id,
+        "relation_type": pair.relation_type,
+        "confidence": str(pair.confidence),
+        "router_version": pair.router_version,
+        "observed_at": pair.observed_at,
+    }
+
+
+@dataclass(frozen=True, slots=True)
+class _BoundX10Evidence:
+    code_manifest_bytes: bytes
+    router_taxonomy_evidence_bytes: bytes
+    code_sha256: str
+    router_taxonomy_evidence_sha256: str
+    gold_protocol_sha256: str
+    confidence_bin_edges: tuple[Decimal, ...]
+    semantic_difference_categories: tuple[str, ...]
+
+
+def _load_gold_protocol(
+    program_root: Path,
+) -> tuple[bytes, tuple[Decimal, ...], tuple[str, ...]]:
+    raw = _read_regular_bytes(
+        program_root / _GOLD_PROTOCOL_CONTRACT, "gold adjudication protocol"
+    )
+    try:
+        document = yaml.safe_load(raw.decode("utf-8"))
+    except (UnicodeDecodeError, yaml.YAMLError) as error:
+        raise X10AuthorizationError("X-10 gold adjudication protocol is invalid YAML") from error
+    expected_keys = {
+        "title",
+        "contract_version",
+        "required_adjudication_fields",
+        "confidence_bin_edges",
+        "semantic_difference_categories",
+    }
+    if type(document) is not dict or set(document) != expected_keys:
+        raise X10AuthorizationError("X-10 gold adjudication protocol has invalid fields")
+    if document["contract_version"] != "v0" or document[
+        "required_adjudication_fields"
+    ] != ["pair_id", "is_correct", "semantic_difference_category"]:
+        raise X10AuthorizationError("X-10 gold adjudication protocol is not v0")
+    raw_edges = document["confidence_bin_edges"]
+    if (
+        type(raw_edges) is not list
+        or len(raw_edges) < 2
+        or any(type(edge) is not str or not _CONFIDENCE_TEXT.fullmatch(edge) for edge in raw_edges)
+    ):
+        raise X10AuthorizationError("X-10 confidence bin edges are invalid")
+    edges = tuple(Decimal(edge) for edge in raw_edges)
+    if (
+        edges[0] != Decimal(0)
+        or edges[-1] != Decimal(1)
+        or any(left >= right for left, right in zip(edges, edges[1:]))
+    ):
+        raise X10AuthorizationError("X-10 confidence bin edges are invalid")
+    raw_categories = document["semantic_difference_categories"]
+    if (
+        type(raw_categories) is not list
+        or not raw_categories
+        or any(
+            type(category) is not str
+            or not category
+            or category != category.strip()
+            for category in raw_categories
+        )
+        or len(raw_categories) != len(set(raw_categories))
+        or "none" not in raw_categories
+    ):
+        raise X10AuthorizationError("X-10 semantic difference categories are invalid")
+    return raw, edges, tuple(raw_categories)
+
+
+def _explicit_router_value(value: str, label: str) -> str:
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ClusterInputError(f"{label} must be explicit")
+    return value
+
+
+def _bound_x10_evidence(
+    program_root: Path, *, router_query: str, router_version: str
+) -> _BoundX10Evidence:
+    router_query = _explicit_router_value(router_query, "router_query")
+    router_version = _explicit_router_value(router_version, "router_version")
+    taxonomy_path = program_root / _MARKET_RELATIONS_CONTRACT
+    taxonomy_raw = _read_regular_bytes(taxonomy_path, "market relation taxonomy")
+    gold_raw, bin_edges, categories = _load_gold_protocol(program_root)
+    module_paths = {
+        "src/prediction_market/clusters.py": Path(__file__),
+        "src/prediction_market/contracts.py": Path(contracts_module.__file__),
+        "src/prediction_market/experiments.py": Path(experiments_module.__file__),
+    }
+    code_manifest: dict[str, str] = {
+        name: _raw_sha256(_read_regular_bytes(path, name))
+        for name, path in sorted(module_paths.items())
+    }
+    taxonomy_sha256 = _raw_sha256(taxonomy_raw)
+    gold_sha256 = _raw_sha256(gold_raw)
+    code_manifest[_MARKET_RELATIONS_CONTRACT.as_posix()] = taxonomy_sha256
+    code_manifest[_GOLD_PROTOCOL_CONTRACT.as_posix()] = gold_sha256
+    code_manifest_bytes = canonical_json_bytes(code_manifest)
+    router_evidence_bytes = canonical_json_bytes(
         {
-            "pair_id": pair.pair_id,
-            "left_market_id": pair.left_market_id,
-            "right_market_id": pair.right_market_id,
-            "relation_type": pair.relation_type,
-            "confidence": str(pair.confidence),
-            "router_version": pair.router_version,
-            "observed_at": pair.observed_at,
+            "router_query": router_query,
+            "router_version": router_version,
+            "taxonomy_sha256": taxonomy_sha256,
         }
-        for pair in sorted(pairs, key=lambda value: value.pair_id)
+    )
+    return _BoundX10Evidence(
+        code_manifest_bytes=code_manifest_bytes,
+        router_taxonomy_evidence_bytes=router_evidence_bytes,
+        code_sha256=_raw_sha256(code_manifest_bytes),
+        router_taxonomy_evidence_sha256=_raw_sha256(router_evidence_bytes),
+        gold_protocol_sha256=gold_sha256,
+        confidence_bin_edges=bin_edges,
+        semantic_difference_categories=categories,
+    )
+
+
+def _validate_candidate_router_version(
+    pairs: Sequence[ClusterPairV0], router_version: str
+) -> None:
+    if any(pair.router_version != router_version for pair in pairs):
+        raise ClusterInputError("every candidate pair must match the registered router_version")
+
+
+def build_x10_precision_preregistration(
+    program_root: str | Path,
+    *,
+    candidate_universe: Sequence[ClusterPairV0],
+    selection_method: str,
+    selection_seed: int,
+    router_query: str,
+    router_version: str,
+) -> X10PrecisionPreregistrationV0:
+    """Build the exact immutable bytes that must be registered before X-10 review."""
+
+    values = _validate_pair_set(candidate_universe)
+    if len(values) < 50:
+        raise ClusterInputError("X-10 candidate universe must contain at least 50 pairs")
+    if selection_method != _X10_SELECTION_METHOD:
+        raise ClusterInputError(f"selection_method must be {_X10_SELECTION_METHOD}")
+    if type(selection_seed) is not int or not 0 <= selection_seed <= 2**63 - 1:
+        raise ClusterInputError("selection_seed must be a non-negative 64-bit integer")
+    router_query = _explicit_router_value(router_query, "router_query")
+    router_version = _explicit_router_value(router_version, "router_version")
+    _validate_candidate_router_version(values, router_version)
+    ranked = sorted(
+        values,
+        key=lambda pair: (
+            canonical_sha256(
+                {
+                    "domain": _X10_SELECTION_METHOD,
+                    "seed": selection_seed,
+                    "pair": _pair_material(pair),
+                }
+            ),
+            pair.pair_id,
+        ),
+    )
+    selected = tuple(ranked[:50])
+    candidate_material = [
+        _pair_material(pair) for pair in sorted(values, key=lambda pair: pair.pair_id)
     ]
-    files = {
-        "clusters.py": Path(__file__),
-        "contracts.py": Path(contracts_module.__file__),
-        "experiments.py": Path(experiments_module.__file__),
+    sample_manifest_bytes = canonical_json_bytes(
+        {
+            "schema": "x10_precision_preregistration_v0",
+            "candidate_universe": candidate_material,
+            "router_query": router_query,
+            "router_version": router_version,
+            "selection": {
+                "method": selection_method,
+                "seed": selection_seed,
+                "selected_pair_ids": [pair.pair_id for pair in selected],
+            },
+            "selected_pairs": [_pair_material(pair) for pair in selected],
+        }
+    )
+    evidence = _bound_x10_evidence(
+        Path(program_root), router_query=router_query, router_version=router_version
+    )
+    return X10PrecisionPreregistrationV0(
+        selected_pairs=selected,
+        selection_method=selection_method,
+        selection_seed=selection_seed,
+        router_query=router_query,
+        router_version=router_version,
+        confidence_bin_edges=evidence.confidence_bin_edges,
+        semantic_difference_categories=evidence.semantic_difference_categories,
+        code_manifest_bytes=evidence.code_manifest_bytes,
+        sample_manifest_bytes=sample_manifest_bytes,
+        router_taxonomy_evidence_bytes=evidence.router_taxonomy_evidence_bytes,
+        code_sha256=evidence.code_sha256,
+        data_sha256=_raw_sha256(sample_manifest_bytes),
+        router_taxonomy_evidence_sha256=evidence.router_taxonomy_evidence_sha256,
+        gold_protocol_sha256=evidence.gold_protocol_sha256,
+    )
+
+
+def build_x10_recall_preregistration(
+    program_root: str | Path,
+    *,
+    candidate_universe: Sequence[ClusterPairV0],
+    router_query: str,
+    router_version: str,
+) -> X10RecallPreregistrationV0:
+    """Build the exact candidate-universe denominator bytes for formal recall."""
+
+    values = _validate_pair_set(candidate_universe)
+    if not values:
+        raise ClusterInputError("recall candidate universe must not be empty")
+    router_query = _explicit_router_value(router_query, "router_query")
+    router_version = _explicit_router_value(router_version, "router_version")
+    _validate_candidate_router_version(values, router_version)
+    denominator_manifest_bytes = canonical_json_bytes(
+        {
+            "schema": "x10_recall_denominator_v0",
+            "candidate_universe": [
+                _pair_material(pair)
+                for pair in sorted(values, key=lambda pair: pair.pair_id)
+            ],
+            "router_query": router_query,
+            "router_version": router_version,
+        }
+    )
+    evidence = _bound_x10_evidence(
+        Path(program_root), router_query=router_query, router_version=router_version
+    )
+    return X10RecallPreregistrationV0(
+        candidate_universe=tuple(values),
+        router_query=router_query,
+        router_version=router_version,
+        code_manifest_bytes=evidence.code_manifest_bytes,
+        denominator_manifest_bytes=denominator_manifest_bytes,
+        router_taxonomy_evidence_bytes=evidence.router_taxonomy_evidence_bytes,
+        code_sha256=evidence.code_sha256,
+        data_sha256=_raw_sha256(denominator_manifest_bytes),
+        router_taxonomy_evidence_sha256=evidence.router_taxonomy_evidence_sha256,
+        gold_protocol_sha256=evidence.gold_protocol_sha256,
+    )
+
+
+def _authorized_scope(
+    card: Mapping[str, Any], scope_name: str
+) -> tuple[Mapping[str, Any], dict[str, Mapping[str, Any]], Mapping[str, str]]:
+    try:
+        scope = card["authorization_scopes"][scope_name]
+    except (KeyError, TypeError) as error:
+        raise X10AuthorizationError(f"X-10 {scope_name} scope is absent") from error
+    if scope.get("authorized") is not True or scope.get("permanent_no_go", False) is True:
+        raise X10AuthorizationError(f"X-10 {scope_name} is not authorized")
+    live_scope = card.get("authorization_scopes", {}).get("live_arbitrage")
+    if (
+        type(live_scope) is not dict
+        or live_scope.get("authorized") is not False
+        or live_scope.get("permanent_no_go") is not True
+    ):
+        raise X10AuthorizationError("X-10 live_arbitrage must remain permanent NO-GO")
+    locks = {
+        lock["id"]: lock
+        for lock in card.get("registration_locks", [])
+        if type(lock) is dict and "id" in lock
     }
-    code_manifest = {
-        name: "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
-        for name, path in sorted(files.items())
+    try:
+        required_lock_ids = tuple(scope["required_lock_ids"])
+    except (KeyError, TypeError) as error:
+        raise X10AuthorizationError(f"X-10 {scope_name} locks are malformed") from error
+    unresolved = [
+        lock_id
+        for lock_id in required_lock_ids
+        if lock_id not in locks or locks[lock_id].get("status") != "resolved"
+    ]
+    if unresolved:
+        raise X10AuthorizationError("X-10 unresolved locks: " + ", ".join(unresolved))
+    try:
+        preregistered = card["preregistered_inputs"][scope_name]
+    except (KeyError, TypeError) as error:
+        raise X10AuthorizationError(f"X-10 {scope_name} inputs are not preregistered") from error
+    return scope, locks, preregistered
+
+
+def _verify_registration_head(
+    card: Mapping[str, Any], registration_head_sha256: str
+) -> None:
+    if (
+        not isinstance(registration_head_sha256, str)
+        or not _SHA256.fullmatch(registration_head_sha256)
+        or card.get("registration_head_sha256") != registration_head_sha256
+    ):
+        raise X10AuthorizationError("X-10 registration head mismatch")
+
+
+def _verify_preregistered_hashes(
+    preregistered: Mapping[str, str], *, code_sha256: str, data_sha256: str
+) -> None:
+    if preregistered.get("code_sha256") != code_sha256:
+        raise X10AuthorizationError("X-10 runtime code/protocol differs from preregistration")
+    if preregistered.get("data_sha256") != data_sha256:
+        raise X10AuthorizationError("X-10 registered data material differs from runtime bytes")
+
+
+def _verify_lock_evidence(
+    locks: Mapping[str, Mapping[str, Any]], expected: Mapping[str, str]
+) -> None:
+    for lock_id, evidence_sha256 in expected.items():
+        lock = locks.get(lock_id)
+        if lock is None or lock.get("evidence_ref") != evidence_sha256:
+            raise X10AuthorizationError(f"X-10 {lock_id} evidence mismatch")
+
+
+def _validate_result_reference(
+    program_root: str | Path,
+    *,
+    scope_name: str,
+    result_label: str,
+    evaluation_started_at: str,
+    code_sha256: str,
+    data_sha256: str,
+    result_sha256: str,
+    registration_head_sha256: str,
+) -> None:
+    result_ref = {
+        "scope": scope_name,
+        "result_label": result_label,
+        "evaluation_started_at": evaluation_started_at,
+        "code_sha256": code_sha256,
+        "data_sha256": data_sha256,
+        "result_sha256": result_sha256,
+        "registration_head_sha256": registration_head_sha256,
     }
-    return canonical_sha256(code_manifest), canonical_sha256(material)
+    try:
+        experiments_module.validate_result_ref(program_root, "X-10", result_ref)
+    except experiments_module.ExperimentRegistryError as error:
+        raise X10AuthorizationError(f"X-10 formal result rejected: {error}") from error
+
+
+def _calibration_payload(calibration: ConfidenceCalibrationV0) -> dict[str, Any]:
+    return {
+        "bins": [
+            {
+                "lower": str(item.lower),
+                "upper": str(item.upper),
+                "upper_inclusive": item.upper_inclusive,
+                "count": item.count,
+                "mean_confidence": (
+                    None if item.mean_confidence is None else str(item.mean_confidence)
+                ),
+                "observed_precision": (
+                    None
+                    if item.observed_precision is None
+                    else str(item.observed_precision)
+                ),
+            }
+            for item in calibration.bins
+        ],
+        "expected_calibration_error": str(calibration.expected_calibration_error),
+    }
 
 
 def run_x10_precision_audit(
     program_root: str | Path,
     *,
-    pairs: Sequence[ClusterPairV0],
-    adjudications: Mapping[str, bool],
-    router_taxonomy_sha256: str | None = None,
-    gold_protocol_sha256: str | None = None,
-    h_approval_sha256: str | None = None,
-) -> PrecisionReportV0:
-    """Run only the precision scope after all X-10 evidence is preregistered."""
+    candidate_universe: Sequence[ClusterPairV0],
+    selection_method: str,
+    selection_seed: int,
+    router_query: str,
+    router_version: str,
+    adjudications: Mapping[str, SemanticAdjudicationV0],
+    h_approval_path: str | Path,
+    evaluation_started_at: str,
+    registration_head_sha256: str,
+) -> X10PrecisionAuditReportV0:
+    """Return the only X-10 object allowed to make a G1 research decision."""
 
     registry = load_experiment_registry(program_root)
     card = registry["X-10"]
-    scope = card["authorization_scopes"]["precision_audit"]
-    if not scope["authorized"]:
-        raise X10AuthorizationError("X-10 precision_audit is not authorized")
-    locks = {lock["id"]: lock for lock in card["registration_locks"]}
-    unresolved = [
-        lock_id
-        for lock_id in scope["required_lock_ids"]
-        if locks[lock_id]["status"] != "resolved"
-    ]
-    if unresolved:
-        raise X10AuthorizationError("X-10 unresolved locks: " + ", ".join(unresolved))
-    if "precision_audit" not in card["preregistered_inputs"]:
-        raise X10AuthorizationError("X-10 precision inputs are not preregistered")
-    values = _validate_pair_set(pairs)
+    scope, locks, registered = _authorized_scope(card, "precision_audit")
+    _verify_registration_head(card, registration_head_sha256)
+    preregistration = build_x10_precision_preregistration(
+        program_root,
+        candidate_universe=candidate_universe,
+        selection_method=selection_method,
+        selection_seed=selection_seed,
+        router_query=router_query,
+        router_version=router_version,
+    )
+    _verify_preregistered_hashes(
+        registered,
+        code_sha256=preregistration.code_sha256,
+        data_sha256=preregistration.data_sha256,
+    )
+    h_approval_sha256 = _raw_sha256(
+        _read_regular_bytes(Path(h_approval_path), "H split approval")
+    )
+    _verify_lock_evidence(
+        locks,
+        {
+            "matched_sample_registered": preregistration.data_sha256,
+            "router_and_taxonomy_available": (
+                preregistration.router_taxonomy_evidence_sha256
+            ),
+            "gold_standard_protocol": preregistration.gold_protocol_sha256,
+            "h_split_approval": h_approval_sha256,
+        },
+    )
+    result_label = scope["required_result_label"]
+    _validate_result_reference(
+        program_root,
+        scope_name="precision_audit",
+        result_label=result_label,
+        evaluation_started_at=evaluation_started_at,
+        code_sha256=preregistration.code_sha256,
+        data_sha256=preregistration.data_sha256,
+        result_sha256="sha256:" + "0" * 64,
+        registration_head_sha256=registration_head_sha256,
+    )
+
     frozen_adjudications = dict(adjudications)
-    if len(values) != 50:
-        raise X10AuthorizationError("X-10 requires exactly 50 preregistered pairs")
-    code_hash, data_hash = _x10_hashes(values)
-    preregistered = card["preregistered_inputs"]["precision_audit"]
-    if preregistered["code_sha256"] != code_hash:
-        raise X10AuthorizationError("X-10 runtime code differs from preregistration")
-    if preregistered["data_sha256"] != data_hash:
-        raise X10AuthorizationError("X-10 sample differs from preregistration")
-    expected_evidence = {
-        "matched_sample_registered": data_hash,
-        "router_and_taxonomy_available": router_taxonomy_sha256,
-        "gold_standard_protocol": gold_protocol_sha256,
-        "h_split_approval": h_approval_sha256,
+    expected_ids = {pair.pair_id for pair in preregistration.selected_pairs}
+    if set(frozen_adjudications) != expected_ids or len(frozen_adjudications) != 50:
+        raise ClusterInputError("every selected X-10 pair must be adjudicated exactly once")
+    if any(
+        not isinstance(value, SemanticAdjudicationV0)
+        for value in frozen_adjudications.values()
+    ):
+        raise ClusterInputError("formal adjudications must be SemanticAdjudicationV0")
+    allowed_categories = set(preregistration.semantic_difference_categories)
+    if any(
+        value.semantic_difference_category not in allowed_categories
+        for value in frozen_adjudications.values()
+    ):
+        raise ClusterInputError("semantic difference category is outside the gold protocol")
+    correctness = {
+        pair_id: adjudication.is_correct
+        for pair_id, adjudication in frozen_adjudications.items()
     }
-    for lock_id, evidence in expected_evidence.items():
-        if evidence is None or not _SHA256.fullmatch(evidence):
-            raise X10AuthorizationError(f"X-10 {lock_id} evidence is required")
-        if locks[lock_id].get("evidence_ref") != evidence:
-            raise X10AuthorizationError(f"X-10 {lock_id} evidence mismatch")
-    return compute_precision(values, frozen_adjudications)
+    precision = compute_precision(preregistration.selected_pairs, correctness)
+    calibration = confidence_calibration(
+        preregistration.selected_pairs,
+        correctness,
+        bin_edges=preregistration.confidence_bin_edges,
+    )
+    semantic_differences = tuple(
+        SemanticDifferenceCountV0(
+            category=category,
+            count=sum(
+                1
+                for adjudication in frozen_adjudications.values()
+                if adjudication.semantic_difference_category == category
+            ),
+        )
+        for category in preregistration.semantic_difference_categories
+    )
+    review_queue = build_review_queue(preregistration.selected_pairs)
+    decision = (
+        "G1_RESEARCH_ADVANCE"
+        if precision.gate.numeric_threshold_met
+        else "G1_RESEARCH_NO_GO"
+    )
+    result_payload = {
+        "schema": "x10_precision_formal_result_v0",
+        "code_sha256": preregistration.code_sha256,
+        "data_sha256": preregistration.data_sha256,
+        "router_taxonomy_evidence_sha256": (
+            preregistration.router_taxonomy_evidence_sha256
+        ),
+        "gold_protocol_sha256": preregistration.gold_protocol_sha256,
+        "h_approval_sha256": h_approval_sha256,
+        "evaluation_started_at": evaluation_started_at,
+        "registration_head_sha256": registration_head_sha256,
+        "precision": {
+            "correct": precision.correct,
+            "reviewed": precision.reviewed,
+            "precision": str(precision.precision),
+            "numeric_threshold_met": precision.gate.numeric_threshold_met,
+            "may_advance": precision.gate.may_advance,
+        },
+        "calibration": _calibration_payload(calibration),
+        "semantic_differences": [
+            {"category": item.category, "count": item.count}
+            for item in semantic_differences
+        ],
+        "review_queue": [
+            {
+                "pair_id": item.pair_id,
+                "priority": item.priority,
+                "status": item.status,
+                "confidence": str(item.confidence),
+                "relation_type": item.relation_type,
+            }
+            for item in review_queue
+        ],
+        "g1_research_decision": decision,
+        "live_arbitrage_authorized": False,
+    }
+    result_sha256 = canonical_sha256(result_payload)
+    _validate_result_reference(
+        program_root,
+        scope_name="precision_audit",
+        result_label=result_label,
+        evaluation_started_at=evaluation_started_at,
+        code_sha256=preregistration.code_sha256,
+        data_sha256=preregistration.data_sha256,
+        result_sha256=result_sha256,
+        registration_head_sha256=registration_head_sha256,
+    )
+    return X10PrecisionAuditReportV0(
+        preregistration=preregistration,
+        precision=precision,
+        calibration=calibration,
+        semantic_differences=semantic_differences,
+        review_queue=review_queue,
+        g1_research_decision=decision,
+        live_arbitrage_authorized=False,
+        h_approval_sha256=h_approval_sha256,
+        evaluation_started_at=evaluation_started_at,
+        registration_head_sha256=registration_head_sha256,
+        result_sha256=result_sha256,
+    )
+
+
+def run_x10_recall_audit(
+    program_root: str | Path,
+    *,
+    candidate_universe: Sequence[ClusterPairV0],
+    reviewed_match_ids: set[str],
+    router_query: str,
+    router_version: str,
+    h_approval_path: str | Path,
+    evaluation_started_at: str,
+    registration_head_sha256: str,
+) -> X10RecallAuditReportV0:
+    """Compute recall only through the authorized, preregistered X-10 scope."""
+
+    registry = load_experiment_registry(program_root)
+    card = registry["X-10"]
+    scope, locks, registered = _authorized_scope(card, "recall")
+    _verify_registration_head(card, registration_head_sha256)
+    preregistration = build_x10_recall_preregistration(
+        program_root,
+        candidate_universe=candidate_universe,
+        router_query=router_query,
+        router_version=router_version,
+    )
+    _verify_preregistered_hashes(
+        registered,
+        code_sha256=preregistration.code_sha256,
+        data_sha256=preregistration.data_sha256,
+    )
+    h_approval_sha256 = _raw_sha256(
+        _read_regular_bytes(Path(h_approval_path), "H split approval")
+    )
+    _verify_lock_evidence(
+        locks,
+        {
+            "recall_candidate_universe": preregistration.data_sha256,
+            "router_and_taxonomy_available": (
+                preregistration.router_taxonomy_evidence_sha256
+            ),
+            "gold_standard_protocol": preregistration.gold_protocol_sha256,
+            "h_split_approval": h_approval_sha256,
+        },
+    )
+    result_label = scope["required_result_label"]
+    _validate_result_reference(
+        program_root,
+        scope_name="recall",
+        result_label=result_label,
+        evaluation_started_at=evaluation_started_at,
+        code_sha256=preregistration.code_sha256,
+        data_sha256=preregistration.data_sha256,
+        result_sha256="sha256:" + "0" * 64,
+        registration_head_sha256=registration_head_sha256,
+    )
+
+    if type(reviewed_match_ids) is not set or any(
+        type(pair_id) is not str for pair_id in reviewed_match_ids
+    ):
+        raise ClusterInputError("reviewed_match_ids must be a set of pair IDs")
+    frozen_match_ids = set(reviewed_match_ids)
+    candidate_ids = {pair.pair_id for pair in preregistration.candidate_universe}
+    if not frozen_match_ids <= candidate_ids:
+        raise ClusterInputError("reviewed match is outside the preregistered candidate universe")
+    recalled = len(frozen_match_ids)
+    denominator = len(candidate_ids)
+    recall = Decimal(recalled) / Decimal(denominator)
+    result_payload = {
+        "schema": "x10_recall_formal_result_v0",
+        "code_sha256": preregistration.code_sha256,
+        "data_sha256": preregistration.data_sha256,
+        "router_taxonomy_evidence_sha256": (
+            preregistration.router_taxonomy_evidence_sha256
+        ),
+        "gold_protocol_sha256": preregistration.gold_protocol_sha256,
+        "h_approval_sha256": h_approval_sha256,
+        "evaluation_started_at": evaluation_started_at,
+        "registration_head_sha256": registration_head_sha256,
+        "reviewed_match_ids": sorted(frozen_match_ids),
+        "recalled": recalled,
+        "denominator": denominator,
+        "recall": str(recall),
+        "live_arbitrage_authorized": False,
+    }
+    result_sha256 = canonical_sha256(result_payload)
+    _validate_result_reference(
+        program_root,
+        scope_name="recall",
+        result_label=result_label,
+        evaluation_started_at=evaluation_started_at,
+        code_sha256=preregistration.code_sha256,
+        data_sha256=preregistration.data_sha256,
+        result_sha256=result_sha256,
+        registration_head_sha256=registration_head_sha256,
+    )
+    return X10RecallAuditReportV0(
+        preregistration=preregistration,
+        recalled=recalled,
+        denominator=denominator,
+        recall=recall,
+        live_arbitrage_authorized=False,
+        h_approval_sha256=h_approval_sha256,
+        evaluation_started_at=evaluation_started_at,
+        registration_head_sha256=registration_head_sha256,
+        result_sha256=result_sha256,
+    )
 
 
 __all__ = [
@@ -415,15 +1058,22 @@ __all__ = [
     "ClusterPairV0",
     "ConfidenceBinV0",
     "ConfidenceCalibrationV0",
-    "MissingRecallDenominatorError",
     "PrecisionReportV0",
     "ReviewQueueItemV0",
+    "SemanticAdjudicationV0",
+    "SemanticDifferenceCountV0",
     "X10AuthorizationError",
+    "X10PrecisionAuditReportV0",
+    "X10PrecisionPreregistrationV0",
+    "X10RecallAuditReportV0",
+    "X10RecallPreregistrationV0",
     "build_review_queue",
+    "build_x10_precision_preregistration",
+    "build_x10_recall_preregistration",
     "cluster_gate",
     "confidence_calibration",
     "compute_precision",
-    "compute_recall",
     "load_cluster_pairs_csv",
     "run_x10_precision_audit",
+    "run_x10_recall_audit",
 ]

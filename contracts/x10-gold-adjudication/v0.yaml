@@ -1,0 +1,20 @@
+title: X-10 Gold Adjudication Protocol v0
+contract_version: v0
+required_adjudication_fields:
+  - pair_id
+  - is_correct
+  - semantic_difference_category
+confidence_bin_edges:
+  - '0'
+  - '0.25'
+  - '0.50'
+  - '0.75'
+  - '1'
+semantic_difference_categories:
+  - none
+  - resolution_source
+  - cutoff
+  - cancellation
+  - participant_identity
+  - settlement
+  - other
