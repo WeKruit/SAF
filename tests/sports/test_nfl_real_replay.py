@@ -33,6 +33,8 @@ GAME_ID = "2025_01_ARI_NO"
 NFLVERSE_REPLAY_COLUMNS = (
     "game_id",
     "play_id",
+    "order_sequence",
+    "season_type",
     "qtr",
     "quarter_seconds_remaining",
     "game_seconds_remaining",
@@ -86,7 +88,10 @@ def _real_game_rows() -> list[dict[str, Any]]:
         columns=list(NFLVERSE_REPLAY_COLUMNS),
         filters=[("game_id", "=", GAME_ID)],
     )
-    rows = table.to_pylist()
+    rows = sorted(
+        table.to_pylist(),
+        key=lambda row: int(row["order_sequence"]),
+    )
     if len(rows) < 2:
         pytest.fail(f"frozen raw object did not contain complete game {GAME_ID}")
     return rows
@@ -276,7 +281,7 @@ def test_real_timeout_is_not_shifted_to_prior_play_and_carries_context() -> None
     timeout_index = next(
         index
         for index, row in enumerate(rows[1:-1], start=1)
-        if row["timeout"] == 1
+        if row["timeout"] == 1 and row["play_type_nfl"] == "TIMEOUT"
     )
     prior_row = rows[timeout_index - 1]
     timeout_row = rows[timeout_index]
@@ -302,6 +307,7 @@ def test_real_timeout_is_not_shifted_to_prior_play_and_carries_context() -> None
     timeout = _event_for_rows(timeout_row, following_row, sequence=2)
     assert timeout.source_play_id == str(int(timeout_row["play_id"]))
     assert timeout.timeout is True
+    assert timeout.timeout_kind == "administrative"
     assert timeout.timeout_team == timeout_row["timeout_team"]
     assert timeout.carry_forward_context is True
 
@@ -342,6 +348,8 @@ def _replay_once() -> tuple[str, int]:
         state = nfl.reduce(state, event)
         assert event.source_play_id == str(int(pre_row["play_id"]))
         assert state.source_play_id == str(int(post_row["play_id"]))
+        assert event.source_order_sequence == int(pre_row["order_sequence"])
+        assert state.source_order_sequence == int(post_row["order_sequence"])
         assert state.sequence == sequence
         assert state.last_event_id == event.event_id
         assert (state.home_score, state.away_score) == _mapped_scores(
@@ -351,9 +359,18 @@ def _replay_once() -> tuple[str, int]:
 
         pre_timeout = pre_row["timeout"] == 1
         post_timeout = post_row["timeout"] == 1
+        pre_admin_timeout = (
+            pre_timeout and pre_row["play_type_nfl"] == "TIMEOUT"
+        )
+        post_admin_timeout = (
+            post_timeout and post_row["play_type_nfl"] == "TIMEOUT"
+        )
         assert event.timeout is pre_timeout
         if pre_timeout:
             assert event.timeout_team == pre_row["timeout_team"]
+            assert event.timeout_kind == (
+                "administrative" if pre_admin_timeout else "play_attached"
+            )
         expected_timeouts = (
             (
                 prior_state.home_timeouts_remaining,
@@ -378,9 +395,7 @@ def _replay_once() -> tuple[str, int]:
             state.away_timeouts_remaining,
         ) == expected_timeouts
 
-        expected_carry = (
-            pre_row["posteam"] is None or post_row["posteam"] is None
-        )
+        expected_carry = pre_admin_timeout or post_row["posteam"] is None
         assert event.carry_forward_context is expected_carry
         if expected_carry:
             assert (
@@ -423,7 +438,11 @@ def _replay_once() -> tuple[str, int]:
                 bool(post_row["goal_to_go"]),
             )
 
-        clock_row = pre_row if pre_timeout else post_row
+        clock_row = (
+            pre_row
+            if pre_admin_timeout or post_admin_timeout
+            else post_row
+        )
         assert (
             state.period,
             state.period_seconds_remaining,

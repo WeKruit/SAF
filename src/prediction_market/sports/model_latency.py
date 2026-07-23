@@ -1342,6 +1342,69 @@ def _soccer_dynamic_transition(
     return next_state, features, distribution, calibrated
 
 
+def _nfl_latency_transition_rows(
+    raw: pd.DataFrame,
+    candidate: pd.Series,
+) -> tuple[dict[str, object], dict[str, object]] | None:
+    """Select one adjacent NFL transition by canonical native source order."""
+
+    if not isinstance(raw, pd.DataFrame) or raw.empty:
+        raise LatencyBenchmarkError(
+            "NFL latency raw rows must be a nonempty DataFrame"
+        )
+    required = {
+        "game_id",
+        "play_id",
+        "order_sequence",
+        "_raw_record_ordinal",
+        "fixed_drive",
+        "posteam",
+    }
+    missing = sorted(required - set(raw.columns))
+    if missing:
+        raise LatencyBenchmarkError(
+            f"NFL latency raw rows are missing columns: {missing}"
+        )
+    game_id = str(candidate["game_id"])
+    try:
+        drive_number = int(candidate["drive_number"])
+        candidate_play_id = _native_scalar(candidate["play_id"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise LatencyBenchmarkError(
+            "NFL latency candidate requires drive_number and play_id identity"
+        ) from exc
+    ordered = raw.sort_values(
+        ["game_id", "order_sequence", "_raw_record_ordinal"],
+        kind="mergesort",
+    )
+    game_rows = ordered.loc[ordered["game_id"] == game_id].reset_index(
+        drop=True
+    )
+    matching_positions = [
+        position
+        for position, play_id in enumerate(game_rows["play_id"])
+        if _native_scalar(play_id) == candidate_play_id
+    ]
+    if len(matching_positions) != 1:
+        raise LatencyBenchmarkError(
+            "NFL latency candidate play_id must identify exactly one native row"
+        )
+    post_position = matching_positions[0]
+    if post_position == 0:
+        return None
+    post = game_rows.iloc[post_position]
+    if (
+        pd.isna(post["fixed_drive"])
+        or int(post["fixed_drive"]) != drive_number
+        or pd.isna(post["posteam"])
+    ):
+        return None
+    pre = game_rows.iloc[post_position - 1]
+    if pd.isna(pre["posteam"]):
+        return None
+    return pre.to_dict(), post.to_dict()
+
+
 def _nfl_benchmark(
     *,
     program_root: Path,
@@ -1375,7 +1438,7 @@ def _nfl_benchmark(
         raise LatencyBenchmarkError("X-11 last fold is incomplete")
     model = x11._transition_model(train)
     ordered_test = test.sort_values(
-        ["game_id", "drive_number", "play_id"], kind="mergesort"
+        ["game_id", "drive_number"], kind="mergesort"
     )
 
     source_partition = next(
@@ -1392,7 +1455,9 @@ def _nfl_benchmark(
     )
     required_columns = (
         "play_id",
+        "order_sequence",
         "game_id",
+        "season_type",
         "home_team",
         "away_team",
         "qtr",
@@ -1401,6 +1466,7 @@ def _nfl_benchmark(
         "game_seconds_remaining",
         "fixed_drive",
         "play_type",
+        "play_type_nfl",
         "play_clock",
         "posteam",
         "down",
@@ -1425,42 +1491,29 @@ def _nfl_benchmark(
     raw = pq.read_table(source_path, columns=list(required_columns)).to_pandas()
     raw["_raw_record_ordinal"] = np.arange(len(raw), dtype=int)
     observation: pd.Series | None = None
-    pre_index: int | None = None
-    post_index: int | None = None
+    pre_row: dict[str, object] | None = None
+    post_row: dict[str, object] | None = None
     for _, candidate in ordered_test.iterrows():
-        game_rows = raw.loc[raw["game_id"] == str(candidate["game_id"])]
-        matching = game_rows.index[
-            pd.to_numeric(game_rows["play_id"], errors="coerce")
-            == float(candidate["play_id"])
-        ]
-        if len(matching) != 1:
-            continue
-        candidate_post_index = int(matching[0])
-        prior_rows = game_rows.index[game_rows.index < candidate_post_index]
-        if prior_rows.empty:
-            continue
-        candidate_pre_index = int(prior_rows[-1])
-        if (
-            pd.isna(raw.at[candidate_pre_index, "posteam"])
-            or pd.isna(raw.at[candidate_post_index, "posteam"])
-        ):
+        transition_rows = _nfl_latency_transition_rows(raw, candidate)
+        if transition_rows is None:
             continue
         observation = candidate
-        pre_index = candidate_pre_index
-        post_index = candidate_post_index
+        pre_row, post_row = transition_rows
         break
-    if observation is None or pre_index is None or post_index is None:
+    if observation is None or pre_row is None or post_row is None:
         raise LatencyBenchmarkError(
             "NFL latency fold has no causally contextual adjacent state row"
         )
-    pre_row = raw.loc[pre_index].to_dict()
-    post_row = raw.loc[post_index].to_dict()
     payload = nfl_game_state.nflverse_transition_payload(
         pre_row,
         post_row,
         sequence=1,
     )
     native_game_id = str(observation["game_id"])
+    raw_record_ordinals = (
+        int(pre_row["_raw_record_ordinal"]),
+        int(post_row["_raw_record_ordinal"]),
+    )
     bundle = build_static_sport_observation_bundle(
         program_root=program_root,
         experiment_id=x11.X11_EXPERIMENT_ID,
@@ -1468,7 +1521,7 @@ def _nfl_benchmark(
         source_system="nflverse",
         source_stream="play_by_play",
         raw_object_hash=source_partition.object_sha256,
-        raw_record_ordinals=(pre_index, post_index),
+        raw_record_ordinals=raw_record_ordinals,
         partition=source_partition.partition,
         fetched_at=str(manifest["fetched_at"]),
         source_at=None,
@@ -1670,7 +1723,7 @@ def _nfl_benchmark(
                 ).as_posix(),
                 "source_manifest_sha256": source_partition.manifest_sha256,
                 "source_object_sha256": source_partition.object_sha256,
-                "raw_record_ordinals": [pre_index, post_index],
+                "raw_record_ordinals": list(raw_record_ordinals),
                 "game_id": state.game_id,
                 "state_sequence": state.sequence,
                 "event_sequence": event.sequence,

@@ -32,12 +32,15 @@ def _state(**changes: object) -> NFLGameState:
         "game_id": _GAME_ID,
         "sequence": 12,
         "terminal": False,
+        "season_type": "REG",
         "home_team": "HME",
         "away_team": "AWY",
         "period": 2,
         "period_seconds_remaining": 600,
         "game_seconds_remaining": 2400,
         "source_play_id": "101",
+        "source_order_sequence": 101,
+        "suspended": False,
         "drive_id": "3",
         "play_clock_seconds": 12,
         "possession_team": "HME",
@@ -65,14 +68,20 @@ def _event_payload(
         "sport": "nfl",
         "game_id": game_id,
         "sequence": state.sequence,
+        "season_type": state.season_type,
         "source_play_id": "100",
+        "source_order_sequence": 100,
         "observation_mode": "offline",
         "play_type": "run",
+        "play_type_nfl": "RUSH",
         "description": "fixture play",
         "period": state.period,
         "period_seconds_remaining": state.period_seconds_remaining,
         "game_seconds_remaining": state.game_seconds_remaining,
         "next_source_play_id": state.source_play_id,
+        "next_source_order_sequence": state.source_order_sequence,
+        "lifecycle_action": "none",
+        "clock_carry_forward": False,
         "next_drive_id": state.drive_id,
         "next_play_clock_seconds": state.play_clock_seconds,
         "possession_team": state.possession_team,
@@ -90,6 +99,8 @@ def _event_payload(
         "score": False,
         "timeout": False,
         "timeout_team": None,
+        "timeout_kind": "none",
+        "clock_correction": False,
         "carry_forward_context": False,
         "period_changed": False,
         "terminal": state.terminal,
@@ -186,6 +197,7 @@ def _context(
 def _fixture(
     *,
     state_changes: dict[str, object] | None = None,
+    payload_changes: dict[str, object] | None = None,
     context_changes: dict[str, object] | None = None,
     bundle_game_id: str | None = None,
     source_at: str | None = _STATE_SOURCE_AT,
@@ -201,6 +213,7 @@ def _fixture(
         game_id=bundle_game_id,
         source_at=source_at,
         raw_object_hash=raw_object_hash,
+        payload_changes=payload_changes,
     )
     state = replace(
         provisional,
@@ -215,6 +228,57 @@ def _fixture(
         **resolved_context_changes,
     )
     return state, context, bundle
+
+
+@pytest.mark.parametrize(
+    ("state_changes", "payload_changes"),
+    [
+        (
+            {"suspended": True},
+            {
+                "play_type": "no_play",
+                "play_type_nfl": "COMMENT",
+                "description": "The game has been suspended.",
+                "period": None,
+                "period_seconds_remaining": None,
+                "game_seconds_remaining": None,
+                "lifecycle_action": "suspend",
+                "clock_carry_forward": True,
+                "first_down": False,
+                "carry_forward_context": True,
+            },
+        ),
+        (
+            {},
+            {
+                "play_type": "no_play",
+                "play_type_nfl": "TIMEOUT",
+                "first_down": False,
+                "timeout": True,
+                "timeout_team": "HME",
+                "timeout_kind": "administrative",
+                "carry_forward_context": True,
+            },
+        ),
+        ({"suspended": True}, {}),
+    ],
+)
+def test_model_seam_rejects_non_snap_lifecycle_admin_or_suspended_state(
+    state_changes: dict[str, object],
+    payload_changes: dict[str, object],
+) -> None:
+    state, context, bundle = _fixture(
+        state_changes=state_changes,
+        payload_changes=payload_changes,
+    )
+
+    with pytest.raises(nfl.NFLModelInputError, match="pre-snap"):
+        _feature_vector(
+            state,
+            context,
+            bundle,
+            variant="spread",
+        )
 
 
 def _feature_vector(
@@ -285,13 +349,13 @@ def test_official_feature_order_and_transform_are_frozen() -> None:
         )
     )
     assert no_spread.source_state_sha256 == (
-        "sha256:dd2146068ba3d3fa3ff22c6dd25d05a6c82acd85017b8c4f5c6afbbdf587c845"
+        "sha256:13e593d5429534b3bafcb633b7376b1c2b3ea257d38689ac3f404c3a236a8e67"
     )
     assert no_spread.feature_sha256 == (
-        "sha256:a3907f042f2b7f7b32e77e59a54bb8671d73d9bdd93eba7c18f93a380b8bc014"
+        "sha256:3a81eebe3c72ec7ea57bd851c2ca7692250bdf5f6594b439398e35e84136f1bb"
     )
     assert spread.feature_sha256 == (
-        "sha256:0e18cf6a4bd0d1875bdfa4fa503fc345256410c86fa4dfa2316321afce7c4e36"
+        "sha256:00d4b0eec2fb83dedf0ab0c811485465bb993a59ac405383d5bfb58b1993fc43"
     )
     assert (
         no_spread.model_artifact_sha256
@@ -639,6 +703,9 @@ def test_envelope_sequence_must_match_reducer_state() -> None:
         ),
         ({"drive_id": "4"}, "drive_id"),
         ({"play_clock_seconds": 13}, "play_clock_seconds"),
+        ({"season_type": "POST"}, "season_type"),
+        ({"source_order_sequence": 102}, "source_order_sequence"),
+        ({"suspended": True}, "suspended"),
         ({"possession_team": "AWY"}, "possession_team"),
         ({"down": 3}, "down"),
         ({"distance": 5}, "distance"),

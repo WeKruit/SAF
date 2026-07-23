@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from prediction_market.sports import (
@@ -29,6 +30,110 @@ from prediction_market.sports.model_latency import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_nfl_latency_builder_uses_canonical_source_order_not_index_or_play_id() -> None:
+    raw = pd.DataFrame(
+        [
+            {
+                "game_id": "2025_01_AWY_HME",
+                "play_id": 100,
+                "order_sequence": 30,
+                "_raw_record_ordinal": 3,
+                "fixed_drive": 2,
+                "posteam": "HME",
+            },
+            {
+                "game_id": "2025_01_AWY_HME",
+                "play_id": 200,
+                "order_sequence": 20,
+                "_raw_record_ordinal": 2,
+                "fixed_drive": 2,
+                "posteam": "HME",
+            },
+            {
+                "game_id": "2025_01_AWY_HME",
+                "play_id": 300,
+                "order_sequence": 15,
+                "_raw_record_ordinal": 1,
+                "fixed_drive": 2,
+                "posteam": "HME",
+            },
+            {
+                "game_id": "2025_01_AWY_HME",
+                "play_id": 400,
+                "order_sequence": 10,
+                "_raw_record_ordinal": 0,
+                "fixed_drive": 1,
+                "posteam": "AWY",
+            },
+        ],
+        index=(90, 10, 70, 50),
+    )
+    candidate = pd.Series(
+        {
+            "game_id": "2025_01_AWY_HME",
+            "drive_number": 2,
+            "play_id": 200,
+        }
+    )
+
+    pre_row, post_row = model_latency._nfl_latency_transition_rows(
+        raw,
+        candidate,
+    )
+
+    assert pre_row["order_sequence"] == 15
+    assert post_row["order_sequence"] == 20
+    assert pre_row["play_id"] > post_row["play_id"]
+
+
+def test_nfl_latency_report_binds_the_selected_raw_ordinals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected_ordinals: tuple[int, int] | None = None
+    select_transition = model_latency._nfl_latency_transition_rows
+
+    def capture_transition(
+        raw: pd.DataFrame,
+        candidate: pd.Series,
+    ) -> tuple[dict[str, object], dict[str, object]] | None:
+        nonlocal selected_ordinals
+        rows = select_transition(raw, candidate)
+        if rows is not None:
+            selected_ordinals = (
+                int(rows[0]["_raw_record_ordinal"]),
+                int(rows[1]["_raw_record_ordinal"]),
+            )
+        return rows
+
+    monkeypatch.setattr(
+        model_latency,
+        "_nfl_latency_transition_rows",
+        capture_transition,
+    )
+    monkeypatch.setattr(
+        model_latency,
+        "benchmark_model_stages",
+        lambda **_arguments: {},
+    )
+    registry_row = next(
+        row
+        for row in model_latency.load_model_registry(PROJECT_ROOT)
+        if row.model_id == "MODEL-NFL-DRIVE-TRANSITION"
+    )
+
+    report = model_latency._nfl_benchmark(
+        program_root=PROJECT_ROOT,
+        registry_row=registry_row,
+        warmup=1,
+        repeats=1,
+    )
+
+    assert selected_ordinals is not None
+    assert report["representative_input_lineage"]["raw_record_ordinals"] == list(
+        selected_ordinals
+    )
 
 
 def _statsbomb_start_event() -> tuple[

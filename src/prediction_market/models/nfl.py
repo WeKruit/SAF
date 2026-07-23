@@ -287,16 +287,30 @@ def _validate_post_state_projection(
             "state event envelope canonical_refs.participant_ids do not "
             "match state teams"
         )
+    if (
+        state.suspended
+        or event.lifecycle_action != "none"
+        or event.clock_carry_forward
+        or event.carry_forward_context
+        or event.timeout_kind == "administrative"
+    ):
+        raise NFLModelInputError(
+            "lifecycle, administrative, context-carry, or suspended state "
+            "is not an eligible independently observed pre-snap model cutoff"
+        )
 
     expected = {
         "sport": event.sport,
         "game_id": event.game_id,
         "sequence": event.sequence,
         "terminal": event.terminal,
+        "season_type": event.season_type,
         "period": event.period,
         "period_seconds_remaining": event.period_seconds_remaining,
         "game_seconds_remaining": event.game_seconds_remaining,
         "source_play_id": event.next_source_play_id,
+        "source_order_sequence": event.next_source_order_sequence,
+        "suspended": event.lifecycle_action == "suspend",
         "drive_id": event.next_drive_id,
         "play_clock_seconds": event.next_play_clock_seconds,
         "possession_team": event.possession_team,

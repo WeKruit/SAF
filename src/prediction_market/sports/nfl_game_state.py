@@ -15,11 +15,20 @@ from dataclasses import dataclass, fields
 from decimal import Decimal
 from numbers import Integral, Real
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from prediction_market.contracts import EventEnvelopeV0
 from prediction_market.sports.event_envelopes import (
     validate_static_sport_observation_bundle,
+)
+from prediction_market.sports.nfl_rules import (
+    NFLRulesError,
+    normalize_native_timeout_remaining,
+    overtime_period_seconds,
+    season_from_game_id,
+    timeout_allotment,
+    timeout_reset_allotment,
+    validate_season_type,
 )
 
 
@@ -91,19 +100,39 @@ def _require_game_id(value: object, field: str) -> None:
         )
 
 
+def _rule_context(game_id: str, season_type: str) -> tuple[int, str]:
+    try:
+        return season_from_game_id(game_id), validate_season_type(season_type)
+    except NFLRulesError as exc:
+        raise NFLGameStateError(str(exc)) from exc
+
+
 def _validate_clock(
+    game_id: str,
+    season_type: str,
     period: object,
     period_seconds_remaining: object,
     game_seconds_remaining: object,
     *,
     context: str,
 ) -> None:
+    season, validated_season_type = _rule_context(game_id, season_type)
     _require_int(period, f"{context}.period", minimum=1)
+    assert type(period) is int
+    if validated_season_type == "REG" and period > 5:
+        raise NFLGameStateError(
+            f"{context}.period exceeds regular-season overtime"
+        )
+    maximum_period_seconds = (
+        900
+        if period <= 4
+        else overtime_period_seconds(season, validated_season_type)
+    )
     _require_int(
         period_seconds_remaining,
         f"{context}.period_seconds_remaining",
         minimum=0,
-        maximum=900,
+        maximum=maximum_period_seconds,
     )
     _require_int(
         game_seconds_remaining,
@@ -111,7 +140,6 @@ def _validate_clock(
         minimum=0,
         maximum=3600,
     )
-    assert type(period) is int
     assert type(period_seconds_remaining) is int
     assert type(game_seconds_remaining) is int
     if period <= 4:
@@ -128,6 +156,8 @@ def _validate_clock(
 
 def _validate_football_values(
     *,
+    season_type: str,
+    period: int,
     down: object,
     distance: object,
     yardline_100: object,
@@ -165,18 +195,20 @@ def _validate_football_values(
         )
     _require_int(home_score, f"{context}.home_score", minimum=0)
     _require_int(away_score, f"{context}.away_score", minimum=0)
-    _require_int(
-        home_timeouts_remaining,
-        f"{context}.home_timeouts_remaining",
-        minimum=0,
-        maximum=3,
-    )
-    _require_int(
-        away_timeouts_remaining,
-        f"{context}.away_timeouts_remaining",
-        minimum=0,
-        maximum=3,
-    )
+    try:
+        maximum_timeouts = timeout_allotment(season_type, period)
+    except NFLRulesError as exc:
+        raise NFLGameStateError(str(exc)) from exc
+    for field_name, value in (
+        ("home_timeouts_remaining", home_timeouts_remaining),
+        ("away_timeouts_remaining", away_timeouts_remaining),
+    ):
+        _require_int(value, f"{context}.{field_name}", minimum=0)
+        if type(value) is int and value > maximum_timeouts:
+            word = "three" if maximum_timeouts == 3 else "two"
+            raise NFLGameStateError(
+                f"{context}.{field_name} exceeds the {word}-timeout allotment"
+            )
 
 
 def _validate_terminal(
@@ -216,12 +248,15 @@ class NFLGameState:
     game_id: str
     sequence: int
     terminal: bool
+    season_type: str
     home_team: str
     away_team: str
     period: int
     period_seconds_remaining: int
     game_seconds_remaining: int
     source_play_id: str
+    source_order_sequence: int
+    suspended: bool
     drive_id: str | None
     play_clock_seconds: int | None
     possession_team: str | None
@@ -241,11 +276,18 @@ class NFLGameState:
         _require_game_id(self.game_id, "state.game_id")
         _require_int(self.sequence, "state.sequence", minimum=0)
         _require_bool(self.terminal, "state.terminal")
+        _rule_context(self.game_id, self.season_type)
         _require_text(self.home_team, "state.home_team")
         _require_text(self.away_team, "state.away_team")
         if self.home_team == self.away_team:
             raise NFLGameStateError("home_team and away_team must differ")
         _require_text(self.source_play_id, "state.source_play_id")
+        _require_int(
+            self.source_order_sequence,
+            "state.source_order_sequence",
+            minimum=0,
+        )
+        _require_bool(self.suspended, "state.suspended")
         if self.drive_id is not None:
             _require_text(self.drive_id, "state.drive_id")
         if self.play_clock_seconds is not None:
@@ -266,12 +308,16 @@ class NFLGameState:
         if self.down is not None and self.possession_team is None:
             raise NFLGameStateError("state.down requires possession_team")
         _validate_clock(
+            self.game_id,
+            self.season_type,
             self.period,
             self.period_seconds_remaining,
             self.game_seconds_remaining,
             context="state",
         )
         _validate_football_values(
+            season_type=self.season_type,
+            period=self.period,
             down=self.down,
             distance=self.distance,
             yardline_100=self.yardline_100,
@@ -306,14 +352,20 @@ class NFLPlayEvent:
     game_id: str
     sequence: int
     event_id: str
+    season_type: str
     source_play_id: str
+    source_order_sequence: int
     observation_mode: str
     play_type: str | None
+    play_type_nfl: str | None
     description: str | None
-    period: int
-    period_seconds_remaining: int
-    game_seconds_remaining: int
+    period: int | None
+    period_seconds_remaining: int | None
+    game_seconds_remaining: int | None
     next_source_play_id: str
+    next_source_order_sequence: int
+    lifecycle_action: Literal["none", "suspend", "resume"]
+    clock_carry_forward: bool
     next_drive_id: str | None
     next_play_clock_seconds: int | None
     possession_team: str | None
@@ -331,6 +383,8 @@ class NFLPlayEvent:
     score: bool
     timeout: bool
     timeout_team: str | None
+    timeout_kind: Literal["none", "administrative", "play_attached"]
+    clock_correction: bool
     carry_forward_context: bool
     period_changed: bool
     terminal: bool
@@ -341,16 +395,48 @@ class NFLPlayEvent:
             raise NFLGameStateError("event.sport must be nfl")
         _require_game_id(self.game_id, "event.game_id")
         _require_int(self.sequence, "event.sequence", minimum=1)
+        _rule_context(self.game_id, self.season_type)
         _require_text(self.source_play_id, "event.source_play_id")
+        _require_int(
+            self.source_order_sequence,
+            "event.source_order_sequence",
+            minimum=0,
+        )
         if self.observation_mode != NFLVERSE_OBSERVATION_MODE:
             raise NFLGameStateError(
                 "event.observation_mode must be explicit offline observation"
             )
         if self.play_type is not None:
             _require_text(self.play_type, "event.play_type")
+        if self.play_type_nfl is not None:
+            _require_text(self.play_type_nfl, "event.play_type_nfl")
         if self.description is not None:
             _require_text(self.description, "event.description")
         _require_text(self.next_source_play_id, "event.next_source_play_id")
+        _require_int(
+            self.next_source_order_sequence,
+            "event.next_source_order_sequence",
+            minimum=0,
+        )
+        if self.next_source_order_sequence <= self.source_order_sequence:
+            raise NFLGameStateError(
+                "event next source order must strictly increase"
+            )
+        if self.lifecycle_action not in {"none", "suspend", "resume"}:
+            raise NFLGameStateError(
+                "event.lifecycle_action must be none, suspend, or resume"
+            )
+        derived_lifecycle_action = "none"
+        if self.play_type_nfl == "COMMENT" and self.description is not None:
+            if self.description.startswith("The game has been suspended."):
+                derived_lifecycle_action = "suspend"
+            elif self.description.startswith("The game has resumed."):
+                derived_lifecycle_action = "resume"
+        if self.lifecycle_action != derived_lifecycle_action:
+            raise NFLGameStateError(
+                "event lifecycle_action must match the bounded COMMENT source"
+            )
+        _require_bool(self.clock_carry_forward, "event.clock_carry_forward")
         if self.next_drive_id is not None:
             _require_text(self.next_drive_id, "event.next_drive_id")
         if self.next_play_clock_seconds is not None:
@@ -365,13 +451,40 @@ class NFLPlayEvent:
             _require_text(self.possession_team, "event.possession_team")
         elif self.down is not None:
             raise NFLGameStateError("event.down requires possession_team")
-        _validate_clock(
+        lifecycle = self.lifecycle_action != "none"
+        clock_values = (
             self.period,
             self.period_seconds_remaining,
             self.game_seconds_remaining,
-            context="event",
         )
+        if lifecycle:
+            if not self.clock_carry_forward or any(
+                value is not None for value in clock_values
+            ):
+                raise NFLGameStateError(
+                    "lifecycle events must carry forward all clock fields"
+                )
+        else:
+            if self.clock_carry_forward or any(
+                value is None for value in clock_values
+            ):
+                raise NFLGameStateError(
+                    "non-lifecycle events require a complete clock"
+                )
+            assert self.period is not None
+            assert self.period_seconds_remaining is not None
+            assert self.game_seconds_remaining is not None
+            _validate_clock(
+                self.game_id,
+                self.season_type,
+                self.period,
+                self.period_seconds_remaining,
+                self.game_seconds_remaining,
+                context="event",
+            )
         _validate_football_values(
+            season_type=self.season_type,
+            period=1 if self.period is None else self.period,
             down=self.down,
             distance=self.distance,
             yardline_100=self.yardline_100,
@@ -387,6 +500,7 @@ class NFLPlayEvent:
             "possession_changed",
             "score",
             "timeout",
+            "clock_correction",
             "carry_forward_context",
             "period_changed",
             "terminal",
@@ -398,21 +512,89 @@ class NFLPlayEvent:
             raise NFLGameStateError(
                 "event.timeout_team must be None when timeout is false"
             )
+        if self.timeout_kind not in {
+            "none",
+            "administrative",
+            "play_attached",
+        }:
+            raise NFLGameStateError(
+                "event.timeout_kind must be none, administrative, or play_attached"
+            )
+        administrative_source = (
+            self.play_type_nfl == "TIMEOUT"
+            and self.play_type == "no_play"
+        )
+        if administrative_source and not self.timeout:
+            raise NFLGameStateError(
+                "TIMEOUT + no_play source requires a charged timeout"
+            )
+        expected_timeout_kind = (
+            "none"
+            if not self.timeout
+            else "administrative"
+            if administrative_source
+            else "play_attached"
+        )
+        if self.timeout_kind != expected_timeout_kind:
+            raise NFLGameStateError(
+                "event.timeout_kind administrative classification requires "
+                "TIMEOUT + no_play source fields"
+            )
+        if self.timeout_kind == "administrative":
+            if not self.carry_forward_context:
+                raise NFLGameStateError(
+                    "administrative timeout must carry football context"
+                )
+            if self.first_down or self.turnover or self.possession_changed or self.score:
+                raise NFLGameStateError(
+                    "administrative timeout may only charge a timeout"
+                )
+        elif self.timeout_kind == "play_attached" and self.carry_forward_context:
+            raise NFLGameStateError(
+                "play-attached timeout must apply observed play context"
+            )
         if self.carry_forward_context and (
             self.first_down or self.turnover or self.possession_changed
         ):
             raise NFLGameStateError(
                 "a context-carry event cannot claim a contextual transition"
             )
-        _validate_terminal(
-            terminal=self.terminal,
-            period=self.period,
-            period_seconds_remaining=self.period_seconds_remaining,
-            game_seconds_remaining=self.game_seconds_remaining,
-            home_score=self.home_score,
-            away_score=self.away_score,
-            context="event",
-        )
+        if lifecycle:
+            prefix = (
+                "The game has been suspended."
+                if self.lifecycle_action == "suspend"
+                else "The game has resumed."
+            )
+            if self.description is None or not self.description.startswith(prefix):
+                raise NFLGameStateError(
+                    "lifecycle action requires its bounded source description"
+                )
+            if (
+                not self.carry_forward_context
+                or self.first_down
+                or self.turnover
+                or self.possession_changed
+                or self.score
+                or self.timeout
+                or self.period_changed
+                or self.terminal
+            ):
+                raise NFLGameStateError(
+                    "lifecycle event may only update suspension state"
+                )
+        else:
+            assert self.period is not None
+            assert self.period_seconds_remaining is not None
+            assert self.game_seconds_remaining is not None
+            _validate_terminal(
+                terminal=self.terminal,
+                period=self.period,
+                period_seconds_remaining=self.period_seconds_remaining,
+                game_seconds_remaining=self.game_seconds_remaining,
+                home_score=self.home_score,
+                away_score=self.away_score,
+                context="event",
+            )
         if (
             type(self.event_id) is not str
             or _EVENT_ID_RE.fullmatch(self.event_id) is None
@@ -430,9 +612,44 @@ class NFLPlayEvent:
             )
         for flag in self.quality_flags:
             _require_text(flag, "event.quality_flags[]")
+        if self.clock_correction and (
+            self.timeout_kind != "administrative"
+            or "source_order_inserted_timeout" not in self.quality_flags
+            or not _is_inserted_native_play_boundary(
+                self.source_play_id,
+                self.next_source_play_id,
+            )
+        ):
+            raise NFLGameStateError(
+                "clock correction requires an inserted administrative timeout"
+            )
+
+
+def _is_inserted_native_play_boundary(
+    source_play_id: str,
+    next_source_play_id: str,
+) -> bool:
+    if not source_play_id.isdigit() or not next_source_play_id.isdigit():
+        return False
+    return int(source_play_id) > int(next_source_play_id)
 
 
 def _validate_clock_transition(state: NFLGameState, event: NFLPlayEvent) -> None:
+    if event.timeout_kind == "administrative" and (
+        event.period_changed or event.terminal
+    ):
+        raise NFLGameStateError(
+            "administrative timeout cannot change period or end the game"
+        )
+    if event.clock_carry_forward:
+        if event.period_changed or event.clock_correction:
+            raise NFLGameStateError(
+                "clock-carry event cannot change period or correct clock"
+            )
+        return
+    assert event.period is not None
+    assert event.period_seconds_remaining is not None
+    assert event.game_seconds_remaining is not None
     period_delta = event.period - state.period
     if period_delta not in {0, 1}:
         raise NFLGameStateError(
@@ -441,11 +658,20 @@ def _validate_clock_transition(state: NFLGameState, event: NFLPlayEvent) -> None
     if event.period_changed != (period_delta == 1):
         raise NFLGameStateError("event.period_changed does not match period transition")
     if period_delta == 0:
-        if (
+        clock_increased = (
             event.period_seconds_remaining > state.period_seconds_remaining
             or event.game_seconds_remaining > state.game_seconds_remaining
-        ):
+        )
+        if clock_increased and not event.clock_correction:
             raise NFLGameStateError("event clock moved backwards within a period")
+        if event.clock_correction and not clock_increased:
+            raise NFLGameStateError(
+                "event.clock_correction requires an actual clock increase"
+            )
+    elif event.clock_correction:
+        raise NFLGameStateError(
+            "event.clock_correction requires a same-period transition"
+        )
     elif (
         state.period < 4
         and event.game_seconds_remaining > state.game_seconds_remaining
@@ -506,26 +732,41 @@ def _validate_possession_transition(
 def _validate_timeout_transition(
     state: NFLGameState, event: NFLPlayEvent
 ) -> None:
+    target_period = state.period if event.period is None else event.period
     home_delta = (
         event.home_timeouts_remaining - state.home_timeouts_remaining
     )
     away_delta = (
         event.away_timeouts_remaining - state.away_timeouts_remaining
     )
-    reset_allowed = event.period_changed and (
-        (state.period == 2 and event.period == 3)
-        or (state.period >= 4 and event.period == state.period + 1)
-    )
-    if (home_delta > 0 or away_delta > 0) and not reset_allowed:
-        raise NFLGameStateError("timeouts may increase only at a rules reset")
-    if state.period == 2 and event.period == 3:
+    reset_allotment: int | None = None
+    if event.period_changed:
+        try:
+            reset_allotment = timeout_reset_allotment(
+                state.season_type,
+                state.period,
+                target_period,
+            )
+        except NFLRulesError as exc:
+            raise NFLGameStateError(str(exc)) from exc
+    if reset_allotment is not None:
         if (
-            home_delta > 0
-            and event.home_timeouts_remaining != 3
-            or away_delta > 0
-            and event.away_timeouts_remaining != 3
+            event.home_timeouts_remaining != reset_allotment
+            or event.away_timeouts_remaining != reset_allotment
         ):
-            raise NFLGameStateError("halftime timeout reset must restore three")
+            word = "three" if reset_allotment == 3 else "two"
+            raise NFLGameStateError(
+                f"timeout reset must restore {word} per team"
+            )
+        if event.timeout or event.timeout_team is not None:
+            raise NFLGameStateError(
+                "timeout reset event cannot also charge a timeout"
+            )
+        return
+    if home_delta > 0 or away_delta > 0:
+        raise NFLGameStateError(
+            "timeouts may increase only at a rules reset"
+        )
     if home_delta < -1 or away_delta < -1:
         raise NFLGameStateError("one event cannot consume multiple team timeouts")
     if home_delta < 0 and away_delta < 0:
@@ -554,15 +795,42 @@ def reduce(state: NFLGameState, event: NFLPlayEvent) -> NFLGameState:
         raise NFLGameStateError("state and event sport differ")
     if state.game_id != event.game_id:
         raise NFLGameStateError("state and event game_id differ")
+    if state.season_type != event.season_type:
+        raise NFLGameStateError("season_type cannot change within a game")
+    if event.source_play_id != state.source_play_id:
+        raise NFLGameStateError(
+            "event source_play_id must match current state"
+        )
+    if event.source_order_sequence != state.source_order_sequence:
+        raise NFLGameStateError(
+            "event source_order_sequence must match current state"
+        )
+    if event.next_source_order_sequence <= event.source_order_sequence:
+        raise NFLGameStateError("next source order must strictly increase")
     if state.terminal:
         raise NFLGameStateError("cannot apply an event after terminal state")
     if event.sequence != state.sequence + 1:
         raise NFLGameStateError("event sequence must immediately follow state")
+    if state.suspended and event.lifecycle_action == "none":
+        raise NFLGameStateError(
+            "a suspended game can only accept a resume lifecycle event"
+        )
 
     _validate_clock_transition(state, event)
     _validate_score_transition(state, event)
     _validate_possession_transition(state, event)
     _validate_timeout_transition(state, event)
+
+    if event.lifecycle_action == "suspend":
+        if state.suspended:
+            raise NFLGameStateError("game is already suspended")
+        target_suspended = True
+    elif event.lifecycle_action == "resume":
+        if not state.suspended:
+            raise NFLGameStateError("game is not suspended")
+        target_suspended = False
+    else:
+        target_suspended = state.suspended
 
     if event.carry_forward_context:
         next_drive_id = state.drive_id
@@ -581,17 +849,32 @@ def reduce(state: NFLGameState, event: NFLPlayEvent) -> NFLGameState:
         yardline_100 = event.yardline_100
         goal_to_go = event.goal_to_go
 
+    if event.clock_carry_forward:
+        period = state.period
+        period_seconds_remaining = state.period_seconds_remaining
+        game_seconds_remaining = state.game_seconds_remaining
+    else:
+        assert event.period is not None
+        assert event.period_seconds_remaining is not None
+        assert event.game_seconds_remaining is not None
+        period = event.period
+        period_seconds_remaining = event.period_seconds_remaining
+        game_seconds_remaining = event.game_seconds_remaining
+
     return NFLGameState(
         sport=state.sport,
         game_id=state.game_id,
         sequence=event.sequence,
         terminal=event.terminal,
+        season_type=state.season_type,
         home_team=state.home_team,
         away_team=state.away_team,
-        period=event.period,
-        period_seconds_remaining=event.period_seconds_remaining,
-        game_seconds_remaining=event.game_seconds_remaining,
+        period=period,
+        period_seconds_remaining=period_seconds_remaining,
+        game_seconds_remaining=game_seconds_remaining,
         source_play_id=event.next_source_play_id,
+        source_order_sequence=event.next_source_order_sequence,
+        suspended=target_suspended,
         drive_id=next_drive_id,
         play_clock_seconds=next_play_clock_seconds,
         possession_team=possession_team,
@@ -614,7 +897,7 @@ class NFLGameStateReducer:
 
     sport = NFL_SPORT
     reducer_id = "REDUCER-NFL-PLAY-STATE"
-    reducer_version = "v2"
+    reducer_version = "v3"
 
     def reduce(
         self,
@@ -746,6 +1029,54 @@ def _source_play_id(row: Mapping[str, object]) -> str:
     raise NFLGameStateError("nflverse play_id must be a stable scalar")
 
 
+def _source_order_sequence(row: Mapping[str, object]) -> int:
+    value = _row_int(row, "order_sequence")
+    assert value is not None
+    if value < 0:
+        raise NFLGameStateError(
+            "nflverse order_sequence must be nonnegative"
+        )
+    return value
+
+
+def _lifecycle_action(
+    row: Mapping[str, object],
+) -> Literal["none", "suspend", "resume"]:
+    if _row_text(row, "play_type_nfl", required=False) != "COMMENT":
+        return "none"
+    description = _row_text(row, "desc", required=False)
+    if (
+        description is not None
+        and description.startswith("The game has been suspended.")
+    ):
+        return "suspend"
+    if (
+        description is not None
+        and description.startswith("The game has resumed.")
+    ):
+        return "resume"
+    return "none"
+
+
+def _timeout_kind(
+    row: Mapping[str, object],
+) -> Literal["none", "administrative", "play_attached"]:
+    timeout_observed = _row_indicator(row, "timeout", default=False)
+    administrative_source = (
+        _row_text(row, "play_type_nfl", required=False) == "TIMEOUT"
+        and _row_text(row, "play_type", required=False) == "no_play"
+    )
+    if administrative_source:
+        if not timeout_observed:
+            raise NFLGameStateError(
+                "TIMEOUT + no_play source requires a charged timeout"
+            )
+        return "administrative"
+    if not timeout_observed:
+        return "none"
+    return "play_attached"
+
+
 def _stable_optional_scalar(
     row: Mapping[str, object],
     field: str,
@@ -868,22 +1199,53 @@ def _home_away_scores(
 
 def _snapshot_from_row(
     row: Mapping[str, object],
+    *,
+    clock_carry_forward: bool = False,
 ) -> dict[str, object]:
+    game_id = _canonical_nflverse_game_id(_row_text(row, "game_id"))
+    season_type = _row_text(row, "season_type")
+    assert season_type is not None
+    _rule_context(game_id, season_type)
+    period = _row_int(row, "qtr")
+    assert period is not None
     down = _row_int(row, "down", required=False)
     distance = (
         _row_int(row, "ydstogo", required=True) if down is not None else None
     )
     home_score, away_score = _home_away_scores(row, after_play=False)
+    native_home_timeouts = _row_int(row, "home_timeouts_remaining")
+    native_away_timeouts = _row_int(row, "away_timeouts_remaining")
+    assert native_home_timeouts is not None
+    assert native_away_timeouts is not None
+    try:
+        home_timeouts = normalize_native_timeout_remaining(
+            native_home_timeouts,
+            season_type=season_type,
+            period=period,
+        )
+        away_timeouts = normalize_native_timeout_remaining(
+            native_away_timeouts,
+            season_type=season_type,
+            period=period,
+        )
+    except NFLRulesError as exc:
+        raise NFLGameStateError(str(exc)) from exc
     return {
-        "game_id": _canonical_nflverse_game_id(
-            _row_text(row, "game_id")
-        ),
+        "game_id": game_id,
+        "season_type": season_type,
         "home_team": _row_text(row, "home_team"),
         "away_team": _row_text(row, "away_team"),
-        "period": _row_int(row, "qtr"),
-        "period_seconds_remaining": _quarter_seconds(row),
-        "game_seconds_remaining": _row_int(row, "game_seconds_remaining"),
+        "period": None if clock_carry_forward else period,
+        "period_seconds_remaining": (
+            None if clock_carry_forward else _quarter_seconds(row)
+        ),
+        "game_seconds_remaining": (
+            None
+            if clock_carry_forward
+            else _row_int(row, "game_seconds_remaining")
+        ),
         "source_play_id": _source_play_id(row),
+        "source_order_sequence": _source_order_sequence(row),
         "drive_id": _stable_optional_scalar(row, "fixed_drive"),
         "play_clock_seconds": _play_clock_seconds(row),
         "possession_team": _row_text(row, "posteam", required=False),
@@ -895,12 +1257,8 @@ def _snapshot_from_row(
         # `total_*` is end-of-play on scoring rows and cannot define this state.
         "home_score": home_score,
         "away_score": away_score,
-        "home_timeouts_remaining": _row_int(
-            row, "home_timeouts_remaining"
-        ),
-        "away_timeouts_remaining": _row_int(
-            row, "away_timeouts_remaining"
-        ),
+        "home_timeouts_remaining": home_timeouts,
+        "away_timeouts_remaining": away_timeouts,
     }
 
 
@@ -919,6 +1277,7 @@ def state_from_nflverse_row(
         sport=NFL_SPORT,
         sequence=sequence,
         terminal=terminal,
+        suspended=False,
         last_event_id=last_event_id,
         **snapshot,
     )
@@ -947,29 +1306,56 @@ def nflverse_transition_payload(
     post_row: Mapping[str, object],
     *,
     sequence: int = 1,
-    terminal: bool | None = None,
     quality_flags: tuple[str, ...] = (),
 ) -> dict[str, object]:
     """Normalize consecutive nflverse rows into a complete envelope payload."""
 
     pre = _normalized_row(pre_row, "pre_row")
     post = _normalized_row(post_row, "post_row")
-    pre_snapshot = _snapshot_from_row(pre)
-    post_snapshot = _snapshot_from_row(post)
-    for field in ("game_id", "home_team", "away_team"):
+    lifecycle_action = _lifecycle_action(pre)
+    post_lifecycle_action = _lifecycle_action(post)
+    pre_snapshot = _snapshot_from_row(
+        pre,
+        clock_carry_forward=lifecycle_action != "none",
+    )
+    post_snapshot = _snapshot_from_row(
+        post,
+        clock_carry_forward=post_lifecycle_action != "none",
+    )
+    for field in ("game_id", "season_type", "home_team", "away_team"):
         if pre_snapshot[field] != post_snapshot[field]:
             raise NFLGameStateError(
                 f"nflverse pre/post observations differ on {field}"
             )
+    if (
+        int(post_snapshot["source_order_sequence"])
+        <= int(pre_snapshot["source_order_sequence"])
+    ):
+        raise NFLGameStateError(
+            "nflverse next source order must strictly increase"
+        )
 
-    pre_has_context = pre_snapshot["possession_team"] is not None
+    source_timeout_kind = _timeout_kind(pre)
+    post_timeout_kind = _timeout_kind(post)
     post_has_context = post_snapshot["possession_team"] is not None
-    carry_forward_context = not pre_has_context or not post_has_context
+    carry_forward_context = (
+        lifecycle_action != "none"
+        or source_timeout_kind == "administrative"
+        or not post_has_context
+    )
     context_snapshot = (
         pre_snapshot if carry_forward_context else post_snapshot
     )
-    source_is_timeout = _row_indicator(pre, "timeout", default=False)
-    clock_snapshot = pre_snapshot if source_is_timeout else post_snapshot
+    if lifecycle_action != "none":
+        clock_snapshot = None
+    elif (
+        source_timeout_kind == "administrative"
+        or post_timeout_kind == "administrative"
+        or post_lifecycle_action != "none"
+    ):
+        clock_snapshot = pre_snapshot
+    else:
+        clock_snapshot = post_snapshot
     pre_possession = pre_snapshot["possession_team"]
     post_possession = context_snapshot["possession_team"]
     possession_changed = (
@@ -982,14 +1368,19 @@ def nflverse_transition_payload(
         pre_snapshot["home_score"] != home_score
         or pre_snapshot["away_score"] != away_score
     )
-    period_changed = pre_snapshot["period"] != clock_snapshot["period"]
-    timeout_observed = source_is_timeout
+    period_changed = (
+        False
+        if clock_snapshot is None
+        else pre_snapshot["period"] != clock_snapshot["period"]
+    )
+    timeout_observed = source_timeout_kind != "none"
     timeout_team = (
         _row_text(pre, "timeout_team") if timeout_observed else None
     )
-    post_is_timeout = _row_indicator(post, "timeout", default=False)
     timeout_snapshot = (
-        pre_snapshot if timeout_observed or post_is_timeout else post_snapshot
+        pre_snapshot
+        if timeout_observed or post_timeout_kind != "none"
+        else post_snapshot
     )
 
     observed_first_down = _row_indicator(pre, "first_down", default=False)
@@ -1004,22 +1395,48 @@ def nflverse_transition_payload(
         or len(quality_flags) != len(set(quality_flags))
     ):
         raise NFLGameStateError("quality_flags must be a unique tuple")
-    target_terminal = _infer_terminal(post) if terminal is None else terminal
+    target_terminal = _infer_terminal(post)
     _require_bool(target_terminal, "terminal")
+    if lifecycle_action != "none":
+        target_terminal = False
     return {
         "sport": NFL_SPORT,
         "game_id": str(post_snapshot["game_id"]),
         "sequence": sequence,
+        "season_type": str(pre_snapshot["season_type"]),
         "source_play_id": _source_play_id(pre),
+        "source_order_sequence": int(
+            pre_snapshot["source_order_sequence"]
+        ),
         "observation_mode": NFLVERSE_OBSERVATION_MODE,
         "play_type": _row_text(pre, "play_type", required=False),
-        "description": _row_text(pre, "desc", required=False),
-        "period": int(clock_snapshot["period"]),
-        "period_seconds_remaining": int(
-            clock_snapshot["period_seconds_remaining"]
+        "play_type_nfl": _row_text(
+            pre,
+            "play_type_nfl",
+            required=False,
         ),
-        "game_seconds_remaining": int(clock_snapshot["game_seconds_remaining"]),
+        "description": _row_text(pre, "desc", required=False),
+        "period": (
+            None
+            if clock_snapshot is None
+            else int(clock_snapshot["period"])
+        ),
+        "period_seconds_remaining": (
+            None
+            if clock_snapshot is None
+            else int(clock_snapshot["period_seconds_remaining"])
+        ),
+        "game_seconds_remaining": (
+            None
+            if clock_snapshot is None
+            else int(clock_snapshot["game_seconds_remaining"])
+        ),
         "next_source_play_id": str(post_snapshot["source_play_id"]),
+        "next_source_order_sequence": int(
+            post_snapshot["source_order_sequence"]
+        ),
+        "lifecycle_action": lifecycle_action,
+        "clock_carry_forward": lifecycle_action != "none",
         "next_drive_id": (
             None
             if context_snapshot["drive_id"] is None
@@ -1065,6 +1482,10 @@ def nflverse_transition_payload(
         "score": score,
         "timeout": timeout_observed,
         "timeout_team": timeout_team,
+        "timeout_kind": source_timeout_kind,
+        "clock_correction": (
+            "source_order_inserted_timeout" in quality_flags
+        ),
         "carry_forward_context": carry_forward_context,
         "period_changed": period_changed,
         "terminal": target_terminal,
@@ -1113,20 +1534,21 @@ def event_from_nflverse_envelope(
             "normalized nflverse envelope requires a canonical nflverse game_id"
         )
     native_game_id = canonical_game_id.removeprefix("game_nflverse_")
-    ordered_parents = tuple(
-        sorted(
-            raw_parents,
-            key=lambda parent: int(parent.lineage.raw_record_ordinal),
-        )
-    )
-    expected_native_ids = (
+    expected_native_ids = {
         f"{native_game_id}:{payload['source_play_id']}",
         f"{native_game_id}:{payload['next_source_play_id']}",
-    )
-    actual_native_ids = tuple(
-        parent.native_refs[0].native_id for parent in ordered_parents
-    )
-    if actual_native_ids != expected_native_ids:
+    }
+    parent_native_ids = {
+        parent.native_refs[0].native_id for parent in raw_parents
+    }
+    envelope_native_ids = {
+        reference.native_id for reference in validated.native_refs
+    }
+    if (
+        len(expected_native_ids) != 2
+        or parent_native_ids != expected_native_ids
+        or envelope_native_ids != expected_native_ids
+    ):
         raise NFLGameStateError(
             "normalized nflverse payload does not match raw native play identity"
         )
