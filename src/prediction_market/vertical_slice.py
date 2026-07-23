@@ -630,10 +630,12 @@ def _formal_blockers(
     blockers: list[str] = []
     scopes = card.get("authorization_scopes")
     scope = scopes.get("formal_result") if isinstance(scopes, dict) else None
-    if not isinstance(scope, dict) or scope.get("authorized") is not True:
+    if not isinstance(scope, dict):
         blockers.append("X-09 formal_result scope is not authorized")
         required_lock_ids: tuple[str, ...] = ()
     else:
+        if scope.get("authorized") is not True:
+            blockers.append("X-09 formal_result scope is not authorized")
         raw_required = scope.get("required_lock_ids")
         required_lock_ids = (
             tuple(raw_required) if isinstance(raw_required, list) else ()
