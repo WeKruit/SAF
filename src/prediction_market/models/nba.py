@@ -142,8 +142,12 @@ def fit_predict_nba_baselines(
     y_train = train[target_column].to_numpy(dtype=int)
     if len(np.unique(y_train)) != 2:
         raise BaselineInputError("training fold requires both target classes")
-    x_train = train.loc[:, features].to_numpy(dtype=float)
-    x_test = test.loc[:, features].to_numpy(dtype=float)
+    # The registered comparison is prior-aware: both learned models receive
+    # the frozen pregame market prior as a feature, while the untouched prior
+    # is also returned as the benchmark prediction.
+    model_features = (*features, market_prior_column)
+    x_train = train.loc[:, model_features].to_numpy(dtype=float)
+    x_test = test.loc[:, model_features].to_numpy(dtype=float)
     logistic = make_pipeline(
         StandardScaler(),
         LogisticRegression(solver="lbfgs", max_iter=1000, random_state=seed),

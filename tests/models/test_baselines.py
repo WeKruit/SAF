@@ -59,6 +59,26 @@ def test_nba_compares_market_prior_logistic_and_gbdt_deterministically() -> None
     assert all(np.all((values >= 0) & (values <= 1)) for values in first.values())
 
 
+def test_nba_logistic_and_gbdt_use_frozen_market_prior_as_an_input() -> None:
+    train, test = _nba_frames()
+    for frame in (train, test):
+        frame["score_diff"] = 0.0
+        frame["seconds_remaining"] = 1000.0
+        frame["market_prior"] = np.where(frame["target"] == 1, 0.9, 0.1)
+
+    predictions = fit_predict_nba_baselines(
+        train,
+        test,
+        feature_columns=("score_diff", "seconds_remaining"),
+        target_column="target",
+        market_prior_column="market_prior",
+        seed=7,
+    )
+
+    assert np.ptp(predictions["logistic"]) > 0.1
+    assert np.ptp(predictions["gbdt"]) > 0.1
+
+
 def test_nba_point_in_time_feature_contract_rejects_future_availability() -> None:
     train, test = _nba_frames()
     test.loc[test.index[0], "score_diff__available_at"] = (
