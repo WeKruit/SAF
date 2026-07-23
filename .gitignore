@@ -5,7 +5,10 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 *.py[cod]
-var/
+var/*
+!var/raw/
+var/raw/*
+!var/raw/manifests/
+!var/raw/manifests/**
 data/raw/*
 !data/raw/README.md
-
