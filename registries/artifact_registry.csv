@@ -54,6 +54,7 @@ ART-C-016,artifacts/data-audit/x01_full_day_input_manifest_v1.json,C+H,v1,X01_L2
 ART-C-017,artifacts/data-audit/x01_full_day_preflight_v1.json,C+H,v1,X01_L2_reconstruction,complete
 ART-C-018,artifacts/data-audit/kalshi_public_backfill_v1.json,C,v1,2026-07-29_W1_data_ready,in_progress
 ART-C-019,src/prediction_market/sports/x03.py,C+E,v0,2026-08-05_W2_review,POC_ONLY
+ART-C-020,artifacts/data-audit/x02_timestamp_sample_measurement_v1.json,C+H,v1,2026-08-05_W2_review,in_progress
 ART-B-001,artifacts/venue-connectivity/capability_matrix_v0.csv,B+C,v0,X08_prospective_recorder_continuity,complete
 ART-B-002,artifacts/venue-connectivity/kalshi_credentials.md,B+C+I,v0,X08_prospective_recorder_continuity,complete
 ART-B-003,artifacts/venue-connectivity/polymarket_public_smoke_v0.json,B+C,v0,X08_prospective_recorder_continuity,complete

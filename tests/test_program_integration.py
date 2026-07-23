@@ -88,8 +88,12 @@ def test_program_status_is_conditional_and_never_claims_blocked_experiments_done
     assert "X-01: `DATA_READY_PREFLIGHT_ONLY`" in text
     assert "24-hour" in text
     assert "`reconstruction_executed: false`" in text
-    assert "X-02: `DATA_READY_NO_RESULT`" in text
-    assert "four selected UTC days" in text
+    assert (
+        "X-02: `MEASUREMENT_COMPLETED_REGISTRY_ACCEPTANCE_DEPENDENCY_BLOCKED`"
+        in text
+    )
+    assert "6,549,816,634 rows" in text
+    assert "downgrades millisecond-sensitive research to seconds" in text
     assert "`results_ref` remains empty" in text
     assert "X-11: `PRELIMINARY_POC`" in text
     assert "`PIT_UNPROVEN`" in text
@@ -113,6 +117,10 @@ def test_week_one_backlog_tracks_current_data_and_poc_boundaries() -> None:
     assert by_id["W1-013"]["deliverable"] == (
         "artifacts/game-state/soccer/x12_real_data_poc_v0.json"
     )
+    assert by_id["W1-020"]["status"] == "COMPLETE"
+    assert "No frozen four-week" in by_id["W1-020"]["blocker"]
+    assert by_id["W1-021"]["status"] == "IN_PROGRESS"
+    assert "RB-014" in by_id["W1-021"]["blocker"]
     assert "POC_ONLY" in by_id["W1-013"]["blocker"]
     assert "experiment ID" not in by_id["W1-012"]["blocker"]
     assert "experiment ID" not in by_id["W1-013"]["blocker"]

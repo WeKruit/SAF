@@ -1,0 +1,128 @@
+{
+  "artifact_id": "ART-C-020",
+  "artifact_version": "v1",
+  "artifact_type": "x02_timestamp_sample_measurement",
+  "owner": "C+H",
+  "experiment_id": "X-02",
+  "status": "MEASUREMENT_COMPLETED_REGISTRY_ACCEPTANCE_DEPENDENCY_BLOCKED",
+  "result_label": "INTERNAL_MEASUREMENT_NOT_FORMAL_RESULT",
+  "is_formal_result": false,
+  "formal_result_eligible": false,
+  "evaluation_started_at": "2026-07-23T06:29:46.051874Z",
+  "completed_at": "2026-07-23T06:39:11.810677Z",
+  "runtime_seconds": 565.758803,
+  "registration": {
+    "registration_head_sha256": "sha256:2aa6365a16d4b9d9f7c6e56a375288e04e043bc9b7cb45aace59b8338b77e70a",
+    "preregistered_code_sha256": "sha256:2fca15f8c1cef4066887d08c13c4036266be9fa35bbe25c09b1c07089f4b0a86",
+    "preregistered_data_sha256": "sha256:9477f8d9a224b47b6dda47dd691761d4ca8b5d88be6ad07416217a2bb44c89a4",
+    "dataset_ids": [
+      "DS-PMXT-V2"
+    ],
+    "model_ids": []
+  },
+  "input": {
+    "raw_storage_convention": "var/raw/raw/source=pmxt/dataset=DS-PMXT-V2/version=v2/partition=<hour>/<sha256>.parquet",
+    "raw_byte_length": 37631630293,
+    "day_count": 4,
+    "object_count": 96,
+    "pre_read_hash_verification": true,
+    "post_read_hash_verification": true,
+    "post_read_governance_revalidation": true
+  },
+  "report": {
+    "absolute_p99_ms": 279725.0,
+    "code_sha256": "sha256:2fca15f8c1cef4066887d08c13c4036266be9fa35bbe25c09b1c07089f4b0a86",
+    "data_sha256": "sha256:9477f8d9a224b47b6dda47dd691761d4ca8b5d88be6ad07416217a2bb44c89a4",
+    "day_count": 4,
+    "days": [
+      "2026-04-22",
+      "2026-05-28",
+      "2026-06-05",
+      "2026-06-25"
+    ],
+    "delta_count": 6549816634,
+    "disorder_definition": "per_market_asset_canonical_receive_source_adjacent_source_regression_v1",
+    "downgrade_triggers": [
+      "absolute_p99_ms_gt_5000"
+    ],
+    "hourly_median_drift_ms": 57.0,
+    "hourly_medians_ms": {
+      "00": 148.0,
+      "01": 153.0,
+      "02": 173.0,
+      "03": 192.0,
+      "04": 171.0,
+      "05": 175.0,
+      "06": 175.0,
+      "07": 177.0,
+      "08": 179.0,
+      "09": 159.0,
+      "10": 176.0,
+      "11": 186.0,
+      "12": 163.0,
+      "13": 166.0,
+      "14": 194.0,
+      "15": 175.0,
+      "16": 173.0,
+      "17": 165.0,
+      "18": 163.0,
+      "19": 175.0,
+      "20": 207.0,
+      "21": 235.0,
+      "22": 234.0,
+      "23": 205.0
+    },
+    "input_bundle_file_sha256": "sha256:46c3f23007929ad31b131f3618009810501b6ef06d0ac2645eb3dcfac217bd8d",
+    "input_bundle_path": "artifacts/data-audit/x02_timestamp_input_bundle_v1.json",
+    "input_bundle_sha256": "sha256:9477f8d9a224b47b6dda47dd691761d4ca8b5d88be6ad07416217a2bb44c89a4",
+    "input_manifest_sha256s": [
+      "sha256:d01571e413a942c615489bc674560a0abc5a718507d990ad4106c1a90f3f61ed",
+      "sha256:e7dfc9e7992f1eb085edc0c67f37100db10c6541533220833dcace2a1e244df3",
+      "sha256:b4f688f1da57827426efd5b0b212b15457282f56a253ceffca74542d11f6419e",
+      "sha256:0b6e87e6b59035751405b5d87a8b9bde2902f0e5545163e0eb17c30a1f3f956e"
+    ],
+    "maximum_delta_ms": 3141571252.0,
+    "millisecond_research_eligible": false,
+    "minimum_delta_ms": 11.0,
+    "negative_delta_count": 0,
+    "negative_delta_rate": 0.0,
+    "object_count": 96,
+    "ordered_comparison_count": 6549569707,
+    "out_of_order_count": 1257606,
+    "out_of_order_rate": 0.00019201353008822935,
+    "quantile_method": "exact_frequency_quantile_cont_ms_v1",
+    "quantiles_ms": {
+      "p50": 177.0,
+      "p95": 159161.0,
+      "p99": 279725.0
+    },
+    "report_sha256": "sha256:d86419f1f38c3b396f11383c6d70939943ad4c1fd9cc2058a9e270fde1b08d03",
+    "row_count": 6549816634,
+    "timestamp_semantics": "receive_at_primary;source_at_secondary_audit_only",
+    "version": "pmxt-timestamp-sample-audit-v1"
+  },
+  "interpretation": {
+    "registered_downgrade_gate_triggered": true,
+    "triggered_rules": [
+      "absolute_p99_ms_gt_5000"
+    ],
+    "required_research_clock_granularity": "seconds",
+    "receive_timestamp_remains_primary": true,
+    "source_timestamp_is_secondary_audit_only": true
+  },
+  "acceptance": {
+    "results_ref_appended": false,
+    "promotion_decision": "",
+    "blocked_by_experiments": [
+      "X-01"
+    ],
+    "blocker_id": "RB-014",
+    "blocker_reason": "X-01 Phase 1 reconstruction dependency is not complete under the conservative registry validator."
+  },
+  "limitations": [
+    "This artifact is the completed preregistered X-02 measurement but is not a registry-accepted formal result while X-01 remains incomplete.",
+    "The PMXT timestamps do not establish order identity queue position or exact fill.",
+    "The registered downgrade trigger requires millisecond-sensitive research to use seconds until new registered evidence changes the decision."
+  ],
+  "artifact_sha256": "sha256:015189190736d0f75dc55ce1086273727bbdb72bb3a4a0b85b380071d39cabda"
+}

@@ -19,3 +19,4 @@ W1-017,I,Create compliance matrix and data license register,registries/complianc
 W1-018,B+A+H,Build deterministic X-09 vertical-slice harness,artifacts/architecture/x09_vertical_slice_v0.md,COMPLETE,Harness passes but formal X-09 locks and X-01 dependency remain unresolved,B+A+H,v0,X09_deterministic_vertical_slice
 W1-019,A,Integrate artifact backlog risk and NO-GO audits,artifacts/architecture/program_status_v0.md,COMPLETE,-,A,v0,first_round_artifact_gate
 W1-020,C+E,Implement fail-closed X-03 census aggregation POC,src/prediction_market/sports/x03.py,COMPLETE,No frozen four-week PMXT Polymarket Kalshi input manifest or formal census result exists,C+E,v0,2026-08-05_W2_review
+W1-021,C+H,Run preregistered four-day X-02 timestamp measurement,artifacts/data-audit/x02_timestamp_sample_measurement_v1.json,IN_PROGRESS,Measurement completed and seconds downgrade triggered but formal registry acceptance remains blocked by X-01 under RB-014,C+H,v1,2026-08-05_W2_review
