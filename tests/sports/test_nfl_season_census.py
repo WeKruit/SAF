@@ -271,6 +271,18 @@ def test_inserted_timeout_is_the_only_clock_correction_class() -> None:
         2,
         0,
     )
+    for field in (
+        "clock_correction_observed_period_seconds_remaining",
+        "clock_correction_observed_game_seconds_remaining",
+    ):
+        audit = _audits(report)[field]
+        assert (audit.comparisons, audit.matches, audit.mismatches) == (
+            2,
+            2,
+            0,
+        )
+    assert _audits(report)["period_seconds_remaining"].mismatches == 0
+    assert _audits(report)["game_seconds_remaining"].mismatches == 0
 
 
 def test_actual_adapter_does_not_call_or_inject_oracle_clock_classification() -> None:
@@ -327,6 +339,12 @@ def test_mutated_production_clock_correction_is_caught(
         if payload["clock_correction"]:
             mutated_calls += 1
             payload["clock_correction"] = False
+            payload[
+                "clock_correction_observed_period_seconds_remaining"
+            ] = None
+            payload[
+                "clock_correction_observed_game_seconds_remaining"
+            ] = None
             payload["quality_flags"] = [
                 flag
                 for flag in payload["quality_flags"]
@@ -709,5 +727,11 @@ def test_frozen_2025_season_has_zero_field_mismatches() -> None:
     assert dict(report.quality_flag_counts)[
         "source_order_inserted_timeout"
     ] == 1
+    assert audits[
+        "clock_correction_observed_period_seconds_remaining"
+    ].mismatches == 0
+    assert audits[
+        "clock_correction_observed_game_seconds_remaining"
+    ].mismatches == 0
     assert audits["postseason_third_timeout_zero"].comparisons == 1
     assert audits["postseason_third_timeout_zero"].mismatches == 0

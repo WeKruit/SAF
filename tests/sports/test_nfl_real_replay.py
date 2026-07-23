@@ -65,6 +65,7 @@ NFLVERSE_REPLAY_COLUMNS = (
     "fumble_lost",
     "timeout",
     "timeout_team",
+    "quarter_end",
     "series_result",
 )
 
@@ -98,14 +99,16 @@ def _real_game_rows() -> list[dict[str, Any]]:
 
 
 def _event_for_rows(
-    pre_row: dict[str, Any],
-    post_row: dict[str, Any],
+    state: nfl.NFLGameState,
+    source_row: dict[str, Any],
+    successor_rows: tuple[dict[str, Any], ...],
     *,
     sequence: int,
 ) -> nfl.NFLPlayEvent:
     payload = nfl.nflverse_transition_payload(
-        pre_row,
-        post_row,
+        state,
+        source_row,
+        successor_rows,
         sequence=sequence,
     )
     _assert_x11_registered()
@@ -161,10 +164,8 @@ def _event_for_rows(
                 "raw_record_ordinal": ordinal,
             },
         )
-        for ordinal, row in (
-            (sequence - 1, pre_row),
-            (sequence, post_row),
-        )
+        for row in (source_row, *successor_rows)
+        for ordinal in (int(row["order_sequence"]),)
     )
     normalized = EventEnvelopeV0.create(
         envelope_version="v0",
@@ -204,6 +205,40 @@ def _event_for_rows(
             program_root=PROJECT_ROOT,
             raw_parents=raw_parents,
         )
+
+
+def _carries_context(row: dict[str, Any]) -> bool:
+    description = row["desc"]
+    lifecycle = (
+        row["play_type_nfl"] == "COMMENT"
+        and isinstance(description, str)
+        and (
+            description.startswith("The game has been suspended.")
+            or description.startswith("The game has resumed.")
+        )
+    )
+    administrative_timeout = (
+        row["play_type_nfl"] == "TIMEOUT"
+        and row["play_type"] == "no_play"
+    )
+    return lifecycle or administrative_timeout or row["quarter_end"] == 1
+
+
+def _successor_window(
+    rows: list[dict[str, Any]],
+    source_index: int,
+) -> tuple[dict[str, Any], ...]:
+    if source_index >= len(rows) - 1:
+        raise AssertionError("a source row requires an immediate successor")
+    if _carries_context(rows[source_index]):
+        return (rows[source_index + 1],)
+
+    window: list[dict[str, Any]] = []
+    for row in rows[source_index + 1 :]:
+        window.append(row)
+        if row["posteam"] is not None:
+            return tuple(window)
+    raise AssertionError("normal source row has no complete causal successor")
 
 
 def _mapped_scores(
@@ -253,8 +288,9 @@ def test_real_touchdown_and_extra_point_are_scored_on_their_own_rows() -> None:
     )
 
     touchdown = _event_for_rows(
+        state,
         touchdown_row,
-        point_after_row,
+        (point_after_row,),
         sequence=1,
     )
     after_touchdown = nfl.reduce(state, touchdown)
@@ -264,8 +300,9 @@ def test_real_touchdown_and_extra_point_are_scored_on_their_own_rows() -> None:
     )
 
     point_after = _event_for_rows(
+        after_touchdown,
         point_after_row,
-        following_row,
+        (following_row,),
         sequence=2,
     )
     after_point = nfl.reduce(after_touchdown, point_after)
@@ -288,9 +325,14 @@ def test_real_timeout_is_not_shifted_to_prior_play_and_carries_context() -> None
     following_row = rows[timeout_index + 1]
 
     state = nfl.state_from_nflverse_row(prior_row, sequence=0)
-    prior_play = _event_for_rows(prior_row, timeout_row, sequence=1)
-    assert prior_play.timeout is False
-    assert prior_play.carry_forward_context is True
+    prior_play = _event_for_rows(
+        state,
+        prior_row,
+        (timeout_row, following_row),
+        sequence=1,
+    )
+    assert prior_play.timeout_observed is False
+    assert prior_play.carry_forward_context is False
     before_timeout = nfl.reduce(state, prior_play)
     assert (
         before_timeout.possession_team,
@@ -298,17 +340,25 @@ def test_real_timeout_is_not_shifted_to_prior_play_and_carries_context() -> None
         before_timeout.distance,
         before_timeout.yardline_100,
     ) == (
-        state.possession_team,
-        state.down,
-        state.distance,
-        state.yardline_100,
+        following_row["posteam"],
+        _optional_int(following_row["down"]),
+        _optional_int(following_row["ydstogo"]),
+        _optional_int(following_row["yardline_100"]),
+    )
+    assert before_timeout.context_source_play_id == str(
+        int(following_row["play_id"])
     )
 
-    timeout = _event_for_rows(timeout_row, following_row, sequence=2)
+    timeout = _event_for_rows(
+        before_timeout,
+        timeout_row,
+        (following_row,),
+        sequence=2,
+    )
     assert timeout.source_play_id == str(int(timeout_row["play_id"]))
-    assert timeout.timeout is True
+    assert timeout.timeout_observed is True
     assert timeout.timeout_kind == "administrative"
-    assert timeout.timeout_team == timeout_row["timeout_team"]
+    assert timeout.timeout_observed_team == timeout_row["timeout_team"]
     assert timeout.carry_forward_context is True
 
     after_timeout = nfl.reduce(before_timeout, timeout)
@@ -335,14 +385,15 @@ def _replay_once() -> tuple[str, int]:
     rows = _real_game_rows()
     state = nfl.state_from_nflverse_row(rows[0], sequence=0)
 
-    for sequence, (pre_row, post_row) in enumerate(
-        zip(rows, rows[1:]),
-        start=1,
-    ):
+    for source_index, pre_row in enumerate(rows[:-1]):
+        sequence = source_index + 1
+        successor_rows = _successor_window(rows, source_index)
+        post_row = successor_rows[0]
         prior_state = state
         event = _event_for_rows(
+            state,
             pre_row,
-            post_row,
+            successor_rows,
             sequence=sequence,
         )
         state = nfl.reduce(state, event)
@@ -365,29 +416,21 @@ def _replay_once() -> tuple[str, int]:
         post_admin_timeout = (
             post_timeout and post_row["play_type_nfl"] == "TIMEOUT"
         )
-        assert event.timeout is pre_timeout
+        assert event.timeout_observed is pre_timeout
         if pre_timeout:
-            assert event.timeout_team == pre_row["timeout_team"]
+            assert event.timeout_observed_team == pre_row["timeout_team"]
             assert event.timeout_kind == (
                 "administrative" if pre_admin_timeout else "play_attached"
             )
         expected_timeouts = (
             (
-                prior_state.home_timeouts_remaining,
-                prior_state.away_timeouts_remaining,
+                int(pre_row["home_timeouts_remaining"]),
+                int(pre_row["away_timeouts_remaining"]),
             )
-            if post_timeout and not pre_timeout
+            if pre_timeout
             else (
-                int(
-                    pre_row["home_timeouts_remaining"]
-                    if pre_timeout
-                    else post_row["home_timeouts_remaining"]
-                ),
-                int(
-                    pre_row["away_timeouts_remaining"]
-                    if pre_timeout
-                    else post_row["away_timeouts_remaining"]
-                ),
+                state.home_timeouts_remaining,
+                state.away_timeouts_remaining,
             )
         )
         assert (
@@ -395,7 +438,7 @@ def _replay_once() -> tuple[str, int]:
             state.away_timeouts_remaining,
         ) == expected_timeouts
 
-        expected_carry = pre_admin_timeout or post_row["posteam"] is None
+        expected_carry = _carries_context(pre_row)
         assert event.carry_forward_context is expected_carry
         if expected_carry:
             assert (
@@ -416,6 +459,7 @@ def _replay_once() -> tuple[str, int]:
                 prior_state.goal_to_go,
             )
         else:
+            context_row = successor_rows[-1]
             assert (
                 state.drive_id,
                 state.play_clock_seconds,
@@ -425,22 +469,28 @@ def _replay_once() -> tuple[str, int]:
                 state.yardline_100,
                 state.goal_to_go,
             ) == (
-                _stable_optional_scalar(post_row["fixed_drive"]),
-                _optional_int(post_row["play_clock"]),
-                post_row["posteam"],
-                _optional_int(post_row["down"]),
+                _stable_optional_scalar(context_row["fixed_drive"]),
+                _optional_int(context_row["play_clock"]),
+                context_row["posteam"],
+                _optional_int(context_row["down"]),
                 (
-                    _optional_int(post_row["ydstogo"])
-                    if post_row["down"] is not None
+                    _optional_int(context_row["ydstogo"])
+                    if context_row["down"] is not None
                     else None
                 ),
-                _optional_int(post_row["yardline_100"]),
-                bool(post_row["goal_to_go"]),
+                _optional_int(context_row["yardline_100"]),
+                bool(context_row["goal_to_go"]),
             )
 
         clock_row = (
             pre_row
-            if pre_admin_timeout or post_admin_timeout
+            if (
+                pre_admin_timeout
+                or (
+                    post_admin_timeout
+                    and post_row["qtr"] == pre_row["qtr"]
+                )
+            )
             else post_row
         )
         assert (
@@ -458,10 +508,12 @@ def _replay_once() -> tuple[str, int]:
 
 def test_real_snapshot_flags_are_committed_only_when_transition_verifies_them() -> None:
     rows = _real_game_rows()
+    state = nfl.state_from_nflverse_row(rows[38], sequence=0)
 
     first_down_before_quarter_end = _event_for_rows(
+        state,
         rows[38],
-        rows[39],
+        _successor_window(rows, 38),
         sequence=39,
     )
     assert rows[38]["first_down"] == 1
@@ -472,23 +524,29 @@ def test_real_snapshot_flags_are_committed_only_when_transition_verifies_them() 
 def test_future_drive_result_cannot_change_a_normalized_transition() -> None:
     rows = _real_game_rows()
     pre_row = rows[20]
-    post_row = rows[21]
+    successors = _successor_window(rows, 20)
+    state = nfl.state_from_nflverse_row(pre_row, sequence=0)
     baseline = _event_for_rows(
+        state,
         pre_row,
-        post_row,
+        successors,
         sequence=21,
     )
     mutated_pre = {**pre_row, "series_result": "Future impossible outcome"}
-    mutated_post = {
-        **post_row,
-        "series_result": "Another future outcome",
-        "play_type": "future play must not leak",
-    }
+    mutated_successors = tuple(
+        {
+            **row,
+            "series_result": "Another future outcome",
+            "play_type": "future play must not leak",
+        }
+        for row in successors
+    )
 
     assert "series_result" in nfl.NFLVERSE_LEAKAGE_FIELDS
     assert _event_for_rows(
+        state,
         mutated_pre,
-        mutated_post,
+        mutated_successors,
         sequence=21,
     ) == baseline
 
@@ -503,7 +561,13 @@ def test_real_complete_game_replays_twice_to_identical_hash() -> None:
 
 def test_adapter_requires_a_fully_bound_event_envelope() -> None:
     rows = _real_game_rows()
-    event = _event_for_rows(rows[0], rows[1], sequence=1)
+    state = nfl.state_from_nflverse_row(rows[0], sequence=0)
+    event = _event_for_rows(
+        state,
+        rows[0],
+        _successor_window(rows, 0),
+        sequence=1,
+    )
     assert event.source_play_id == str(int(rows[0]["play_id"]))
 
     with pytest.raises(TypeError, match="EventEnvelopeV0"):

@@ -36,6 +36,8 @@ def _state(**changes: object) -> Any:
         "game_seconds_remaining": 3300,
         "source_play_id": "101",
         "source_order_sequence": 100,
+        "context_source_play_id": "101",
+        "context_source_order_sequence": 100,
         "suspended": False,
         "drive_id": "1",
         "play_clock_seconds": 12,
@@ -56,6 +58,9 @@ def _state(**changes: object) -> Any:
 
 def _event(state: Any, **changes: object) -> Any:
     nfl = _module()
+    default_next_play_id = (
+        "123" if state.source_play_id == "122" else "122"
+    )
     values: dict[str, object] = {
         "sport": "nfl",
         "game_id": state.game_id,
@@ -71,8 +76,18 @@ def _event(state: Any, **changes: object) -> Any:
         "period": state.period,
         "period_seconds_remaining": state.period_seconds_remaining - 10,
         "game_seconds_remaining": state.game_seconds_remaining - 10,
-        "next_source_play_id": "122",
+        "next_source_play_id": default_next_play_id,
         "next_source_order_sequence": state.source_order_sequence + 1,
+        "context_source_play_id": default_next_play_id,
+        "context_source_order_sequence": state.source_order_sequence + 1,
+        "source_window_play_ids": (
+            state.source_play_id,
+            default_next_play_id,
+        ),
+        "source_window_order_sequences": (
+            state.source_order_sequence,
+            state.source_order_sequence + 1,
+        ),
         "lifecycle_action": "none",
         "clock_carry_forward": False,
         "next_drive_id": state.drive_id,
@@ -90,16 +105,46 @@ def _event(state: Any, **changes: object) -> Any:
         "turnover": False,
         "possession_changed": False,
         "score": False,
-        "timeout": False,
-        "timeout_team": None,
+        "timeout_observed": False,
+        "timeout_observed_team": None,
         "timeout_kind": "none",
+        "timeout_charge_team": None,
+        "quarter_end": False,
         "clock_correction": False,
+        "clock_correction_observed_period_seconds_remaining": None,
+        "clock_correction_observed_game_seconds_remaining": None,
         "carry_forward_context": False,
         "period_changed": False,
         "terminal": False,
         "quality_flags": (),
     }
     values.update(changes)
+    if "source_window_play_ids" not in changes:
+        values["source_window_play_ids"] = (
+            values["source_play_id"],
+            values["next_source_play_id"],
+        )
+    if "source_window_order_sequences" not in changes:
+        values["source_window_order_sequences"] = (
+            values["source_order_sequence"],
+            values["next_source_order_sequence"],
+        )
+    if bool(values["carry_forward_context"]):
+        if "context_source_play_id" not in changes:
+            values["context_source_play_id"] = state.context_source_play_id
+        if "context_source_order_sequence" not in changes:
+            values["context_source_order_sequence"] = (
+                state.context_source_order_sequence
+            )
+    else:
+        if "context_source_play_id" not in changes:
+            values["context_source_play_id"] = values[
+                "source_window_play_ids"
+            ][-1]
+        if "context_source_order_sequence" not in changes:
+            values["context_source_order_sequence"] = values[
+                "source_window_order_sequences"
+            ][-1]
     return nfl.NFLPlayEvent(**values)
 
 
@@ -165,21 +210,54 @@ def _nflverse_rows() -> tuple[dict[str, object], dict[str, object]]:
     return pre, post
 
 
+def _nflverse_payload(
+    source: dict[str, object],
+    *successors: dict[str, object],
+    state: Any | None = None,
+    sequence: int = 1,
+) -> dict[str, object]:
+    nfl = _module()
+    current = (
+        nfl.state_from_nflverse_row(source)
+        if state is None
+        else state
+    )
+    return nfl.nflverse_transition_payload(
+        current,
+        source,
+        tuple(successors),
+        sequence=sequence,
+    )
+
+
 def _adapt_nflverse_observations(
     pre: dict[str, object],
-    post: dict[str, object],
-    *,
+    *successors: dict[str, object],
+    state: Any | None = None,
     state_sequence: int = 0,
 ) -> tuple[Any, Any]:
     nfl = _module()
+    if not successors:
+        raise AssertionError("test adapter requires a successor window")
+    current_state = (
+        nfl.state_from_nflverse_row(pre, sequence=state_sequence)
+        if state is None
+        else state
+    )
     payload = nfl.nflverse_transition_payload(
+        current_state,
         pre,
-        post,
-        sequence=state_sequence + 1,
+        tuple(successors),
+        sequence=current_state.sequence + 1,
     )
     native_game_id = str(pre["game_id"])
-    source_play_id = str(int(float(pre["play_id"])))
-    next_source_play_id = str(int(float(post["play_id"])))
+    window_rows = (pre, *successors)
+    window_play_ids = tuple(
+        str(int(float(row["play_id"]))) for row in window_rows
+    )
+    raw_record_ordinals = tuple(
+        range(state_sequence, state_sequence + len(window_rows))
+    )
     bundle = build_static_sport_observation_bundle(
         program_root=PROJECT_ROOT,
         experiment_id="X-11",
@@ -187,7 +265,7 @@ def _adapt_nflverse_observations(
         source_system="nflverse",
         source_stream="play_by_play",
         raw_object_hash="sha256:" + "7" * 64,
-        raw_record_ordinals=(state_sequence, state_sequence + 1),
+        raw_record_ordinals=raw_record_ordinals,
         partition="season-2025",
         fetched_at="2026-07-22T12:00:00Z",
         source_at=None,
@@ -198,20 +276,19 @@ def _adapt_nflverse_observations(
             f"participant_{pre['home_team']}",
         ),
         native_namespace="nflverse.play",
-        native_ids=(
-            f"{native_game_id}:{source_play_id}",
-            f"{native_game_id}:{next_source_play_id}",
+        native_ids=tuple(
+            f"{native_game_id}:{play_id}"
+            for play_id in window_play_ids
         ),
-        normalized_source_sequence=state_sequence + 1,
+        normalized_source_sequence=current_state.sequence + 1,
         normalized_payload=payload,
     )
-    state = nfl.state_from_nflverse_row(pre, sequence=state_sequence)
     event = nfl.event_from_nflverse_envelope(
         bundle.normalized,
         program_root=PROJECT_ROOT,
         raw_parents=bundle.raw,
     )
-    return state, event
+    return current_state, event
 
 
 def test_first_down_reduces_to_a_new_immutable_state() -> None:
@@ -289,6 +366,7 @@ def test_quarter_timeout_and_terminal_transitions_are_representable() -> None:
             distance=2,
             yardline_100=30,
             first_down=False,
+            quarter_end=True,
             period_changed=True,
         ),
     )
@@ -309,9 +387,10 @@ def test_quarter_timeout_and_terminal_transitions_are_representable() -> None:
             play_type="no_play",
             play_type_nfl="TIMEOUT",
             home_timeouts_remaining=2,
-            timeout=True,
-            timeout_team="HME",
+            timeout_observed=True,
+            timeout_observed_team="HME",
             timeout_kind="administrative",
+            timeout_charge_team="HME",
             carry_forward_context=True,
         ),
     )
@@ -457,6 +536,7 @@ def test_regular_season_overtime_duration_uses_historical_rule_snapshot(
         distance=10,
         yardline_100=75,
         first_down=False,
+        quarter_end=True,
         period_changed=True,
     )
 
@@ -489,6 +569,7 @@ def test_postseason_overtime_uses_three_timeouts_per_half() -> None:
         distance=10,
         yardline_100=75,
         first_down=False,
+        quarter_end=True,
         period_changed=True,
     )
 
@@ -511,7 +592,7 @@ def test_overtime_rejects_wrong_timeout_allotment_at_period_five() -> None:
     }
 
     postseason = _state(season_type="POST", **regulation_end)
-    with pytest.raises(nfl.NFLGameStateError, match="three"):
+    with pytest.raises(nfl.NFLGameStateError, match="timeouts|consume"):
         nfl.reduce(
             postseason,
             _event(
@@ -525,12 +606,13 @@ def test_overtime_rejects_wrong_timeout_allotment_at_period_five() -> None:
                 distance=10,
                 yardline_100=75,
                 first_down=False,
+                quarter_end=True,
                 period_changed=True,
             ),
         )
 
     regular = _state(season_type="REG", **regulation_end)
-    with pytest.raises(nfl.NFLGameStateError, match="two"):
+    with pytest.raises(nfl.NFLGameStateError, match="timeouts|allotment"):
         nfl.reduce(
             regular,
             _event(
@@ -544,6 +626,7 @@ def test_overtime_rejects_wrong_timeout_allotment_at_period_five() -> None:
                 distance=10,
                 yardline_100=75,
                 first_down=False,
+                quarter_end=True,
                 period_changed=True,
             ),
         )
@@ -569,11 +652,12 @@ def test_postseason_timeout_reset_occurs_every_two_overtime_periods() -> None:
         home_timeouts_remaining=2,
         away_timeouts_remaining=1,
         first_down=False,
+        quarter_end=True,
         period_changed=True,
     )
     assert nfl.reduce(first_half_end, period_six).home_timeouts_remaining == 2
 
-    with pytest.raises(nfl.NFLGameStateError, match="reset"):
+    with pytest.raises(nfl.NFLGameStateError, match="timeouts|allotment"):
         nfl.reduce(
             first_half_end,
             _event(
@@ -584,6 +668,7 @@ def test_postseason_timeout_reset_occurs_every_two_overtime_periods() -> None:
                 home_timeouts_remaining=3,
                 away_timeouts_remaining=3,
                 first_down=False,
+                quarter_end=True,
                 period_changed=True,
             ),
         )
@@ -606,10 +691,11 @@ def test_postseason_timeout_reset_occurs_every_two_overtime_periods() -> None:
         home_timeouts_remaining=3,
         away_timeouts_remaining=3,
         first_down=False,
+        quarter_end=True,
         period_changed=True,
     )
     assert nfl.reduce(second_half_end, period_seven).away_timeouts_remaining == 3
-    with pytest.raises(nfl.NFLGameStateError, match="three"):
+    with pytest.raises(nfl.NFLGameStateError, match="timeouts|multiple"):
         nfl.reduce(
             second_half_end,
             _event(
@@ -620,6 +706,7 @@ def test_postseason_timeout_reset_occurs_every_two_overtime_periods() -> None:
                 home_timeouts_remaining=2,
                 away_timeouts_remaining=1,
                 first_down=False,
+                quarter_end=True,
                 period_changed=True,
             ),
         )
@@ -636,6 +723,9 @@ def test_native_postseason_overtime_timeout_counters_are_rules_normalized() -> N
             "game_seconds_remaining": 0.0,
             "home_timeouts_remaining": 1.0,
             "away_timeouts_remaining": 0.0,
+            "play_type": None,
+            "play_type_nfl": "END_QUARTER",
+            "quarter_end": 1.0,
         }
     )
     overtime.update(
@@ -675,9 +765,10 @@ def test_same_period_clock_increase_requires_inserted_admin_timeout() -> None:
         "game_seconds_remaining": 3210,
         "first_down": False,
         "home_timeouts_remaining": 2,
-        "timeout": True,
-        "timeout_team": "HME",
+        "timeout_observed": True,
+        "timeout_observed_team": "HME",
         "timeout_kind": "administrative",
+        "timeout_charge_team": "HME",
         "carry_forward_context": True,
         "play_type": "no_play",
         "play_type_nfl": "TIMEOUT",
@@ -702,20 +793,78 @@ def test_same_period_clock_increase_requires_inserted_admin_timeout() -> None:
                 state,
                 **{**common, "next_source_play_id": "201"},
                 clock_correction=True,
+                clock_correction_observed_period_seconds_remaining=510,
+                clock_correction_observed_game_seconds_remaining=3210,
                 quality_flags=("source_order_inserted_timeout",),
             ),
         )
 
-    corrected = nfl.reduce(
-        state,
-        _event(
-            state,
-            **common,
-            clock_correction=True,
-            quality_flags=("source_order_inserted_timeout",),
-        ),
+
+def test_public_event_flags_cannot_authorize_clock_correction() -> None:
+    nfl = _module()
+    state = _state(
+        source_play_id="200",
+        source_order_sequence=200,
+        period_seconds_remaining=500,
+        game_seconds_remaining=3200,
     )
-    assert corrected.period_seconds_remaining == 510
+
+    forged = _event(
+        state,
+        period_seconds_remaining=510,
+        game_seconds_remaining=3210,
+        first_down=False,
+        home_timeouts_remaining=2,
+        timeout_observed=True,
+        timeout_observed_team="HME",
+        timeout_kind="administrative",
+        timeout_charge_team="HME",
+        carry_forward_context=True,
+        play_type="no_play",
+        play_type_nfl="TIMEOUT",
+        next_source_play_id="199",
+        next_source_order_sequence=201,
+        clock_correction=True,
+        clock_correction_observed_period_seconds_remaining=510,
+        clock_correction_observed_game_seconds_remaining=3210,
+        quality_flags=("source_order_inserted_timeout",),
+    )
+
+    with pytest.raises(nfl.NFLGameStateError, match="moved backwards"):
+        nfl.reduce(state, forged)
+
+
+def test_reducer_rejects_correction_without_observed_clock_increase() -> None:
+    nfl = _module()
+    state = _state(
+        source_play_id="200",
+        source_order_sequence=200,
+        period_seconds_remaining=500,
+        game_seconds_remaining=3200,
+    )
+    forged = _event(
+        state,
+        period_seconds_remaining=500,
+        game_seconds_remaining=3200,
+        first_down=False,
+        home_timeouts_remaining=2,
+        timeout_observed=True,
+        timeout_observed_team="HME",
+        timeout_kind="administrative",
+        timeout_charge_team="HME",
+        carry_forward_context=True,
+        play_type="no_play",
+        play_type_nfl="TIMEOUT",
+        next_source_play_id="199",
+        next_source_order_sequence=201,
+        clock_correction=True,
+        clock_correction_observed_period_seconds_remaining=500,
+        clock_correction_observed_game_seconds_remaining=3200,
+        quality_flags=("source_order_inserted_timeout",),
+    )
+
+    with pytest.raises(nfl.NFLGameStateError, match="did not increase"):
+        nfl.reduce(state, forged)
 
 
 def test_lifecycle_events_carry_clock_and_update_suspension() -> None:
@@ -819,7 +968,7 @@ def test_arbitrary_missing_clock_comment_fails_closed() -> None:
     )
 
     with pytest.raises(nfl.NFLGameStateError, match="clock|qtr|time"):
-        nfl.nflverse_transition_payload(pre, post)
+        _nflverse_payload(pre, post)
 
 
 def test_bounded_comment_descriptions_derive_lifecycle_actions() -> None:
@@ -844,7 +993,7 @@ def test_bounded_comment_descriptions_derive_lifecycle_actions() -> None:
         }
     )
 
-    payload = nfl.nflverse_transition_payload(pre, post)
+    payload = _nflverse_payload(pre, post, state=_state())
 
     assert payload["lifecycle_action"] == "suspend"
     assert payload["clock_carry_forward"] is True
@@ -864,9 +1013,10 @@ def test_timeout_kind_distinguishes_admin_from_play_attached_charge() -> None:
             play_type="no_play",
             play_type_nfl="TIMEOUT",
             home_timeouts_remaining=2,
-            timeout=True,
-            timeout_team="HME",
+            timeout_observed=True,
+            timeout_observed_team="HME",
             timeout_kind="administrative",
+            timeout_charge_team="HME",
             carry_forward_context=True,
         ),
     )
@@ -880,11 +1030,15 @@ def test_timeout_kind_distinguishes_admin_from_play_attached_charge() -> None:
             "home_timeouts_remaining": 2.0,
         }
     )
-    _, attached = _adapt_nflverse_observations(attached_row, following_row)
     attached_state = _state(
         source_play_id="101",
         source_order_sequence=100,
         home_timeouts_remaining=3,
+    )
+    _, attached = _adapt_nflverse_observations(
+        attached_row,
+        following_row,
+        state=attached_state,
     )
     after_attached = nfl.reduce(attached_state, attached)
 
@@ -893,6 +1047,24 @@ def test_timeout_kind_distinguishes_admin_from_play_attached_charge() -> None:
     assert after_attached.home_timeouts_remaining == 2
     assert after_attached.down == 1
     assert after_attached.yardline_100 == 35
+
+
+def test_context_carry_rejects_forged_context_lineage() -> None:
+    nfl = _module()
+    state = _state(
+        context_source_play_id="90",
+        context_source_order_sequence=90,
+    )
+    forged = _event(
+        state,
+        first_down=False,
+        carry_forward_context=True,
+        context_source_play_id="999",
+        context_source_order_sequence=999,
+    )
+
+    with pytest.raises(nfl.NFLGameStateError, match="context source"):
+        nfl.reduce(state, forged)
 
 
 def test_timeout_kind_and_charged_counter_must_agree() -> None:
@@ -905,9 +1077,10 @@ def test_timeout_kind_and_charged_counter_must_agree() -> None:
         _event(
             state,
             home_timeouts_remaining=2,
-            timeout=True,
-            timeout_team="HME",
+            timeout_observed=True,
+            timeout_observed_team="HME",
             timeout_kind="none",
+            timeout_charge_team="HME",
         )
 
 
@@ -922,9 +1095,10 @@ def test_event_source_types_prove_admin_and_lifecycle_classification() -> None:
             play_type_nfl="TIMEOUT",
             first_down=False,
             home_timeouts_remaining=2,
-            timeout=True,
-            timeout_team="HME",
+            timeout_observed=True,
+            timeout_observed_team="HME",
             timeout_kind="administrative",
+            timeout_charge_team="HME",
             carry_forward_context=True,
         )
     with pytest.raises(nfl.NFLGameStateError, match="lifecycle"):
@@ -943,17 +1117,8 @@ def test_event_source_types_prove_admin_and_lifecycle_classification() -> None:
         )
 
 
-def test_timeout_source_row_requires_a_charged_timeout() -> None:
+def test_unobserved_timeout_source_is_not_classified_as_a_timeout() -> None:
     nfl = _module()
-    state = _state()
-    with pytest.raises(nfl.NFLGameStateError, match="charged timeout"):
-        _event(
-            state,
-            play_type="no_play",
-            play_type_nfl="TIMEOUT",
-            first_down=False,
-        )
-
     timeout_row, post = _nflverse_rows()
     timeout_row.update(
         {
@@ -963,8 +1128,12 @@ def test_timeout_source_row_requires_a_charged_timeout() -> None:
             "timeout_team": None,
         }
     )
-    with pytest.raises(nfl.NFLGameStateError, match="charged timeout"):
-        nfl.nflverse_transition_payload(timeout_row, post)
+    payload = _nflverse_payload(timeout_row, post)
+
+    assert payload["timeout_observed"] is False
+    assert payload["timeout_observed_team"] is None
+    assert payload["timeout_kind"] == "none"
+    assert payload["timeout_charge_team"] is None
 
 
 def test_administrative_timeout_cannot_change_period_or_end_game() -> None:
@@ -984,9 +1153,10 @@ def test_administrative_timeout_cannot_change_period_or_end_game() -> None:
         game_seconds_remaining=0,
         first_down=False,
         home_timeouts_remaining=2,
-        timeout=True,
-        timeout_team="HME",
+        timeout_observed=True,
+        timeout_observed_team="HME",
         timeout_kind="administrative",
+        timeout_charge_team="HME",
         carry_forward_context=True,
         terminal=True,
     )
@@ -1008,10 +1178,244 @@ def test_timeout_native_type_with_real_play_is_not_administrative() -> None:
         }
     )
 
-    payload = nfl.nflverse_transition_payload(attached, post)
+    payload = _nflverse_payload(attached, post)
 
     assert payload["timeout_kind"] == "play_attached"
     assert payload["carry_forward_context"] is False
+
+
+def test_normal_play_uses_first_complete_context_across_timeout_window() -> None:
+    nfl = _module()
+    source, complete = _nflverse_rows()
+    source["fumble_lost"] = 1.0
+    timeout = {
+        **source,
+        "play_id": 150.0,
+        "order_sequence": 101.0,
+        "quarter_seconds_remaining": 590.0,
+        "game_seconds_remaining": 3290.0,
+        "posteam": None,
+        "down": None,
+        "yardline_100": None,
+        "posteam_score": None,
+        "defteam_score": None,
+        "posteam_score_post": None,
+        "defteam_score_post": None,
+        "play_type": "no_play",
+        "play_type_nfl": "TIMEOUT",
+        "desc": "Timeout #1 by AWY at 09:50.",
+        "timeout": 1.0,
+        "timeout_team": "AWY",
+        "away_timeouts_remaining": 2.0,
+    }
+    complete.update(
+        {
+            "play_id": 140.0,
+            "order_sequence": 102.0,
+            "posteam": "AWY",
+            "down": 1.0,
+            "ydstogo": 10.0,
+            "yardline_100": 65.0,
+            "away_timeouts_remaining": 2.0,
+        }
+    )
+    state = nfl.state_from_nflverse_row(source)
+
+    payload = nfl.nflverse_transition_payload(
+        state,
+        source,
+        (timeout, complete),
+    )
+
+    assert payload["next_source_play_id"] == "150"
+    assert payload["next_source_order_sequence"] == 101
+    assert payload["context_source_play_id"] == "140"
+    assert payload["context_source_order_sequence"] == 102
+    assert payload["source_window_play_ids"] == ["101", "150", "140"]
+    assert payload["source_window_order_sequences"] == [100, 101, 102]
+    assert payload["carry_forward_context"] is False
+    assert payload["possession_team"] == "AWY"
+    assert payload["possession_changed"] is True
+    assert payload["turnover"] is True
+    assert payload["home_timeouts_remaining"] == 3
+    assert payload["away_timeouts_remaining"] == 3
+
+
+def test_observed_timeout_without_counter_charge_is_representable() -> None:
+    nfl = _module()
+    source, complete = _nflverse_rows()
+    source.update(
+        {
+            "play_id": 150.0,
+            "order_sequence": 101.0,
+            "quarter_seconds_remaining": 590.0,
+            "game_seconds_remaining": 3290.0,
+            "posteam": None,
+            "down": None,
+            "yardline_100": None,
+            "posteam_score": None,
+            "defteam_score": None,
+            "posteam_score_post": None,
+            "defteam_score_post": None,
+            "play_type": "no_play",
+            "play_type_nfl": "TIMEOUT",
+            "desc": "Timeout #4 by AWY at 09:50.",
+            "timeout": 1.0,
+            "timeout_team": "AWY",
+            "away_timeouts_remaining": 0.0,
+        }
+    )
+    complete.update(
+        {
+            "play_id": 140.0,
+            "order_sequence": 102.0,
+            "quarter_seconds_remaining": 590.0,
+            "game_seconds_remaining": 3290.0,
+            "away_timeouts_remaining": 0.0,
+        }
+    )
+    state = _state(
+        source_play_id="150",
+        source_order_sequence=101,
+        away_timeouts_remaining=0,
+    )
+
+    payload = nfl.nflverse_transition_payload(
+        state,
+        source,
+        (complete,),
+    )
+    payload["quality_flags"] = tuple(payload["quality_flags"])
+    payload["source_window_play_ids"] = tuple(
+        payload["source_window_play_ids"]
+    )
+    payload["source_window_order_sequences"] = tuple(
+        payload["source_window_order_sequences"]
+    )
+    event = nfl.NFLPlayEvent(event_id=EVENT_ID, **payload)
+    next_state = nfl.reduce(state, event)
+
+    assert event.timeout_observed is True
+    assert event.timeout_kind == "administrative"
+    assert event.timeout_charge_team is None
+    assert next_state.away_timeouts_remaining == 0
+
+
+def test_observed_timeout_team_must_be_a_game_participant() -> None:
+    nfl = _module()
+    state = _state(away_timeouts_remaining=0)
+    event = _event(
+        state,
+        play_type="no_play",
+        play_type_nfl="TIMEOUT",
+        timeout_observed=True,
+        timeout_observed_team="XXX",
+        timeout_kind="administrative",
+        timeout_charge_team=None,
+        carry_forward_context=True,
+        first_down=False,
+    )
+
+    with pytest.raises(nfl.NFLGameStateError, match="participant"):
+        nfl.reduce(state, event)
+
+
+def test_nflverse_adapter_owns_inserted_timeout_clock_correction() -> None:
+    nfl = _module()
+    source, successor = _nflverse_rows()
+    source.update(
+        {
+            "play_id": 200.0,
+            "order_sequence": 200.0,
+            "quarter_seconds_remaining": 510.0,
+            "game_seconds_remaining": 3210.0,
+            "play_type": "no_play",
+            "play_type_nfl": "TIMEOUT",
+            "desc": "Timeout #1 by HME at 08:30.",
+            "timeout": 1.0,
+            "timeout_team": "HME",
+            "home_timeouts_remaining": 2.0,
+        }
+    )
+    successor.update(
+        {
+            "play_id": 199.0,
+            "order_sequence": 201.0,
+            "quarter_seconds_remaining": 500.0,
+            "game_seconds_remaining": 3200.0,
+            "home_timeouts_remaining": 2.0,
+        }
+    )
+    state = _state(
+        source_play_id="200",
+        source_order_sequence=200,
+        period_seconds_remaining=500,
+        game_seconds_remaining=3200,
+    )
+
+    payload = nfl.nflverse_transition_payload(
+        state,
+        source,
+        (successor,),
+    )
+
+    assert payload["clock_correction"] is True
+    assert payload["quality_flags"] == [
+        "source_order_inserted_timeout"
+    ]
+    assert payload["period_seconds_remaining"] == (
+        state.period_seconds_remaining
+    )
+    assert payload["game_seconds_remaining"] == (
+        state.game_seconds_remaining
+    )
+    assert payload.get(
+        "clock_correction_observed_period_seconds_remaining"
+    ) == 510
+    assert payload.get(
+        "clock_correction_observed_game_seconds_remaining"
+    ) == 3210
+
+    payload["quality_flags"] = tuple(payload["quality_flags"])
+    payload["source_window_play_ids"] = tuple(
+        payload["source_window_play_ids"]
+    )
+    payload["source_window_order_sequences"] = tuple(
+        payload["source_window_order_sequences"]
+    )
+    event = nfl.NFLPlayEvent(event_id=EVENT_ID, **payload)
+    corrected = nfl.reduce(state, event)
+    assert corrected.period_seconds_remaining == 500
+    assert corrected.game_seconds_remaining == 3200
+
+
+def test_nflverse_adapter_rejects_caller_or_payload_clock_flags() -> None:
+    nfl = _module()
+    source, successor = _nflverse_rows()
+    state = nfl.state_from_nflverse_row(source)
+
+    with pytest.raises(TypeError, match="quality_flags"):
+        nfl.nflverse_transition_payload(
+            state,
+            source,
+            (successor,),
+            quality_flags=("source_order_inserted_timeout",),
+        )
+
+    payload = nfl.nflverse_transition_payload(
+        state,
+        source,
+        (successor,),
+    )
+    payload["quality_flags"] = ("source_order_inserted_timeout",)
+    payload["source_window_play_ids"] = tuple(
+        payload["source_window_play_ids"]
+    )
+    payload["source_window_order_sequences"] = tuple(
+        payload["source_window_order_sequences"]
+    )
+    with pytest.raises(nfl.NFLGameStateError, match="quality flag"):
+        nfl.NFLPlayEvent(event_id=EVENT_ID, **payload)
 
 
 def test_penalty_row_does_not_generalize_to_context_carry() -> None:
@@ -1033,7 +1437,7 @@ def test_penalty_row_does_not_generalize_to_context_carry() -> None:
         }
     )
 
-    payload = nfl.nflverse_transition_payload(penalty, post)
+    payload = _nflverse_payload(penalty, post)
 
     assert payload["carry_forward_context"] is False
 
@@ -1114,11 +1518,13 @@ def test_nflverse_adapter_never_falls_back_to_final_score_columns() -> None:
 def test_adapter_terminal_state_cannot_be_injected_by_caller() -> None:
     nfl = _module()
     pre, post = _nflverse_rows()
+    state = nfl.state_from_nflverse_row(pre)
 
     with pytest.raises(TypeError, match="terminal"):
         nfl.nflverse_transition_payload(
+            state,
             pre,
-            post,
+            (post,),
             terminal=True,
         )
 
@@ -1283,11 +1689,16 @@ def test_nflverse_timeout_is_same_row_and_context_carries_across_admin_row() -> 
         "away_timeouts_remaining": 3.0,
     }
 
-    state, ordinary_event = _adapt_nflverse_observations(ordinary, timeout)
+    state, ordinary_event = _adapt_nflverse_observations(
+        ordinary,
+        timeout,
+        next_play,
+    )
     assert ordinary_event.source_play_id == "3881"
-    assert ordinary_event.timeout is False
-    assert ordinary_event.timeout_team is None
-    assert ordinary_event.carry_forward_context is True
+    assert ordinary_event.timeout_observed is False
+    assert ordinary_event.timeout_observed_team is None
+    assert ordinary_event.timeout_charge_team is None
+    assert ordinary_event.carry_forward_context is False
 
     before_timeout = nfl.reduce(state, ordinary_event)
     assert before_timeout.home_timeouts_remaining == 3
@@ -1296,16 +1707,18 @@ def test_nflverse_timeout_is_same_row_and_context_carries_across_admin_row() -> 
         before_timeout.down,
         before_timeout.distance,
         before_timeout.yardline_100,
-    ) == ("AWY", 3, 17, 35)
+    ) == ("AWY", 4, 10, 28)
 
     _, timeout_event = _adapt_nflverse_observations(
         timeout,
         next_play,
+        state=before_timeout,
         state_sequence=1,
     )
     assert timeout_event.source_play_id == "3915"
-    assert timeout_event.timeout is True
-    assert timeout_event.timeout_team == "HME"
+    assert timeout_event.timeout_observed is True
+    assert timeout_event.timeout_observed_team == "HME"
+    assert timeout_event.timeout_charge_team == "HME"
     assert timeout_event.carry_forward_context is True
 
     after_timeout = nfl.reduce(before_timeout, timeout_event)
@@ -1315,7 +1728,7 @@ def test_nflverse_timeout_is_same_row_and_context_carries_across_admin_row() -> 
         after_timeout.down,
         after_timeout.distance,
         after_timeout.yardline_100,
-    ) == ("AWY", 3, 17, 35)
+    ) == ("AWY", 4, 10, 28)
 
 
 def test_envelope_adapter_uses_complete_payload_and_ignores_next_play_outcome() -> None:
@@ -1323,15 +1736,22 @@ def test_envelope_adapter_uses_complete_payload_and_ignores_next_play_outcome() 
     pre, post = _nflverse_rows()
     post["play_type"] = "future-pass"
     post["series_result"] = "future touchdown"
+    state = nfl.state_from_nflverse_row(pre, sequence=8)
 
-    payload = nfl.nflverse_transition_payload(pre, post, sequence=9)
-    mutated_payload = nfl.nflverse_transition_payload(
+    payload = _nflverse_payload(
+        pre,
+        post,
+        state=state,
+        sequence=9,
+    )
+    mutated_payload = _nflverse_payload(
         pre,
         {
             **post,
             "play_type": "future-kneel",
             "series_result": "future punt",
         },
+        state=state,
         sequence=9,
     )
     assert payload == mutated_payload
@@ -1373,7 +1793,12 @@ def test_envelope_adapter_uses_complete_payload_and_ignores_next_play_outcome() 
 def test_envelope_binding_does_not_reorder_transition_by_raw_ordinal() -> None:
     nfl = _module()
     pre, post = _nflverse_rows()
-    payload = nfl.nflverse_transition_payload(pre, post, sequence=9)
+    payload = _nflverse_payload(
+        pre,
+        post,
+        state=nfl.state_from_nflverse_row(pre, sequence=8),
+        sequence=9,
+    )
     bundle = build_static_sport_observation_bundle(
         program_root=PROJECT_ROOT,
         experiment_id="X-11",

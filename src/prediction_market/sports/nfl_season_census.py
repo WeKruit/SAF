@@ -110,6 +110,8 @@ _AUDIT_BASES: dict[
     "lifecycle_action": "rule_derived",
     "carry_forward_context": "rule_derived",
     "clock_correction": "rule_derived",
+    "clock_correction_observed_period_seconds_remaining": "native_direct",
+    "clock_correction_observed_game_seconds_remaining": "native_direct",
     "quarter_end": "rule_derived",
     "postseason_third_timeout_zero": "rule_derived",
     "context_source_play_id": "lineage",
@@ -189,6 +191,8 @@ class _OracleTransition:
     timeout_charge_team: str | None
     carry_forward_context: bool
     clock_correction: bool
+    clock_correction_observed_period_seconds_remaining: int | None
+    clock_correction_observed_game_seconds_remaining: int | None
     quarter_end: bool
     postseason_third_timeout_zero: bool
     context_source_play_id: str
@@ -956,14 +960,27 @@ def _oracle_transition(
     )
     assert context is not None
 
+    clock_correction = _clock_correction_expected(
+        prior_state,
+        pre_row,
+        post_row,
+    )
     if lifecycle_action != "none":
         target_period = prior_state["period"]
         target_period_seconds = prior_state["period_seconds_remaining"]
         target_game_seconds = prior_state["game_seconds_remaining"]
     elif timeout_kind == "administrative":
         target_period = pre["period"]
-        target_period_seconds = pre["period_seconds_remaining"]
-        target_game_seconds = pre["game_seconds_remaining"]
+        target_period_seconds = (
+            prior_state["period_seconds_remaining"]
+            if clock_correction
+            else pre["period_seconds_remaining"]
+        )
+        target_game_seconds = (
+            prior_state["game_seconds_remaining"]
+            if clock_correction
+            else pre["game_seconds_remaining"]
+        )
     elif post_lifecycle_action != "none" or (
         post_timeout_kind == "administrative"
         and post["period"] == pre["period"]
@@ -1003,11 +1020,6 @@ def _oracle_transition(
     else:
         suspended = bool(prior_state["suspended"])
 
-    clock_correction = _clock_correction_expected(
-        prior_state,
-        pre_row,
-        post_row,
-    )
     reset_allotment = _timeout_reset_allotment(
         prior_state,
         target_period=int(target_period),
@@ -1153,6 +1165,16 @@ def _oracle_transition(
         timeout_charge_team=timeout_charge_team,
         carry_forward_context=carry_forward_context,
         clock_correction=clock_correction,
+        clock_correction_observed_period_seconds_remaining=(
+            int(pre["period_seconds_remaining"])
+            if clock_correction
+            else None
+        ),
+        clock_correction_observed_game_seconds_remaining=(
+            int(pre["game_seconds_remaining"])
+            if clock_correction
+            else None
+        ),
         quarter_end=_quarter_end(pre_row),
         postseason_third_timeout_zero=postseason_third_timeout_zero,
         context_source_play_id=expected_context_play_id,
@@ -1257,6 +1279,8 @@ _STATE_AUDIT_FIELDS = tuple(
         "lifecycle_action",
         "carry_forward_context",
         "clock_correction",
+        "clock_correction_observed_period_seconds_remaining",
+        "clock_correction_observed_game_seconds_remaining",
         "quarter_end",
         "postseason_third_timeout_zero",
         "event_context_source_play_id",
@@ -1560,6 +1584,28 @@ def _scan_once(
                     "clock_correction",
                     oracle_transition.clock_correction,
                     event.clock_correction,
+                )
+                auditor.compare(
+                    "clock_correction_observed_period_seconds_remaining",
+                    (
+                        oracle_transition
+                        .clock_correction_observed_period_seconds_remaining
+                    ),
+                    (
+                        event
+                        .clock_correction_observed_period_seconds_remaining
+                    ),
+                )
+                auditor.compare(
+                    "clock_correction_observed_game_seconds_remaining",
+                    (
+                        oracle_transition
+                        .clock_correction_observed_game_seconds_remaining
+                    ),
+                    (
+                        event
+                        .clock_correction_observed_game_seconds_remaining
+                    ),
                 )
                 auditor.compare(
                     "quarter_end",

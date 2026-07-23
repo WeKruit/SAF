@@ -22,7 +22,6 @@ _GAME_ID = "game_nflverse_2025_01_AWY_HME"
 _STATE_SOURCE_AT = "2025-09-07T19:30:00Z"
 _RECEIVER_OBSERVED_AT = datetime(2025, 9, 7, 17, 55, tzinfo=timezone.utc)
 _SPREAD_OBSERVED_AT = datetime(2025, 9, 7, 19, 0, tzinfo=timezone.utc)
-_MANIFEST_SHA256 = "sha256:" + "b" * 64
 _OBJECT_SHA256 = "sha256:" + "7" * 64
 
 
@@ -40,6 +39,8 @@ def _state(**changes: object) -> NFLGameState:
         "game_seconds_remaining": 2400,
         "source_play_id": "101",
         "source_order_sequence": 101,
+        "context_source_play_id": "101",
+        "context_source_order_sequence": 101,
         "suspended": False,
         "drive_id": "3",
         "play_clock_seconds": 12,
@@ -64,6 +65,20 @@ def _event_payload(
     game_id: str,
     changes: dict[str, object] | None = None,
 ) -> dict[str, object]:
+    source_window_play_ids = ["100", state.source_play_id]
+    source_window_order_sequences = [
+        100,
+        state.source_order_sequence,
+    ]
+    if (
+        state.context_source_play_id != state.source_play_id
+        or state.context_source_order_sequence
+        != state.source_order_sequence
+    ):
+        source_window_play_ids.append(state.context_source_play_id)
+        source_window_order_sequences.append(
+            state.context_source_order_sequence
+        )
     payload: dict[str, object] = {
         "sport": "nfl",
         "game_id": game_id,
@@ -80,6 +95,14 @@ def _event_payload(
         "game_seconds_remaining": state.game_seconds_remaining,
         "next_source_play_id": state.source_play_id,
         "next_source_order_sequence": state.source_order_sequence,
+        "context_source_play_id": state.context_source_play_id,
+        "context_source_order_sequence": (
+            state.context_source_order_sequence
+        ),
+        "source_window_play_ids": source_window_play_ids,
+        "source_window_order_sequences": (
+            source_window_order_sequences
+        ),
         "lifecycle_action": "none",
         "clock_carry_forward": False,
         "next_drive_id": state.drive_id,
@@ -97,10 +120,14 @@ def _event_payload(
         "turnover": False,
         "possession_changed": False,
         "score": False,
-        "timeout": False,
-        "timeout_team": None,
+        "timeout_observed": False,
+        "timeout_observed_team": None,
         "timeout_kind": "none",
+        "timeout_charge_team": None,
+        "quarter_end": False,
         "clock_correction": False,
+        "clock_correction_observed_period_seconds_remaining": None,
+        "clock_correction_observed_game_seconds_remaining": None,
         "carry_forward_context": False,
         "period_changed": False,
         "terminal": state.terminal,
@@ -121,6 +148,18 @@ def _state_envelope_bundle(
 ) -> StaticSportObservationEnvelopeBundle:
     canonical_game_id = state.game_id if game_id is None else game_id
     native_game_id = canonical_game_id.removeprefix("game_nflverse_")
+    normalized_payload = _event_payload(
+        state,
+        game_id=canonical_game_id,
+        changes=payload_changes,
+    )
+    source_window_play_ids = tuple(
+        str(play_id)
+        for play_id in normalized_payload["source_window_play_ids"]
+    )
+    raw_record_ordinals = tuple(
+        range(10, 10 + len(source_window_play_ids))
+    )
     return build_static_sport_observation_bundle(
         program_root=PROJECT_ROOT,
         experiment_id="X-11",
@@ -128,7 +167,7 @@ def _state_envelope_bundle(
         source_system="nflverse",
         source_stream="play_by_play",
         raw_object_hash=raw_object_hash,
-        raw_record_ordinals=(10, 11),
+        raw_record_ordinals=raw_record_ordinals,
         partition="season-2025",
         fetched_at="2026-07-22T12:00:00Z",
         source_at=source_at,
@@ -139,16 +178,12 @@ def _state_envelope_bundle(
             "participant_nflverse_HME",
         ),
         native_namespace="nflverse.play",
-        native_ids=(
-            f"{native_game_id}:100",
-            f"{native_game_id}:{state.source_play_id}",
+        native_ids=tuple(
+            f"{native_game_id}:{play_id}"
+            for play_id in source_window_play_ids
         ),
         normalized_source_sequence=state.sequence,
-        normalized_payload=_event_payload(
-            state,
-            game_id=canonical_game_id,
-            changes=payload_changes,
-        ),
+        normalized_payload=normalized_payload,
     )
 
 
@@ -186,7 +221,6 @@ def _context(
         "second_half_receiver_observed_at": _RECEIVER_OBSERVED_AT,
         "home_spread_line": -3.5,
         "spread_observed_at": _SPREAD_OBSERVED_AT,
-        "declared_source_manifest_sha256": _MANIFEST_SHA256,
         "source_object_sha256": _OBJECT_SHA256,
         "pit_status": "offline_reconstruction_not_live_PIT",
     }
@@ -254,8 +288,8 @@ def _fixture(
                 "play_type": "no_play",
                 "play_type_nfl": "TIMEOUT",
                 "first_down": False,
-                "timeout": True,
-                "timeout_team": "HME",
+                "timeout_observed": True,
+                "timeout_observed_team": "HME",
                 "timeout_kind": "administrative",
                 "carry_forward_context": True,
             },
@@ -349,13 +383,13 @@ def test_official_feature_order_and_transform_are_frozen() -> None:
         )
     )
     assert no_spread.source_state_sha256 == (
-        "sha256:13e593d5429534b3bafcb633b7376b1c2b3ea257d38689ac3f404c3a236a8e67"
+        "sha256:912fc703d299b332991346a08f746d2ccc3f3cebf11fd87bdac33b241752ad28"
     )
     assert no_spread.feature_sha256 == (
-        "sha256:3a81eebe3c72ec7ea57bd851c2ca7692250bdf5f6594b439398e35e84136f1bb"
+        "sha256:a5e842bd14fca14017a2f7079117148c101bf36f6652f433ecc0ebf7368770bf"
     )
     assert spread.feature_sha256 == (
-        "sha256:00d4b0eec2fb83dedf0ab0c811485465bb993a59ac405383d5bfb58b1993fc43"
+        "sha256:fb34837761adbf53bd60f9d410413fb0cb91cb9382547ee6cb0bdd7e6809cd4a"
     )
     assert (
         no_spread.model_artifact_sha256
@@ -500,10 +534,6 @@ def test_feature_digest_binds_context_envelope_raw_lineage_and_variant() -> None
             context,
             spread_observed_at=context.spread_observed_at - timedelta(seconds=1),
         ),
-        replace(
-            context,
-            declared_source_manifest_sha256="sha256:" + "d" * 64,
-        ),
         replace(context, pit_status="PIT_UNPROVEN"),
     )
     digests = {
@@ -554,6 +584,62 @@ def test_feature_digest_binds_context_envelope_raw_lineage_and_variant() -> None
         variant="spread",
     ).feature_sha256 != baseline.feature_sha256
     assert no_spread.feature_sha256 != baseline.feature_sha256
+
+
+def test_feature_seam_accepts_a_complete_multi_parent_successor_window() -> None:
+    state, context, bundle = _fixture(
+        state_changes={
+            "source_play_id": "150",
+            "source_order_sequence": 101,
+            "context_source_play_id": "101",
+            "context_source_order_sequence": 102,
+        }
+    )
+
+    features = _feature_vector(
+        state,
+        context,
+        bundle,
+        variant="spread",
+    )
+
+    assert len(features.state_event_raw_parents) == 3
+    assert tuple(
+        parent.native_refs[0].native_id
+        for parent in features.state_event_raw_parents
+    ) == (
+        "2025_01_AWY_HME:100",
+        "2025_01_AWY_HME:150",
+        "2025_01_AWY_HME:101",
+    )
+
+
+def test_feature_seam_rejects_incomplete_or_reordered_multi_parent_lineage() -> None:
+    state, context, bundle = _fixture(
+        state_changes={
+            "source_play_id": "150",
+            "source_order_sequence": 101,
+            "context_source_play_id": "101",
+            "context_source_order_sequence": 102,
+        }
+    )
+
+    invalid_parent_windows = (
+        (bundle.raw[0], bundle.raw[2]),
+        (bundle.raw[0], bundle.raw[2], bundle.raw[1]),
+    )
+    for raw_parents in invalid_parent_windows:
+        with pytest.raises(
+            nfl.NFLModelInputError,
+            match="state event envelope",
+        ):
+            nfl.fastrmodels_feature_vector(
+                state,
+                context=context,
+                variant="spread",
+                program_root=PROJECT_ROOT,
+                state_event_raw_parents=raw_parents,
+            )
 
 
 def test_feature_digest_binds_selected_official_model_artifact(
@@ -958,6 +1044,19 @@ def test_raw_parents_must_share_one_source_object_hash() -> None:
 def test_context_requires_a_contract_envelope() -> None:
     with pytest.raises(nfl.NFLModelInputError, match="state_event_envelope"):
         _context(state_event_envelope={"event_id": "not-validated"})
+
+
+def test_context_rejects_an_unresolved_manifest_declaration() -> None:
+    _, context, _ = _fixture()
+
+    with pytest.raises(
+        TypeError,
+        match="declared_source_manifest_sha256",
+    ):
+        replace(
+            context,
+            declared_source_manifest_sha256="sha256:" + "d" * 64,
+        )
 
 
 @pytest.mark.parametrize(

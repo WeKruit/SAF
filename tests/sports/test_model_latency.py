@@ -117,6 +117,13 @@ def test_nfl_latency_report_binds_the_selected_raw_ordinals(
         "benchmark_model_stages",
         lambda **_arguments: {},
     )
+    monkeypatch.setattr(
+        model_latency,
+        "_strict_registered_model_output",
+        lambda *_arguments, **_keywords: pytest.fail(
+            "a source_at=None NFL sample must not materialize ModelOutputV1"
+        ),
+    )
     registry_row = next(
         row
         for row in model_latency.load_model_registry(PROJECT_ROOT)
@@ -133,6 +140,12 @@ def test_nfl_latency_report_binds_the_selected_raw_ordinals(
     assert selected_ordinals is not None
     assert report["representative_input_lineage"]["raw_record_ordinals"] == list(
         selected_ordinals
+    )
+    assert report["contract_output"] is None
+    assert report["pit_status"] == "PIT_UNPROVEN"
+    assert report["pit_cutoff_at"] is None
+    assert report["output_validation_scope"] == (
+        "probability_domain_and_sum_only"
     )
 
 
@@ -818,6 +831,15 @@ def test_latency_protocol_migrates_atomically_to_dynamic_soccer_identity() -> No
     assert model_latency.MEASURED_MODELS[
         model_latency.DYNAMIC_SOCCER_MODEL_ID
     ] == ("X-12", "v1")
+
+
+def test_nfl_latency_limitation_states_v3_census_boundary() -> None:
+    assert model_latency.NFL_REDUCER_LATENCY_LIMITATION == (
+        "the NFL reducer-v3 latency path uses season-complete 2025 state "
+        "semantics validated by the separate 285-game census; timed work "
+        "remains one representative reducer transition and excludes census "
+        "execution"
+    )
 
 
 def test_committed_static_latency_artifact_is_retired_by_dynamic_migration() -> None:

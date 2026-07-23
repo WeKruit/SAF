@@ -111,7 +111,6 @@ class NFLWinProbabilityContext:
     second_half_receiver_observed_at: datetime
     home_spread_line: float | None
     spread_observed_at: datetime | None
-    declared_source_manifest_sha256: str
     source_object_sha256: str
     pit_status: Literal[
         "live_pit",
@@ -160,10 +159,6 @@ class NFLWinProbabilityContext:
                 _finite_number(self.home_spread_line, "home_spread_line"),
             )
             _utc_datetime(self.spread_observed_at, "spread_observed_at")
-        _sha256(
-            self.declared_source_manifest_sha256,
-            "declared_source_manifest_sha256",
-        )
         _sha256(self.source_object_sha256, "source_object_sha256")
         if self.pit_status not in FASTRMODELS_PIT_STATUSES:
             raise NFLModelInputError(
@@ -219,9 +214,6 @@ def _context_material(context: NFLWinProbabilityContext) -> dict[str, object]:
         ),
         "second_half_receiver_source_ref": (
             context.second_half_receiver_source_ref
-        ),
-        "declared_source_manifest_sha256": (
-            context.declared_source_manifest_sha256
         ),
         "source_object_sha256": context.source_object_sha256,
         "state_event_envelope": _envelope_hash_material(
@@ -310,6 +302,10 @@ def _validate_post_state_projection(
         "game_seconds_remaining": event.game_seconds_remaining,
         "source_play_id": event.next_source_play_id,
         "source_order_sequence": event.next_source_order_sequence,
+        "context_source_play_id": event.context_source_play_id,
+        "context_source_order_sequence": (
+            event.context_source_order_sequence
+        ),
         "suspended": event.lifecycle_action == "suspend",
         "drive_id": event.next_drive_id,
         "play_clock_seconds": event.next_play_clock_seconds,
@@ -432,14 +428,15 @@ class FastrmodelsFeatureVector:
             )
         if (
             type(self.state_event_raw_parents) is not tuple
-            or len(self.state_event_raw_parents) != 2
+            or len(self.state_event_raw_parents) < 2
             or any(
                 not isinstance(parent, EventEnvelopeV0)
                 for parent in self.state_event_raw_parents
             )
         ):
             raise NFLModelInputError(
-                "state_event_raw_parents must contain two EventEnvelopeV0 objects"
+                "state_event_raw_parents must contain the complete "
+                "EventEnvelopeV0 source window"
             )
         if self.variant == "spread" and self.context.home_spread_line is None:
             raise NFLModelInputError(

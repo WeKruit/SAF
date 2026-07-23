@@ -1,11 +1,11 @@
-"""Governed state/event-to-ModelOutputV1 latency benchmarks.
+"""Governed state/event transition latency benchmarks.
 
 Only models that can execute the complete registered transition path are
 measured.  Training, raw-source loading, registry loading, and network I/O are
-completed before timing.  Every timed full-path invocation still performs the
-sport reducer, feature extraction, fitted-model inference, output
-materialization, and strict ``ModelOutputV1`` validation against the frozen
-registry binding.
+completed before timing.  A timed path materializes ``ModelOutputV1`` only when
+the representative source has a proven point-in-time cutoff; otherwise it
+measures reducer, features, inference, and probability-distribution validation
+while reporting a null contract output.
 """
 
 from __future__ import annotations
@@ -52,6 +52,12 @@ DYNAMIC_SOCCER_EVIDENCE_PATH = (
     "artifacts/game-state/soccer/x12_dynamic_transition_poc_v1.json"
 )
 ACCURACY_EVIDENCE_SCOPE = "aggregate_walk_forward_model_family_evidence"
+NFL_REDUCER_LATENCY_LIMITATION = (
+    "the NFL reducer-v3 latency path uses season-complete 2025 state "
+    "semantics validated by the separate 285-game census; timed work "
+    "remains one representative reducer transition and excludes census "
+    "execution"
+)
 REQUIRED_STAGES = (
     "state_reducer",
     "feature_extraction",
@@ -1487,6 +1493,7 @@ def _nfl_benchmark(
         "interception",
         "fumble_lost",
         "first_down",
+        "quarter_end",
     )
     raw = pq.read_table(source_path, columns=list(required_columns)).to_pandas()
     raw["_raw_record_ordinal"] = np.arange(len(raw), dtype=int)
@@ -1504,9 +1511,11 @@ def _nfl_benchmark(
         raise LatencyBenchmarkError(
             "NFL latency fold has no causally contextual adjacent state row"
         )
+    state = nfl_game_state.state_from_nflverse_row(pre_row, sequence=0)
     payload = nfl_game_state.nflverse_transition_payload(
+        state,
         pre_row,
-        post_row,
+        (post_row,),
         sequence=1,
     )
     native_game_id = str(observation["game_id"])
@@ -1539,7 +1548,6 @@ def _nfl_benchmark(
         normalized_source_sequence=1,
         normalized_payload=payload,
     )
-    state = nfl_game_state.state_from_nflverse_row(pre_row, sequence=0)
     event = nfl_game_state.event_from_nflverse_envelope(
         bundle.normalized,
         program_root=program_root,
@@ -1604,74 +1612,42 @@ def _nfl_benchmark(
             model_paths=(Path(x11.__file__),),
         ),
     )
-    model_parameter_sha256 = str(governance["model_parameter_sha256"])
-
-    game_date = pd.Timestamp(observation["game_date"])
-    pit_cutoff = game_date + pd.Timedelta(
-        seconds=3600 - next_state.game_seconds_remaining
-    )
-
-    def output_document(
-        probabilities: np.ndarray,
-        features: np.ndarray,
-    ) -> dict[str, object]:
-        feature_sha256 = _sha256_json(
-            {
-                "next_state_sha256": canonical_state_sha256(next_state),
-                "feature_names": list(x11.GAME_STATE_FEATURES),
-                "feature_values": features[0].tolist(),
-            }
-        )
-        return {
-            "contract_version": "v1",
-            "model_id": registry_row.model_id,
-            "model_version": registry_row.model_version,
-            "experiment_id": registry_row.experiment_id,
-            "run_id": (
-                "run_latency_"
-                + model_parameter_sha256.removeprefix(_HASH_PREFIX)[:24]
-            ),
-            "game_id": state.game_id,
-            "state_event_id": event.event_id,
-            "pit_cutoff_at": pit_cutoff.isoformat().replace("+00:00", "Z"),
-            "output_kind": "state_transition",
-            "transition_unit": "drive",
-            "state_space": list(x11.TRANSITION_CLASSES),
-            "horizon": "next_state_transition",
-            "probabilities": _fixed_point_probabilities(
-                x11.TRANSITION_CLASSES,
-                probabilities,
-            ),
-            "feature_sha256": feature_sha256,
-            "data_sha256": registry_row.data_manifest_sha256,
-            "config_sha256": registry_row.parameter_config_sha256,
-            "quality_flags": [
-                "preliminary_rules",
-                "source_clock_unverified",
-            ],
+    feature_sha256 = _sha256_json(
+        {
+            "next_state_sha256": canonical_state_sha256(next_state),
+            "feature_names": list(x11.GAME_STATE_FEATURES),
+            "feature_values": fixed_features[0].tolist(),
         }
-
-    def validate_output(
-        probabilities: np.ndarray,
-        features: np.ndarray,
-    ) -> contracts.ModelOutputV1:
-        return _strict_registered_model_output(
-            output_document(probabilities, features),
-            registry_row=registry_row,
-        )
-
-    fixed_output = validate_output(fixed_probabilities, fixed_features)
-    contracts.validate_contract_v1(
-        program_root,
-        "model-output/v1.schema.yaml",
-        fixed_output,
     )
 
-    def full_path() -> contracts.ModelOutputV1:
+    def validate_probabilities(
+        probabilities: np.ndarray,
+    ) -> tuple[float, ...]:
+        values = np.asarray(probabilities, dtype=float)
+        if (
+            values.shape != (len(x11.TRANSITION_CLASSES),)
+            or not np.all(np.isfinite(values))
+            or np.any(values < 0.0)
+            or np.any(values > 1.0)
+            or not math.isclose(
+                float(values.sum()),
+                1.0,
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            )
+        ):
+            raise LatencyBenchmarkError(
+                "NFL model probabilities are not a distribution"
+            )
+        return tuple(float(value) for value in values)
+
+    fixed_probability_sample = validate_probabilities(fixed_probabilities)
+
+    def full_path() -> tuple[float, ...]:
         current = nfl_game_state.NFL_GAME_STATE_REDUCER.reduce(state, event)
         features = extract_features(current)
         probabilities = infer(features)
-        return validate_output(probabilities, features)
+        return validate_probabilities(probabilities)
 
     report = benchmark_model_stages(
         model_id=registry_row.model_id,
@@ -1683,7 +1659,7 @@ def _nfl_benchmark(
             "feature_extraction": lambda: extract_features(next_state),
             "model_inference": lambda: infer(fixed_features),
             "output_validation": (
-                lambda: validate_output(fixed_probabilities, fixed_features)
+                lambda: validate_probabilities(fixed_probabilities)
             ),
             "full_path": full_path,
         },
@@ -1698,14 +1674,10 @@ def _nfl_benchmark(
             "model_inference": lambda value: isinstance(value, np.ndarray)
             and value.shape == fixed_probabilities.shape
             and bool(np.allclose(value, fixed_probabilities, rtol=0.0, atol=0.0)),
-            "output_validation": lambda value: _output_is_bound(
-                value,
-                registry_row=registry_row,
+            "output_validation": lambda value: (
+                value == fixed_probability_sample
             ),
-            "full_path": lambda value: _output_is_bound(
-                value,
-                registry_row=registry_row,
-            ),
+            "full_path": lambda value: value == fixed_probability_sample,
         },
         warmup=warmup,
         repeats=repeats,
@@ -1714,6 +1686,12 @@ def _nfl_benchmark(
         {
             "model_version": registry_row.model_version,
             "sport": "nfl",
+            "contract_output": None,
+            "pit_status": "PIT_UNPROVEN",
+            "pit_cutoff_at": None,
+            "output_validation_scope": (
+                "probability_domain_and_sum_only"
+            ),
             "governance": governance,
             "representative_input_lineage": {
                 "dataset_id": x11.X11_DATASET_ID,
@@ -1731,7 +1709,7 @@ def _nfl_benchmark(
                 "previous_state_sha256": canonical_state_sha256(state),
                 "event_sha256": canonical_state_sha256(event),
                 "next_state_sha256": canonical_state_sha256(next_state),
-                "feature_sha256": str(fixed_output.feature_sha256),
+                "feature_sha256": feature_sha256,
                 "training_cutoff_exclusive": pd.Timestamp(cutoff).isoformat(),
                 "training_games": int(train["game_id"].nunique()),
                 "training_observations": int(len(train)),
@@ -2430,8 +2408,8 @@ def build_current_model_latency_report(
         "live_sla_claimed": False,
         "scope": (
             "warm batch-one state/event transition through reducer, feature "
-            "extraction, fitted registered transition model, output "
-            "materialization, and strict ModelOutputV1 validation"
+            "extraction, fitted registered transition model, and output "
+            "validation bounded by each source's point-in-time eligibility"
         ),
         "protocol": {
             "timer": "time.perf_counter_ns",
@@ -2445,8 +2423,8 @@ def build_current_model_latency_report(
                 "state_reducer",
                 "feature_extraction",
                 "registered_model_inference",
-                "model_output_materialization",
-                "strict_model_output_v1_validation_against_preloaded_registry",
+                "probability_distribution_validation",
+                "strict_model_output_v1_validation_only_when_pit_eligible",
             ],
             "excluded_from_all_timed_regions": [
                 "model_training",
@@ -2455,9 +2433,9 @@ def build_current_model_latency_report(
                 "network_io",
             ],
             "preflight_registry_validation": (
-                "contracts.validate_contract_v1 executed once per model before "
-                "timing; every timed output is then strictly revalidated against "
-                "the immutable preloaded registry row"
+                "the immutable model registry is validated before timing; "
+                "ModelOutputV1 is materialized only for a source with a proven "
+                "point-in-time cutoff"
             ),
         },
         "runtime": _runtime_record(),
@@ -2473,10 +2451,14 @@ def build_current_model_latency_report(
                 "the soccer five-minute path uses the registered dynamic state model "
                 "with Dixon-Coles pregame base-rate offsets"
             ),
-            "the NFL reducer-v2 benchmark validates P0 score/timeout semantics, not season-complete rules",
+            NFL_REDUCER_LATENCY_LIMITATION,
             "wall-clock results are machine- and load-specific",
             "source ingestion, network transport, market joins, and execution are out of scope",
             "game-end-only models are not mislabeled as ModelOutputV1 full paths",
+            (
+                "the real NFL source has no source_at cutoff, so its latency "
+                "sample is PIT_UNPROVEN with a null contract output"
+            ),
         ],
     }
     report["report_sha256"] = _sha256_json(report)
@@ -2585,8 +2567,8 @@ def validate_model_latency_report(
         "state_reducer",
         "feature_extraction",
         "registered_model_inference",
-        "model_output_materialization",
-        "strict_model_output_v1_validation_against_preloaded_registry",
+        "probability_distribution_validation",
+        "strict_model_output_v1_validation_only_when_pit_eligible",
     ]
     expected_excluded = [
         "model_training",
@@ -2622,6 +2604,16 @@ def validate_model_latency_report(
             or benchmark.get("model_version") != expected_version
         ):
             raise LatencyBenchmarkError("latency benchmark registry binding changed")
+        if benchmark.get("sport") == "nfl" and (
+            benchmark.get("contract_output", object()) is not None
+            or benchmark.get("pit_status") != "PIT_UNPROVEN"
+            or benchmark.get("pit_cutoff_at", object()) is not None
+            or benchmark.get("output_validation_scope")
+            != "probability_domain_and_sum_only"
+        ):
+            raise LatencyBenchmarkError(
+                "NFL non-PIT latency sample contract changed"
+            )
         row = registry[str(model_id)]
         governance = benchmark.get("governance")
         if not isinstance(governance, Mapping):
