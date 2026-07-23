@@ -7,7 +7,7 @@ import csv
 import hashlib
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -40,6 +40,35 @@ _X02_PREREGISTRATION_LOCK_IDS = frozenset(
         "h_split_approval",
     }
 )
+_REPRODUCTION_CONTRACTS = {
+    "X-11": {
+        "reproduction_id": "REPRO-X11-NFL-FASTRMODELS-V1",
+        "scope": "team_h_nfl_fastrmodels_reproduction_v1",
+        "base_scope": "preregistered_pipeline",
+        "dataset_ids": ("DS-NFLVERSE",),
+        "model_ids": (
+            "MODEL-NFL-FASTRMODELS-NO-SPREAD",
+            "MODEL-NFL-FASTRMODELS-SPREAD",
+        ),
+        "code_paths": ("src/prediction_market/models/nfl.py",),
+    },
+    "X-12": {
+        "reproduction_id": (
+            "REPRO-X12-SOCCER-DYNAMIC-TRANSITION-V1"
+        ),
+        "scope": "team_h_soccer_dynamic_transition_reproduction_v1",
+        "base_scope": "poc_result",
+        "dataset_ids": ("DS-STATSBOMB-OPEN",),
+        "model_ids": (
+            "MODEL-SOCCER-DIXON-COLES",
+            "MODEL-SOCCER-DYNAMIC-INTENSITY",
+        ),
+        "code_paths": (
+            "src/prediction_market/sports/soccer_transition_model.py",
+            "src/prediction_market/sports/x12.py",
+        ),
+    },
+}
 _X02_TIMESTAMP_AUDIT_PREREGISTRATION = {
     "sampling_and_seed": {
         "selection_seed": 20260722,
@@ -1462,6 +1491,247 @@ def _validate_result_shape(value: Any) -> dict[str, Any]:
     return snapshot
 
 
+def _validate_reproduction_registration(
+    value: Any,
+    experiment_id: str,
+) -> dict[str, Any]:
+    if experiment_id not in {"X-11", "X-12"}:
+        raise ExperimentRegistryError(
+            f"{experiment_id}: register_reproduction is only valid for "
+            "X-11 or X-12"
+        )
+    registration = _exact_keys(
+        value,
+        {
+            "reproduction_id",
+            "scope",
+            "result_class",
+            "dataset_ids",
+            "model_bindings",
+            "code_paths",
+            "code_sha256",
+            "data_sha256",
+            "reproduction_spec_sha256",
+        },
+        f"{experiment_id} reproduction registration",
+    )
+    _nonempty_string(
+        registration["reproduction_id"],
+        f"{experiment_id} reproduction_id",
+    )
+    _nonempty_string(
+        registration["scope"],
+        f"{experiment_id} reproduction scope",
+    )
+    if registration["result_class"] != "poc":
+        raise ExperimentRegistryError(
+            f"{experiment_id}: reproduction result_class must be poc"
+        )
+    dataset_ids = _canonical_id_list(
+        registration["dataset_ids"],
+        pattern=_DATASET_ID_RE,
+        label=f"{experiment_id} reproduction dataset_ids",
+    )
+    if not dataset_ids:
+        raise ExperimentRegistryError(
+            f"{experiment_id}: reproduction dataset_ids must be non-empty"
+        )
+    model_bindings = registration["model_bindings"]
+    if type(model_bindings) is not list or not model_bindings:
+        raise ExperimentRegistryError(
+            f"{experiment_id}: model_bindings must be a non-empty list"
+        )
+    model_ids: list[str] = []
+    for item in model_bindings:
+        binding = _exact_keys(
+            item,
+            {
+                "model_id",
+                "model_version",
+                "model_record_sha256",
+            },
+            f"{experiment_id} reproduction model binding",
+        )
+        model_id = _nonempty_string(
+            binding["model_id"],
+            f"{experiment_id} reproduction model_id",
+        )
+        if _MODEL_ID_RE.fullmatch(model_id) is None:
+            raise ExperimentRegistryError(
+                f"{experiment_id}: invalid reproduction model_id"
+            )
+        model_ids.append(model_id)
+        _nonempty_string(
+            binding["model_version"],
+            f"{experiment_id} reproduction model_version",
+        )
+        _sha256(
+            binding["model_record_sha256"],
+            f"{experiment_id} model_record_sha256",
+        )
+    if len(model_ids) != len(set(model_ids)):
+        raise ExperimentRegistryError(
+            f"{experiment_id}: duplicate reproduction model_id"
+        )
+    if model_ids != sorted(model_ids):
+        raise ExperimentRegistryError(
+            f"{experiment_id}: model_bindings must be canonically sorted "
+            "by model_id"
+        )
+    _sha256(
+        registration["code_sha256"],
+        f"{experiment_id} reproduction code_sha256",
+    )
+    code_paths = registration["code_paths"]
+    if (
+        type(code_paths) is not list
+        or not code_paths
+        or any(type(item) is not str for item in code_paths)
+    ):
+        raise ExperimentRegistryError(
+            f"{experiment_id}: reproduction code_paths must be a non-empty "
+            "list of strings"
+        )
+    for code_path in code_paths:
+        _nonempty_string(
+            code_path,
+            f"{experiment_id} reproduction code path",
+        )
+    if len(code_paths) != len(set(code_paths)):
+        raise ExperimentRegistryError(
+            f"{experiment_id}: duplicate reproduction code path"
+        )
+    if code_paths != sorted(code_paths):
+        raise ExperimentRegistryError(
+            f"{experiment_id}: reproduction code_paths must be canonically "
+            "sorted"
+        )
+    _sha256(
+        registration["data_sha256"],
+        f"{experiment_id} reproduction data_sha256",
+    )
+    contract = _REPRODUCTION_CONTRACTS[experiment_id]
+    if (
+        registration["reproduction_id"] != contract["reproduction_id"]
+        or registration["scope"] != contract["scope"]
+        or dataset_ids != list(contract["dataset_ids"])
+        or model_ids != list(contract["model_ids"])
+        or code_paths != list(contract["code_paths"])
+    ):
+        raise ExperimentRegistryError(
+            f"{experiment_id}: reproduction contract mismatch"
+        )
+    _sha256(
+        registration["reproduction_spec_sha256"],
+        f"{experiment_id} reproduction_spec_sha256",
+    )
+    specification = {
+        key: item
+        for key, item in registration.items()
+        if key != "reproduction_spec_sha256"
+    }
+    expected_spec_sha256 = (
+        "sha256:" + hashlib.sha256(_canonical_bytes(specification)).hexdigest()
+    )
+    if registration["reproduction_spec_sha256"] != expected_spec_sha256:
+        raise ExperimentRegistryError(
+            f"{experiment_id}: reproduction spec hash mismatch"
+        )
+    return registration
+
+
+def _model_record_sha256(row: Any) -> str:
+    record: dict[str, Any] = {}
+    for item in fields(row):
+        value = getattr(row, item.name)
+        record[item.name] = list(value) if type(value) is tuple else value
+    return "sha256:" + hashlib.sha256(_canonical_bytes(record)).hexdigest()
+
+
+def _reproduction_code_sha256(
+    program_root: Path,
+    experiment_id: str,
+    code_paths: list[str],
+) -> str:
+    code_objects: list[dict[str, str]] = []
+    for code_path in code_paths:
+        path = _safe_file(
+            program_root,
+            code_path,
+            f"{experiment_id} reproduction code object",
+        )
+        code_objects.append(
+            {
+                "path": code_path,
+                "sha256": (
+                    "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+                ),
+            }
+        )
+    return "sha256:" + hashlib.sha256(
+        _canonical_bytes(code_objects)
+    ).hexdigest()
+
+
+def _validate_reproduction_bindings(
+    program_root: Path,
+    experiment_id: str,
+    registration: dict[str, Any],
+) -> None:
+    from prediction_market.program_audit import (
+        ResearchRegistryError,
+        validate_registered_research_bindings,
+    )
+
+    try:
+        datasets, models = validate_registered_research_bindings(
+            program_root,
+            experiment_id=experiment_id,
+            dataset_ids=registration["dataset_ids"],
+            model_ids=[
+                binding["model_id"]
+                for binding in registration["model_bindings"]
+            ],
+            result_class="poc",
+        )
+    except ResearchRegistryError as exc:
+        raise ExperimentRegistryError(
+            f"{experiment_id}: reproduction bindings are invalid: {exc}"
+        ) from exc
+    models_by_id = {row.model_id: row for row in models}
+    for binding in registration["model_bindings"]:
+        model_id = binding["model_id"]
+        model = models_by_id[model_id]
+        if model.model_version != binding["model_version"]:
+            raise ExperimentRegistryError(
+                f"{experiment_id}: reproduction model {model_id} version "
+                "mismatch"
+            )
+        if _model_record_sha256(model) != binding["model_record_sha256"]:
+            raise ExperimentRegistryError(
+                f"{experiment_id}: reproduction model {model_id} record "
+                "hash mismatch"
+            )
+    actual_code_sha256 = _reproduction_code_sha256(
+        program_root,
+        experiment_id,
+        registration["code_paths"],
+    )
+    if registration["code_sha256"] != actual_code_sha256:
+        raise ExperimentRegistryError(
+            f"{experiment_id}: reproduction code hash mismatch"
+        )
+    if len(datasets) != 1:
+        raise ExperimentRegistryError(
+            f"{experiment_id}: reproduction requires exactly one dataset "
+            "manifest"
+        )
+    if registration["data_sha256"] != datasets[0].manifest_sha256:
+        raise ExperimentRegistryError(
+            f"{experiment_id}: reproduction data hash mismatch"
+        )
+
+
 def _validate_changes(changes: Any, experiment_id: str) -> dict[str, Any]:
     if type(changes) is not dict or not changes:
         raise ExperimentRegistryError(f"{experiment_id}: amendment changes must be non-empty")
@@ -1475,11 +1745,22 @@ def _validate_changes(changes: Any, experiment_id: str) -> dict[str, Any]:
         "archive_audit_clarification",
         "timestamp_audit_preregistration",
         "timestamp_input_manifest_binding",
+        "register_reproduction",
     }
     if not set(changes).issubset(allowed):
         raise ExperimentRegistryError(f"{experiment_id}: uncontrolled amendment changes")
     if "status" in changes and changes["status"] not in _ALLOWED_STATUSES:
         raise ExperimentRegistryError(f"{experiment_id}: invalid amended status")
+    if "register_reproduction" in changes:
+        if set(changes) != {"register_reproduction"}:
+            raise ExperimentRegistryError(
+                f"{experiment_id}: register_reproduction must be an atomic "
+                "amendment"
+            )
+        _validate_reproduction_registration(
+            changes["register_reproduction"],
+            experiment_id,
+        )
     if "resolve_locks" in changes:
         items = changes["resolve_locks"]
         if type(items) is not list:
@@ -1699,6 +1980,8 @@ class _RegistrationMeta:
     head: str
     head_at: str = _RESULT_ACCEPTANCE_NOT_BEFORE
     preregistered_inputs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    registered_reproduction_id: str | None = None
+    registered_reproduction_scope: str | None = None
     stored_results: list[dict[str, Any]] = field(default_factory=list)
     result_appended_at: list[str] = field(default_factory=list)
     lock_resolved_at: dict[str, str] = field(default_factory=dict)
@@ -2107,6 +2390,13 @@ def _validate_result_against_state(
     evaluation_at = _canonical_utc(
         result["evaluation_started_at"], "evaluation_started_at", result_error=True
     )
+    if (
+        result["scope"] == meta.registered_reproduction_scope
+        and evaluation_at > _utc_now()
+    ):
+        raise PreRegistrationEvaluationError(
+            f"{card['id']}: reproduction evaluation cannot be future-dated"
+        )
     boundary = _canonical_utc(
         card["result_acceptance_not_before"], "result_acceptance_not_before", result_error=True
     )
@@ -2217,6 +2507,14 @@ def _apply_amendments(
             raise ExperimentRegistryError(f"{experiment_id}: ledger and card chain record mismatch")
         changes = _validate_changes(amendment["changes"], experiment_id)
         if (
+            "register_reproduction" in changes
+            and amended_time > _utc_now()
+        ):
+            raise ExperimentRegistryError(
+                f"{experiment_id}: reproduction amendment cannot be "
+                "future-dated"
+            )
+        if (
             "timestamp_audit_preregistration" in changes
             and meta.timestamp_audit_preregistered
         ):
@@ -2235,6 +2533,85 @@ def _apply_amendments(
                 program_root,
                 changes["timestamp_input_manifest_binding"],
             )
+        if "register_reproduction" in changes:
+            registration = changes["register_reproduction"]
+            reproduction_id = registration["reproduction_id"]
+            scope_name = registration["scope"]
+            model_ids = [
+                item["model_id"]
+                for item in registration["model_bindings"]
+            ]
+            if meta.registered_reproduction_id is not None:
+                raise ExperimentRegistryError(
+                    f"{experiment_id}: register_reproduction is append-once; "
+                    f"duplicate reproduction_id {reproduction_id}"
+                )
+            if scope_name in effective["authorization_scopes"]:
+                raise ExperimentRegistryError(
+                    f"{experiment_id}: reproduction scope {scope_name} "
+                    "already exists"
+                )
+            lock_id = f"reproduction:{reproduction_id}"
+            if any(
+                lock["id"] == lock_id
+                for lock in effective["registration_locks"]
+            ):
+                raise ExperimentRegistryError(
+                    f"{experiment_id}: reproduction lock {lock_id} "
+                    "already exists"
+                )
+            _validate_reproduction_bindings(
+                program_root,
+                experiment_id,
+                registration,
+            )
+            effective["registration_locks"].append(
+                {
+                    "id": lock_id,
+                    "status": "resolved",
+                    "reason": (
+                        f"Team H registered reproduction {reproduction_id} "
+                        "before evaluation."
+                    ),
+                    "evidence_ref": registration[
+                        "reproduction_spec_sha256"
+                    ],
+                }
+            )
+            base_scope_name = _REPRODUCTION_CONTRACTS[
+                experiment_id
+            ]["base_scope"]
+            base_scope = effective["authorization_scopes"][
+                base_scope_name
+            ]
+            inherited_lock_ids = list(
+                base_scope["required_lock_ids"]
+            )
+            effective["authorization_scopes"][scope_name] = {
+                "authorized": True,
+                "required_result_label": "PRELIMINARY",
+                "required_lock_ids": [
+                    *inherited_lock_ids,
+                    lock_id,
+                ],
+                "input_binding": {
+                    "result_class": "poc",
+                    "dataset_ids": list(registration["dataset_ids"]),
+                    "model_ids": model_ids,
+                    "synthetic_data_sha256": None,
+                },
+            }
+            meta.preregistered_inputs[scope_name] = {
+                "code_sha256": registration["code_sha256"],
+                "data_sha256": registration["data_sha256"],
+                "dataset_ids": list(registration["dataset_ids"]),
+                "model_ids": model_ids,
+                "registered_at": amendment["amended_at"],
+            }
+            meta.scope_authorized_at[scope_name] = amendment["amended_at"]
+            meta.lock_resolved_at[lock_id] = amendment["amended_at"]
+            meta.registered_reproduction_id = reproduction_id
+            meta.registered_reproduction_scope = scope_name
         if "resolve_locks" in changes:
             lock_by_id = {lock["id"]: lock for lock in effective["registration_locks"]}
             for item in changes["resolve_locks"]:
@@ -2257,6 +2634,11 @@ def _apply_amendments(
                 meta.scope_authorized_at[scope_name] = amendment["amended_at"]
         if "preregistered_inputs" in changes:
             for item in changes["preregistered_inputs"]:
+                if item["scope"] == meta.registered_reproduction_scope:
+                    raise ExperimentRegistryError(
+                        f"{experiment_id}: reproduction inputs are "
+                        "append-once"
+                    )
                 if item["scope"] not in effective["authorization_scopes"]:
                     raise ExperimentRegistryError(f"{experiment_id}: unknown input scope")
                 scope_binding = effective["authorization_scopes"][
@@ -2343,6 +2725,14 @@ def _apply_amendments(
             )
         if "results_ref" in changes:
             result = _validate_result_shape(changes["results_ref"])
+            if (
+                result["scope"] == meta.registered_reproduction_scope
+                and amended_time > _utc_now()
+            ):
+                raise ExperimentRegistryError(
+                    f"{experiment_id}: reproduction result amendment cannot "
+                    "be future-dated"
+                )
             try:
                 _validate_result_against_state(program_root, effective, meta, result)
             except ExperimentRegistryError as exc:

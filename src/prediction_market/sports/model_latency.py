@@ -31,7 +31,13 @@ import pyarrow.parquet as pq
 
 from prediction_market import contracts
 from prediction_market.program_audit import ModelRegistryRow, load_model_registry
-from prediction_market.sports import nfl_game_state, soccer_game_state, x11, x12
+from prediction_market.sports import (
+    nfl_game_state,
+    soccer_game_state,
+    soccer_transition_model,
+    x11,
+    x12,
+)
 from prediction_market.sports.event_envelopes import (
     build_static_sport_observation_bundle,
 )
@@ -40,6 +46,11 @@ from prediction_market.sports.game_state import canonical_state_sha256
 
 RESULT_LABEL = "PRELIMINARY_ENGINEERING_BENCHMARK"
 ARTIFACT_TYPE = "sport_model_full_path_latency"
+REPORT_VERSION = "v1"
+DYNAMIC_SOCCER_MODEL_ID = "MODEL-SOCCER-DYNAMIC-INTENSITY"
+DYNAMIC_SOCCER_EVIDENCE_PATH = (
+    "artifacts/game-state/soccer/x12_dynamic_transition_poc_v1.json"
+)
 ACCURACY_EVIDENCE_SCOPE = "aggregate_walk_forward_model_family_evidence"
 REQUIRED_STAGES = (
     "state_reducer",
@@ -50,7 +61,7 @@ REQUIRED_STAGES = (
 )
 MEASURED_MODELS = {
     "MODEL-NFL-DRIVE-TRANSITION": ("X-11", "v1"),
-    "MODEL-SOCCER-FIVE-MINUTE-TRANSITION": ("X-12", "v1"),
+    DYNAMIC_SOCCER_MODEL_ID: ("X-12", "v1"),
 }
 UNAVAILABLE_MODEL_REASONS = {
     "MODEL-NFL-LOGISTIC": (
@@ -369,15 +380,22 @@ def _registry_row_sha256(row: ModelRegistryRow) -> str:
 def _source_code_hashes(
     *,
     reducer_path: Path,
-    model_path: Path,
+    model_paths: tuple[Path, ...],
 ) -> dict[str, str]:
-    paths = {
-        "latency_harness": Path(__file__),
-        "sport_reducer": reducer_path,
-        "model_implementation": model_path,
-    }
+    if not model_paths:
+        raise LatencyBenchmarkError(
+            "benchmark model implementation inventory is empty"
+        )
     try:
-        return {name: _sha256_bytes(path.read_bytes()) for name, path in paths.items()}
+        model_hashes = {
+            path.name: _sha256_bytes(path.read_bytes())
+            for path in model_paths
+        }
+        return {
+            "latency_harness": _sha256_bytes(Path(__file__).read_bytes()),
+            "sport_reducer": _sha256_bytes(reducer_path.read_bytes()),
+            "model_implementation": _sha256_json(model_hashes),
+        }
     except OSError as error:
         raise LatencyBenchmarkError("benchmark source code cannot be hashed") from error
 
@@ -436,17 +454,34 @@ def _nfl_model_parameter_snapshot(model: object) -> dict[str, object]:
 
 
 def _soccer_model_parameter_snapshot(
-    model: x12.DixonColesModel,
+    base_rate_model: x12.DixonColesModel,
+    dynamic_model: soccer_transition_model.DynamicIntensityModel,
+    temperature_calibration: soccer_transition_model.TemperatureCalibration,
 ) -> dict[str, object]:
-    if not isinstance(model, x12.DixonColesModel):
+    if (
+        not isinstance(base_rate_model, x12.DixonColesModel)
+        or not isinstance(
+            dynamic_model,
+            soccer_transition_model.DynamicIntensityModel,
+        )
+        or not isinstance(
+            temperature_calibration,
+            soccer_transition_model.TemperatureCalibration,
+        )
+    ):
         raise LatencyBenchmarkError(
             "soccer transition model has no fitted parameter snapshot"
         )
     snapshot = _json_model_value(
         {
-            "snapshot_version": "v0",
-            "model_family": "dixon_coles",
-            "model": asdict(model),
+            "snapshot_version": "v1",
+            "model_family": (
+                "dixon_coles_base_rate_plus_symmetric_dynamic_intensity_"
+                "plus_multiclass_temperature"
+            ),
+            "base_rate_model": asdict(base_rate_model),
+            "dynamic_intensity_model": asdict(dynamic_model),
+            "temperature_calibration": asdict(temperature_calibration),
         }
     )
     if not isinstance(snapshot, dict):
@@ -568,53 +603,181 @@ def _validate_model_parameter_snapshot(
             )
         return snapshot
 
-    if model_id == "MODEL-SOCCER-FIVE-MINUTE-TRANSITION":
+    if model_id == DYNAMIC_SOCCER_MODEL_ID:
         if set(snapshot) != {
             "snapshot_version",
             "model_family",
-            "model",
+            "base_rate_model",
+            "dynamic_intensity_model",
+            "temperature_calibration",
         } or (
-            snapshot.get("snapshot_version") != "v0"
-            or snapshot.get("model_family") != "dixon_coles"
+            snapshot.get("snapshot_version") != "v1"
+            or snapshot.get("model_family")
+            != (
+                "dixon_coles_base_rate_plus_symmetric_dynamic_intensity_"
+                "plus_multiclass_temperature"
+            )
         ):
             raise LatencyBenchmarkError(
                 "soccer model parameter snapshot structure is invalid"
             )
-        model = snapshot.get("model")
-        expected_fields = {item.name for item in fields(x12.DixonColesModel)}
-        if not isinstance(model, dict) or set(model) != expected_fields:
+        base_rate_model = snapshot.get("base_rate_model")
+        base_rate_fields = {item.name for item in fields(x12.DixonColesModel)}
+        if (
+            not isinstance(base_rate_model, dict)
+            or set(base_rate_model) != base_rate_fields
+        ):
             raise LatencyBenchmarkError(
-                "soccer fitted parameter snapshot fields are invalid"
+                "soccer base-rate parameter snapshot fields are invalid"
             )
-        team_ids = model.get("team_ids")
-        parameters = model.get("parameters")
+        team_ids = base_rate_model.get("team_ids")
+        parameters = base_rate_model.get("parameters")
         if (
             not isinstance(team_ids, list)
             or len(team_ids) < 2
             or any(type(value) is not int or value <= 0 for value in team_ids)
             or len(team_ids) != len(set(team_ids))
             or team_ids != sorted(team_ids)
-            or model.get("reference_team_id") not in team_ids
+            or base_rate_model.get("reference_team_id") not in team_ids
             or not isinstance(parameters, list)
             or not parameters
         ):
             raise LatencyBenchmarkError(
-                "soccer fitted parameter snapshot identity is invalid"
+                "soccer base-rate parameter snapshot identity is invalid"
             )
         for value in parameters:
-            _finite_parameter_number(value, "model.parameters")
-        for name in expected_fields - {
+            _finite_parameter_number(value, "base_rate_model.parameters")
+        for name in base_rate_fields - {
             "team_ids",
             "reference_team_id",
             "parameters",
             "optimizer_status",
         }:
-            _finite_parameter_number(model.get(name), f"model.{name}")
-        if type(model.get("optimizer_status")) is not str or not model[
-            "optimizer_status"
-        ]:
+            _finite_parameter_number(
+                base_rate_model.get(name),
+                f"base_rate_model.{name}",
+            )
+        if (
+            type(base_rate_model.get("optimizer_status")) is not str
+            or not base_rate_model["optimizer_status"]
+        ):
             raise LatencyBenchmarkError(
-                "soccer optimizer status parameter snapshot is invalid"
+                "soccer base-rate optimizer status parameter snapshot is invalid"
+            )
+
+        dynamic_model = snapshot.get("dynamic_intensity_model")
+        dynamic_fields = {
+            item.name
+            for item in fields(
+                soccer_transition_model.DynamicIntensityModel
+            )
+        }
+        if (
+            not isinstance(dynamic_model, dict)
+            or set(dynamic_model) != dynamic_fields
+            or dynamic_model.get("coefficient_names")
+            != list(soccer_transition_model.COEFFICIENT_NAMES)
+        ):
+            raise LatencyBenchmarkError(
+                "soccer dynamic parameter snapshot fields are invalid"
+            )
+        coefficients = dynamic_model.get("coefficients")
+        if not isinstance(coefficients, list) or len(coefficients) != len(
+            soccer_transition_model.COEFFICIENT_NAMES
+        ):
+            raise LatencyBenchmarkError(
+                "soccer dynamic coefficients are invalid"
+            )
+        for value in coefficients:
+            _finite_parameter_number(
+                value,
+                "dynamic_intensity_model.coefficients",
+            )
+        for name in (
+            "l2_penalty",
+            "objective",
+            "initial_objective",
+            "projected_gradient_inf_norm",
+        ):
+            _finite_parameter_number(
+                dynamic_model.get(name),
+                f"dynamic_intensity_model.{name}",
+            )
+        if (
+            type(dynamic_model.get("iterations")) is not int
+            or int(dynamic_model["iterations"]) < 0
+            or type(dynamic_model.get("optimizer_status")) is not str
+            or not dynamic_model["optimizer_status"]
+            or dynamic_model.get("parameter_sha256")
+            != soccer_transition_model.DynamicIntensityModel(
+                coefficients=tuple(float(value) for value in coefficients),
+                l2_penalty=float(dynamic_model["l2_penalty"]),
+                objective=float(dynamic_model["objective"]),
+                iterations=int(dynamic_model["iterations"]),
+                optimizer_status=str(dynamic_model["optimizer_status"]),
+                initial_objective=float(dynamic_model["initial_objective"]),
+                projected_gradient_inf_norm=float(
+                    dynamic_model["projected_gradient_inf_norm"]
+                ),
+            ).parameter_sha256
+        ):
+            raise LatencyBenchmarkError(
+                "soccer dynamic parameter snapshot identity is invalid"
+            )
+
+        temperature_calibration = snapshot.get("temperature_calibration")
+        calibration_fields = {
+            item.name
+            for item in fields(
+                soccer_transition_model.TemperatureCalibration
+            )
+        }
+        if (
+            not isinstance(temperature_calibration, dict)
+            or set(temperature_calibration) != calibration_fields
+        ):
+            raise LatencyBenchmarkError(
+                "soccer temperature calibration snapshot fields are invalid"
+            )
+        try:
+            fitted_calibration = (
+                soccer_transition_model.TemperatureCalibration(
+                    temperature=float(
+                        temperature_calibration["temperature"]
+                    ),
+                    initial_objective=float(
+                        temperature_calibration["initial_objective"]
+                    ),
+                    objective=float(
+                        temperature_calibration["objective"]
+                    ),
+                    iterations=temperature_calibration["iterations"],
+                    optimizer_status=temperature_calibration[
+                        "optimizer_status"
+                    ],
+                    calibration_match_count=temperature_calibration[
+                        "calibration_match_count"
+                    ],
+                    calibration_observation_count=temperature_calibration[
+                        "calibration_observation_count"
+                    ],
+                )
+            )
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+            soccer_transition_model.SoccerTransitionModelError,
+        ) as error:
+            raise LatencyBenchmarkError(
+                "soccer temperature calibration snapshot identity is invalid"
+            ) from error
+        if (
+            temperature_calibration.get("parameter_sha256")
+            != fitted_calibration.parameter_sha256
+        ):
+            raise LatencyBenchmarkError(
+                "soccer temperature calibration snapshot identity is invalid"
             )
         return snapshot
 
@@ -794,6 +957,389 @@ def _common_governance(
         "code_sha256": dict(code_sha256),
         "preflight_full_registry_contract_validation": True,
     }
+
+
+def _require_dynamic_soccer_evidence(
+    evidence: Mapping[str, object],
+    *,
+    program_root: Path,
+) -> dict[str, object]:
+    """Parse only the registered full calibrated X-12 v1 evidence."""
+
+    error_message = (
+        "soccer latency has no registered calibrated dynamic empirical evidence"
+    )
+
+    def invalid(cause: BaseException | None = None) -> None:
+        if cause is None:
+            raise LatencyBenchmarkError(error_message)
+        raise LatencyBenchmarkError(error_message) from cause
+
+    try:
+        current_registration_preflight = (
+            x12._validate_x12_reproduction_preflight(program_root)
+        )
+    except (OSError, TypeError, ValueError, x12.X12DataError) as error:
+        raise LatencyBenchmarkError(
+            "soccer latency cannot establish the current X-12 "
+            "reproduction preflight"
+        ) from error
+    evidence_registration_preflight = evidence.get(
+        "registration_preflight"
+    )
+    if (
+        not isinstance(evidence_registration_preflight, Mapping)
+        or dict(evidence_registration_preflight)
+        != current_registration_preflight
+    ):
+        raise LatencyBenchmarkError(
+            "soccer evidence differs from the current X-12 "
+            "reproduction preflight"
+        )
+
+    if (
+        evidence.get("artifact_type")
+        != "x12_real_data_dixon_coles_dynamic_transition_poc_v1"
+        or evidence.get("experiment_id") != x12.X12_EXPERIMENT_ID
+        or evidence.get("model_id") != x12.X12_MODEL_ID
+        or evidence.get("model_version") != x12.X12_MODEL_VERSION
+        or evidence.get("authorization_scope")
+        != x12.X12_AUTHORIZATION_SCOPE
+        or evidence.get("result_label") != x12.X12_RESULT_LABEL
+        or evidence.get("execution_mode") != "full"
+    ):
+        invalid()
+
+    model = evidence.get("model")
+    transition_output = evidence.get("transition_output")
+    transition_model = (
+        model.get("transition_model")
+        if isinstance(model, Mapping)
+        else None
+    )
+    if (
+        not isinstance(model, Mapping)
+        or not isinstance(transition_model, Mapping)
+        or transition_model.get("methodology")
+        != (
+            "Maia-family dynamic-covariate adaptation with frozen "
+            "Dixon-Coles base-rate offset"
+        )
+        or transition_model.get("reproduction_scope")
+        != "not a complete Maia or Cox reproduction"
+        or not isinstance(transition_output, Mapping)
+        or transition_output.get("state_space")
+        != list(soccer_transition_model.TRANSITION_CLASSES)
+        or transition_output.get("horizon_seconds")
+        != soccer_transition_model.TRANSITION_HORIZON_SECONDS
+        or transition_output.get("evaluation_protocol")
+        != "frozen_chronological_date_group_holdout_50_25_25"
+        or transition_output.get("primary_probability_variant")
+        != "temperature_calibrated"
+        or transition_output.get("diagnostic_probability_variant")
+        != "uncalibrated"
+        or transition_model.get("output_probability_variants")
+        != {
+            "primary": "temperature_calibrated",
+            "diagnostic": "uncalibrated",
+        }
+    ):
+        invalid()
+
+    optimizer_max_iterations = model.get("optimizer_max_iterations")
+    transition_optimizer_max_iterations = transition_model.get(
+        "optimizer_max_iterations"
+    )
+    l2_penalty = transition_model.get("l2_penalty")
+    if (
+        type(optimizer_max_iterations) is not int
+        or optimizer_max_iterations < 1
+        or transition_optimizer_max_iterations != optimizer_max_iterations
+        or type(l2_penalty) not in {int, float}
+        or not math.isfinite(float(l2_penalty))
+        or float(l2_penalty) < 0.0
+    ):
+        invalid()
+
+    split_document = transition_model.get("split")
+    split_fields = {
+        item.name for item in fields(x12.X12TransitionSplitAudit)
+    }
+    if (
+        not isinstance(split_document, Mapping)
+        or set(split_document) != split_fields
+        or split_document.get("method")
+        != "frozen_chronological_date_group_holdout_50_25_25"
+    ):
+        invalid()
+
+    date_fields = (
+        "base_fit_first_date",
+        "base_fit_last_date",
+        "calibration_first_date",
+        "calibration_last_date",
+        "final_test_first_date",
+        "final_test_last_date",
+        "final_test_evaluated_first_date",
+        "final_test_evaluated_last_date",
+    )
+    timestamp_fields = (
+        "dynamic_fit_evaluation_cutoff",
+        "temperature_fit_evaluation_cutoff",
+        "base_fit_max_outcome_available_at",
+        "calibration_max_label_available_at",
+    )
+    count_fields = (
+        "base_fit_date_count",
+        "calibration_date_count",
+        "final_test_date_count",
+        "final_test_evaluated_date_count",
+        "base_fit_match_count",
+        "calibration_match_count",
+        "final_test_match_count",
+        "final_test_evaluated_match_count",
+    )
+    hash_fields = (
+        "dixon_coles_parameter_sha256",
+        "dynamic_parameter_sha256",
+        "raw_transition_parameter_sha256",
+        "temperature_parameter_sha256",
+        "calibrated_transition_parameter_sha256",
+    )
+    try:
+        parsed_dates: dict[str, pd.Timestamp] = {}
+        for name in date_fields:
+            value = split_document[name]
+            if type(value) is not str:
+                invalid()
+            timestamp = pd.Timestamp(value)
+            if pd.isna(timestamp) or timestamp.tzinfo is None:
+                invalid()
+            parsed_dates[name] = timestamp.tz_convert("UTC")
+        parsed_timestamps: dict[str, pd.Timestamp] = {}
+        for name in timestamp_fields:
+            value = split_document[name]
+            if type(value) is not str:
+                invalid()
+            timestamp = pd.Timestamp(value)
+            if pd.isna(timestamp) or timestamp.tzinfo is None:
+                invalid()
+            parsed_timestamps[name] = timestamp.tz_convert("UTC")
+        for name in count_fields:
+            if (
+                type(split_document[name]) is not int
+                or int(split_document[name]) < 1
+            ):
+                invalid()
+        for name in hash_fields:
+            _validate_digest(split_document[name], f"soccer split {name}")
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+        OverflowError,
+        LatencyBenchmarkError,
+    ) as error:
+        invalid(error)
+
+    if not (
+        parsed_dates["base_fit_first_date"]
+        <= parsed_dates["base_fit_last_date"]
+        < parsed_dates["calibration_first_date"]
+        <= parsed_dates["calibration_last_date"]
+        < parsed_dates["final_test_first_date"]
+        <= parsed_dates["final_test_evaluated_first_date"]
+        <= parsed_dates["final_test_evaluated_last_date"]
+        <= parsed_dates["final_test_last_date"]
+        and int(split_document["final_test_evaluated_date_count"])
+        <= int(split_document["final_test_date_count"])
+        and int(split_document["final_test_evaluated_match_count"])
+        <= int(split_document["final_test_match_count"])
+        and parsed_timestamps["base_fit_max_outcome_available_at"]
+        < parsed_timestamps["dynamic_fit_evaluation_cutoff"]
+        < parsed_timestamps["temperature_fit_evaluation_cutoff"]
+        and parsed_timestamps["calibration_max_label_available_at"]
+        < parsed_timestamps["temperature_fit_evaluation_cutoff"]
+    ):
+        invalid()
+
+    calibration_document = transition_model.get("temperature_calibration")
+    calibration_fields = {
+        item.name
+        for item in fields(
+            soccer_transition_model.TemperatureCalibration
+        )
+    }
+    if (
+        not isinstance(calibration_document, Mapping)
+        or set(calibration_document) != calibration_fields
+    ):
+        invalid()
+    try:
+        temperature_calibration = (
+            soccer_transition_model.TemperatureCalibration(
+                temperature=calibration_document["temperature"],
+                initial_objective=calibration_document[
+                    "initial_objective"
+                ],
+                objective=calibration_document["objective"],
+                iterations=calibration_document["iterations"],
+                optimizer_status=calibration_document[
+                    "optimizer_status"
+                ],
+                calibration_match_count=calibration_document[
+                    "calibration_match_count"
+                ],
+                calibration_observation_count=calibration_document[
+                    "calibration_observation_count"
+                ],
+            )
+        )
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+        soccer_transition_model.SoccerTransitionModelError,
+    ) as error:
+        invalid(error)
+    if (
+        calibration_document.get("parameter_sha256")
+        != temperature_calibration.parameter_sha256
+        or split_document["temperature_parameter_sha256"]
+        != temperature_calibration.parameter_sha256
+        or temperature_calibration.calibration_match_count
+        != split_document["calibration_match_count"]
+        or temperature_calibration.calibration_observation_count
+        != (
+            temperature_calibration.calibration_match_count
+            * len(x12.TRANSITION_SNAPSHOTS)
+        )
+    ):
+        invalid()
+
+    raw_transition_sha256 = _sha256_json(
+        {
+            "dixon_coles_parameter_sha256": split_document[
+                "dixon_coles_parameter_sha256"
+            ],
+            "dynamic_parameter_sha256": split_document[
+                "dynamic_parameter_sha256"
+            ],
+            "model_id": x12.X12_MODEL_ID,
+            "model_version": x12.X12_MODEL_VERSION,
+            "probability_variant": "uncalibrated",
+        }
+    )
+    calibrated_transition_sha256 = _sha256_json(
+        {
+            "model_id": x12.X12_MODEL_ID,
+            "model_version": x12.X12_MODEL_VERSION,
+            "raw_transition_parameter_sha256": raw_transition_sha256,
+            "temperature_parameter_sha256": (
+                temperature_calibration.parameter_sha256
+            ),
+            "probability_variant": "temperature_calibrated",
+        }
+    )
+    if (
+        split_document["raw_transition_parameter_sha256"]
+        != raw_transition_sha256
+        or split_document["calibrated_transition_parameter_sha256"]
+        != calibrated_transition_sha256
+    ):
+        invalid()
+
+    metrics = transition_output.get("metrics")
+    raw_metrics = (
+        metrics.get("raw_model_metrics")
+        if isinstance(metrics, Mapping)
+        else None
+    )
+    if (
+        not isinstance(metrics, Mapping)
+        or metrics.get("classes")
+        != list(soccer_transition_model.TRANSITION_CLASSES)
+        or type(metrics.get("observations")) is not int
+        or int(metrics["observations"]) < 1
+        or type(metrics.get("brier")) not in {int, float}
+        or not math.isfinite(float(metrics["brier"]))
+        or float(metrics["brier"]) < 0.0
+        or type(metrics.get("log_loss")) not in {int, float}
+        or not math.isfinite(float(metrics["log_loss"]))
+        or float(metrics["log_loss"]) < 0.0
+        or metrics.get("probability_variant")
+        != "temperature_calibrated"
+        or not isinstance(raw_metrics, Mapping)
+        or raw_metrics.get("classes")
+        != list(soccer_transition_model.TRANSITION_CLASSES)
+        or raw_metrics.get("observations") != metrics["observations"]
+        or type(raw_metrics.get("brier")) not in {int, float}
+        or not math.isfinite(float(raw_metrics["brier"]))
+        or float(raw_metrics["brier"]) < 0.0
+        or type(raw_metrics.get("log_loss")) not in {int, float}
+        or not math.isfinite(float(raw_metrics["log_loss"]))
+        or float(raw_metrics["log_loss"]) < 0.0
+        or raw_metrics.get("probability_variant") != "uncalibrated"
+    ):
+        invalid()
+
+    try:
+        split = x12.X12TransitionSplitAudit(
+            **{
+                name: (
+                    parsed_timestamps[name]
+                    if name in parsed_timestamps
+                    else split_document[name]
+                )
+                for name in split_fields
+            }
+        )
+    except (TypeError, ValueError) as error:
+        invalid(error)
+    return {
+        "model": dict(model),
+        "transition_model": dict(transition_model),
+        "split": split,
+        "temperature_calibration": temperature_calibration,
+        "metrics": dict(metrics),
+        "registration_preflight": current_registration_preflight,
+        "optimizer_max_iterations": optimizer_max_iterations,
+        "l2_penalty": float(l2_penalty),
+    }
+
+
+def _soccer_dynamic_transition(
+    previous_state: soccer_game_state.SoccerGameState,
+    event: soccer_game_state.SoccerGameEvent,
+    *,
+    model: soccer_transition_model.DynamicIntensityModel,
+    temperature_calibration: soccer_transition_model.TemperatureCalibration,
+    base_home_goals: float,
+    base_away_goals: float,
+) -> tuple[
+    soccer_game_state.SoccerGameState,
+    soccer_transition_model.SoccerTransitionFeatures,
+    soccer_transition_model.SoccerTransitionDistribution,
+    np.ndarray,
+]:
+    """Execute reducer -> feature -> dynamic predictor -> calibration."""
+
+    next_state = soccer_game_state.SOCCER_GAME_STATE_REDUCER.reduce(
+        previous_state,
+        event,
+    )
+    features = soccer_transition_model.extract_transition_features(next_state)
+    distribution = soccer_transition_model.predict_transition_distribution(
+        model,
+        base_home_goals=base_home_goals,
+        base_away_goals=base_away_goals,
+        features=features,
+    )
+    calibrated = soccer_transition_model.apply_multiclass_temperature(
+        np.asarray([distribution.probabilities], dtype=float),
+        temperature=temperature_calibration.temperature,
+    )[0]
+    return next_state, features, distribution, calibrated
 
 
 def _nfl_benchmark(
@@ -1002,7 +1548,7 @@ def _nfl_benchmark(
         model_parameter_snapshot=model_parameter_snapshot,
         code_sha256=_source_code_hashes(
             reducer_path=Path(nfl_game_state.__file__),
-            model_path=Path(x11.__file__),
+            model_paths=(Path(x11.__file__),),
         ),
     )
     model_parameter_sha256 = str(governance["model_parameter_sha256"])
@@ -1156,6 +1702,26 @@ def _soccer_benchmark(
     warmup: int,
     repeats: int,
 ) -> dict[str, object]:
+    evidence, evidence_common = _load_verified_evidence(
+        program_root=program_root,
+        relative_path=DYNAMIC_SOCCER_EVIDENCE_PATH,
+    )
+    parsed_evidence = _require_dynamic_soccer_evidence(
+        evidence,
+        program_root=program_root,
+    )
+    split = parsed_evidence["split"]
+    temperature_calibration = parsed_evidence["temperature_calibration"]
+    if (
+        not isinstance(split, x12.X12TransitionSplitAudit)
+        or not isinstance(
+            temperature_calibration,
+            soccer_transition_model.TemperatureCalibration,
+        )
+    ):
+        raise LatencyBenchmarkError(
+            "soccer calibrated evidence parser emitted invalid fitted inputs"
+        )
     loaded = x12.load_x12_dataset(
         store_root=program_root / "var" / "raw",
         program_root=program_root,
@@ -1167,21 +1733,227 @@ def _soccer_benchmark(
     matches = loaded.matches.sort_values(
         ["played_at", "match_id"], kind="mergesort"
     ).reset_index(drop=True)
-    cutoff = matches["match_date"].max()
-    train = matches.loc[matches["match_date"] < cutoff].copy()
-    test = matches.loc[matches["match_date"] == cutoff].copy()
-    if train.empty or len(test) != 1:
-        raise LatencyBenchmarkError("X-12 last fold is incomplete")
+
+    try:
+        (
+            base_fit,
+            calibration,
+            final_test,
+            final_test_evaluated,
+        ) = x12._frozen_transition_split(
+            matches,
+            evaluation_match_limit=(
+                split.final_test_evaluated_match_count
+            ),
+        )
+    except (TypeError, ValueError, x12.X12DataError) as error:
+        raise LatencyBenchmarkError(
+            "soccer registered frozen transition split cannot be reproduced"
+        ) from error
+
+    def utc_timestamp(value: object) -> pd.Timestamp:
+        timestamp = pd.Timestamp(value)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.tz_localize("UTC")
+        return timestamp.tz_convert("UTC")
+
+    frame_audits = (
+        (
+            base_fit,
+            split.base_fit_first_date,
+            split.base_fit_last_date,
+            split.base_fit_date_count,
+            split.base_fit_match_count,
+        ),
+        (
+            calibration,
+            split.calibration_first_date,
+            split.calibration_last_date,
+            split.calibration_date_count,
+            split.calibration_match_count,
+        ),
+        (
+            final_test,
+            split.final_test_first_date,
+            split.final_test_last_date,
+            split.final_test_date_count,
+            split.final_test_match_count,
+        ),
+        (
+            final_test_evaluated,
+            split.final_test_evaluated_first_date,
+            split.final_test_evaluated_last_date,
+            split.final_test_evaluated_date_count,
+            split.final_test_evaluated_match_count,
+        ),
+    )
+    if any(
+        frame.empty
+        or utc_timestamp(frame["match_date"].min())
+        != utc_timestamp(first_date)
+        or utc_timestamp(frame["match_date"].max())
+        != utc_timestamp(last_date)
+        or int(frame["match_date"].nunique()) != date_count
+        or int(frame["match_id"].nunique()) != match_count
+        for (
+            frame,
+            first_date,
+            last_date,
+            date_count,
+            match_count,
+        ) in frame_audits
+    ) or (
+        utc_timestamp(calibration["played_at"].min())
+        != split.dynamic_fit_evaluation_cutoff
+        or utc_timestamp(final_test["played_at"].min())
+        != split.temperature_fit_evaluation_cutoff
+        or utc_timestamp(base_fit["outcome_available_at"].max())
+        != split.base_fit_max_outcome_available_at
+    ):
+        raise LatencyBenchmarkError(
+            "soccer registered frozen transition split differs from source data"
+        )
+
     team_ids = tuple(
         sorted(set(matches["home_team_id"]) | set(matches["away_team_id"]))
     )
-    model = x12._fit_dixon_coles(
-        train,
-        team_ids=team_ids,
-        optimizer_max_iterations=250,
-        initial_parameters=None,
+    optimizer_max_iterations = int(
+        parsed_evidence["optimizer_max_iterations"]
     )
-    observation = test.iloc[0]
+    try:
+        model = x12._fit_dixon_coles(
+            base_fit,
+            team_ids=team_ids,
+            optimizer_max_iterations=optimizer_max_iterations,
+            initial_parameters=None,
+        )
+    except (TypeError, ValueError, x12.X12DataError) as error:
+        raise LatencyBenchmarkError(
+            "soccer registered base Dixon-Coles fit failed closed"
+        ) from error
+    dixon_coles_parameter_sha256 = _sha256_json(list(model.parameters))
+    dynamic_training_rows = x12._dynamic_training_rows(
+        base_fit,
+        loaded.goals,
+        loaded.dismissals,
+        model=model,
+    )
+    held_out_match_ids = frozenset(
+        set(calibration["match_id"].astype(int))
+        | set(final_test["match_id"].astype(int))
+    )
+    try:
+        dynamic_model = soccer_transition_model.fit_dynamic_intensity(
+            dynamic_training_rows,
+            evaluation_cutoff=split.dynamic_fit_evaluation_cutoff,
+            held_out_match_ids=held_out_match_ids,
+            l2_penalty=float(parsed_evidence["l2_penalty"]),
+            optimizer_max_iterations=optimizer_max_iterations,
+        )
+    except soccer_transition_model.SoccerTransitionModelError as error:
+        raise LatencyBenchmarkError(
+            "soccer dynamic transition latency fit failed closed"
+        ) from error
+    raw_transition_parameter_sha256 = _sha256_json(
+        {
+            "dixon_coles_parameter_sha256": (
+                dixon_coles_parameter_sha256
+            ),
+            "dynamic_parameter_sha256": dynamic_model.parameter_sha256,
+            "model_id": x12.X12_MODEL_ID,
+            "model_version": x12.X12_MODEL_VERSION,
+            "probability_variant": "uncalibrated",
+        }
+    )
+    calibration_rows = x12._transition_rows(
+        calibration,
+        loaded.goals,
+        loaded.dismissals,
+        model=model,
+        dynamic_model=dynamic_model,
+        inventory_sha256_value=loaded.inventory.inventory_sha256,
+        dixon_coles_parameter_sha256=dixon_coles_parameter_sha256,
+        raw_transition_parameter_sha256=(
+            raw_transition_parameter_sha256
+        ),
+        calibrated_transition_parameter_sha256=None,
+        temperature_calibration=None,
+    )
+    calibration_predictions = pd.DataFrame(calibration_rows).sort_values(
+        ["prediction_at", "match_id", "period", "period_clock_ms"],
+        kind="mergesort",
+    )
+    calibration_max_label_available_at = utc_timestamp(
+        calibration_predictions["prediction_at"].max()
+        + pd.Timedelta(
+            seconds=soccer_transition_model.TRANSITION_HORIZON_SECONDS
+        )
+    )
+    if (
+        calibration_predictions.empty
+        or calibration_max_label_available_at
+        != split.calibration_max_label_available_at
+    ):
+        raise LatencyBenchmarkError(
+            "soccer registered calibration interval differs from source data"
+        )
+    raw_columns = [
+        f"raw_probability_{label}"
+        for label in soccer_transition_model.TRANSITION_CLASSES
+    ]
+    try:
+        fitted_temperature_calibration = (
+            soccer_transition_model.fit_multiclass_temperature(
+                calibration_predictions[
+                    "observed_transition"
+                ].to_numpy(dtype=object),
+                calibration_predictions[raw_columns].to_numpy(dtype=float),
+                groups=calibration_predictions[
+                    "match_id"
+                ].to_numpy(dtype=object),
+                minimum_matches=20,
+                optimizer_max_iterations=optimizer_max_iterations,
+            )
+        )
+    except soccer_transition_model.SoccerTransitionModelError as error:
+        raise LatencyBenchmarkError(
+            "soccer transition calibration latency fit failed closed"
+        ) from error
+    calibrated_transition_parameter_sha256 = _sha256_json(
+        {
+            "model_id": x12.X12_MODEL_ID,
+            "model_version": x12.X12_MODEL_VERSION,
+            "raw_transition_parameter_sha256": (
+                raw_transition_parameter_sha256
+            ),
+            "temperature_parameter_sha256": (
+                fitted_temperature_calibration.parameter_sha256
+            ),
+            "probability_variant": "temperature_calibrated",
+        }
+    )
+    if (
+        split.dixon_coles_parameter_sha256
+        != dixon_coles_parameter_sha256
+        or split.dynamic_parameter_sha256
+        != dynamic_model.parameter_sha256
+        or split.raw_transition_parameter_sha256
+        != raw_transition_parameter_sha256
+        or split.temperature_parameter_sha256
+        != fitted_temperature_calibration.parameter_sha256
+        or split.calibrated_transition_parameter_sha256
+        != calibrated_transition_parameter_sha256
+        or fitted_temperature_calibration != temperature_calibration
+    ):
+        raise LatencyBenchmarkError(
+            "soccer fitted calibrated parameters differ from registered evidence"
+        )
+    observation = final_test_evaluated.iloc[0]
+    base_home_goals, base_away_goals = x12._expected_goals(
+        model,
+        home_team_id=int(observation["home_team_id"]),
+        away_team_id=int(observation["away_team_id"]),
+    )
     source_object_sha256 = str(observation["event_object_sha256"])
     source_manifest_sha256 = str(observation["event_manifest_sha256"])
     source_path = _find_raw_object(
@@ -1201,78 +1973,116 @@ def _soccer_benchmark(
         ) from error
     if not isinstance(raw_events, list) or not raw_events:
         raise LatencyBenchmarkError("soccer representative event file is empty")
-    raw_event = raw_events[0]
-    if not isinstance(raw_event, dict):
-        raise LatencyBenchmarkError("soccer representative event is not an object")
     game_id = f"game_statsbomb_{int(observation['match_id'])}"
-    event_payload = soccer_game_state.statsbomb_event_payload(
-        raw_event,
-        game_id=game_id,
-    )
-    event_sequence = int(event_payload["sequence"])
-    native_event_id = str(event_payload["native_event_id"])
-    bundle = build_static_sport_observation_bundle(
-        program_root=program_root,
-        experiment_id=x12.X12_EXPERIMENT_ID,
-        dataset_id=x12.X12_DATASET_ID,
-        source_system="statsbomb",
-        source_stream="events",
-        raw_object_hash=source_object_sha256,
-        raw_record_ordinals=(event_sequence - 1,),
-        partition=str(manifest["upstream_partition"]),
-        fetched_at=str(manifest["fetched_at"]),
-        source_at=None,
-        competition_id="cmp_statsbomb_2",
-        game_id=game_id,
-        participant_ids=(
-            f"participant_statsbomb_{int(observation['home_team_id'])}",
-            f"participant_statsbomb_{int(observation['away_team_id'])}",
-        ),
-        native_namespace="statsbomb.event",
-        native_ids=(native_event_id,),
-        normalized_source_sequence=event_sequence,
-        normalized_payload=event_payload,
-    )
-    event = soccer_game_state.adapt_statsbomb_event(
-        bundle.normalized,
-        program_root=program_root,
-        raw_parents=bundle.raw,
-    )
-    state = soccer_game_state.initial_soccer_game_state(
+    current_state = soccer_game_state.initial_soccer_game_state(
         game_id,
         home_team_id=int(observation["home_team_id"]),
         away_team_id=int(observation["away_team_id"]),
     )
-    next_state = soccer_game_state.SOCCER_GAME_STATE_REDUCER.reduce(state, event)
-
-    def extract_features(
-        current: soccer_game_state.SoccerGameState,
-    ) -> tuple[int, int]:
-        return current.home_team_id, current.away_team_id
-
-    fixed_features = extract_features(next_state)
-    expected_features = (
-        int(observation["home_team_id"]),
-        int(observation["away_team_id"]),
-    )
-    if fixed_features != expected_features:
+    representative: tuple[
+        soccer_game_state.SoccerGameState,
+        soccer_game_state.SoccerGameEvent,
+        soccer_game_state.SoccerGameState,
+        soccer_transition_model.SoccerTransitionFeatures,
+        soccer_transition_model.SoccerTransitionDistribution,
+        int,
+    ] | None = None
+    for raw_ordinal, raw_event in enumerate(raw_events):
+        if not isinstance(raw_event, dict):
+            raise LatencyBenchmarkError(
+                "soccer representative event is not an object"
+            )
+        event_payload = soccer_game_state.statsbomb_event_payload(
+            raw_event,
+            game_id=game_id,
+        )
+        event_sequence = int(event_payload["sequence"])
+        if event_sequence - 1 != raw_ordinal:
+            raise LatencyBenchmarkError(
+                "soccer raw event ordinal differs from its native sequence"
+            )
+        native_event_id = str(event_payload["native_event_id"])
+        bundle = build_static_sport_observation_bundle(
+            program_root=program_root,
+            experiment_id=x12.X12_EXPERIMENT_ID,
+            dataset_id=x12.X12_DATASET_ID,
+            source_system="statsbomb",
+            source_stream="events",
+            raw_object_hash=source_object_sha256,
+            raw_record_ordinals=(raw_ordinal,),
+            partition=str(manifest["upstream_partition"]),
+            fetched_at=str(manifest["fetched_at"]),
+            source_at=None,
+            competition_id="cmp_statsbomb_2",
+            game_id=game_id,
+            participant_ids=(
+                f"participant_statsbomb_{int(observation['home_team_id'])}",
+                f"participant_statsbomb_{int(observation['away_team_id'])}",
+            ),
+            native_namespace="statsbomb.event",
+            native_ids=(native_event_id,),
+            normalized_source_sequence=event_sequence,
+            normalized_payload=event_payload,
+        )
+        candidate_event = soccer_game_state.adapt_statsbomb_event(
+            bundle.normalized,
+            program_root=program_root,
+            raw_parents=bundle.raw,
+        )
+        candidate_next_state = (
+            soccer_game_state.SOCCER_GAME_STATE_REDUCER.reduce(
+                current_state,
+                candidate_event,
+            )
+        )
+        try:
+            candidate_features = (
+                soccer_transition_model.extract_transition_features(
+                    candidate_next_state
+                )
+            )
+        except soccer_transition_model.SoccerTransitionModelError:
+            current_state = candidate_next_state
+            continue
+        candidate_distribution = (
+            soccer_transition_model.predict_transition_distribution(
+                dynamic_model,
+                base_home_goals=base_home_goals,
+                base_away_goals=base_away_goals,
+                features=candidate_features,
+            )
+        )
+        representative = (
+            current_state,
+            candidate_event,
+            candidate_next_state,
+            candidate_features,
+            candidate_distribution,
+            raw_ordinal,
+        )
+        break
+    if representative is None:
         raise LatencyBenchmarkError(
-            "soccer reducer state does not reproduce registered model features"
+            "soccer source has no event with an eligible five-minute horizon"
         )
-
-    def infer(features: tuple[int, int]) -> np.ndarray:
-        rates = x12._expected_goals(
-            model,
-            home_team_id=features[0],
-            away_team_id=features[1],
-        )
-        return x12._competing_goal_probabilities(*rates)
-
-    fixed_probabilities = infer(fixed_features)
-    model_parameter_snapshot = _soccer_model_parameter_snapshot(model)
-    evidence, evidence_common = _load_verified_evidence(
-        program_root=program_root,
-        relative_path="artifacts/game-state/soccer/x12_real_data_poc_v0.json",
+    (
+        state,
+        event,
+        next_state,
+        fixed_features,
+        fixed_distribution,
+        raw_ordinal,
+    ) = representative
+    fixed_probabilities = (
+        soccer_transition_model.apply_multiclass_temperature(
+            np.asarray([fixed_distribution.probabilities], dtype=float),
+            temperature=temperature_calibration.temperature,
+        )[0]
+    )
+    model_parameter_snapshot = _soccer_model_parameter_snapshot(
+        model,
+        dynamic_model,
+        temperature_calibration,
     )
     transition = evidence["transition_output"]
     execution_config_sha256 = _sha256_json(
@@ -1298,23 +2108,42 @@ def _soccer_benchmark(
         model_parameter_snapshot=model_parameter_snapshot,
         code_sha256=_source_code_hashes(
             reducer_path=Path(soccer_game_state.__file__),
-            model_path=Path(x12.__file__),
+            model_paths=(
+                Path(x12.__file__),
+                Path(soccer_transition_model.__file__),
+            ),
         ),
     )
     model_parameter_sha256 = str(governance["model_parameter_sha256"])
-    pit_cutoff = pd.Timestamp(observation["played_at"])
+    pit_cutoff = pd.Timestamp(observation["played_at"]) + pd.Timedelta(
+        milliseconds=next_state.clock_ms
+    )
+
+    def extract_features(
+        current: soccer_game_state.SoccerGameState,
+    ) -> soccer_transition_model.SoccerTransitionFeatures:
+        return soccer_transition_model.extract_transition_features(current)
+
+    def infer(
+        features: soccer_transition_model.SoccerTransitionFeatures,
+    ) -> np.ndarray:
+        distribution = (
+            soccer_transition_model.predict_transition_distribution(
+                dynamic_model,
+                base_home_goals=base_home_goals,
+                base_away_goals=base_away_goals,
+                features=features,
+            )
+        )
+        return soccer_transition_model.apply_multiclass_temperature(
+            np.asarray([distribution.probabilities], dtype=float),
+            temperature=temperature_calibration.temperature,
+        )[0]
 
     def output_document(
         probabilities: np.ndarray,
-        features: tuple[int, int],
+        features: soccer_transition_model.SoccerTransitionFeatures,
     ) -> dict[str, object]:
-        feature_sha256 = _sha256_json(
-            {
-                "next_state_sha256": canonical_state_sha256(next_state),
-                "feature_names": ["home_team_id", "away_team_id"],
-                "feature_values": list(features),
-            }
-        )
         return {
             "contract_version": "v1",
             "model_id": registry_row.model_id,
@@ -1329,13 +2158,13 @@ def _soccer_benchmark(
             "pit_cutoff_at": pit_cutoff.isoformat().replace("+00:00", "Z"),
             "output_kind": "state_transition",
             "transition_unit": "five_minute_interval",
-            "state_space": list(x12.TRANSITION_CLASSES),
+            "state_space": list(soccer_transition_model.TRANSITION_CLASSES),
             "horizon": "next_state_transition",
             "probabilities": _fixed_point_probabilities(
-                x12.TRANSITION_CLASSES,
+                soccer_transition_model.TRANSITION_CLASSES,
                 probabilities,
             ),
-            "feature_sha256": feature_sha256,
+            "feature_sha256": features.feature_sha256,
             "data_sha256": registry_row.data_manifest_sha256,
             "config_sha256": registry_row.parameter_config_sha256,
             "quality_flags": [
@@ -1346,7 +2175,7 @@ def _soccer_benchmark(
 
     def validate_output(
         probabilities: np.ndarray,
-        features: tuple[int, int],
+        features: soccer_transition_model.SoccerTransitionFeatures,
     ) -> contracts.ModelOutputV1:
         return _strict_registered_model_output(
             output_document(probabilities, features),
@@ -1361,9 +2190,14 @@ def _soccer_benchmark(
     )
 
     def full_path() -> contracts.ModelOutputV1:
-        current = soccer_game_state.SOCCER_GAME_STATE_REDUCER.reduce(state, event)
-        features = extract_features(current)
-        probabilities = infer(features)
+        _, features, _, probabilities = _soccer_dynamic_transition(
+            state,
+            event,
+            model=dynamic_model,
+            temperature_calibration=temperature_calibration,
+            base_home_goals=base_home_goals,
+            base_away_goals=base_away_goals,
+        )
         return validate_output(probabilities, features)
 
     report = benchmark_model_stages(
@@ -1416,7 +2250,7 @@ def _soccer_benchmark(
                 ).as_posix(),
                 "source_manifest_sha256": source_manifest_sha256,
                 "source_object_sha256": source_object_sha256,
-                "raw_record_ordinals": [0],
+                "raw_record_ordinals": [raw_ordinal],
                 "game_id": state.game_id,
                 "state_sequence": state.sequence,
                 "event_sequence": event.sequence,
@@ -1425,8 +2259,33 @@ def _soccer_benchmark(
                 "event_sha256": canonical_state_sha256(event),
                 "next_state_sha256": canonical_state_sha256(next_state),
                 "feature_sha256": str(fixed_output.feature_sha256),
-                "training_cutoff_exclusive": pd.Timestamp(cutoff).isoformat(),
-                "training_matches": int(len(train)),
+                "base_fit_cutoff_exclusive": (
+                    split.dynamic_fit_evaluation_cutoff.isoformat()
+                ),
+                "base_fit_matches": int(len(base_fit)),
+                "calibration_cutoff_exclusive": (
+                    split.temperature_fit_evaluation_cutoff.isoformat()
+                ),
+                "calibration_matches": int(len(calibration)),
+                "final_test_matches": int(len(final_test)),
+                "final_test_evaluated_matches": int(
+                    len(final_test_evaluated)
+                ),
+                "dixon_coles_parameter_sha256": (
+                    dixon_coles_parameter_sha256
+                ),
+                "dynamic_parameter_sha256": (
+                    dynamic_model.parameter_sha256
+                ),
+                "raw_transition_parameter_sha256": (
+                    raw_transition_parameter_sha256
+                ),
+                "temperature_parameter_sha256": (
+                    temperature_calibration.parameter_sha256
+                ),
+                "calibrated_transition_parameter_sha256": (
+                    calibrated_transition_parameter_sha256
+                ),
             },
             "accuracy_reference": _accuracy_reference(
                 evidence_common,
@@ -1505,14 +2364,14 @@ def build_current_model_latency_report(
         ),
         _soccer_benchmark(
             program_root=root,
-            registry_row=registry["MODEL-SOCCER-FIVE-MINUTE-TRANSITION"],
+            registry_row=registry[DYNAMIC_SOCCER_MODEL_ID],
             warmup=warmup,
             repeats=repeats,
         ),
     ]
     report: dict[str, object] = {
         "artifact_type": ARTIFACT_TYPE,
-        "version": "v0",
+        "version": REPORT_VERSION,
         "result_label": RESULT_LABEL,
         "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "live_sla_claimed": False,
@@ -1557,7 +2416,10 @@ def build_current_model_latency_report(
         "limitations": [
             "engineering benchmark only; no live SLA or production claim",
             "accuracy is referenced from verified evidence and is not recomputed",
-            "the soccer five-minute POC uses only pregame team intensities and is not state-conditioned",
+            (
+                "the soccer five-minute path uses the registered dynamic state model "
+                "with Dixon-Coles pregame base-rate offsets"
+            ),
             "the NFL reducer-v2 benchmark validates P0 score/timeout semantics, not season-complete rules",
             "wall-clock results are machine- and load-specific",
             "source ingestion, network transport, market joins, and execution are out of scope",
@@ -1650,7 +2512,7 @@ def validate_model_latency_report(
     document = dict(report)
     if document.get("artifact_type") != ARTIFACT_TYPE:
         raise LatencyBenchmarkError("latency report artifact_type is invalid")
-    if document.get("version") != "v0":
+    if document.get("version") != REPORT_VERSION:
         raise LatencyBenchmarkError("latency report version is invalid")
     if document.get("result_label") != RESULT_LABEL:
         raise LatencyBenchmarkError("latency report result label is invalid")
@@ -1756,8 +2618,13 @@ def validate_model_latency_report(
                 if benchmark.get("sport") == "nfl"
                 else soccer_game_state.__file__
             ),
-            model_path=Path(
-                x11.__file__ if benchmark.get("sport") == "nfl" else x12.__file__
+            model_paths=(
+                (Path(x11.__file__),)
+                if benchmark.get("sport") == "nfl"
+                else (
+                    Path(x12.__file__),
+                    Path(soccer_transition_model.__file__),
+                )
             ),
         )
         if dict(code_hashes) != expected_code_hashes:

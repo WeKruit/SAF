@@ -33,6 +33,10 @@ from prediction_market.experiments import (  # noqa: E402
     validate_result_ref,
 )
 import prediction_market.experiments as experiments_module  # noqa: E402
+from prediction_market.program_audit import (  # noqa: E402
+    load_dataset_registry,
+    load_model_registry,
+)
 import prediction_market.raw_store as raw_store_module  # noqa: E402
 from prediction_market.raw_store import RawSegmentWriter  # noqa: E402
 
@@ -59,6 +63,33 @@ EXPECTED_TASK_3_PATHS = {
     "src/prediction_market/experiments.py",
     "tests/test_experiment_registry.py",
     *(f"registries/experiments/X-{number:02d}.yaml" for number in range(1, 13)),
+}
+REPRODUCTION_CONTRACTS = {
+    "X-11": {
+        "reproduction_id": "REPRO-X11-NFL-FASTRMODELS-V1",
+        "scope": "team_h_nfl_fastrmodels_reproduction_v1",
+        "base_scope": "preregistered_pipeline",
+        "dataset_ids": ["DS-NFLVERSE"],
+        "model_ids": [
+            "MODEL-NFL-FASTRMODELS-NO-SPREAD",
+            "MODEL-NFL-FASTRMODELS-SPREAD",
+        ],
+        "code_paths": ["src/prediction_market/models/nfl.py"],
+    },
+    "X-12": {
+        "reproduction_id": "REPRO-X12-SOCCER-DYNAMIC-TRANSITION-V1",
+        "scope": "team_h_soccer_dynamic_transition_reproduction_v1",
+        "base_scope": "poc_result",
+        "dataset_ids": ["DS-STATSBOMB-OPEN"],
+        "model_ids": [
+            "MODEL-SOCCER-DIXON-COLES",
+            "MODEL-SOCCER-DYNAMIC-INTENSITY",
+        ],
+        "code_paths": [
+            "src/prediction_market/sports/soccer_transition_model.py",
+            "src/prediction_market/sports/x12.py",
+        ],
+    },
 }
 EXPECTED_X02_PREREGISTRATION = {
     "sampling_and_seed": {
@@ -219,6 +250,16 @@ def _copy_program_fixture(tmp_path: Path) -> Path:
     shutil.copytree(PROJECT_ROOT / "registries", root / "registries")
     shutil.copytree(PROJECT_ROOT / "artifacts", root / "artifacts")
     shutil.copytree(PROJECT_ROOT / "contracts", root / "contracts")
+    code_paths = {
+        relative
+        for contract in REPRODUCTION_CONTRACTS.values()
+        for relative in contract["code_paths"]
+    }
+    for relative_value in code_paths:
+        relative = Path(str(relative_value))
+        destination = root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(PROJECT_ROOT / relative, destination)
     return root
 
 
@@ -324,6 +365,139 @@ def _canonical_sha256(value: Any) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _model_record_sha256(root: Path, model_id: str) -> str:
+    row = next(
+        item for item in load_model_registry(root) if item.model_id == model_id
+    )
+    record = {
+        field_name: (
+            list(value)
+            if type(value := getattr(row, field_name)) is tuple
+            else value
+        )
+        for field_name in row.__dataclass_fields__
+    }
+    return _canonical_sha256(record)
+
+
+def _reproduction_code_sha256(
+    root: Path,
+    code_paths: list[str],
+) -> str:
+    return _canonical_sha256(
+        [
+            {
+                "path": code_path,
+                "sha256": (
+                    "sha256:"
+                    + hashlib.sha256(
+                        (root / code_path).read_bytes()
+                    ).hexdigest()
+                ),
+            }
+            for code_path in code_paths
+        ]
+    )
+
+
+def _seed_reproduction_model_rows(
+    root: Path,
+    experiment_id: str,
+) -> None:
+    path = root / "registries" / "model_registry.csv"
+    with path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = reader.fieldnames
+        rows = list(reader)
+    assert fieldnames is not None
+    by_id = {row["model_id"]: row for row in rows}
+    if experiment_id == "X-11":
+        template = by_id["MODEL-NFL-NFLFASTR-COMPARATOR"]
+        required = (
+            "MODEL-NFL-FASTRMODELS-NO-SPREAD",
+            "MODEL-NFL-FASTRMODELS-SPREAD",
+        )
+    else:
+        template = by_id["MODEL-SOCCER-FIVE-MINUTE-TRANSITION"]
+        required = ("MODEL-SOCCER-DYNAMIC-INTENSITY",)
+    changed = False
+    for model_id in required:
+        if model_id in by_id:
+            continue
+        row = dict(template)
+        row["model_id"] = model_id
+        row["model_version"] = "v1"
+        row["parameter_config_sha256"] = _canonical_sha256(
+            {
+                "fixture_only": True,
+                "model_id": model_id,
+            }
+        )
+        rows.append(row)
+        by_id[model_id] = row
+        changed = True
+    if changed:
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+
+
+def _valid_reproduction_registration(
+    root: Path,
+    experiment_id: str,
+    *,
+    scope: str | None = None,
+    reproduction_id: str | None = None,
+    model_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    contract = REPRODUCTION_CONTRACTS[experiment_id]
+    _seed_reproduction_model_rows(root, experiment_id)
+    dataset_ids = list(contract["dataset_ids"])
+    default_model_ids = list(contract["model_ids"])
+    selected_model_ids = (
+        default_model_ids if model_ids is None else model_ids
+    )
+    models = {
+        row.model_id: row for row in load_model_registry(root)
+    }
+    datasets = {
+        row.dataset_id: row for row in load_dataset_registry(root)
+    }
+    code_paths = [str(item) for item in contract["code_paths"]]
+    registration: dict[str, Any] = {
+        "reproduction_id": (
+            str(contract["reproduction_id"])
+            if reproduction_id is None
+            else reproduction_id
+        ),
+        "scope": (
+            str(contract["scope"])
+            if scope is None
+            else scope
+        ),
+        "result_class": "poc",
+        "dataset_ids": dataset_ids,
+        "model_bindings": [
+            {
+                "model_id": model_id,
+                "model_version": models[model_id].model_version,
+                "model_record_sha256": _model_record_sha256(
+                    root, model_id
+                ),
+            }
+            for model_id in selected_model_ids
+        ],
+        "code_paths": code_paths,
+        "code_sha256": _reproduction_code_sha256(root, code_paths),
+        "data_sha256": datasets[dataset_ids[0]].manifest_sha256,
+    }
+    registration["reproduction_spec_sha256"] = _canonical_sha256(
+        registration
+    )
+    return registration
 
 
 def _write_pretty_json(path: Path, value: dict[str, Any]) -> str:
@@ -525,6 +699,39 @@ def _append_amendment(
             }
         )
     return amendment
+
+
+def _resolve_reproduction_base_locks(
+    root: Path,
+    experiment_id: str,
+    *,
+    amended_at: str,
+) -> dict[str, Any]:
+    contract = REPRODUCTION_CONTRACTS[experiment_id]
+    card = _read_card(root, experiment_id)
+    lock_ids = card["authorization_scopes"][
+        contract["base_scope"]
+    ]["required_lock_ids"]
+    return _append_amendment(
+        root,
+        experiment_id,
+        amended_at=amended_at,
+        changes={
+            "resolve_locks": [
+                {
+                    "lock_id": lock_id,
+                    "evidence_ref": _canonical_sha256(
+                        {
+                            "experiment_id": experiment_id,
+                            "lock_id": lock_id,
+                            "fixture": "explicit_resolution",
+                        }
+                    ),
+                }
+                for lock_id in lock_ids
+            ]
+        },
+    )
 
 
 def _rewrite_seed_amendment(
@@ -1982,6 +2189,599 @@ def test_x11_completion_can_only_use_the_pipeline_scope(
     assert x11["authorization_scopes"]["formal_result"][
         "permanent_no_go"
     ] is True
+
+
+@pytest.mark.parametrize("experiment_id", ["X-11", "X-12"])
+def test_team_h_can_register_an_exact_preliminary_poc_reproduction(
+    tmp_path: Path,
+    experiment_id: str,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    base = _read_card(root, experiment_id)
+    registration = _valid_reproduction_registration(
+        root, experiment_id
+    )
+    amendment = _append_amendment(
+        root,
+        experiment_id,
+        amended_at="2026-07-23T00:00:02Z",
+        changes={"register_reproduction": registration},
+    )
+
+    effective = load_experiment_registry(root)[experiment_id]
+    scope = effective["authorization_scopes"][registration["scope"]]
+    model_ids = [
+        binding["model_id"]
+        for binding in registration["model_bindings"]
+    ]
+    dedicated_locks = [
+        lock
+        for lock in effective["registration_locks"]
+        if lock["id"]
+        not in {item["id"] for item in base["registration_locks"]}
+    ]
+    base_lock_ids = base["authorization_scopes"][
+        REPRODUCTION_CONTRACTS[experiment_id]["base_scope"]
+    ]["required_lock_ids"]
+
+    assert registration["code_paths"] == REPRODUCTION_CONTRACTS[
+        experiment_id
+    ]["code_paths"]
+    assert registration["code_sha256"] == _reproduction_code_sha256(
+        root,
+        registration["code_paths"],
+    )
+    dataset = next(
+        row
+        for row in load_dataset_registry(root)
+        if row.dataset_id == registration["dataset_ids"][0]
+    )
+    assert registration["data_sha256"] == dataset.manifest_sha256
+    assert (
+        effective["registration_record_sha256"]
+        == base["registration_record_sha256"]
+    )
+    assert all(
+        effective["authorization_scopes"][scope_name] == base_scope
+        for scope_name, base_scope in base["authorization_scopes"].items()
+    )
+    assert scope == {
+        "authorized": True,
+        "required_result_label": "PRELIMINARY",
+        "required_lock_ids": [
+            *base_lock_ids,
+            dedicated_locks[0]["id"],
+        ],
+        "input_binding": {
+            "result_class": "poc",
+            "dataset_ids": registration["dataset_ids"],
+            "model_ids": model_ids,
+            "synthetic_data_sha256": None,
+        },
+    }
+    assert dedicated_locks == [
+        {
+            "id": f"reproduction:{registration['reproduction_id']}",
+            "status": "resolved",
+            "reason": (
+                f"Team H registered reproduction "
+                f"{registration['reproduction_id']} before evaluation."
+            ),
+            "evidence_ref": registration[
+                "reproduction_spec_sha256"
+            ],
+        }
+    ]
+    assert effective["preregistered_inputs"][registration["scope"]] == {
+        "code_sha256": registration["code_sha256"],
+        "data_sha256": registration["data_sha256"],
+        "dataset_ids": registration["dataset_ids"],
+        "model_ids": model_ids,
+        "registered_at": "2026-07-23T00:00:02Z",
+    }
+
+    result = _valid_result_ref(
+        scope=registration["scope"],
+        result_label="PRELIMINARY",
+        evaluation_started_at="2026-07-23T00:00:03Z",
+        registration_head_sha256=amendment["amendment_sha256"],
+        code_sha256=registration["code_sha256"],
+        data_sha256=registration["data_sha256"],
+        dataset_ids=registration["dataset_ids"],
+        model_ids=model_ids,
+    )
+    with pytest.raises(
+        UnresolvedRegistrationLockError,
+        match="unresolved registration locks",
+    ):
+        validate_result_ref(root, experiment_id, result)
+
+    resolution_amendment = _resolve_reproduction_base_locks(
+        root,
+        experiment_id,
+        amended_at="2026-07-23T00:00:03Z",
+    )
+    result["evaluation_started_at"] = "2026-07-23T00:00:04Z"
+    result["registration_head_sha256"] = resolution_amendment[
+        "amendment_sha256"
+    ]
+    assert validate_result_ref(root, experiment_id, result) == result
+
+
+def test_register_reproduction_is_limited_to_x11_and_x12(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    registration = _valid_reproduction_registration(root, "X-11")
+    _append_amendment(
+        root,
+        "X-06",
+        amended_at="2026-07-23T00:00:02Z",
+        changes={"register_reproduction": registration},
+    )
+
+    with pytest.raises(
+        ExperimentRegistryError,
+        match="register_reproduction.*only valid for X-11 or X-12",
+    ):
+        load_experiment_registry(root)
+
+
+@pytest.mark.parametrize(
+    "duplicate",
+    ["existing_scope", "model_id"],
+)
+def test_register_reproduction_rejects_duplicate_scope_or_model_ids(
+    tmp_path: Path,
+    duplicate: str,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    registration = _valid_reproduction_registration(root, "X-11")
+    if duplicate == "existing_scope":
+        registration["scope"] = "preregistered_pipeline"
+    else:
+        registration["model_bindings"].append(
+            copy.deepcopy(registration["model_bindings"][0])
+        )
+    registration["reproduction_spec_sha256"] = _canonical_sha256(
+        {
+            key: value
+            for key, value in registration.items()
+            if key != "reproduction_spec_sha256"
+        }
+    )
+    _append_amendment(
+        root,
+        "X-11",
+        amended_at="2026-07-23T00:00:02Z",
+        changes={"register_reproduction": registration},
+    )
+
+    with pytest.raises(
+        ExperimentRegistryError,
+        match="contract mismatch|duplicate|already exists",
+    ):
+        load_experiment_registry(root)
+
+
+def test_register_reproduction_is_append_once(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    first = _valid_reproduction_registration(root, "X-11")
+    _append_amendment(
+        root,
+        "X-11",
+        amended_at="2026-07-23T00:00:02Z",
+        changes={"register_reproduction": first},
+    )
+    second = _valid_reproduction_registration(root, "X-11")
+    _append_amendment(
+        root,
+        "X-11",
+        amended_at="2026-07-23T00:00:03Z",
+        changes={"register_reproduction": second},
+    )
+
+    with pytest.raises(
+        ExperimentRegistryError,
+        match="register_reproduction is append-once",
+    ):
+        load_experiment_registry(root)
+
+
+def test_registered_reproduction_inputs_cannot_be_overwritten(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    registration = _valid_reproduction_registration(root, "X-11")
+    _append_amendment(
+        root,
+        "X-11",
+        amended_at="2026-07-23T00:00:02Z",
+        changes={"register_reproduction": registration},
+    )
+    _append_amendment(
+        root,
+        "X-11",
+        amended_at="2026-07-23T00:00:03Z",
+        changes={
+            "preregistered_inputs": [
+                {
+                    "scope": registration["scope"],
+                    "code_sha256": "sha256:" + "c" * 64,
+                    "data_sha256": registration["data_sha256"],
+                    "dataset_ids": registration["dataset_ids"],
+                    "model_ids": [
+                        item["model_id"]
+                        for item in registration["model_bindings"]
+                    ],
+                }
+            ]
+        },
+    )
+
+    with pytest.raises(
+        ExperimentRegistryError,
+        match="reproduction inputs are append-once",
+    ):
+        load_experiment_registry(root)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "model_version",
+        "model_record_sha256",
+        "reproduction_spec_sha256",
+    ],
+)
+def test_register_reproduction_rejects_hash_or_version_mismatch(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    registration = _valid_reproduction_registration(root, "X-11")
+    if mutation == "model_version":
+        binding = registration["model_bindings"][0]
+        binding["model_version"] = (
+            "v1" if binding["model_version"] == "v0" else "v0"
+        )
+    elif mutation == "model_record_sha256":
+        registration["model_bindings"][0][
+            "model_record_sha256"
+        ] = "sha256:" + "c" * 64
+    else:
+        registration["reproduction_spec_sha256"] = (
+            "sha256:" + "c" * 64
+        )
+    if mutation != "reproduction_spec_sha256":
+        registration["reproduction_spec_sha256"] = _canonical_sha256(
+            {
+                key: value
+                for key, value in registration.items()
+                if key != "reproduction_spec_sha256"
+            }
+        )
+    _append_amendment(
+        root,
+        "X-11",
+        amended_at="2026-07-23T00:00:02Z",
+        changes={"register_reproduction": registration},
+    )
+
+    with pytest.raises(
+        ExperimentRegistryError,
+        match="version mismatch|record hash mismatch|spec hash mismatch",
+    ):
+        load_experiment_registry(root)
+
+
+@pytest.mark.parametrize(
+    ("experiment_id", "model_ids"),
+    [
+        ("X-11", ["MODEL-NFL-LOGISTIC"]),
+        ("X-12", ["MODEL-SOCCER-DIXON-COLES"]),
+    ],
+)
+def test_register_reproduction_rejects_noncanonical_model_set(
+    tmp_path: Path,
+    experiment_id: str,
+    model_ids: list[str],
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    registration = _valid_reproduction_registration(
+        root,
+        experiment_id,
+        model_ids=model_ids,
+    )
+    _append_amendment(
+        root,
+        experiment_id,
+        amended_at="2026-07-23T00:00:02Z",
+        changes={"register_reproduction": registration},
+    )
+
+    with pytest.raises(
+        ExperimentRegistryError,
+        match="reproduction contract mismatch",
+    ):
+        load_experiment_registry(root)
+
+
+def test_register_reproduction_rejects_unknown_reproduction_id(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    registration = _valid_reproduction_registration(
+        root,
+        "X-11",
+        reproduction_id="REPRO-X11-LEGACY-V1",
+    )
+    _append_amendment(
+        root,
+        "X-11",
+        amended_at="2026-07-23T00:00:02Z",
+        changes={"register_reproduction": registration},
+    )
+
+    with pytest.raises(
+        ExperimentRegistryError,
+        match="reproduction contract mismatch",
+    ):
+        load_experiment_registry(root)
+
+
+@pytest.mark.parametrize("binding", ["code", "data"])
+def test_register_reproduction_recomputes_code_and_data_bindings(
+    tmp_path: Path,
+    binding: str,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    registration = _valid_reproduction_registration(root, "X-11")
+    if binding == "code":
+        registration["code_sha256"] = "sha256:" + "c" * 64
+    else:
+        registration["data_sha256"] = "sha256:" + "c" * 64
+    registration["reproduction_spec_sha256"] = _canonical_sha256(
+        {
+            key: value
+            for key, value in registration.items()
+            if key != "reproduction_spec_sha256"
+        }
+    )
+    _append_amendment(
+        root,
+        "X-11",
+        amended_at="2026-07-23T00:00:02Z",
+        changes={"register_reproduction": registration},
+    )
+
+    with pytest.raises(
+        ExperimentRegistryError,
+        match=f"reproduction {binding} hash mismatch",
+    ):
+        load_experiment_registry(root)
+
+
+@pytest.mark.parametrize(
+    ("experiment_id", "code_path"),
+    [
+        ("X-11", "src/prediction_market/models/nfl.py"),
+        (
+            "X-12",
+            "src/prediction_market/sports/soccer_transition_model.py",
+        ),
+        ("X-12", "src/prediction_market/sports/x12.py"),
+    ],
+)
+def test_registered_reproduction_fails_if_any_code_object_changes(
+    tmp_path: Path,
+    experiment_id: str,
+    code_path: str,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    registration = _valid_reproduction_registration(root, experiment_id)
+    mutated_path = root / code_path
+    mutated_path.write_bytes(mutated_path.read_bytes() + b"\n# mutation\n")
+    _append_amendment(
+        root,
+        experiment_id,
+        amended_at="2026-07-23T00:00:02Z",
+        changes={"register_reproduction": registration},
+    )
+
+    with pytest.raises(
+        ExperimentRegistryError,
+        match="reproduction code hash mismatch",
+    ):
+        load_experiment_registry(root)
+
+
+def test_register_reproduction_rejects_legacy_singular_code_path(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    registration = _valid_reproduction_registration(root, "X-11")
+    registration["code_path"] = registration.pop("code_paths")[0]
+    registration["reproduction_spec_sha256"] = _canonical_sha256(
+        {
+            key: value
+            for key, value in registration.items()
+            if key != "reproduction_spec_sha256"
+        }
+    )
+    _append_amendment(
+        root,
+        "X-11",
+        amended_at="2026-07-23T00:00:02Z",
+        changes={"register_reproduction": registration},
+    )
+
+    with pytest.raises(
+        ExperimentRegistryError,
+        match="unexpected or missing keys",
+    ):
+        load_experiment_registry(root)
+
+
+def test_register_reproduction_rejects_future_amendment(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    registration = _valid_reproduction_registration(root, "X-11")
+    _append_amendment(
+        root,
+        "X-11",
+        amended_at="2026-07-23T00:00:05Z",
+        changes={"register_reproduction": registration},
+    )
+
+    with (
+        patch.object(
+            experiments_module,
+            "_utc_now",
+            return_value=datetime(2026, 7, 23, 0, 0, 4, tzinfo=timezone.utc),
+        ),
+        pytest.raises(
+            ExperimentRegistryError,
+            match="reproduction amendment cannot be future-dated",
+        ),
+    ):
+        load_experiment_registry(root)
+
+
+def test_reproduction_rejects_future_evaluation(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    registration = _valid_reproduction_registration(root, "X-11")
+    _append_amendment(
+        root,
+        "X-11",
+        amended_at="2026-07-23T00:00:02Z",
+        changes={"register_reproduction": registration},
+    )
+    amendment = _resolve_reproduction_base_locks(
+        root,
+        "X-11",
+        amended_at="2026-07-23T00:00:03Z",
+    )
+    result = _valid_result_ref(
+        scope=registration["scope"],
+        result_label="PRELIMINARY",
+        evaluation_started_at="2026-07-23T00:00:05Z",
+        registration_head_sha256=amendment["amendment_sha256"],
+        code_sha256=registration["code_sha256"],
+        data_sha256=registration["data_sha256"],
+        dataset_ids=registration["dataset_ids"],
+        model_ids=[
+            item["model_id"]
+            for item in registration["model_bindings"]
+        ],
+    )
+
+    with (
+        patch.object(
+            experiments_module,
+            "_utc_now",
+            return_value=datetime(2026, 7, 23, 0, 0, 4, tzinfo=timezone.utc),
+        ),
+        pytest.raises(
+            PreRegistrationEvaluationError,
+            match="reproduction evaluation cannot be future-dated",
+        ),
+    ):
+        validate_result_ref(root, "X-11", result)
+
+
+def test_reproduction_rejects_future_result_amendment(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    registration = _valid_reproduction_registration(root, "X-11")
+    _append_amendment(
+        root,
+        "X-11",
+        amended_at="2026-07-23T00:00:02Z",
+        changes={"register_reproduction": registration},
+    )
+    registration_amendment = _resolve_reproduction_base_locks(
+        root,
+        "X-11",
+        amended_at="2026-07-23T00:00:03Z",
+    )
+    result = _valid_result_ref(
+        scope=registration["scope"],
+        result_label="PRELIMINARY",
+        evaluation_started_at="2026-07-23T00:00:04Z",
+        registration_head_sha256=registration_amendment[
+            "amendment_sha256"
+        ],
+        code_sha256=registration["code_sha256"],
+        data_sha256=registration["data_sha256"],
+        dataset_ids=registration["dataset_ids"],
+        model_ids=[
+            item["model_id"]
+            for item in registration["model_bindings"]
+        ],
+    )
+    _append_amendment(
+        root,
+        "X-11",
+        amended_at="2026-07-23T00:00:06Z",
+        changes={"results_ref": result},
+    )
+
+    with (
+        patch.object(
+            experiments_module,
+            "_utc_now",
+            return_value=datetime(2026, 7, 23, 0, 0, 5, tzinfo=timezone.utc),
+        ),
+        pytest.raises(
+            ExperimentRegistryError,
+            match="reproduction result amendment cannot be future-dated",
+        ),
+    ):
+        load_experiment_registry(root)
+
+
+def test_reproduction_evaluation_must_follow_registration_amendment(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    registration = _valid_reproduction_registration(root, "X-11")
+    _append_amendment(
+        root,
+        "X-11",
+        amended_at="2026-07-23T00:00:02Z",
+        changes={"register_reproduction": registration},
+    )
+    amendment = _resolve_reproduction_base_locks(
+        root,
+        "X-11",
+        amended_at="2026-07-23T00:00:03Z",
+    )
+    result = _valid_result_ref(
+        scope=registration["scope"],
+        result_label="PRELIMINARY",
+        evaluation_started_at="2026-07-23T00:00:01Z",
+        registration_head_sha256=amendment["amendment_sha256"],
+        code_sha256=registration["code_sha256"],
+        data_sha256=registration["data_sha256"],
+        dataset_ids=registration["dataset_ids"],
+        model_ids=[
+            item["model_id"]
+            for item in registration["model_bindings"]
+        ],
+    )
+
+    with pytest.raises(
+        PreRegistrationEvaluationError,
+        match="evaluation must follow input preregistration amendment",
+    ):
+        validate_result_ref(root, "X-11", result)
 
 
 def test_x12_is_statsbomb_poc_without_market_prior_or_formal_promotion(

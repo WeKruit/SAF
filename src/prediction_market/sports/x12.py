@@ -18,10 +18,19 @@ import pandas as pd
 from scipy.optimize import minimize
 from scipy.special import gammaln
 
-from prediction_market import contracts
 from prediction_market.models.validation import (
     ValidationInputError,
     evaluate_multiclass_probabilities,
+)
+from prediction_market.sports.soccer_transition_model import (
+    DynamicIntensityModel,
+    SoccerTransitionFeatures,
+    SoccerTransitionModelError,
+    TemperatureCalibration,
+    apply_multiclass_temperature,
+    fit_dynamic_intensity,
+    fit_multiclass_temperature,
+    predict_transition_distribution,
 )
 from prediction_market.sports.statsbomb import (
     STATSBOMB_COMMIT,
@@ -37,15 +46,31 @@ X12_DATASET_ID = "DS-STATSBOMB-OPEN"
 X12_SOURCE = "statsbomb"
 X12_STATSBOMB_VERSION = STATSBOMB_COMMIT
 X12_SEED = 20260722
-X12_RESULT_LABEL = "POC_NO_PIT_MARKET_PRIOR"
-X12_CONTRACT_RESULT_LABEL = "PRELIMINARY"
+X12_RESULT_LABEL = "PRELIMINARY"
 X12_EXPERIMENT_ID = "X-12"
-X12_AUTHORIZATION_SCOPE = "poc_result"
+X12_AUTHORIZATION_SCOPE = (
+    "team_h_soccer_dynamic_transition_reproduction_v1"
+)
+X12_MODEL_ID = "MODEL-SOCCER-DYNAMIC-INTENSITY"
+X12_MODEL_VERSION = "v1"
+X12_DYNAMIC_EVIDENCE_RELATIVE_PATH = Path(
+    "artifacts/game-state/soccer/x12_dynamic_transition_poc_v1.json"
+)
+X12_HISTORICAL_1X2_RELATIVE_PATH = Path(
+    "artifacts/game-state/soccer/x12_real_data_poc_v0.json"
+)
+X12_HISTORICAL_1X2_FILE_SHA256 = (
+    "sha256:34b80e999885f3c44c0a9366b7595ed24080623e42fc2e4e4ed2c264fceb61eb"
+)
 
 OUTCOME_CLASSES = ("home_win", "draw", "away_win")
 TRANSITION_CLASSES = ("home_goal", "away_goal", "no_goal")
 TRANSITION_HORIZON_SECONDS = 300
-TRANSITION_SNAPSHOT_MINUTES = tuple(range(0, 90, 5))
+TRANSITION_SNAPSHOTS = tuple(
+    (period, period_minute)
+    for period in (1, 2)
+    for period_minute in range(0, 45, 5)
+)
 KICKOFF_TIME_BASIS = "source_naive_attached_UTC_for_deterministic_order_only"
 OFFLINE_PIT_STATUS = "offline_reconstruction_not_live_PIT"
 
@@ -57,6 +82,8 @@ _HASH_PREFIX = "sha256:"
 _INVALID_LIKELIHOOD_OBJECTIVE = 1e100
 _BOUND_ROUNDOFF_ULPS = 8
 _KKT_BOUNDARY_ABS_TOLERANCE = 1e-10
+_DYNAMIC_INTENSITY_L2_PENALTY = 1.0
+_MINIMUM_TRANSITION_CALIBRATION_MATCHES = 20
 
 
 class X12DataError(ValueError):
@@ -100,8 +127,10 @@ class X12LoadedDataset:
     inventory: X12InputInventory
     matches: pd.DataFrame
     goals: pd.DataFrame
+    dismissals: pd.DataFrame
     chronology_sha256: str
     goal_timeline_sha256: str
+    dismissal_timeline_sha256: str
     source_time_regressions: int
 
 
@@ -123,43 +152,53 @@ class DixonColesModel:
 
 
 @dataclass(frozen=True, slots=True)
-class X12FoldAudit:
-    test_date: str
-    test_min_played_at: pd.Timestamp
-    test_max_played_at: pd.Timestamp
-    train_max_played_at: pd.Timestamp
-    train_max_outcome_available_at: pd.Timestamp
-    train_match_count: int
-    test_match_count: int
-    optimizer_iterations: int
-    optimizer_objective: float
-    optimizer_initial_projected_gradient_inf_norm: float
-    optimizer_objective_improvement: float
-    optimizer_parameter_displacement: float
-    optimizer_projected_gradient_inf_norm: float
-    parameter_sha256: str
+class X12TransitionSplitAudit:
+    method: str
+    base_fit_first_date: str
+    base_fit_last_date: str
+    calibration_first_date: str
+    calibration_last_date: str
+    final_test_first_date: str
+    final_test_last_date: str
+    final_test_evaluated_first_date: str
+    final_test_evaluated_last_date: str
+    base_fit_date_count: int
+    calibration_date_count: int
+    final_test_date_count: int
+    final_test_evaluated_date_count: int
+    base_fit_match_count: int
+    calibration_match_count: int
+    final_test_match_count: int
+    final_test_evaluated_match_count: int
+    dynamic_fit_evaluation_cutoff: pd.Timestamp
+    temperature_fit_evaluation_cutoff: pd.Timestamp
+    base_fit_max_outcome_available_at: pd.Timestamp
+    calibration_max_label_available_at: pd.Timestamp
+    dixon_coles_parameter_sha256: str
+    dynamic_parameter_sha256: str
+    raw_transition_parameter_sha256: str
+    temperature_parameter_sha256: str
+    calibrated_transition_parameter_sha256: str
 
 
 @dataclass(frozen=True, slots=True)
-class X12Evaluation:
+class X12DynamicTransitionEvaluation:
     experiment_id: str
+    model_id: str
+    model_version: str
     authorization_scope: str
     result_label: str
-    contract_result_label: str
     is_formal_result: bool
     seed: int
-    predictions: pd.DataFrame
     transition_predictions: pd.DataFrame
-    folds: tuple[X12FoldAudit, ...]
-    outcome_metrics: dict[str, object]
+    transition_split: X12TransitionSplitAudit
+    temperature_calibration: TemperatureCalibration
     transition_metrics: dict[str, object]
-    minimum_train_matches: int
     evaluation_match_limit: int | None
     bootstrap_samples: int
     minimum_valid_bootstrap_samples: int
     confidence_level: float
     optimizer_max_iterations: int
-    goal_grid_max: int
 
 
 def _canonical_bytes(value: object) -> bytes:
@@ -291,6 +330,8 @@ def chronology_sha256(matches: pd.DataFrame) -> str:
         "event_object_sha256",
         "event_schema_fingerprint",
         "goal_timeline_sha256",
+        "dismissal_timeline_sha256",
+        "period_2_global_offset_ms",
     )
     if not isinstance(matches, pd.DataFrame) or matches.empty:
         raise X12DataError("chronology requires nonempty canonical matches")
@@ -329,13 +370,29 @@ def chronology_sha256(matches: pd.DataFrame) -> str:
                     row.goal_timeline_sha256,
                     "goal_timeline_sha256",
                 ),
+                "dismissal_timeline_sha256": _validate_digest(
+                    row.dismissal_timeline_sha256,
+                    "dismissal_timeline_sha256",
+                ),
+                "period_2_global_offset_ms": int(
+                    row.period_2_global_offset_ms
+                ),
             }
         )
     return _sha256(documents)
 
 
 def _canonical_goal_documents(goals: pd.DataFrame) -> list[dict[str, object]]:
-    required = ("match_id", "elapsed_seconds", "event_index", "scoring_side")
+    required = (
+        "match_id",
+        "period",
+        "period_clock_ms",
+        "global_elapsed_ms",
+        "source_clock_ms",
+        "event_index",
+        "native_event_id",
+        "scoring_side",
+    )
     if not isinstance(goals, pd.DataFrame):
         raise X12DataError("goal timeline must be a dataframe")
     missing = sorted(set(required) - set(goals.columns))
@@ -343,11 +400,18 @@ def _canonical_goal_documents(goals: pd.DataFrame) -> list[dict[str, object]]:
         raise X12DataError(f"goal timeline columns are missing: {missing}")
     documents: list[dict[str, object]] = []
     ordered = goals.sort_values(
-        ["match_id", "elapsed_seconds", "event_index"],
+        ["match_id", "global_elapsed_ms", "event_index"],
         kind="mergesort",
     )
     for row in ordered.itertuples(index=False):
-        numeric_values = (row.match_id, row.elapsed_seconds, row.event_index)
+        numeric_values = (
+            row.match_id,
+            row.period,
+            row.period_clock_ms,
+            row.global_elapsed_ms,
+            row.source_clock_ms,
+            row.event_index,
+        )
         if any(
             isinstance(value, (bool, np.bool_))
             or not isinstance(value, (int, np.integer))
@@ -355,22 +419,38 @@ def _canonical_goal_documents(goals: pd.DataFrame) -> list[dict[str, object]]:
         ):
             raise X12DataError("goal timeline identities and times must be integers")
         match_id = int(row.match_id)
-        elapsed_seconds = int(row.elapsed_seconds)
+        period = int(row.period)
+        period_clock_ms = int(row.period_clock_ms)
+        global_elapsed_ms = int(row.global_elapsed_ms)
+        source_clock_ms = int(row.source_clock_ms)
         event_index = int(row.event_index)
+        native_event_id = str(row.native_event_id)
         scoring_side = str(row.scoring_side)
         if match_id <= 0:
             raise X12DataError("goal timeline match_id must be positive")
-        if not 0 <= elapsed_seconds <= 130 * 60 + 59:
-            raise X12DataError("goal timeline elapsed_seconds is invalid")
+        if not 1 <= period <= 5:
+            raise X12DataError("goal timeline period is invalid")
+        if (
+            period_clock_ms < 0
+            or global_elapsed_ms < 0
+            or source_clock_ms < 0
+        ):
+            raise X12DataError("goal timeline clocks must be nonnegative")
         if event_index <= 0:
             raise X12DataError("goal timeline event_index must be positive")
+        if not native_event_id:
+            raise X12DataError("goal timeline native_event_id must be nonempty")
         if scoring_side not in {"home_goal", "away_goal"}:
             raise X12DataError("goal timeline scoring_side is invalid")
         documents.append(
             {
                 "match_id": match_id,
-                "elapsed_seconds": elapsed_seconds,
+                "period": period,
+                "period_clock_ms": period_clock_ms,
+                "global_elapsed_ms": global_elapsed_ms,
+                "source_clock_ms": source_clock_ms,
                 "event_index": event_index,
+                "native_event_id": native_event_id,
                 "scoring_side": scoring_side,
             }
         )
@@ -411,8 +491,12 @@ def _validate_goal_timeline_binding(
     for item in documents:
         by_match[int(item["match_id"])].append(
             {
-                "elapsed_seconds": int(item["elapsed_seconds"]),
+                "period": int(item["period"]),
+                "period_clock_ms": int(item["period_clock_ms"]),
+                "global_elapsed_ms": int(item["global_elapsed_ms"]),
+                "source_clock_ms": int(item["source_clock_ms"]),
                 "event_index": int(item["event_index"]),
+                "native_event_id": str(item["native_event_id"]),
                 "scoring_side": str(item["scoring_side"]),
             }
         )
@@ -424,6 +508,161 @@ def _validate_goal_timeline_binding(
         if _sha256(by_match[int(row.match_id)]) != expected:
             raise X12DataError(
                 f"goal timeline does not match frozen match {int(row.match_id)}"
+            )
+
+
+def _canonical_dismissal_documents(
+    dismissals: pd.DataFrame,
+) -> list[dict[str, object]]:
+    required = (
+        "match_id",
+        "period",
+        "period_clock_ms",
+        "global_elapsed_ms",
+        "source_clock_ms",
+        "event_index",
+        "native_event_id",
+        "player_id",
+        "dismissal_side",
+        "card",
+    )
+    if not isinstance(dismissals, pd.DataFrame):
+        raise X12DataError("dismissal timeline must be a dataframe")
+    missing = sorted(set(required) - set(dismissals.columns))
+    if missing:
+        raise X12DataError(
+            f"dismissal timeline columns are missing: {missing}"
+        )
+    documents: list[dict[str, object]] = []
+    ordered = dismissals.sort_values(
+        ["match_id", "global_elapsed_ms", "event_index", "player_id"],
+        kind="mergesort",
+    )
+    for row in ordered.itertuples(index=False):
+        numeric_values = (
+            row.match_id,
+            row.period,
+            row.period_clock_ms,
+            row.global_elapsed_ms,
+            row.source_clock_ms,
+            row.event_index,
+            row.player_id,
+        )
+        if any(
+            isinstance(value, (bool, np.bool_))
+            or not isinstance(value, (int, np.integer))
+            for value in numeric_values
+        ):
+            raise X12DataError(
+                "dismissal timeline identities and times must be integers"
+            )
+        match_id = int(row.match_id)
+        period = int(row.period)
+        period_clock_ms = int(row.period_clock_ms)
+        global_elapsed_ms = int(row.global_elapsed_ms)
+        source_clock_ms = int(row.source_clock_ms)
+        event_index = int(row.event_index)
+        native_event_id = str(row.native_event_id)
+        player_id = int(row.player_id)
+        dismissal_side = str(row.dismissal_side)
+        card = str(row.card)
+        if match_id <= 0 or event_index <= 0 or player_id <= 0:
+            raise X12DataError(
+                "dismissal timeline identities must be positive"
+            )
+        if not 1 <= period <= 5:
+            raise X12DataError("dismissal timeline period is invalid")
+        if (
+            period_clock_ms < 0
+            or global_elapsed_ms < 0
+            or source_clock_ms < 0
+        ):
+            raise X12DataError("dismissal timeline clocks must be nonnegative")
+        if not native_event_id:
+            raise X12DataError(
+                "dismissal timeline native_event_id must be nonempty"
+            )
+        if dismissal_side not in {
+            "home_dismissal",
+            "away_dismissal",
+        }:
+            raise X12DataError("dismissal timeline side is invalid")
+        if card not in {"Red Card", "Second Yellow"}:
+            raise X12DataError("dismissal timeline card is invalid")
+        documents.append(
+            {
+                "match_id": match_id,
+                "period": period,
+                "period_clock_ms": period_clock_ms,
+                "global_elapsed_ms": global_elapsed_ms,
+                "source_clock_ms": source_clock_ms,
+                "event_index": event_index,
+                "native_event_id": native_event_id,
+                "player_id": player_id,
+                "dismissal_side": dismissal_side,
+                "card": card,
+            }
+        )
+    identities = [
+        (int(item["match_id"]), int(item["player_id"]))
+        for item in documents
+    ]
+    if len(set(identities)) != len(identities):
+        raise X12DataError(
+            "dismissal timeline contains duplicate match-player identity"
+        )
+    return documents
+
+
+def dismissal_timeline_sha256(dismissals: pd.DataFrame) -> str:
+    """Hash the canonical state-affecting dismissal timeline."""
+
+    return _sha256(_canonical_dismissal_documents(dismissals))
+
+
+def _validate_dismissal_timeline_binding(
+    matches: pd.DataFrame,
+    dismissals: pd.DataFrame,
+    *,
+    expected_sha256: str,
+) -> None:
+    documents = _canonical_dismissal_documents(dismissals)
+    actual_sha256 = _sha256(documents)
+    if actual_sha256 != _validate_digest(
+        expected_sha256,
+        "dismissal_timeline_sha256",
+    ):
+        raise X12DataError("frozen dismissal timeline SHA-256 is invalid")
+    known_match_ids = set(matches["match_id"].astype(int))
+    observed_match_ids = {int(item["match_id"]) for item in documents}
+    if not observed_match_ids <= known_match_ids:
+        raise X12DataError("dismissal timeline contains an unknown match")
+    by_match: dict[int, list[dict[str, object]]] = {
+        match_id: [] for match_id in known_match_ids
+    }
+    for item in documents:
+        by_match[int(item["match_id"])].append(
+            {
+                "period": int(item["period"]),
+                "period_clock_ms": int(item["period_clock_ms"]),
+                "global_elapsed_ms": int(item["global_elapsed_ms"]),
+                "source_clock_ms": int(item["source_clock_ms"]),
+                "event_index": int(item["event_index"]),
+                "native_event_id": str(item["native_event_id"]),
+                "player_id": int(item["player_id"]),
+                "dismissal_side": str(item["dismissal_side"]),
+                "card": str(item["card"]),
+            }
+        )
+    for row in matches.itertuples(index=False):
+        expected = _validate_digest(
+            row.dismissal_timeline_sha256,
+            "match.dismissal_timeline_sha256",
+        )
+        if _sha256(by_match[int(row.match_id)]) != expected:
+            raise X12DataError(
+                "dismissal timeline does not match frozen match "
+                f"{int(row.match_id)}"
             )
 
 
@@ -564,7 +803,9 @@ def _event_type(event: dict[str, Any]) -> str:
     return str(event_type["name"])
 
 
-def _validate_native_event_time(event: dict[str, Any]) -> int:
+def _validate_native_event_time(
+    event: dict[str, Any],
+) -> tuple[int, int, int]:
     minute = event.get("minute")
     second = event.get("second")
     period = event.get("period")
@@ -584,7 +825,21 @@ def _validate_native_event_time(event: dict[str, Any]) -> int:
         or int(match.group("second")) > 59
     ):
         raise X12DataError("event timestamp is not a valid native clock")
-    return minute * 60 + second
+    timestamp_second = int(match.group("second"))
+    if timestamp_second != second:
+        raise X12DataError("event timestamp second must match event second")
+    millisecond = int(match.group("fraction")[:3].ljust(3, "0"))
+    period_clock_ms = (
+        (
+            int(match.group("hour")) * 60 * 60
+            + int(match.group("minute")) * 60
+            + timestamp_second
+        )
+        * 1_000
+        + millisecond
+    )
+    source_clock_ms = (minute * 60 + second) * 1_000 + millisecond
+    return period, period_clock_ms, source_clock_ms
 
 
 def _goal_side(
@@ -608,6 +863,53 @@ def _goal_side(
     return None
 
 
+def _dismissal(
+    event: dict[str, Any],
+    *,
+    home_team_id: int,
+    away_team_id: int,
+) -> tuple[int, str, str] | None:
+    event_type = _event_type(event)
+    container_name = (
+        "bad_behaviour"
+        if event_type == "Bad Behaviour"
+        else "foul_committed"
+        if event_type == "Foul Committed"
+        else None
+    )
+    if container_name is None:
+        return None
+    container = event.get(container_name)
+    if type(container) is not dict:
+        return None
+    card_value = container.get("card")
+    if type(card_value) is not dict:
+        return None
+    card = card_value.get("name")
+    if card not in {"Red Card", "Second Yellow"}:
+        return None
+    player = event.get("player")
+    if (
+        type(player) is not dict
+        or type(player.get("id")) is not int
+        or int(player["id"]) <= 0
+    ):
+        raise X12DataError(
+            "state-affecting dismissal requires a positive player id"
+        )
+    team_id = _event_team_id(event)
+    dismissal_side = (
+        "home_dismissal"
+        if team_id == home_team_id
+        else "away_dismissal"
+        if team_id == away_team_id
+        else None
+    )
+    if dismissal_side is None:
+        raise X12DataError("dismissal team is outside the current match")
+    return int(player["id"]), dismissal_side, str(card)
+
+
 def _adapt_events(
     payload: bytes,
     *,
@@ -616,23 +918,39 @@ def _adapt_events(
     away_team_id: int,
     expected_home_score: int,
     expected_away_score: int,
-) -> tuple[list[dict[str, object]], int]:
+) -> tuple[
+    list[dict[str, object]],
+    list[dict[str, object]],
+    int,
+    dict[int, int],
+]:
     try:
         inspect_statsbomb_event(payload, match_id=match_id)
     except StatsBombSourceError as error:
         raise X12DataError(f"events-{match_id} failed native validation") from error
     events = _strict_json_array(payload, context=f"events-{match_id}")
     goals: list[dict[str, object]] = []
-    prior_elapsed = -1
+    dismissal_by_player: dict[int, dict[str, object]] = {}
+    prior_source_clock_ms = -1
+    maximum_period_clock_ms: dict[int, int] = {}
     time_regressions = 0
     for event in events:
         event_index = event.get("index")
         if type(event_index) is not int or event_index <= 0:
             raise X12DataError("event index must be a positive integer")
-        elapsed = _validate_native_event_time(event)
-        if elapsed < prior_elapsed:
+        period, period_clock_ms, source_clock_ms = (
+            _validate_native_event_time(event)
+        )
+        if source_clock_ms < prior_source_clock_ms:
             time_regressions += 1
-        prior_elapsed = elapsed
+        prior_source_clock_ms = source_clock_ms
+        maximum_period_clock_ms[period] = max(
+            maximum_period_clock_ms.get(period, -1),
+            period_clock_ms,
+        )
+        native_event_id = event.get("id")
+        if type(native_event_id) is not str or not native_event_id:
+            raise X12DataError("event id must be a nonempty source string")
         team_id = _event_team_id(event)
         if team_id not in {home_team_id, away_team_id}:
             raise X12DataError(f"events-{match_id} contains an unknown team")
@@ -645,12 +963,69 @@ def _adapt_events(
             goals.append(
                 {
                     "match_id": match_id,
-                    "elapsed_seconds": elapsed,
+                    "period": period,
+                    "period_clock_ms": period_clock_ms,
+                    "source_clock_ms": source_clock_ms,
                     "event_index": event_index,
+                    "native_event_id": native_event_id,
                     "scoring_side": scoring_side,
                 }
             )
-    goals.sort(key=lambda value: (value["elapsed_seconds"], value["event_index"]))
+        dismissal = _dismissal(
+            event,
+            home_team_id=home_team_id,
+            away_team_id=away_team_id,
+        )
+        if dismissal is not None:
+            player_id, dismissal_side, card = dismissal
+            candidate: dict[str, object] = {
+                "match_id": match_id,
+                "period": period,
+                "period_clock_ms": period_clock_ms,
+                "source_clock_ms": source_clock_ms,
+                "event_index": event_index,
+                "native_event_id": native_event_id,
+                "player_id": player_id,
+                "dismissal_side": dismissal_side,
+                "card": card,
+            }
+            prior = dismissal_by_player.get(player_id)
+            if prior is None or (
+                int(candidate["period"]),
+                int(candidate["period_clock_ms"]),
+                int(candidate["event_index"]),
+            ) < (
+                int(prior["period"]),
+                int(prior["period_clock_ms"]),
+                int(prior["event_index"]),
+            ):
+                dismissal_by_player[player_id] = candidate
+    if not {1, 2} <= set(maximum_period_clock_ms):
+        raise X12DataError("regulation match requires periods 1 and 2")
+    period_offsets_ms: dict[int, int] = {}
+    next_offset_ms = 0
+    for period in sorted(maximum_period_clock_ms):
+        period_offsets_ms[period] = next_offset_ms
+        next_offset_ms += maximum_period_clock_ms[period] + 1
+    for item in (*goals, *dismissal_by_player.values()):
+        item["global_elapsed_ms"] = (
+            period_offsets_ms[int(item["period"])]
+            + int(item["period_clock_ms"])
+        )
+    goals.sort(
+        key=lambda value: (
+            value["global_elapsed_ms"],
+            value["event_index"],
+        )
+    )
+    dismissals = sorted(
+        dismissal_by_player.values(),
+        key=lambda value: (
+            value["global_elapsed_ms"],
+            value["event_index"],
+            value["player_id"],
+        ),
+    )
     observed = Counter(str(goal["scoring_side"]) for goal in goals)
     if (
         observed["home_goal"] != expected_home_score
@@ -659,7 +1034,7 @@ def _adapt_events(
         raise X12DataError(
             f"events-{match_id} goal timeline does not reconcile to final score"
         )
-    return goals, time_regressions
+    return goals, dismissals, time_regressions, period_offsets_ms
 
 
 def load_x12_dataset(
@@ -743,6 +1118,7 @@ def load_x12_dataset(
     )
     match_rows: list[dict[str, object]] = []
     goal_rows: list[dict[str, object]] = []
+    dismissal_rows: list[dict[str, object]] = []
     event_inventory: list[X12ManifestInventory] = []
     source_time_regressions = 0
     for match_id in index_audit.chronological_match_ids:
@@ -764,7 +1140,12 @@ def load_x12_dataset(
             raise X12DataError(
                 f"events-{match_id} failed native validation"
             ) from error
-        adapted_goals, regressions = _adapt_events(
+        (
+            adapted_goals,
+            adapted_dismissals,
+            regressions,
+            period_offsets_ms,
+        ) = _adapt_events(
             verified_event.object_bytes,
             match_id=match_id,
             home_team_id=home_team_id,
@@ -774,6 +1155,7 @@ def load_x12_dataset(
         )
         source_time_regressions += regressions
         goal_rows.extend(adapted_goals)
+        dismissal_rows.extend(adapted_dismissals)
         event_manifest = _manifest_inventory(
             verified_event,
             manifest_path=event_path,
@@ -792,11 +1174,35 @@ def load_x12_dataset(
         )
         goal_material = [
             {
-                "elapsed_seconds": int(goal["elapsed_seconds"]),
+                "period": int(goal["period"]),
+                "period_clock_ms": int(goal["period_clock_ms"]),
+                "global_elapsed_ms": int(goal["global_elapsed_ms"]),
+                "source_clock_ms": int(goal["source_clock_ms"]),
                 "event_index": int(goal["event_index"]),
+                "native_event_id": str(goal["native_event_id"]),
                 "scoring_side": str(goal["scoring_side"]),
             }
             for goal in adapted_goals
+        ]
+        dismissal_material = [
+            {
+                "period": int(dismissal["period"]),
+                "period_clock_ms": int(
+                    dismissal["period_clock_ms"]
+                ),
+                "global_elapsed_ms": int(
+                    dismissal["global_elapsed_ms"]
+                ),
+                "source_clock_ms": int(dismissal["source_clock_ms"]),
+                "event_index": int(dismissal["event_index"]),
+                "native_event_id": str(
+                    dismissal["native_event_id"]
+                ),
+                "player_id": int(dismissal["player_id"]),
+                "dismissal_side": str(dismissal["dismissal_side"]),
+                "card": str(dismissal["card"]),
+            }
+            for dismissal in adapted_dismissals
         ]
         match_rows.append(
             {
@@ -818,6 +1224,10 @@ def load_x12_dataset(
                 "event_object_sha256": event_manifest.object_sha256,
                 "event_schema_fingerprint": event_manifest.schema_fingerprint,
                 "goal_timeline_sha256": _sha256(goal_material),
+                "dismissal_timeline_sha256": _sha256(
+                    dismissal_material
+                ),
+                "period_2_global_offset_ms": period_offsets_ms[2],
                 "source_time_regressions": regressions,
             }
         )
@@ -843,11 +1253,40 @@ def load_x12_dataset(
 
     goals = pd.DataFrame(
         goal_rows,
-        columns=("match_id", "elapsed_seconds", "event_index", "scoring_side"),
+        columns=(
+            "match_id",
+            "period",
+            "period_clock_ms",
+            "global_elapsed_ms",
+            "source_clock_ms",
+            "event_index",
+            "native_event_id",
+            "scoring_side",
+        ),
     )
     if not goals.empty:
         goals = goals.sort_values(
-            ["match_id", "elapsed_seconds", "event_index"],
+            ["match_id", "global_elapsed_ms", "event_index"],
+            kind="mergesort",
+        ).reset_index(drop=True)
+    dismissals = pd.DataFrame(
+        dismissal_rows,
+        columns=(
+            "match_id",
+            "period",
+            "period_clock_ms",
+            "global_elapsed_ms",
+            "source_clock_ms",
+            "event_index",
+            "native_event_id",
+            "player_id",
+            "dismissal_side",
+            "card",
+        ),
+    )
+    if not dismissals.empty:
+        dismissals = dismissals.sort_values(
+            ["match_id", "global_elapsed_ms", "event_index", "player_id"],
             kind="mergesort",
         ).reset_index(drop=True)
     team_ids = set(matches["home_team_id"]) | set(matches["away_team_id"])
@@ -889,8 +1328,12 @@ def load_x12_dataset(
         inventory=inventory,
         matches=matches,
         goals=goals,
+        dismissals=dismissals,
         chronology_sha256=chronology_sha256(matches),
         goal_timeline_sha256=goal_timeline_sha256(goals),
+        dismissal_timeline_sha256=dismissal_timeline_sha256(
+            dismissals
+        ),
         source_time_regressions=source_time_regressions,
     )
 
@@ -1465,269 +1908,583 @@ def _expected_goals(
     return home_rate, away_rate
 
 
-def _poisson_mass(rate: float, goal_grid_max: int) -> np.ndarray:
-    goals = np.arange(goal_grid_max + 1, dtype=float)
-    return np.exp(-rate + goals * math.log(rate) - gammaln(goals + 1))
+def _timeline_by_match(
+    frame: pd.DataFrame,
+) -> dict[int, pd.DataFrame]:
+    return {
+        int(match_id): rows.sort_values(
+            ["global_elapsed_ms", "event_index"],
+            kind="mergesort",
+        )
+        for match_id, rows in frame.groupby("match_id", sort=False)
+    }
 
 
-def _outcome_probabilities(
-    model: DixonColesModel,
+def _events_at_or_before_cutoff(
+    frame: pd.DataFrame,
     *,
-    home_team_id: int,
-    away_team_id: int,
-    goal_grid_max: int,
-) -> tuple[np.ndarray, float, float]:
-    home_rate, away_rate = _expected_goals(
-        model,
-        home_team_id=home_team_id,
-        away_team_id=away_team_id,
-    )
-    matrix = np.outer(
-        _poisson_mass(home_rate, goal_grid_max),
-        _poisson_mass(away_rate, goal_grid_max),
-    )
-    matrix[0, 0] *= 1.0 - home_rate * away_rate * model.rho
-    matrix[0, 1] *= 1.0 + home_rate * model.rho
-    matrix[1, 0] *= 1.0 + away_rate * model.rho
-    matrix[1, 1] *= 1.0 - model.rho
-    if np.any(~np.isfinite(matrix)) or np.any(matrix < 0):
-        raise X12DataError("Dixon-Coles score grid contains invalid probability mass")
-    probabilities = np.asarray(
-        [
-            np.tril(matrix, k=-1).sum(),
-            np.trace(matrix),
-            np.triu(matrix, k=1).sum(),
-        ],
-        dtype=float,
-    )
-    total = float(probabilities.sum())
-    if not math.isfinite(total) or total <= 0:
-        raise X12DataError("Dixon-Coles outcome mass cannot be normalized")
-    probabilities /= total
-    probabilities[-1] = 1.0 - probabilities[0] - probabilities[1]
-    if (
-        np.any(probabilities < 0)
-        or np.any(probabilities > 1)
-        or not math.isclose(
-            float(probabilities.sum()), 1.0, rel_tol=0.0, abs_tol=1e-12
+    period: int,
+    period_clock_ms: int,
+) -> pd.DataFrame:
+    return frame.loc[
+        (frame["period"] < period)
+        | (
+            (frame["period"] == period)
+            & (frame["period_clock_ms"] <= period_clock_ms)
         )
-    ):
-        raise X12DataError("Dixon-Coles outcome probabilities are not normalized")
-    return probabilities, home_rate, away_rate
+    ].sort_values(["global_elapsed_ms", "event_index"], kind="mergesort")
 
 
-def _empirical_baseline(train: pd.DataFrame) -> np.ndarray:
-    counts = train["outcome"].value_counts()
-    smoothed = np.asarray(
-        [float(counts.get(label, 0)) + 1.0 for label in OUTCOME_CLASSES],
-        dtype=float,
+def _events_in_transition_window(
+    frame: pd.DataFrame,
+    *,
+    period: int,
+    cutoff_period_clock_ms: int,
+) -> pd.DataFrame:
+    end_period_clock_ms = (
+        cutoff_period_clock_ms + TRANSITION_HORIZON_SECONDS * 1_000
     )
-    probabilities = smoothed / float(smoothed.sum())
-    probabilities[-1] = 1.0 - probabilities[0] - probabilities[1]
-    return probabilities
+    return frame.loc[
+        (frame["period"] == period)
+        & (frame["period_clock_ms"] > cutoff_period_clock_ms)
+        & (frame["period_clock_ms"] <= end_period_clock_ms)
+    ].sort_values(["period_clock_ms", "event_index"], kind="mergesort")
 
 
-def _competing_goal_probabilities(
-    home_rate: float,
-    away_rate: float,
-) -> np.ndarray:
-    total_rate = home_rate + away_rate
-    if not math.isfinite(total_rate) or total_rate <= 0:
-        raise X12DataError("five-minute transition intensity is invalid")
-    no_goal = math.exp(
-        -total_rate * TRANSITION_HORIZON_SECONDS / (90.0 * 60.0)
+def _state_at_cutoff(
+    goals: pd.DataFrame,
+    dismissals: pd.DataFrame,
+    *,
+    period: int,
+    period_clock_ms: int,
+) -> tuple[int, int, int, int]:
+    known_goals = _events_at_or_before_cutoff(
+        goals,
+        period=period,
+        period_clock_ms=period_clock_ms,
     )
-    scoring = 1.0 - no_goal
-    home_goal = scoring * home_rate / total_rate
-    away_goal = 1.0 - home_goal - no_goal
-    probabilities = np.asarray([home_goal, away_goal, no_goal], dtype=float)
-    if (
-        np.any(~np.isfinite(probabilities))
-        or np.any(probabilities < 0)
-        or np.any(probabilities > 1)
-        or not math.isclose(
-            float(probabilities.sum()), 1.0, rel_tol=0.0, abs_tol=1e-12
+    known_dismissals = _events_at_or_before_cutoff(
+        dismissals,
+        period=period,
+        period_clock_ms=period_clock_ms,
+    )
+    return (
+        int((known_goals["scoring_side"] == "home_goal").sum()),
+        int((known_goals["scoring_side"] == "away_goal").sum()),
+        int(
+            (
+                known_dismissals["dismissal_side"]
+                == "home_dismissal"
+            ).sum()
+        ),
+        int(
+            (
+                known_dismissals["dismissal_side"]
+                == "away_dismissal"
+            ).sum()
+        ),
+    )
+
+
+def _empty_goal_timeline() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=(
+            "match_id",
+            "period",
+            "period_clock_ms",
+            "global_elapsed_ms",
+            "source_clock_ms",
+            "event_index",
+            "native_event_id",
+            "scoring_side",
         )
-    ):
-        raise X12DataError("five-minute transition probabilities are not normalized")
-    return probabilities
+    )
+
+
+def _empty_dismissal_timeline() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=(
+            "match_id",
+            "period",
+            "period_clock_ms",
+            "global_elapsed_ms",
+            "source_clock_ms",
+            "event_index",
+            "native_event_id",
+            "player_id",
+            "dismissal_side",
+            "card",
+        )
+    )
+
+
+def _snapshot_global_elapsed_ms(
+    match: Any,
+    *,
+    period: int,
+    period_clock_ms: int,
+) -> int:
+    if period == 1:
+        return period_clock_ms
+    if period == 2:
+        offset = int(match.period_2_global_offset_ms)
+        if offset <= 45 * 60 * 1_000:
+            raise X12DataError(
+                "second-period global offset must follow regulation minute 45"
+            )
+        return offset + period_clock_ms
+    raise X12DataError("transition snapshots are limited to periods 1 and 2")
+
+
+def _dynamic_training_rows(
+    train: pd.DataFrame,
+    goals: pd.DataFrame,
+    dismissals: pd.DataFrame,
+    *,
+    model: DixonColesModel,
+) -> pd.DataFrame:
+    goals_by_match = _timeline_by_match(goals)
+    dismissals_by_match = _timeline_by_match(dismissals)
+    rows: list[dict[str, object]] = []
+    for match in train.itertuples(index=False):
+        match_id = int(match.match_id)
+        home_rate, away_rate = _expected_goals(
+            model,
+            home_team_id=int(match.home_team_id),
+            away_team_id=int(match.away_team_id),
+        )
+        match_goals = goals_by_match.get(
+            match_id,
+            _empty_goal_timeline(),
+        )
+        match_dismissals = dismissals_by_match.get(
+            match_id,
+            _empty_dismissal_timeline(),
+        )
+        for period, period_minute in TRANSITION_SNAPSHOTS:
+            period_clock_ms = period_minute * 60 * 1_000
+            global_elapsed_ms = _snapshot_global_elapsed_ms(
+                match,
+                period=period,
+                period_clock_ms=period_clock_ms,
+            )
+            (
+                home_score,
+                away_score,
+                home_dismissals,
+                away_dismissals,
+            ) = _state_at_cutoff(
+                match_goals,
+                match_dismissals,
+                period=period,
+                period_clock_ms=period_clock_ms,
+            )
+            future = _events_in_transition_window(
+                match_goals,
+                period=period,
+                cutoff_period_clock_ms=period_clock_ms,
+            )
+            feature_available_at = match.played_at + pd.Timedelta(
+                milliseconds=global_elapsed_ms
+            )
+            label_available_at = match.played_at + pd.Timedelta(
+                milliseconds=(
+                    global_elapsed_ms
+                    + TRANSITION_HORIZON_SECONDS * 1_000
+                )
+            )
+            home_score_difference = home_score - away_score
+            home_dismissal_difference = (
+                home_dismissals - away_dismissals
+            )
+            common: dict[str, object] = {
+                "match_id": match_id,
+                "exposure_seconds": TRANSITION_HORIZON_SECONDS,
+                "second_half": int(period == 2),
+                "feature_available_at": feature_available_at,
+                "label_available_at": label_available_at,
+            }
+            rows.extend(
+                (
+                    {
+                        **common,
+                        "side": "home",
+                        "base_goals_per_90": home_rate,
+                        "goal_count": int(
+                            (
+                                future["scoring_side"]
+                                == "home_goal"
+                            ).sum()
+                        ),
+                        "score_difference": home_score_difference,
+                        "dismissal_difference": (
+                            home_dismissal_difference
+                        ),
+                    },
+                    {
+                        **common,
+                        "side": "away",
+                        "base_goals_per_90": away_rate,
+                        "goal_count": int(
+                            (
+                                future["scoring_side"]
+                                == "away_goal"
+                            ).sum()
+                        ),
+                        "score_difference": -home_score_difference,
+                        "dismissal_difference": (
+                            -home_dismissal_difference
+                        ),
+                    },
+                )
+            )
+    return pd.DataFrame(rows)
+
+
+def _source_state_sha256(
+    match: Any,
+    goals: pd.DataFrame,
+    dismissals: pd.DataFrame,
+    *,
+    period: int,
+    period_clock_ms: int,
+    home_score: int,
+    away_score: int,
+    home_dismissals: int,
+    away_dismissals: int,
+) -> str:
+    expected_state = _state_at_cutoff(
+        goals,
+        dismissals,
+        period=period,
+        period_clock_ms=period_clock_ms,
+    )
+    supplied_state = (
+        home_score,
+        away_score,
+        home_dismissals,
+        away_dismissals,
+    )
+    if expected_state != supplied_state:
+        raise X12DataError("cutoff state does not match its observed prefix")
+    known_goals = _events_at_or_before_cutoff(
+        goals,
+        period=period,
+        period_clock_ms=period_clock_ms,
+    )
+    known_dismissals = _events_at_or_before_cutoff(
+        dismissals,
+        period=period,
+        period_clock_ms=period_clock_ms,
+    )
+    goal_prefix = [
+        {
+            "period": int(row.period),
+            "period_clock_ms": int(row.period_clock_ms),
+            "event_index": int(row.event_index),
+            "native_event_id": str(row.native_event_id),
+            "scoring_side": str(row.scoring_side),
+        }
+        for row in known_goals.itertuples(index=False)
+    ]
+    dismissal_prefix = [
+        {
+            "period": int(row.period),
+            "period_clock_ms": int(row.period_clock_ms),
+            "event_index": int(row.event_index),
+            "native_event_id": str(row.native_event_id),
+            "player_id": int(row.player_id),
+            "dismissal_side": str(row.dismissal_side),
+            "card": str(row.card),
+        }
+        for row in known_dismissals.itertuples(index=False)
+    ]
+    return _sha256(
+        {
+            "state_kind": (
+                "offline_statsbomb_observed_prefix_snapshot"
+            ),
+            "match_id": int(match.match_id),
+            "period": period,
+            "period_clock_ms": period_clock_ms,
+            "home_team_id": int(match.home_team_id),
+            "away_team_id": int(match.away_team_id),
+            "home_score": home_score,
+            "away_score": away_score,
+            "home_dismissals": home_dismissals,
+            "away_dismissals": away_dismissals,
+            "goal_prefix": goal_prefix,
+            "dismissal_prefix": dismissal_prefix,
+        }
+    )
 
 
 def _transition_rows(
     test: pd.DataFrame,
     goals: pd.DataFrame,
+    dismissals: pd.DataFrame,
     *,
     model: DixonColesModel,
+    dynamic_model: DynamicIntensityModel,
     inventory_sha256_value: str,
-    model_parameter_sha256: str,
+    dixon_coles_parameter_sha256: str,
+    raw_transition_parameter_sha256: str,
+    calibrated_transition_parameter_sha256: str | None,
+    temperature_calibration: TemperatureCalibration | None,
 ) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
-    goals_by_match = {
-        int(match_id): frame.sort_values(
-            ["elapsed_seconds", "event_index"],
-            kind="mergesort",
-        )
-        for match_id, frame in goals.groupby("match_id", sort=False)
-    }
+    static_comparator = DynamicIntensityModel(
+        coefficients=(0.0, 0.0, 0.0),
+        l2_penalty=0.0,
+        objective=0.0,
+        iterations=0,
+        optimizer_status="fixed_zero_dynamic_coefficients",
+    )
+    goals_by_match = _timeline_by_match(goals)
+    dismissals_by_match = _timeline_by_match(dismissals)
     for match in test.itertuples(index=False):
         home_rate, away_rate = _expected_goals(
             model,
             home_team_id=int(match.home_team_id),
             away_team_id=int(match.away_team_id),
         )
-        probabilities = _competing_goal_probabilities(home_rate, away_rate)
         match_goals = goals_by_match.get(
             int(match.match_id),
-            pd.DataFrame(
-                columns=("elapsed_seconds", "event_index", "scoring_side")
-            ),
+            _empty_goal_timeline(),
         )
-        for snapshot_minute in TRANSITION_SNAPSHOT_MINUTES:
-            start = snapshot_minute * 60
-            end = start + TRANSITION_HORIZON_SECONDS
-            known = match_goals.loc[match_goals["elapsed_seconds"] < start]
-            future = match_goals.loc[
-                (match_goals["elapsed_seconds"] >= start)
-                & (match_goals["elapsed_seconds"] < end)
-            ]
+        match_dismissals = dismissals_by_match.get(
+            int(match.match_id),
+            _empty_dismissal_timeline(),
+        )
+        for period, period_minute in TRANSITION_SNAPSHOTS:
+            period_clock_ms = period_minute * 60 * 1_000
+            global_elapsed_ms = _snapshot_global_elapsed_ms(
+                match,
+                period=period,
+                period_clock_ms=period_clock_ms,
+            )
+            future = _events_in_transition_window(
+                match_goals,
+                period=period,
+                cutoff_period_clock_ms=period_clock_ms,
+            )
             observed = (
                 str(future.iloc[0]["scoring_side"])
                 if not future.empty
                 else "no_goal"
             )
-            prediction_at = match.played_at + pd.Timedelta(seconds=start)
+            prediction_at = match.played_at + pd.Timedelta(
+                milliseconds=global_elapsed_ms
+            )
+            (
+                home_score,
+                away_score,
+                home_dismissals,
+                away_dismissals,
+            ) = _state_at_cutoff(
+                match_goals,
+                match_dismissals,
+                period=period,
+                period_clock_ms=period_clock_ms,
+            )
+            source_state_sha256 = _source_state_sha256(
+                match,
+                match_goals,
+                match_dismissals,
+                period=period,
+                period_clock_ms=period_clock_ms,
+                home_score=home_score,
+                away_score=away_score,
+                home_dismissals=home_dismissals,
+                away_dismissals=away_dismissals,
+            )
+            features = SoccerTransitionFeatures(
+                game_id=f"game_{int(match.match_id)}",
+                home_team_id=int(match.home_team_id),
+                away_team_id=int(match.away_team_id),
+                elapsed_seconds=global_elapsed_ms / 1_000.0,
+                second_half=int(period == 2),
+                home_score=home_score,
+                away_score=away_score,
+                home_dismissals=home_dismissals,
+                away_dismissals=away_dismissals,
+                home_score_difference=home_score - away_score,
+                home_dismissal_difference=(
+                    home_dismissals - away_dismissals
+                ),
+                source_state_sha256=source_state_sha256,
+            )
+            try:
+                distribution = predict_transition_distribution(
+                    dynamic_model,
+                    base_home_goals=home_rate,
+                    base_away_goals=away_rate,
+                    features=features,
+                )
+                static_distribution = predict_transition_distribution(
+                    static_comparator,
+                    base_home_goals=home_rate,
+                    base_away_goals=away_rate,
+                    features=features,
+                )
+            except SoccerTransitionModelError as error:
+                raise X12DataError(
+                    "dynamic transition prediction failed closed"
+                ) from error
             row: dict[str, object] = {
                 "match_id": int(match.match_id),
-                "snapshot_minute": snapshot_minute,
+                "period": period,
+                "period_minute": period_minute,
+                "period_clock_ms": period_clock_ms,
+                "global_elapsed_ms": global_elapsed_ms,
                 "prediction_at": prediction_at,
                 "feature_available_at": prediction_at,
                 "horizon_seconds": TRANSITION_HORIZON_SECONDS,
-                "home_score_at_cutoff": int(
-                    (known["scoring_side"] == "home_goal").sum()
-                ),
-                "away_score_at_cutoff": int(
-                    (known["scoring_side"] == "away_goal").sum()
-                ),
+                "home_score_at_cutoff": home_score,
+                "away_score_at_cutoff": away_score,
+                "home_dismissals_at_cutoff": home_dismissals,
+                "away_dismissals_at_cutoff": away_dismissals,
                 "observed_transition": observed,
                 "pit_status": OFFLINE_PIT_STATUS,
                 "inventory_sha256": inventory_sha256_value,
-                "model_parameter_sha256": model_parameter_sha256,
+                "model_parameter_sha256": (
+                    calibrated_transition_parameter_sha256
+                    if temperature_calibration is not None
+                    else raw_transition_parameter_sha256
+                ),
+                "dixon_coles_parameter_sha256": (
+                    dixon_coles_parameter_sha256
+                ),
+                "raw_transition_parameter_sha256": (
+                    raw_transition_parameter_sha256
+                ),
+                "dynamic_parameter_sha256": (
+                    dynamic_model.parameter_sha256
+                ),
+                "temperature_parameter_sha256": (
+                    temperature_calibration.parameter_sha256
+                    if temperature_calibration is not None
+                    else None
+                ),
+                "source_state_sha256": source_state_sha256,
+                "source_feature_sha256": features.feature_sha256,
                 "manifest_sha256": match.event_manifest_sha256,
                 "object_sha256": match.event_object_sha256,
                 "schema_fingerprint": match.event_schema_fingerprint,
             }
             for index, label in enumerate(TRANSITION_CLASSES):
-                row[f"probability_{label}"] = float(probabilities[index])
+                row[f"raw_probability_{label}"] = float(
+                    distribution.probabilities[index]
+                )
+                row[f"static_probability_{label}"] = float(
+                    static_distribution.probabilities[index]
+                )
             rows.append(row)
-    return rows
-
-
-def _multiclass_point_metrics(
-    targets: np.ndarray,
-    probabilities: np.ndarray,
-    *,
-    classes: tuple[str, ...],
-) -> tuple[float, float]:
-    class_index = {label: index for index, label in enumerate(classes)}
-    try:
-        encoded = np.asarray(
-            [class_index[str(value)] for value in targets],
-            dtype=int,
+    raw_probability_matrix = np.asarray(
+        [
+            [
+                float(row[f"raw_probability_{label}"])
+                for label in TRANSITION_CLASSES
+            ]
+            for row in rows
+        ],
+        dtype=float,
+    )
+    calibrated_probability_matrix = (
+        apply_multiclass_temperature(
+            raw_probability_matrix,
+            temperature=temperature_calibration.temperature,
         )
-    except KeyError as error:
-        raise X12DataError("transition target is outside the frozen state space") from error
-    indicator = np.eye(len(classes), dtype=float)[encoded]
-    selected = np.clip(
-        probabilities[np.arange(len(encoded)), encoded],
-        1e-15,
-        1.0,
+        if temperature_calibration is not None
+        else raw_probability_matrix
     )
-    return (
-        float(np.mean(np.sum(np.square(probabilities - indicator), axis=1))),
-        float(-np.mean(np.log(selected))),
-    )
+    for row, probabilities in zip(
+        rows,
+        calibrated_probability_matrix,
+        strict=True,
+    ):
+        for index, label in enumerate(TRANSITION_CLASSES):
+            row[f"probability_{label}"] = float(probabilities[index])
+    return rows
 
 
 def _transition_metrics(
     transitions: pd.DataFrame,
     *,
     bootstrap_samples: int,
+    minimum_valid_bootstrap_samples: int,
     confidence_level: float,
 ) -> dict[str, object]:
-    columns = [f"probability_{label}" for label in TRANSITION_CLASSES]
-    probabilities = transitions[columns].to_numpy(dtype=float)
-    targets = transitions["observed_transition"].to_numpy(dtype=object)
-    brier, log_loss = _multiclass_point_metrics(
-        targets,
-        probabilities,
-        classes=TRANSITION_CLASSES,
+    def evaluate(
+        *,
+        probability_prefix: str,
+        probability_variant: str,
+    ) -> dict[str, object]:
+        columns = [
+            f"{probability_prefix}probability_{label}"
+            for label in TRANSITION_CLASSES
+        ]
+        try:
+            metrics = evaluate_multiclass_probabilities(
+                transitions["observed_transition"].to_numpy(dtype=object),
+                transitions[columns].to_numpy(dtype=float),
+                classes=TRANSITION_CLASSES,
+                groups=transitions["match_id"].to_numpy(dtype=object),
+                bootstrap_samples=bootstrap_samples,
+                confidence_level=confidence_level,
+                minimum_valid_samples=minimum_valid_bootstrap_samples,
+                seed=X12_SEED,
+                prediction_at=transitions["prediction_at"],
+                feature_available_at=transitions["feature_available_at"],
+                prior_probabilities=transitions[static_columns].to_numpy(
+                    dtype=float
+                ),
+                prior_available_at=transitions["feature_available_at"],
+            )
+        except ValidationInputError as error:
+            raise X12DataError(
+                "X-12 transition evaluation failed closed"
+            ) from error
+        comparison = dict(metrics.pop("prior_comparison"))
+        comparison["static_metrics"] = comparison.pop("prior_metrics")
+        comparison["delta_definition"] = (
+            f"{probability_variant}_model_minus_static_comparator"
+        )
+        comparison["comparator"] = (
+            "pregame_dixon_coles_competing_poisson"
+        )
+        metrics["static_comparison"] = comparison
+        metrics["probability_variant"] = probability_variant
+        metrics["target_definition"] = (
+            "first scoring side in (cutoff, cutoff+300s]; "
+            "no_goal if none"
+        )
+        metrics["seed"] = X12_SEED
+        return metrics
+
+    static_columns = [
+        f"static_probability_{label}" for label in TRANSITION_CLASSES
+    ]
+    calibrated_metrics = evaluate(
+        probability_prefix="",
+        probability_variant="temperature_calibrated",
     )
-    groups = transitions["match_id"].to_numpy(dtype=object)
-    unique_groups = tuple(dict.fromkeys(groups.tolist()))
-    if len(unique_groups) < 2:
-        raise X12DataError("transition bootstrap requires at least two matches")
-    by_group = {
-        group: np.flatnonzero(groups == group) for group in unique_groups
-    }
-    rng = np.random.default_rng(X12_SEED)
-    brier_samples: list[float] = []
-    log_loss_samples: list[float] = []
-    for _ in range(bootstrap_samples):
-        selected = rng.choice(
-            len(unique_groups),
-            size=len(unique_groups),
-            replace=True,
-        )
-        indices = np.concatenate(
-            [by_group[unique_groups[int(index)]] for index in selected]
-        )
-        sampled = _multiclass_point_metrics(
-            targets[indices],
-            probabilities[indices],
-            classes=TRANSITION_CLASSES,
-        )
-        brier_samples.append(sampled[0])
-        log_loss_samples.append(sampled[1])
-    alpha = (1.0 - confidence_level) / 2.0
-    return {
-        "classes": TRANSITION_CLASSES,
-        "target_definition": (
-            "first scoring side in [cutoff, cutoff+300s); no_goal if none"
-        ),
-        "brier": brier,
-        "brier_definition": "mean_sum_squared_class_error",
-        "log_loss": log_loss,
-        "bootstrap_ci": {
-            "brier": (
-                float(np.quantile(brier_samples, alpha)),
-                float(np.quantile(brier_samples, 1.0 - alpha)),
-            ),
-            "log_loss": (
-                float(np.quantile(log_loss_samples, alpha)),
-                float(np.quantile(log_loss_samples, 1.0 - alpha)),
-            ),
-        },
-        "bootstrap_samples_requested": bootstrap_samples,
-        "bootstrap_samples_valid": bootstrap_samples,
-        "confidence_level": confidence_level,
-        "clusters": len(unique_groups),
-        "observations": len(transitions),
-        "seed": X12_SEED,
-    }
+    raw_metrics = evaluate(
+        probability_prefix="raw_",
+        probability_variant="uncalibrated",
+    )
+    calibrated_metrics["raw_model_metrics"] = raw_metrics
+    return calibrated_metrics
 
 
-def _validate_run_parameters(
+def _validate_dynamic_run_parameters(
     *,
-    minimum_train_matches: int,
     evaluation_match_limit: int | None,
     bootstrap_samples: int,
     minimum_valid_bootstrap_samples: int,
     confidence_level: float,
     optimizer_max_iterations: int,
-    goal_grid_max: int,
 ) -> None:
-    if type(minimum_train_matches) is not int or minimum_train_matches < 30:
-        raise X12DataError("minimum_train_matches must be an integer >= 30")
     if evaluation_match_limit is not None and (
         type(evaluation_match_limit) is not int or evaluation_match_limit < 20
     ):
@@ -1748,31 +2505,117 @@ def _validate_run_parameters(
         raise X12DataError("confidence_level must be a float in (0, 1)")
     if type(optimizer_max_iterations) is not int or optimizer_max_iterations < 20:
         raise X12DataError("optimizer_max_iterations must be an integer >= 20")
-    if type(goal_grid_max) is not int or goal_grid_max < 8:
-        raise X12DataError("goal_grid_max must be an integer >= 8")
 
 
-def run_x12_walk_forward(
+def _whole_date_group_limit(
+    matches: pd.DataFrame,
+    *,
+    match_limit: int | None,
+) -> pd.DataFrame:
+    if match_limit is None:
+        return matches.copy()
+    selected_dates: list[pd.Timestamp] = []
+    selected_match_count = 0
+    for match_date, group in matches.groupby(
+        "match_date",
+        sort=True,
+    ):
+        group_match_count = len(group)
+        if selected_match_count + group_match_count > match_limit:
+            break
+        selected_dates.append(pd.Timestamp(match_date))
+        selected_match_count += group_match_count
+    selected = matches.loc[
+        matches["match_date"].isin(selected_dates)
+    ].copy()
+    if selected["match_id"].nunique() < 20:
+        raise X12DataError(
+            "bounded transition evaluation requires at least 20 matches "
+            "in complete date groups"
+        )
+    return selected
+
+
+def _frozen_transition_split(
+    matches: pd.DataFrame,
+    *,
+    evaluation_match_limit: int | None,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    dates = [
+        pd.Timestamp(value)
+        for value in matches["match_date"].drop_duplicates()
+    ]
+    if len(dates) < 4:
+        raise X12DataError(
+            "transition holdout requires at least four chronological date groups"
+        )
+    base_date_count = len(dates) // 2
+    calibration_date_count = len(dates) // 4
+    if base_date_count == 0 or calibration_date_count == 0:
+        raise X12DataError(
+            "transition holdout cannot form nonempty 50/25/25 partitions"
+        )
+    base_dates = dates[:base_date_count]
+    calibration_dates = dates[
+        base_date_count : base_date_count + calibration_date_count
+    ]
+    final_dates = dates[base_date_count + calibration_date_count :]
+    base = matches.loc[matches["match_date"].isin(base_dates)].copy()
+    calibration = matches.loc[
+        matches["match_date"].isin(calibration_dates)
+    ].copy()
+    final_full = matches.loc[matches["match_date"].isin(final_dates)].copy()
+    final_evaluated = _whole_date_group_limit(
+        final_full,
+        match_limit=evaluation_match_limit,
+    )
+    partitions = (base, calibration, final_full)
+    match_id_sets = [
+        set(frame["match_id"].astype(int))
+        for frame in partitions
+    ]
+    if (
+        any(frame.empty for frame in partitions)
+        or match_id_sets[0] & match_id_sets[1]
+        or match_id_sets[0] & match_id_sets[2]
+        or match_id_sets[1] & match_id_sets[2]
+        or set().union(*match_id_sets)
+        != set(matches["match_id"].astype(int))
+    ):
+        raise X12DataError(
+            "transition holdout partitions must be disjoint and exhaustive"
+        )
+    if len(calibration) < _MINIMUM_TRANSITION_CALIBRATION_MATCHES:
+        raise X12DataError(
+            "transition calibration interval has insufficient matches"
+        )
+    if not (
+        base["played_at"].max() < calibration["played_at"].min()
+        and calibration["played_at"].max() < final_full["played_at"].min()
+    ):
+        raise X12DataError(
+            "transition holdout chronology is not strictly ordered"
+        )
+    return base, calibration, final_full, final_evaluated
+
+
+def run_x12_dynamic_transition(
     loaded: X12LoadedDataset,
     *,
-    minimum_train_matches: int = 100,
     evaluation_match_limit: int | None = None,
     bootstrap_samples: int = 200,
     minimum_valid_bootstrap_samples: int = 100,
     confidence_level: float = 0.95,
     optimizer_max_iterations: int = 250,
-    goal_grid_max: int = 10,
-) -> X12Evaluation:
-    """Run date-grouped expanding-window Dixon-Coles 1X2 evaluation."""
+) -> X12DynamicTransitionEvaluation:
+    """Run the frozen date-grouped dynamic-transition reproduction."""
 
-    _validate_run_parameters(
-        minimum_train_matches=minimum_train_matches,
+    _validate_dynamic_run_parameters(
         evaluation_match_limit=evaluation_match_limit,
         bootstrap_samples=bootstrap_samples,
         minimum_valid_bootstrap_samples=minimum_valid_bootstrap_samples,
         confidence_level=confidence_level,
         optimizer_max_iterations=optimizer_max_iterations,
-        goal_grid_max=goal_grid_max,
     )
     if not isinstance(loaded, X12LoadedDataset):
         raise TypeError("loaded must be an X12LoadedDataset")
@@ -1785,317 +2628,476 @@ def run_x12_walk_forward(
         loaded.goals,
         expected_sha256=loaded.goal_timeline_sha256,
     )
+    _validate_dismissal_timeline_binding(
+        loaded.matches,
+        loaded.dismissals,
+        expected_sha256=loaded.dismissal_timeline_sha256,
+    )
     matches = loaded.matches.sort_values(
         ["played_at", "match_id"], kind="mergesort"
     ).reset_index(drop=True)
     if len(matches) != STATSBOMB_EXPECTED_MATCHES:
         raise X12DataError("X-12 run requires all 380 frozen matches")
-    if set(matches["outcome"]) != set(OUTCOME_CLASSES):
-        raise X12DataError("frozen season must contain every 1X2 outcome class")
     team_ids = tuple(
         sorted(set(matches["home_team_id"]) | set(matches["away_team_id"]))
     )
     if len(team_ids) != loaded.inventory.team_count:
         raise X12DataError("team inventory changed after source adaptation")
 
-    candidate_dates: list[pd.Timestamp] = []
-    for test_date in matches["match_date"].drop_duplicates():
-        train = matches.loc[matches["match_date"] < test_date]
-        if len(train) >= minimum_train_matches:
-            candidate_dates.append(pd.Timestamp(test_date))
-    selected_match_ids: set[int] | None = None
-    if evaluation_match_limit is not None:
-        candidates = matches.loc[matches["match_date"].isin(candidate_dates)].head(
-            evaluation_match_limit
+    (
+        transition_base,
+        transition_calibration,
+        transition_final_full,
+        transition_final_evaluated,
+    ) = _frozen_transition_split(
+        matches,
+        evaluation_match_limit=evaluation_match_limit,
+    )
+    dynamic_fit_evaluation_cutoff = transition_calibration[
+        "played_at"
+    ].min()
+    temperature_fit_evaluation_cutoff = transition_final_full[
+        "played_at"
+    ].min()
+    if not (
+        transition_base["outcome_available_at"].max()
+        < dynamic_fit_evaluation_cutoff
+    ):
+        raise X12DataError(
+            "transition base outcomes are not available before calibration"
         )
-        selected_match_ids = set(candidates["match_id"].astype(int))
-        candidate_dates = [
-            pd.Timestamp(value)
-            for value in candidates["match_date"].drop_duplicates()
-        ]
-    if not candidate_dates:
-        raise X12DataError("no expanding-window evaluation dates are available")
-
-    prediction_frames: list[pd.DataFrame] = []
-    transition_rows: list[dict[str, object]] = []
-    fold_audits: list[X12FoldAudit] = []
-    warm_start: tuple[float, ...] | None = None
-    for test_date in candidate_dates:
-        train = matches.loc[matches["match_date"] < test_date].copy()
-        test = matches.loc[matches["match_date"] == test_date].copy()
-        if selected_match_ids is not None:
-            test = test.loc[test["match_id"].isin(selected_match_ids)].copy()
-        if test.empty:
-            continue
-        if len(train) < minimum_train_matches:
-            raise X12DataError("expanding fold has insufficient prior matches")
-        if not train["played_at"].max() < test["played_at"].min():
-            raise X12DataError("training kickoff is not strictly before test kickoff")
-        if not train["outcome_available_at"].max() < test["played_at"].min():
-            raise X12DataError(
-                "training outcome availability is not strictly before prediction"
-            )
-        model = _fit_dixon_coles(
-            train,
-            team_ids=team_ids,
+    transition_dixon_coles = _fit_dixon_coles(
+        transition_base,
+        team_ids=team_ids,
+        optimizer_max_iterations=optimizer_max_iterations,
+        initial_parameters=None,
+    )
+    transition_dixon_coles_parameter_sha256 = _sha256(
+        list(transition_dixon_coles.parameters)
+    )
+    dynamic_training_rows = _dynamic_training_rows(
+        transition_base,
+        loaded.goals,
+        loaded.dismissals,
+        model=transition_dixon_coles,
+    )
+    held_out_transition_match_ids = frozenset(
+        set(transition_calibration["match_id"].astype(int))
+        | set(transition_final_full["match_id"].astype(int))
+    )
+    try:
+        dynamic_model = fit_dynamic_intensity(
+            dynamic_training_rows,
+            evaluation_cutoff=dynamic_fit_evaluation_cutoff,
+            held_out_match_ids=held_out_transition_match_ids,
+            l2_penalty=_DYNAMIC_INTENSITY_L2_PENALTY,
             optimizer_max_iterations=optimizer_max_iterations,
-            initial_parameters=warm_start,
         )
-        warm_start = model.parameters
-        model_parameter_sha256 = _sha256(list(model.parameters))
-        baseline = _empirical_baseline(train)
-        feature_available_at = train["outcome_available_at"].max()
-        for class_index, label in enumerate(OUTCOME_CLASSES):
-            test[f"baseline_probability_{label}"] = float(baseline[class_index])
-        home_rates: list[float] = []
-        away_rates: list[float] = []
-        outcome_matrices: list[np.ndarray] = []
-        for row in test.itertuples(index=False):
-            probabilities, home_rate, away_rate = _outcome_probabilities(
-                model,
-                home_team_id=int(row.home_team_id),
-                away_team_id=int(row.away_team_id),
-                goal_grid_max=goal_grid_max,
-            )
-            outcome_matrices.append(probabilities)
-            home_rates.append(home_rate)
-            away_rates.append(away_rate)
-        probability_matrix = np.vstack(outcome_matrices)
-        for class_index, label in enumerate(OUTCOME_CLASSES):
-            test[f"probability_{label}"] = probability_matrix[:, class_index]
-        test["expected_home_goals"] = home_rates
-        test["expected_away_goals"] = away_rates
-        test["prediction_at"] = test["played_at"]
-        test["model_feature_available_at"] = feature_available_at
-        test["baseline_available_at"] = feature_available_at
-        test["inventory_sha256"] = loaded.inventory.inventory_sha256
-        test["result_label"] = X12_RESULT_LABEL
-        prediction_frames.append(test)
-        transition_rows.extend(
-            _transition_rows(
-                test,
-                loaded.goals,
-                model=model,
-                inventory_sha256_value=loaded.inventory.inventory_sha256,
-                model_parameter_sha256=model_parameter_sha256,
-            )
-        )
-        fold_audits.append(
-            X12FoldAudit(
-                test_date=_frame_timestamp(test_date),
-                test_min_played_at=test["played_at"].min(),
-                test_max_played_at=test["played_at"].max(),
-                train_max_played_at=train["played_at"].max(),
-                train_max_outcome_available_at=train[
-                    "outcome_available_at"
-                ].max(),
-                train_match_count=len(train),
-                test_match_count=len(test),
-                optimizer_iterations=model.iterations,
-                optimizer_objective=model.objective,
-                optimizer_initial_projected_gradient_inf_norm=(
-                    model.initial_projected_gradient_inf_norm
-                ),
-                optimizer_objective_improvement=model.objective_improvement,
-                optimizer_parameter_displacement=model.parameter_displacement,
-                optimizer_projected_gradient_inf_norm=(
-                    model.projected_gradient_inf_norm
-                ),
-                parameter_sha256=model_parameter_sha256,
-            )
-        )
-    predictions = (
-        pd.concat(prediction_frames, ignore_index=True)
-        .sort_values(["played_at", "match_id"], kind="mergesort")
-        .reset_index(drop=True)
+    except SoccerTransitionModelError as error:
+        raise X12DataError(
+            "dynamic-intensity base fit failed closed"
+        ) from error
+    raw_transition_parameter_sha256 = _sha256(
+        {
+            "dixon_coles_parameter_sha256": (
+                transition_dixon_coles_parameter_sha256
+            ),
+            "dynamic_parameter_sha256": dynamic_model.parameter_sha256,
+            "model_id": X12_MODEL_ID,
+            "model_version": X12_MODEL_VERSION,
+            "probability_variant": "uncalibrated",
+        }
     )
-    if predictions["match_id"].nunique() < 20:
-        raise X12DataError("bounded X-12 evaluation requires at least 20 matches")
-    transition_predictions = (
-        pd.DataFrame(transition_rows)
-        .sort_values(["prediction_at", "match_id"], kind="mergesort")
-        .reset_index(drop=True)
+    calibration_rows = _transition_rows(
+        transition_calibration,
+        loaded.goals,
+        loaded.dismissals,
+        model=transition_dixon_coles,
+        dynamic_model=dynamic_model,
+        inventory_sha256_value=loaded.inventory.inventory_sha256,
+        dixon_coles_parameter_sha256=(
+            transition_dixon_coles_parameter_sha256
+        ),
+        raw_transition_parameter_sha256=(
+            raw_transition_parameter_sha256
+        ),
+        calibrated_transition_parameter_sha256=None,
+        temperature_calibration=None,
     )
-
-    outcome_columns = [f"probability_{label}" for label in OUTCOME_CLASSES]
-    baseline_columns = [
-        f"baseline_probability_{label}" for label in OUTCOME_CLASSES
+    calibration_predictions = pd.DataFrame(calibration_rows).sort_values(
+        ["prediction_at", "match_id", "period", "period_clock_ms"],
+        kind="mergesort",
+    )
+    calibration_max_label_available_at = (
+        calibration_predictions["prediction_at"].max()
+        + pd.Timedelta(seconds=TRANSITION_HORIZON_SECONDS)
+    )
+    if not (
+        calibration_max_label_available_at
+        < temperature_fit_evaluation_cutoff
+    ):
+        raise X12DataError(
+            "calibration labels are not available before final test"
+        )
+    raw_columns = [
+        f"raw_probability_{label}" for label in TRANSITION_CLASSES
     ]
     try:
-        outcome_metrics = evaluate_multiclass_probabilities(
-            predictions["outcome"].to_numpy(dtype=object),
-            predictions[outcome_columns].to_numpy(dtype=float),
-            classes=OUTCOME_CLASSES,
-            groups=predictions["match_id"].to_numpy(dtype=object),
-            bootstrap_samples=bootstrap_samples,
-            confidence_level=confidence_level,
-            minimum_valid_samples=minimum_valid_bootstrap_samples,
-            seed=X12_SEED,
-            prediction_at=predictions["prediction_at"],
-            feature_available_at=predictions["model_feature_available_at"],
-            prior_probabilities=predictions[baseline_columns].to_numpy(dtype=float),
-            prior_available_at=predictions["baseline_available_at"],
+        temperature_calibration = fit_multiclass_temperature(
+            calibration_predictions[
+                "observed_transition"
+            ].to_numpy(dtype=object),
+            calibration_predictions[raw_columns].to_numpy(dtype=float),
+            groups=calibration_predictions[
+                "match_id"
+            ].to_numpy(dtype=object),
+            minimum_matches=_MINIMUM_TRANSITION_CALIBRATION_MATCHES,
+            optimizer_max_iterations=optimizer_max_iterations,
         )
-    except ValidationInputError as error:
-        raise X12DataError("X-12 multiclass evaluation failed closed") from error
-    comparison = dict(outcome_metrics.pop("prior_comparison"))
-    comparison["baseline_metrics"] = comparison.pop("prior_metrics")
-    comparison["delta_definition"] = "model_minus_simple_baseline"
-    comparison["comparator"] = "expanding_empirical_1x2_laplace_alpha_1"
-    outcome_metrics["simple_baseline_comparison"] = comparison
-    outcome_metrics["market_prior"] = {
-        "available": False,
-        "reason": "no_point_in_time_market_prior",
-    }
+    except SoccerTransitionModelError as error:
+        raise X12DataError(
+            "transition temperature calibration failed closed"
+        ) from error
+    calibrated_transition_parameter_sha256 = _sha256(
+        {
+            "model_id": X12_MODEL_ID,
+            "model_version": X12_MODEL_VERSION,
+            "raw_transition_parameter_sha256": (
+                raw_transition_parameter_sha256
+            ),
+            "temperature_parameter_sha256": (
+                temperature_calibration.parameter_sha256
+            ),
+            "probability_variant": "temperature_calibrated",
+        }
+    )
+    transition_rows = _transition_rows(
+        transition_final_evaluated,
+        loaded.goals,
+        loaded.dismissals,
+        model=transition_dixon_coles,
+        dynamic_model=dynamic_model,
+        inventory_sha256_value=loaded.inventory.inventory_sha256,
+        dixon_coles_parameter_sha256=(
+            transition_dixon_coles_parameter_sha256
+        ),
+        raw_transition_parameter_sha256=(
+            raw_transition_parameter_sha256
+        ),
+        calibrated_transition_parameter_sha256=(
+            calibrated_transition_parameter_sha256
+        ),
+        temperature_calibration=temperature_calibration,
+    )
+    transition_predictions = (
+        pd.DataFrame(transition_rows)
+        .sort_values(
+            ["prediction_at", "match_id", "period", "period_clock_ms"],
+            kind="mergesort",
+        )
+        .reset_index(drop=True)
+    )
+    transition_split = X12TransitionSplitAudit(
+        method="frozen_chronological_date_group_holdout_50_25_25",
+        base_fit_first_date=_frame_timestamp(
+            transition_base["match_date"].min()
+        ),
+        base_fit_last_date=_frame_timestamp(
+            transition_base["match_date"].max()
+        ),
+        calibration_first_date=_frame_timestamp(
+            transition_calibration["match_date"].min()
+        ),
+        calibration_last_date=_frame_timestamp(
+            transition_calibration["match_date"].max()
+        ),
+        final_test_first_date=_frame_timestamp(
+            transition_final_full["match_date"].min()
+        ),
+        final_test_last_date=_frame_timestamp(
+            transition_final_full["match_date"].max()
+        ),
+        final_test_evaluated_first_date=_frame_timestamp(
+            transition_final_evaluated["match_date"].min()
+        ),
+        final_test_evaluated_last_date=_frame_timestamp(
+            transition_final_evaluated["match_date"].max()
+        ),
+        base_fit_date_count=transition_base["match_date"].nunique(),
+        calibration_date_count=(
+            transition_calibration["match_date"].nunique()
+        ),
+        final_test_date_count=(
+            transition_final_full["match_date"].nunique()
+        ),
+        final_test_evaluated_date_count=(
+            transition_final_evaluated["match_date"].nunique()
+        ),
+        base_fit_match_count=transition_base["match_id"].nunique(),
+        calibration_match_count=(
+            transition_calibration["match_id"].nunique()
+        ),
+        final_test_match_count=(
+            transition_final_full["match_id"].nunique()
+        ),
+        final_test_evaluated_match_count=(
+            transition_final_evaluated["match_id"].nunique()
+        ),
+        dynamic_fit_evaluation_cutoff=dynamic_fit_evaluation_cutoff,
+        temperature_fit_evaluation_cutoff=(
+            temperature_fit_evaluation_cutoff
+        ),
+        base_fit_max_outcome_available_at=transition_base[
+            "outcome_available_at"
+        ].max(),
+        calibration_max_label_available_at=(
+            calibration_max_label_available_at
+        ),
+        dixon_coles_parameter_sha256=(
+            transition_dixon_coles_parameter_sha256
+        ),
+        dynamic_parameter_sha256=dynamic_model.parameter_sha256,
+        raw_transition_parameter_sha256=(
+            raw_transition_parameter_sha256
+        ),
+        temperature_parameter_sha256=(
+            temperature_calibration.parameter_sha256
+        ),
+        calibrated_transition_parameter_sha256=(
+            calibrated_transition_parameter_sha256
+        ),
+    )
 
-    return X12Evaluation(
+    return X12DynamicTransitionEvaluation(
         experiment_id=X12_EXPERIMENT_ID,
+        model_id=X12_MODEL_ID,
+        model_version=X12_MODEL_VERSION,
         authorization_scope=X12_AUTHORIZATION_SCOPE,
         result_label=X12_RESULT_LABEL,
-        contract_result_label=X12_CONTRACT_RESULT_LABEL,
         is_formal_result=False,
         seed=X12_SEED,
-        predictions=predictions,
         transition_predictions=transition_predictions,
-        folds=tuple(fold_audits),
-        outcome_metrics=outcome_metrics,
+        transition_split=transition_split,
+        temperature_calibration=temperature_calibration,
         transition_metrics=_transition_metrics(
             transition_predictions,
             bootstrap_samples=bootstrap_samples,
+            minimum_valid_bootstrap_samples=(
+                minimum_valid_bootstrap_samples
+            ),
             confidence_level=confidence_level,
         ),
-        minimum_train_matches=minimum_train_matches,
         evaluation_match_limit=evaluation_match_limit,
         bootstrap_samples=bootstrap_samples,
         minimum_valid_bootstrap_samples=minimum_valid_bootstrap_samples,
         confidence_level=confidence_level,
         optimizer_max_iterations=optimizer_max_iterations,
-        goal_grid_max=goal_grid_max,
     )
 
 
-_REGISTRATION_LOCK_IDS = (
-    "statsbomb_manifest_and_version",
-    "statsbomb_research_license",
-    "pit_feature_contract",
-    "dixon_coles_config_and_seed",
-    "expanding_window_split",
-    "transition_definition",
-    "h_split_approval",
-)
-
-
-def _fixed_point_probabilities(
-    probabilities: dict[str, float],
-) -> dict[str, dict[str, object]]:
-    scale = 18
-    denominator = 10**scale
-    atoms: dict[str, int] = {}
-    remaining = denominator
-    for label in TRANSITION_CLASSES[:-1]:
-        value = int(round(probabilities[label] * denominator))
-        if value < 0 or value > remaining:
-            raise X12DataError("fixed-point transition probability is invalid")
-        atoms[label] = value
-        remaining -= value
-    atoms[TRANSITION_CLASSES[-1]] = remaining
-    if any(value < 0 for value in atoms.values()) or sum(atoms.values()) != denominator:
-        raise X12DataError("fixed-point transition probabilities are not exact")
-    return {
-        label: {"atoms": str(atoms[label]), "scale": scale}
-        for label in TRANSITION_CLASSES
-    }
-
-
-def _transition_contract_output(
-    row: Any,
-    *,
-    evaluation: X12Evaluation,
+def _validate_x12_reproduction_preflight(
     program_root: str | Path,
 ) -> dict[str, object]:
-    probabilities = {
-        label: float(getattr(row, f"probability_{label}"))
-        for label in TRANSITION_CLASSES
-    }
-    cutoff = _frame_timestamp(row.prediction_at)
-    feature_material = {
-        "match_id": int(row.match_id),
-        "pit_cutoff_at": cutoff,
-        "home_score": int(row.home_score_at_cutoff),
-        "away_score": int(row.away_score_at_cutoff),
-        "event_object_sha256": row.object_sha256,
-        "offline_pit_status": row.pit_status,
-    }
-    config_sha256 = _sha256(
-        {
-            "model_id": "MODEL-SOCCER-FIVE-MINUTE-TRANSITION",
-            "model_version": "v1",
-            "parameter_sha256": row.model_parameter_sha256,
-            "transition_horizon_seconds": TRANSITION_HORIZON_SECONDS,
-            "transition_boundary": "[cutoff,cutoff+300s)",
-            "rate_basis": "Dixon-Coles pregame expected goals competing hazards",
-            "seed": evaluation.seed,
-        }
+    from prediction_market.experiments import (
+        ExperimentRegistryError,
+        load_experiment_registry,
     )
-    event_digest = hashlib.sha256(
-        _canonical_bytes(
-            {
-                "experiment_id": X12_EXPERIMENT_ID,
-                "match_id": int(row.match_id),
-                "pit_cutoff_at": cutoff,
-                "horizon_seconds": TRANSITION_HORIZON_SECONDS,
-                "data_sha256": row.inventory_sha256,
-                "config_sha256": config_sha256,
-            }
-        )
-    ).hexdigest()
-    document: dict[str, object] = {
-        "contract_version": "v1",
-        "model_id": "MODEL-SOCCER-FIVE-MINUTE-TRANSITION",
-        "model_version": "v1",
-        "experiment_id": X12_EXPERIMENT_ID,
-        "run_id": (
-            "run_x12_"
-            + str(row.inventory_sha256).removeprefix(_HASH_PREFIX)[:16]
-            + "_"
-            + config_sha256.removeprefix(_HASH_PREFIX)[:16]
-        ),
-        "game_id": f"game_{int(row.match_id)}",
-        "state_event_id": f"evt_{event_digest}",
-        "pit_cutoff_at": cutoff,
-        "output_kind": "state_transition",
-        "transition_unit": "five_minute_interval",
-        "state_space": list(TRANSITION_CLASSES),
-        "horizon": "next_state_transition",
-        "probabilities": _fixed_point_probabilities(probabilities),
-        "feature_sha256": _sha256(feature_material),
-        "data_sha256": row.inventory_sha256,
-        "config_sha256": config_sha256,
-        "quality_flags": [
-            "preliminary_rules",
-            "source_clock_unverified",
-        ],
-    }
+
+    root = Path(program_root)
     try:
-        validated = contracts.validate_contract_v1(
-            program_root,
-            "model-output/v1.schema.yaml",
-            document,
-        )
-    except ValueError as error:
+        card = load_experiment_registry(root)[X12_EXPERIMENT_ID]
+    except (ExperimentRegistryError, KeyError, OSError) as error:
         raise X12DataError(
-            "five-minute transition failed model-output v1 validation"
+            "X-12 reproduction registration preflight failed"
         ) from error
-    if not isinstance(validated, contracts.ModelOutputV1):
+    scopes = card.get("authorization_scopes")
+    if (
+        type(scopes) is not dict
+        or X12_AUTHORIZATION_SCOPE not in scopes
+    ):
         raise X12DataError(
-            "five-minute transition validator returned an invalid contract type"
+            "X-12 reproduction registration is missing"
         )
-    return validated.model_dump(mode="json")
+    scope = scopes[X12_AUTHORIZATION_SCOPE]
+    expected_binding = {
+        "result_class": "poc",
+        "dataset_ids": [X12_DATASET_ID],
+        "model_ids": [
+            "MODEL-SOCCER-DIXON-COLES",
+            X12_MODEL_ID,
+        ],
+        "synthetic_data_sha256": None,
+    }
+    if (
+        type(scope) is not dict
+        or scope.get("authorized") is not True
+        or scope.get("required_result_label") != X12_RESULT_LABEL
+        or scope.get("input_binding") != expected_binding
+    ):
+        raise X12DataError(
+            "X-12 reproduction registration binding is invalid"
+        )
+    preregistered_inputs = card.get("preregistered_inputs")
+    registered_input = (
+        preregistered_inputs.get(X12_AUTHORIZATION_SCOPE)
+        if type(preregistered_inputs) is dict
+        else None
+    )
+    if (
+        type(registered_input) is not dict
+        or registered_input.get("dataset_ids") != [X12_DATASET_ID]
+        or registered_input.get("model_ids")
+        != [
+            "MODEL-SOCCER-DIXON-COLES",
+            X12_MODEL_ID,
+        ]
+        or type(registered_input.get("registered_at")) is not str
+    ):
+        raise X12DataError(
+            "X-12 reproduction registered inputs are missing"
+        )
+    code_sha256 = _validate_digest(
+        registered_input.get("code_sha256"),
+        "reproduction code_sha256",
+    )
+    data_sha256 = _validate_digest(
+        registered_input.get("data_sha256"),
+        "reproduction data_sha256",
+    )
+    required_lock_ids = scope.get("required_lock_ids")
+    registration_locks = card.get("registration_locks")
+    if (
+        type(required_lock_ids) is not list
+        or not required_lock_ids
+        or type(registration_locks) is not list
+    ):
+        raise X12DataError(
+            "X-12 reproduction registration locks are invalid"
+        )
+    lock_by_id = {
+        str(lock.get("id")): lock
+        for lock in registration_locks
+        if type(lock) is dict
+    }
+    unresolved = [
+        str(lock_id)
+        for lock_id in required_lock_ids
+        if (
+            str(lock_id) not in lock_by_id
+            or lock_by_id[str(lock_id)].get("status") != "resolved"
+        )
+    ]
+    reproduction_lock_ids = [
+        str(lock_id)
+        for lock_id in required_lock_ids
+        if str(lock_id).startswith("reproduction:")
+    ]
+    if len(reproduction_lock_ids) != 1:
+        raise X12DataError(
+            "X-12 reproduction registration lock is missing"
+        )
+    if unresolved:
+        raise X12DataError(
+            "X-12 reproduction registration has unresolved locks: "
+            + ", ".join(unresolved)
+        )
+    resolved_locks = [
+        {
+            "id": str(lock_id),
+            "evidence_ref": _validate_digest(
+                lock_by_id[str(lock_id)].get("evidence_ref"),
+                f"registration lock {lock_id} evidence_ref",
+            ),
+        }
+        for lock_id in required_lock_ids
+    ]
+    amendments = card.get("amendments")
+    if type(amendments) is not list:
+        raise X12DataError(
+            "X-12 reproduction amendment chain is invalid"
+        )
+    registration_head_sha256 = _validate_digest(
+        (
+            amendments[-1].get("amendment_sha256")
+            if amendments
+            else card.get("registration_record_sha256")
+        ),
+        "registration_head_sha256",
+    )
+    return {
+        "experiment_id": X12_EXPERIMENT_ID,
+        "scope": X12_AUTHORIZATION_SCOPE,
+        "result_label": X12_RESULT_LABEL,
+        "dataset_ids": [X12_DATASET_ID],
+        "model_ids": [
+            "MODEL-SOCCER-DIXON-COLES",
+            X12_MODEL_ID,
+        ],
+        "required_lock_ids": [str(value) for value in required_lock_ids],
+        "resolved_locks": resolved_locks,
+        "reproduction_lock_id": reproduction_lock_ids[0],
+        "reproduction_spec_sha256": lock_by_id[
+            reproduction_lock_ids[0]
+        ]["evidence_ref"],
+        "code_sha256": code_sha256,
+        "data_sha256": data_sha256,
+        "registered_at": registered_input["registered_at"],
+        "registration_head_sha256": registration_head_sha256,
+        "status": "resolved",
+    }
+
+
+def _historical_x12_1x2_reference(
+    program_root: str | Path,
+) -> dict[str, object]:
+    path = Path(program_root) / X12_HISTORICAL_1X2_RELATIVE_PATH
+    try:
+        payload = path.read_bytes()
+        document = json.loads(payload)
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise X12DataError(
+            "historical X-12 1X2 artifact is unavailable"
+        ) from error
+    file_sha256 = (
+        "sha256:" + hashlib.sha256(payload).hexdigest()
+    )
+    if file_sha256 != X12_HISTORICAL_1X2_FILE_SHA256:
+        raise X12DataError(
+            "historical X-12 1X2 artifact file hash changed"
+        )
+    if (
+        type(document) is not dict
+        or document.get("artifact_type")
+        != "x12_real_data_dixon_coles_poc_v0"
+        or document.get("experiment_id") != X12_EXPERIMENT_ID
+        or document.get("authorization_scope") != "poc_result"
+        or document.get("result_label")
+        != "POC_NO_PIT_MARKET_PRIOR"
+        or document.get("evidence_sha256")
+        != evidence_sha256(document)
+    ):
+        raise X12DataError(
+            "historical X-12 1X2 artifact identity is invalid"
+        )
+    return {
+        "path": X12_HISTORICAL_1X2_RELATIVE_PATH.as_posix(),
+        "file_sha256": file_sha256,
+        "evidence_sha256": document["evidence_sha256"],
+        "artifact_type": document["artifact_type"],
+        "result_label": document["result_label"],
+        "authorization_scope": document["authorization_scope"],
+        "model_id": "MODEL-SOCCER-DIXON-COLES",
+        "referenced_component": "outcome_evaluation",
+        "reuse_policy": "read_only_reference",
+        "recomputed_for_v1": False,
+        "metrics_migrated_to_v1": False,
+        "historical_transition_output_reused": False,
+    }
 
 
 def build_x12_evidence(
     loaded: X12LoadedDataset,
-    evaluation: X12Evaluation,
+    evaluation: X12DynamicTransitionEvaluation,
     *,
     program_root: str | Path,
     execution_mode: str,
@@ -2104,60 +3106,37 @@ def build_x12_evidence(
 
     if not isinstance(loaded, X12LoadedDataset):
         raise TypeError("loaded must be an X12LoadedDataset")
-    if not isinstance(evaluation, X12Evaluation):
-        raise TypeError("evaluation must be an X12Evaluation")
+    if not isinstance(evaluation, X12DynamicTransitionEvaluation):
+        raise TypeError(
+            "evaluation must be an X12DynamicTransitionEvaluation"
+        )
     if execution_mode not in {"bounded_smoke", "full"}:
         raise X12DataError("execution_mode must be bounded_smoke or full")
+    registration_preflight = _validate_x12_reproduction_preflight(
+        program_root
+    )
+    historical_1x2_reference = _historical_x12_1x2_reference(
+        program_root
+    )
     if (
         evaluation.experiment_id != X12_EXPERIMENT_ID
+        or evaluation.model_id != X12_MODEL_ID
+        or evaluation.model_version != X12_MODEL_VERSION
         or evaluation.authorization_scope != X12_AUTHORIZATION_SCOPE
         or evaluation.result_label != X12_RESULT_LABEL
-        or evaluation.contract_result_label != X12_CONTRACT_RESULT_LABEL
         or evaluation.is_formal_result
     ):
         raise X12DataError("X-12 evidence cannot upgrade beyond the POC scope")
     if inventory_sha256(loaded.inventory) != loaded.inventory.inventory_sha256:
         raise X12DataError("input inventory self-hash is invalid")
-    for frame in (
-        evaluation.predictions,
-        evaluation.transition_predictions,
+    if (
+        evaluation.transition_predictions.empty
+        or not evaluation.transition_predictions[
+            "inventory_sha256"
+        ].eq(loaded.inventory.inventory_sha256).all()
     ):
-        if (
-            frame.empty
-            or not frame["inventory_sha256"]
-            .eq(loaded.inventory.inventory_sha256)
-            .all()
-        ):
-            raise X12DataError("evaluation output is not bound to its inventory")
-
-    prediction_documents = []
-    for row in evaluation.predictions.itertuples(index=False):
-        prediction_documents.append(
-            {
-                "match_id": int(row.match_id),
-                "prediction_at": _frame_timestamp(row.prediction_at),
-                "observed_outcome": str(row.outcome),
-                "probabilities": {
-                    label: float(getattr(row, f"probability_{label}"))
-                    for label in OUTCOME_CLASSES
-                },
-                "simple_baseline_probabilities": {
-                    label: float(
-                        getattr(row, f"baseline_probability_{label}")
-                    )
-                    for label in OUTCOME_CLASSES
-                },
-                "expected_goals": {
-                    "home": float(row.expected_home_goals),
-                    "away": float(row.expected_away_goals),
-                },
-                "lineage": {
-                    "inventory_sha256": row.inventory_sha256,
-                    "manifest_sha256": row.event_manifest_sha256,
-                    "object_sha256": row.event_object_sha256,
-                    "schema_fingerprint": row.event_schema_fingerprint,
-                },
-            }
+        raise X12DataError(
+            "transition evaluation is not bound to its inventory"
         )
     transition_documents = []
     for row in evaluation.transition_predictions.itertuples(index=False):
@@ -2165,13 +3144,25 @@ def build_x12_evidence(
             label: float(getattr(row, f"probability_{label}"))
             for label in TRANSITION_CLASSES
         }
+        raw_probabilities = {
+            label: float(getattr(row, f"raw_probability_{label}"))
+            for label in TRANSITION_CLASSES
+        }
         if not math.isclose(
             sum(probabilities.values()), 1.0, rel_tol=0.0, abs_tol=1e-12
+        ) or not math.isclose(
+            sum(raw_probabilities.values()),
+            1.0,
+            rel_tol=0.0,
+            abs_tol=1e-12,
         ):
             raise X12DataError("transition evidence is not exactly normalized")
         transition_documents.append(
             {
                 "match_id": int(row.match_id),
+                "period": int(row.period),
+                "period_clock_ms": int(row.period_clock_ms),
+                "global_elapsed_ms": int(row.global_elapsed_ms),
                 "prediction_at": _frame_timestamp(row.prediction_at),
                 "feature_available_at": _frame_timestamp(
                     row.feature_available_at
@@ -2180,20 +3171,54 @@ def build_x12_evidence(
                 "state": {
                     "home_score": int(row.home_score_at_cutoff),
                     "away_score": int(row.away_score_at_cutoff),
+                    "home_dismissals": int(
+                        row.home_dismissals_at_cutoff
+                    ),
+                    "away_dismissals": int(
+                        row.away_dismissals_at_cutoff
+                    ),
                 },
                 "observed_transition": str(row.observed_transition),
                 "probabilities": probabilities,
-                "contract_output": _transition_contract_output(
-                    row,
-                    evaluation=evaluation,
-                    program_root=program_root,
-                ),
+                "raw_probabilities": raw_probabilities,
+                "static_comparator_probabilities": {
+                    label: float(
+                        getattr(row, f"static_probability_{label}")
+                    )
+                    for label in TRANSITION_CLASSES
+                },
+                "contract_output": None,
+                "contract_output_status": {
+                    "available": False,
+                    "reason": (
+                        "offline_snapshot_not_bound_to_reducer_event_envelope"
+                    ),
+                },
                 "pit_status": str(row.pit_status),
                 "lineage": {
                     "inventory_sha256": row.inventory_sha256,
                     "manifest_sha256": row.manifest_sha256,
                     "object_sha256": row.object_sha256,
                     "schema_fingerprint": row.schema_fingerprint,
+                    "source_state_sha256": row.source_state_sha256,
+                    "source_feature_sha256": (
+                        row.source_feature_sha256
+                    ),
+                    "dixon_coles_parameter_sha256": (
+                        row.dixon_coles_parameter_sha256
+                    ),
+                    "raw_transition_parameter_sha256": (
+                        row.raw_transition_parameter_sha256
+                    ),
+                    "dynamic_parameter_sha256": (
+                        row.dynamic_parameter_sha256
+                    ),
+                    "temperature_parameter_sha256": (
+                        row.temperature_parameter_sha256
+                    ),
+                    "calibrated_transition_parameter_sha256": (
+                        row.model_parameter_sha256
+                    ),
                 },
             }
         )
@@ -2203,24 +3228,33 @@ def build_x12_evidence(
         "inventory_sha256": loaded.inventory.inventory_sha256,
     }
     evidence_without_hash: dict[str, object] = {
-        "artifact_type": "x12_real_data_dixon_coles_poc_v0",
+        "artifact_type": (
+            "x12_real_data_dixon_coles_dynamic_transition_poc_v1"
+        ),
         "experiment_id": X12_EXPERIMENT_ID,
+        "model_id": X12_MODEL_ID,
+        "model_version": X12_MODEL_VERSION,
         "authorization_scope": X12_AUTHORIZATION_SCOPE,
         "result_label": X12_RESULT_LABEL,
-        "contract_result_label": X12_CONTRACT_RESULT_LABEL,
         "execution_mode": execution_mode,
         "is_formal_result": False,
         "formal_result_eligible": False,
         "promotion_decision": "POC_ONLY",
+        "registration_preflight": registration_preflight,
+        "historical_1x2_reference": historical_1x2_reference,
         "input_inventory": inventory_document,
         "chronology_sha256": loaded.chronology_sha256,
         "goal_timeline_sha256": loaded.goal_timeline_sha256,
+        "dismissal_timeline_sha256": (
+            loaded.dismissal_timeline_sha256
+        ),
         "kickoff_time_basis": KICKOFF_TIME_BASIS,
         "source_time_audit": {
             "native_index_time_regressions_observed": loaded.source_time_regressions,
             "treatment": (
-                "reported_not_silently_reordered_for_PIT; goal labels sort by "
-                "native minute,second,index; result remains offline POC"
+                "reported_not_silently_reordered_for_PIT; period and "
+                "period-local native timestamp are preserved; global elapsed "
+                "ordering uses non-colliding observed-period offsets"
             ),
         },
         "market_prior": {
@@ -2229,57 +3263,105 @@ def build_x12_evidence(
             "reason": "no_point_in_time_market_prior",
         },
         "model": {
-            "name": "low_score_adjusted_dixon_coles",
-            "training_rule": (
-                "all complete matches on calendar dates strictly before test date"
-            ),
-            "outcome_availability_rule": (
-                "conservative kickoff_plus_3_hours must precede prediction"
-            ),
-            "reference_team_rule": "lowest numeric team_id attack fixed to zero",
-            "regularization": 0.001,
-            "rho_bounds": [-0.2, 0.2],
-            "parameter_bound_machine_roundoff_tolerance_ulps": (
-                _BOUND_ROUNDOFF_ULPS
-            ),
-            "kkt_boundary_absolute_tolerance": (
-                _KKT_BOUNDARY_ABS_TOLERANCE
-            ),
-            "goal_grid_max": evaluation.goal_grid_max,
-            "optimizer": "SLSQP",
-            "optimizer_gradient": "analytic",
-            "optimizer_fail_closed_checks": [
-                (
-                    "initial_and_final_parameter_bounds_with_8_ulp_"
-                    "machine_roundoff_tolerance"
-                ),
-                "valid_likelihood_domain",
-                "finite_objective_and_gradient",
-                "objective_non_regression",
-                "objective_improvement",
-                "parameter_displacement",
-                "projected_gradient_inf_norm_lte_1e-4",
-            ],
+            "name": "state_conditioned_dynamic_soccer_transition",
+            "model_id": X12_MODEL_ID,
+            "model_version": X12_MODEL_VERSION,
             "optimizer_max_iterations": evaluation.optimizer_max_iterations,
             "seed": X12_SEED,
-        },
-        "walk_forward": {
-            "minimum_train_matches": evaluation.minimum_train_matches,
-            "evaluation_match_limit": evaluation.evaluation_match_limit,
-            "folds": [_json_ready(asdict(fold)) for fold in evaluation.folds],
-        },
-        "outcome_evaluation": {
-            "classes": list(OUTCOME_CLASSES),
-            "predictions": prediction_documents,
-            "metrics": _json_ready(evaluation.outcome_metrics),
+            "transition_model": {
+                "methodology": (
+                    "Maia-family dynamic-covariate adaptation with frozen "
+                    "Dixon-Coles base-rate offset"
+                ),
+                "reproduction_scope": (
+                    "not a complete Maia or Cox reproduction"
+                ),
+                "features": [
+                    "second_half",
+                    "score_difference",
+                    "dismissal_difference",
+                ],
+                "side_orientation": (
+                    "shared coefficients with home/away signed covariates"
+                ),
+                "base_rate_offset": (
+                    "single base-fit-interval Dixon-Coles goals per 90"
+                ),
+                "base_rate_model": {
+                    "model_id": "MODEL-SOCCER-DIXON-COLES",
+                    "role": "transition_offset_only",
+                    "new_1x2_output_produced": False,
+                    "reference_team_rule": (
+                        "lowest numeric team_id attack fixed to zero"
+                    ),
+                    "outcome_availability_rule": (
+                        "kickoff_plus_3_hours precedes calibration"
+                    ),
+                    "regularization": 0.001,
+                    "rho_bounds": [-0.2, 0.2],
+                    "optimizer": "SLSQP",
+                    "optimizer_gradient": "analytic",
+                    "parameter_bound_machine_roundoff_tolerance_ulps": (
+                        _BOUND_ROUNDOFF_ULPS
+                    ),
+                    "kkt_boundary_absolute_tolerance": (
+                        _KKT_BOUNDARY_ABS_TOLERANCE
+                    ),
+                    "optimizer_fail_closed_checks": [
+                        (
+                            "initial_and_final_parameter_bounds_with_8_ulp_"
+                            "machine_roundoff_tolerance"
+                        ),
+                        "valid_likelihood_domain",
+                        "finite_objective_and_gradient",
+                        "objective_non_regression",
+                        "objective_improvement",
+                        "parameter_displacement",
+                        "projected_gradient_inf_norm_lte_1e-4",
+                    ],
+                },
+                "training_windows_per_match": len(
+                    TRANSITION_SNAPSHOTS
+                ),
+                "window_seconds": TRANSITION_HORIZON_SECONDS,
+                "l2_penalty": _DYNAMIC_INTENSITY_L2_PENALTY,
+                "optimizer": "L-BFGS-B",
+                "optimizer_gradient": "analytic",
+                "optimizer_max_iterations": (
+                    evaluation.optimizer_max_iterations
+                ),
+                "pit_rule": (
+                    "state consumes events at or before cutoff; labels use "
+                    "the first goal in (cutoff,cutoff+300s]; calibration and "
+                    "final-test match ids are rejected from base fitting"
+                ),
+                "evaluation_protocol": (
+                    "frozen chronological date-group holdout; earliest 50% "
+                    "base fit, next 25% temperature calibration, final 25% test"
+                ),
+                "split": _json_ready(asdict(evaluation.transition_split)),
+                "temperature_calibration": _json_ready(
+                    asdict(evaluation.temperature_calibration)
+                ),
+                "output_probability_variants": {
+                    "primary": "temperature_calibrated",
+                    "diagnostic": "uncalibrated",
+                },
+            },
         },
         "transition_output": {
             "state_space": list(TRANSITION_CLASSES),
             "horizon_seconds": TRANSITION_HORIZON_SECONDS,
             "boundary_rule": (
-                "first goal in [cutoff,cutoff+300s); current state uses goals "
-                "strictly before cutoff"
+                "current score and deduplicated dismissal state consume "
+                "events at or before cutoff; first goal in "
+                "(cutoff,cutoff+300s] defines the label"
             ),
+            "evaluation_protocol": (
+                "frozen_chronological_date_group_holdout_50_25_25"
+            ),
+            "primary_probability_variant": "temperature_calibrated",
+            "diagnostic_probability_variant": "uncalibrated",
             "availability_status": OFFLINE_PIT_STATUS,
             "distributions": transition_documents,
             "metrics": _json_ready(evaluation.transition_metrics),
@@ -2290,25 +3372,18 @@ def build_x12_evidence(
             "samples_requested": evaluation.bootstrap_samples,
             "minimum_valid_samples": evaluation.minimum_valid_bootstrap_samples,
             "confidence_level": evaluation.confidence_level,
-            "outcome_samples_valid": evaluation.outcome_metrics[
-                "bootstrap_samples_valid"
-            ],
             "transition_samples_valid": evaluation.transition_metrics[
                 "bootstrap_samples_valid"
             ],
         },
-        "registration_locks": [
-            {
-                "id": lock_id,
-                "status": "registry_unresolved",
-            }
-            for lock_id in _REGISTRATION_LOCK_IDS
+        "registration_locks": registration_preflight[
+            "required_lock_ids"
         ],
         "open_gates": [
-            "Team H lock approval",
             "point-in-time market prior unavailable",
             "StatsBomb O-004 remains research-only",
             "offline event availability is not a live PIT feed",
+            "transition snapshots lack real EventEnvelope state_event_id",
             "formal promotion unauthorized",
         ],
         "no_go_attestation": {
@@ -2327,19 +3402,52 @@ def build_x12_evidence(
     return evidence
 
 
-def write_x12_evidence(path: str | Path, evidence: dict[str, object]) -> None:
-    """Persist canonical evidence without silently replacing different bytes."""
+def write_x12_evidence(
+    *,
+    program_root: str | Path,
+    evidence: dict[str, object],
+) -> Path:
+    """Persist only the registered append-only dynamic-transition artifact."""
 
     if not isinstance(evidence, dict):
         raise TypeError("evidence must be a dictionary")
     if evidence.get("evidence_sha256") != evidence_sha256(evidence):
         raise X12DataError("evidence self-hash is invalid")
-    destination = Path(path)
+    registration_preflight = _validate_x12_reproduction_preflight(
+        program_root
+    )
+    if evidence.get("registration_preflight") != registration_preflight:
+        raise X12DataError(
+            "evidence registration preflight is stale or mismatched"
+        )
+    historical_1x2_reference = _historical_x12_1x2_reference(
+        program_root
+    )
+    if (
+        evidence.get("historical_1x2_reference")
+        != historical_1x2_reference
+    ):
+        raise X12DataError(
+            "historical X-12 1X2 reference is stale or mismatched"
+        )
+    if (
+        evidence.get("experiment_id") != X12_EXPERIMENT_ID
+        or evidence.get("model_id") != X12_MODEL_ID
+        or evidence.get("model_version") != X12_MODEL_VERSION
+        or evidence.get("authorization_scope") != X12_AUTHORIZATION_SCOPE
+        or evidence.get("result_label") != X12_RESULT_LABEL
+    ):
+        raise X12DataError(
+            "evidence identity does not match the registered reproduction"
+        )
+    destination = (
+        Path(program_root) / X12_DYNAMIC_EVIDENCE_RELATIVE_PATH
+    )
     payload = _canonical_bytes(evidence) + b"\n"
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists():
         if destination.read_bytes() == payload:
-            return
+            return destination
         raise X12DataError("refusing to overwrite different X-12 evidence")
     temporary = destination.with_name(
         f".{destination.name}.{os.getpid()}.tmp"
@@ -2353,6 +3461,7 @@ def write_x12_evidence(path: str | Path, evidence: dict[str, object]) -> None:
     finally:
         if temporary.exists():
             temporary.unlink()
+    return destination
 
 
 __all__ = [
@@ -2363,15 +3472,19 @@ __all__ = [
     "TRANSITION_CLASSES",
     "TRANSITION_HORIZON_SECONDS",
     "X12DataError",
-    "X12Evaluation",
-    "X12FoldAudit",
+    "X12DynamicTransitionEvaluation",
     "X12InputInventory",
     "X12LoadedDataset",
     "X12ManifestInventory",
+    "X12TransitionSplitAudit",
     "X12_AUTHORIZATION_SCOPE",
-    "X12_CONTRACT_RESULT_LABEL",
     "X12_DATASET_ID",
+    "X12_DYNAMIC_EVIDENCE_RELATIVE_PATH",
     "X12_EXPERIMENT_ID",
+    "X12_HISTORICAL_1X2_FILE_SHA256",
+    "X12_HISTORICAL_1X2_RELATIVE_PATH",
+    "X12_MODEL_ID",
+    "X12_MODEL_VERSION",
     "X12_RESULT_LABEL",
     "X12_SEED",
     "X12_SOURCE",
@@ -2382,6 +3495,6 @@ __all__ = [
     "goal_timeline_sha256",
     "inventory_sha256",
     "load_x12_dataset",
-    "run_x12_walk_forward",
+    "run_x12_dynamic_transition",
     "write_x12_evidence",
 ]

@@ -5,8 +5,18 @@ import hashlib
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 
+from prediction_market.sports import (
+    model_latency,
+    soccer_game_state,
+    soccer_transition_model,
+    x12,
+)
+from prediction_market.sports.event_envelopes import (
+    build_static_sport_observation_bundle,
+)
 from prediction_market.sports.model_latency import (
     LatencyBenchmarkError,
     _fixed_point_probabilities,
@@ -19,6 +29,76 @@ from prediction_market.sports.model_latency import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _statsbomb_start_event() -> tuple[
+    soccer_game_state.SoccerGameState,
+    soccer_game_state.SoccerGameEvent,
+]:
+    game_id = "game_statsbomb_latency_fixture"
+    raw_event = {
+        "id": "statsbomb-latency-event-1",
+        "index": 1,
+        "period": 1,
+        "timestamp": "00:00:00.000",
+        "minute": 0,
+        "second": 0,
+        "type": {"id": 35, "name": "Starting XI"},
+        "team": {"id": 10, "name": "Home"},
+        "tactics": {
+            "formation": 433,
+            "lineup": [
+                {
+                    "player": {
+                        "id": 1_000 + player,
+                        "name": f"Home Player {player}",
+                    },
+                    "position": {"id": player, "name": f"Position {player}"},
+                    "jersey_number": player,
+                }
+                for player in range(1, 12)
+            ],
+        },
+    }
+    payload = soccer_game_state.statsbomb_event_payload(
+        raw_event,
+        game_id=game_id,
+    )
+    bundle = build_static_sport_observation_bundle(
+        program_root=PROJECT_ROOT,
+        experiment_id="X-12",
+        dataset_id="DS-STATSBOMB-OPEN",
+        source_system="statsbomb",
+        source_stream="events",
+        raw_object_hash="sha256:" + "8" * 64,
+        raw_record_ordinals=(0,),
+        partition="synthetic-latency-fixture",
+        fetched_at="2026-07-22T12:00:00Z",
+        source_at=None,
+        competition_id="cmp_statsbomb_2",
+        game_id=game_id,
+        participant_ids=(
+            "participant_statsbomb_10",
+            "participant_statsbomb_20",
+        ),
+        native_namespace="statsbomb.event",
+        native_ids=("statsbomb-latency-event-1",),
+        normalized_source_sequence=1,
+        normalized_payload=payload,
+    )
+    event = soccer_game_state.adapt_statsbomb_event(
+        bundle.normalized,
+        program_root=PROJECT_ROOT,
+        raw_parents=bundle.raw,
+    )
+    return (
+        soccer_game_state.initial_soccer_game_state(
+            game_id,
+            home_team_id=10,
+            away_team_id=20,
+        ),
+        event,
+    )
 
 
 def _rehash_report(report: dict[str, object]) -> None:
@@ -196,131 +276,460 @@ def test_unavailable_sports_never_receive_placeholder_latency() -> None:
         }
 
 
-def test_committed_latency_artifact_is_governed_and_complete() -> None:
+def _soccer_fixture_models() -> tuple[
+    x12.DixonColesModel,
+    soccer_transition_model.DynamicIntensityModel,
+    soccer_transition_model.TemperatureCalibration,
+]:
+    return (
+        x12.DixonColesModel(
+            team_ids=(10, 20),
+            reference_team_id=10,
+            parameters=(0.0, 0.1, -0.1, 0.2),
+            home_advantage=0.2,
+            rho=-0.05,
+            initial_objective=100.0,
+            initial_projected_gradient_inf_norm=1.0,
+            objective=90.0,
+            objective_improvement=10.0,
+            parameter_displacement=0.4,
+            projected_gradient_inf_norm=1e-6,
+            iterations=12,
+            optimizer_status="synthetic_converged",
+        ),
+        soccer_transition_model.DynamicIntensityModel(
+            coefficients=(-0.20, -0.45, -0.90),
+            l2_penalty=1.0,
+            objective=0.0,
+            iterations=0,
+            optimizer_status="engineering_fixture_not_empirical",
+        ),
+        soccer_transition_model.TemperatureCalibration(
+            temperature=1.7,
+            initial_objective=0.8,
+            objective=0.7,
+            iterations=4,
+            optimizer_status="synthetic_converged",
+            calibration_match_count=24,
+            calibration_observation_count=432,
+        ),
+    )
+
+
+def _calibrated_soccer_evidence() -> dict[str, object]:
+    _, dynamic_model, calibration = _soccer_fixture_models()
+    dixon_coles_sha256 = "sha256:" + "1" * 64
+    raw_transition_sha256 = x12._sha256(
+        {
+            "dixon_coles_parameter_sha256": dixon_coles_sha256,
+            "dynamic_parameter_sha256": dynamic_model.parameter_sha256,
+            "model_id": x12.X12_MODEL_ID,
+            "model_version": x12.X12_MODEL_VERSION,
+            "probability_variant": "uncalibrated",
+        }
+    )
+    calibrated_transition_sha256 = x12._sha256(
+        {
+            "model_id": x12.X12_MODEL_ID,
+            "model_version": x12.X12_MODEL_VERSION,
+            "raw_transition_parameter_sha256": raw_transition_sha256,
+            "temperature_parameter_sha256": calibration.parameter_sha256,
+            "probability_variant": "temperature_calibrated",
+        }
+    )
+    return {
+        "artifact_type": (
+            "x12_real_data_dixon_coles_dynamic_transition_poc_v1"
+        ),
+        "experiment_id": "X-12",
+        "model_id": x12.X12_MODEL_ID,
+        "model_version": x12.X12_MODEL_VERSION,
+        "authorization_scope": x12.X12_AUTHORIZATION_SCOPE,
+        "result_label": "PRELIMINARY",
+        "execution_mode": "full",
+        "registration_preflight": {
+            "experiment_id": "X-12",
+            "scope": x12.X12_AUTHORIZATION_SCOPE,
+            "result_label": "PRELIMINARY",
+            "status": "resolved",
+            "registration_head_sha256": "sha256:" + "9" * 64,
+        },
+        "model": {
+            "optimizer_max_iterations": 250,
+            "transition_model": {
+                "methodology": (
+                    "Maia-family dynamic-covariate adaptation with frozen "
+                    "Dixon-Coles base-rate offset"
+                ),
+                "reproduction_scope": (
+                    "not a complete Maia or Cox reproduction"
+                ),
+                "l2_penalty": 1.0,
+                "optimizer_max_iterations": 250,
+                "split": {
+                    "method": (
+                        "frozen_chronological_date_group_holdout_50_25_25"
+                    ),
+                    "base_fit_first_date": "2015-08-08T00:00:00+00:00",
+                    "base_fit_last_date": "2016-01-01T00:00:00+00:00",
+                    "calibration_first_date": "2016-01-02T00:00:00+00:00",
+                    "calibration_last_date": "2016-03-01T00:00:00+00:00",
+                    "final_test_first_date": "2016-03-02T00:00:00+00:00",
+                    "final_test_last_date": "2016-05-15T00:00:00+00:00",
+                    "final_test_evaluated_first_date": (
+                        "2016-03-02T00:00:00+00:00"
+                    ),
+                    "final_test_evaluated_last_date": (
+                        "2016-05-01T00:00:00+00:00"
+                    ),
+                    "base_fit_date_count": 50,
+                    "calibration_date_count": 25,
+                    "final_test_date_count": 25,
+                    "final_test_evaluated_date_count": 22,
+                    "base_fit_match_count": 190,
+                    "calibration_match_count": 90,
+                    "final_test_match_count": 100,
+                    "final_test_evaluated_match_count": 90,
+                    "dynamic_fit_evaluation_cutoff": (
+                        "2016-01-02T12:00:00+00:00"
+                    ),
+                    "temperature_fit_evaluation_cutoff": (
+                        "2016-03-02T12:00:00+00:00"
+                    ),
+                    "base_fit_max_outcome_available_at": (
+                        "2016-01-01T18:00:00+00:00"
+                    ),
+                    "calibration_max_label_available_at": (
+                        "2016-03-01T22:00:00+00:00"
+                    ),
+                    "dixon_coles_parameter_sha256": dixon_coles_sha256,
+                    "dynamic_parameter_sha256": (
+                        dynamic_model.parameter_sha256
+                    ),
+                    "raw_transition_parameter_sha256": (
+                        raw_transition_sha256
+                    ),
+                    "temperature_parameter_sha256": (
+                        calibration.parameter_sha256
+                    ),
+                    "calibrated_transition_parameter_sha256": (
+                        calibrated_transition_sha256
+                    ),
+                },
+                "temperature_calibration": {
+                    "temperature": calibration.temperature,
+                    "initial_objective": calibration.initial_objective,
+                    "objective": calibration.objective,
+                    "iterations": calibration.iterations,
+                    "optimizer_status": calibration.optimizer_status,
+                    "calibration_match_count": 90,
+                    "calibration_observation_count": 90 * 18,
+                    "parameter_sha256": calibration.parameter_sha256,
+                },
+                "output_probability_variants": {
+                    "primary": "temperature_calibrated",
+                    "diagnostic": "uncalibrated",
+                },
+            },
+        },
+        "transition_output": {
+            "state_space": list(soccer_transition_model.TRANSITION_CLASSES),
+            "horizon_seconds": 300,
+            "evaluation_protocol": (
+                "frozen_chronological_date_group_holdout_50_25_25"
+            ),
+            "primary_probability_variant": "temperature_calibrated",
+            "diagnostic_probability_variant": "uncalibrated",
+            "metrics": {
+                "classes": list(
+                    soccer_transition_model.TRANSITION_CLASSES
+                ),
+                "observations": 1_620,
+                "brier": 0.42,
+                "log_loss": 0.71,
+                "probability_variant": "temperature_calibrated",
+                "raw_model_metrics": {
+                    "classes": list(
+                        soccer_transition_model.TRANSITION_CLASSES
+                    ),
+                    "observations": 1_620,
+                    "brier": 0.45,
+                    "log_loss": 0.75,
+                    "probability_variant": "uncalibrated",
+                },
+            },
+        },
+    }
+
+
+def test_soccer_latency_applies_fitted_temperature_after_dynamic_prediction() -> None:
+    previous_state, event = _statsbomb_start_event()
+    _, fixture_model, calibration = _soccer_fixture_models()
+
+    next_state, features, distribution, calibrated = (
+        model_latency._soccer_dynamic_transition(
+            previous_state,
+            event,
+            model=fixture_model,
+            temperature_calibration=calibration,
+            base_home_goals=1.6,
+            base_away_goals=1.2,
+        )
+    )
+
+    assert event.event_id.startswith("evt_")
+    assert next_state.sequence == event.sequence
+    assert features.source_state_sha256 == next_state.state_sha256
+    assert distribution.source_feature_sha256 == features.feature_sha256
+    assert distribution.model_parameter_sha256 == fixture_model.parameter_sha256
+    assert sum(distribution.probabilities) == pytest.approx(1.0, abs=1e-15)
+    expected = soccer_transition_model.apply_multiclass_temperature(
+        np.asarray([distribution.probabilities], dtype=float),
+        temperature=calibration.temperature,
+    )[0]
+    assert calibrated == pytest.approx(expected, abs=0.0)
+    assert calibrated.tolist() != pytest.approx(distribution.probabilities)
+
+
+def test_soccer_parameter_snapshot_requires_bound_temperature_calibrator() -> None:
+    base_model, dynamic_model, calibration = _soccer_fixture_models()
+    snapshot = model_latency._soccer_model_parameter_snapshot(
+        base_model,
+        dynamic_model,
+        calibration,
+    )
+
+    assert snapshot["temperature_calibration"]["parameter_sha256"] == (
+        calibration.parameter_sha256
+    )
+    assert (
+        model_latency._validate_model_parameter_snapshot(
+            model_latency.DYNAMIC_SOCCER_MODEL_ID,
+            snapshot,
+        )
+        == snapshot
+    )
+
+    missing = deepcopy(snapshot)
+    del missing["temperature_calibration"]
+    with pytest.raises(LatencyBenchmarkError, match="snapshot structure"):
+        model_latency._validate_model_parameter_snapshot(
+            model_latency.DYNAMIC_SOCCER_MODEL_ID,
+            missing,
+        )
+
+    forged = deepcopy(snapshot)
+    forged["temperature_calibration"]["parameter_sha256"] = (
+        "sha256:" + "0" * 64
+    )
+    with pytest.raises(LatencyBenchmarkError, match="calibration.*identity"):
+        model_latency._validate_model_parameter_snapshot(
+            model_latency.DYNAMIC_SOCCER_MODEL_ID,
+            forged,
+        )
+
+
+def test_soccer_evidence_parser_requires_complete_calibrated_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence = _calibrated_soccer_evidence()
+    monkeypatch.setattr(
+        x12,
+        "_validate_x12_reproduction_preflight",
+        lambda _: deepcopy(evidence["registration_preflight"]),
+    )
+
+    parsed = model_latency._require_dynamic_soccer_evidence(
+        evidence,
+        program_root=PROJECT_ROOT,
+    )
+
+    assert isinstance(parsed["split"], x12.X12TransitionSplitAudit)
+    assert isinstance(
+        parsed["temperature_calibration"],
+        soccer_transition_model.TemperatureCalibration,
+    )
+    assert parsed["metrics"] == evidence["transition_output"]["metrics"]
+    assert parsed["split"].temperature_parameter_sha256 == (
+        parsed["temperature_calibration"].parameter_sha256
+    )
+
+
+def test_soccer_evidence_parser_rejects_old_static_or_uncalibrated_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current_preflight = _calibrated_soccer_evidence()[
+        "registration_preflight"
+    ]
+    monkeypatch.setattr(
+        x12,
+        "_validate_x12_reproduction_preflight",
+        lambda _: deepcopy(current_preflight),
+    )
+    invalid_documents: list[dict[str, object]] = []
+    wrong_model = _calibrated_soccer_evidence()
+    wrong_model["model_id"] = "MODEL-SOCCER-FIVE-MINUTE-TRANSITION"
+    invalid_documents.append(wrong_model)
+
+    wrong_version = _calibrated_soccer_evidence()
+    wrong_version["model_version"] = "v0"
+    invalid_documents.append(wrong_version)
+
+    wrong_scope = _calibrated_soccer_evidence()
+    wrong_scope["authorization_scope"] = "poc_result"
+    invalid_documents.append(wrong_scope)
+
+    bounded = _calibrated_soccer_evidence()
+    bounded["execution_mode"] = "bounded_smoke"
+    invalid_documents.append(bounded)
+
+    incomplete_split = _calibrated_soccer_evidence()
+    del incomplete_split["model"]["transition_model"]["split"][
+        "calibration_max_label_available_at"
+    ]
+    invalid_documents.append(incomplete_split)
+
+    incomplete_calibration = _calibrated_soccer_evidence()
+    del incomplete_calibration["model"]["transition_model"][
+        "temperature_calibration"
+    ]["parameter_sha256"]
+    invalid_documents.append(incomplete_calibration)
+
+    uncalibrated_metrics = _calibrated_soccer_evidence()
+    uncalibrated_metrics["transition_output"]["metrics"][
+        "probability_variant"
+    ] = "uncalibrated"
+    invalid_documents.append(uncalibrated_metrics)
+
+    forged_hash_chain = _calibrated_soccer_evidence()
+    forged_hash_chain["model"]["transition_model"]["split"][
+        "calibrated_transition_parameter_sha256"
+    ] = "sha256:" + "0" * 64
+    invalid_documents.append(forged_hash_chain)
+
+    for invalid in invalid_documents:
+        with pytest.raises(
+            LatencyBenchmarkError,
+            match="registered calibrated dynamic empirical evidence",
+        ):
+            model_latency._require_dynamic_soccer_evidence(
+                invalid,
+                program_root=PROJECT_ROOT,
+            )
+
+
+def test_soccer_evidence_preflight_fails_closed_when_missing_stale_or_unresolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence = _calibrated_soccer_evidence()
+    current_preflight = deepcopy(evidence["registration_preflight"])
+    monkeypatch.setattr(
+        x12,
+        "_validate_x12_reproduction_preflight",
+        lambda _: deepcopy(current_preflight),
+    )
+
+    missing = deepcopy(evidence)
+    del missing["registration_preflight"]
+    stale = deepcopy(evidence)
+    stale["registration_preflight"]["registration_head_sha256"] = (
+        "sha256:" + "0" * 64
+    )
+    for invalid in (missing, stale):
+        with pytest.raises(
+            LatencyBenchmarkError,
+            match="current X-12 reproduction preflight",
+        ):
+            model_latency._require_dynamic_soccer_evidence(
+                invalid,
+                program_root=PROJECT_ROOT,
+            )
+
+    def unresolved(_: object) -> dict[str, object]:
+        raise x12.X12DataError(
+            "X-12 reproduction registration has unresolved locks"
+        )
+
+    monkeypatch.setattr(
+        x12,
+        "_validate_x12_reproduction_preflight",
+        unresolved,
+    )
+    with pytest.raises(
+        LatencyBenchmarkError,
+        match="current X-12 reproduction preflight",
+    ):
+        model_latency._require_dynamic_soccer_evidence(
+            evidence,
+            program_root=PROJECT_ROOT,
+        )
+
+
+def test_soccer_latency_rejects_legacy_static_transition_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    legacy_evidence = json.loads(
+        (
+            PROJECT_ROOT
+            / "artifacts"
+            / "game-state"
+            / "soccer"
+            / "x12_real_data_poc_v0.json"
+        ).read_text(encoding="utf-8")
+    )
+    current_preflight = _calibrated_soccer_evidence()[
+        "registration_preflight"
+    ]
+    legacy_evidence["registration_preflight"] = deepcopy(
+        current_preflight
+    )
+    monkeypatch.setattr(
+        x12,
+        "_validate_x12_reproduction_preflight",
+        lambda _: deepcopy(current_preflight),
+    )
+
+    with pytest.raises(
+        LatencyBenchmarkError,
+        match="registered calibrated dynamic empirical evidence",
+    ):
+        model_latency._require_dynamic_soccer_evidence(
+            legacy_evidence,
+            program_root=PROJECT_ROOT,
+        )
+
+
+def test_latency_protocol_migrates_atomically_to_dynamic_soccer_identity() -> None:
+    assert model_latency.REPORT_VERSION == "v1"
+    assert model_latency.DYNAMIC_SOCCER_MODEL_ID == (
+        "MODEL-SOCCER-DYNAMIC-INTENSITY"
+    )
+    assert model_latency.DYNAMIC_SOCCER_EVIDENCE_PATH == (
+        "artifacts/game-state/soccer/x12_dynamic_transition_poc_v1.json"
+    )
+    assert "MODEL-SOCCER-FIVE-MINUTE-TRANSITION" not in (
+        model_latency.MEASURED_MODELS
+    )
+    assert model_latency.MEASURED_MODELS[
+        model_latency.DYNAMIC_SOCCER_MODEL_ID
+    ] == ("X-12", "v1")
+
+
+def test_committed_static_latency_artifact_is_retired_by_dynamic_migration() -> None:
     artifact_path = (
         PROJECT_ROOT / "artifacts" / "game-state" / "model_latency_v0.json"
     )
     report = json.loads(artifact_path.read_text(encoding="utf-8"))
 
-    validated = validate_model_latency_report(report, program_root=PROJECT_ROOT)
-
-    assert validated == report
     assert report["artifact_type"] == "sport_model_full_path_latency"
     assert report["result_label"] == "PRELIMINARY_ENGINEERING_BENCHMARK"
     assert report["live_sla_claimed"] is False
-    assert report["protocol"]["minimum_timed_iterations"] >= 1_000
-    assert report["protocol"]["stages"] == [
-        "state_reducer",
-        "feature_extraction",
-        "model_inference",
-        "output_validation",
-        "full_path",
-    ]
-    assert report["protocol"]["included_in_full_path"] == [
-        "state_reducer",
-        "feature_extraction",
-        "registered_model_inference",
-        "model_output_materialization",
-        "strict_model_output_v1_validation_against_preloaded_registry",
-    ]
-    assert report["protocol"]["excluded_from_all_timed_regions"] == [
-        "model_training",
-        "raw_source_loading",
-        "registry_snapshot_loading",
-        "network_io",
-    ]
-    assert {item["sport"] for item in report["unavailable_sports"]} == {
-        "nba",
-        "mlb",
-        "f1",
-    }
-    assert {item["model_id"] for item in report["benchmarks"]} == {
-        "MODEL-NFL-DRIVE-TRANSITION",
-        "MODEL-SOCCER-FIVE-MINUTE-TRANSITION",
-    }
-    assert {item["model_id"] for item in report["unavailable_models"]} == {
-        "MODEL-NFL-LOGISTIC",
-        "MODEL-NFL-GBDT",
-        "MODEL-SOCCER-DIXON-COLES",
-    }
-    assert all(
-        benchmark["accuracy_reference"]["status"]
-        == "referenced_existing_evidence_not_recomputed"
-        for benchmark in report["benchmarks"]
+    assert any(
+        "not state-conditioned" in limitation
+        for limitation in report["limitations"]
     )
-    assert all(
-        {
-            "brier",
-            "log_loss",
-            "observations",
-        }.issubset(benchmark["accuracy_reference"]["reported_metrics"])
-        for benchmark in report["benchmarks"]
-    )
-    for benchmark in report["benchmarks"]:
-        assert set(benchmark["stages"]) == set(report["protocol"]["stages"])
-        assert benchmark["measured_events"] >= 1_000
-        assert benchmark["full_path_events_per_second"] > 0
-        governance = benchmark["governance"]
-        assert set(governance["code_sha256"]) == {
-            "latency_harness",
-            "sport_reducer",
-            "model_implementation",
-        }
-        for digest in (
-            *governance["code_sha256"].values(),
-            governance["data_manifest_sha256"],
-            governance["training_manifest_sha256"],
-            governance["parameter_config_sha256"],
-            governance["model_parameter_sha256"],
-            governance["model_registry_row_sha256"],
-        ):
-            assert digest.startswith("sha256:") and len(digest) == 71
-        parameter_snapshot_payload = json.dumps(
-            governance["model_parameter_snapshot"],
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-            allow_nan=False,
-        ).encode("utf-8")
-        assert governance["model_parameter_sha256"] == (
-            "sha256:"
-            + hashlib.sha256(parameter_snapshot_payload).hexdigest()
-        )
-        lineage = benchmark["representative_input_lineage"]
-        assert lineage["previous_state_sha256"].startswith("sha256:")
-        assert lineage["event_sha256"].startswith("sha256:")
-        assert lineage["next_state_sha256"].startswith("sha256:")
-        assert lineage["source_object_sha256"].startswith("sha256:")
-
-        accuracy = benchmark["accuracy_reference"]
-        evidence = json.loads(
-            (PROJECT_ROOT / accuracy["evidence_path"]).read_text(encoding="utf-8")
-        )
-        assert accuracy["reported_metrics"] == resolve_json_pointer(
-            evidence,
-            accuracy["metric_pointer"],
-        )
-        assert accuracy["metric_snapshot_sha256"].startswith("sha256:")
-        assert (
-            accuracy["scope"]
-            == "aggregate_walk_forward_model_family_evidence"
-        )
-        assert "model_binding" not in accuracy
-        assert (
-            "model_parameter_sha256"
-            not in accuracy["aggregate_walk_forward_model_family_binding"]
-        )
-        assert accuracy[
-            "aggregate_walk_forward_model_family_binding"
-        ] == {
-            "model_id": benchmark["model_id"],
-            "model_version": benchmark["model_version"],
-            "data_manifest_sha256": governance["data_manifest_sha256"],
-            "parameter_config_sha256": governance["parameter_config_sha256"],
-            "evidence_sha256": accuracy["evidence_sha256"],
-            "evidence_file_sha256": accuracy["evidence_file_sha256"],
-            "metric_snapshot_sha256": accuracy["metric_snapshot_sha256"],
-        }
+    with pytest.raises(LatencyBenchmarkError, match="version is invalid"):
+        validate_model_latency_report(report, program_root=PROJECT_ROOT)
 
 
 def test_latency_report_rejects_detached_accuracy_pointer_and_snapshot() -> None:
@@ -330,26 +739,39 @@ def test_latency_report_rejects_detached_accuracy_pointer_and_snapshot() -> None
     report = json.loads(artifact_path.read_text(encoding="utf-8"))
 
     missing_pointer = deepcopy(report)
-    missing_pointer["benchmarks"][0]["accuracy_reference"]["metric_pointer"] = (
-        "/does/not/exist"
-    )
+    benchmark = missing_pointer["benchmarks"][0]
+    accuracy = benchmark["accuracy_reference"]
+    accuracy["metric_pointer"] = "/does/not/exist"
     with pytest.raises(LatencyBenchmarkError, match="JSON Pointer"):
-        validate_model_latency_report(missing_pointer, program_root=PROJECT_ROOT)
+        model_latency._validate_accuracy_reference(
+            accuracy,
+            benchmark=benchmark,
+            program_root=PROJECT_ROOT,
+        )
 
     changed_snapshot = deepcopy(report)
-    changed_snapshot["benchmarks"][0]["accuracy_reference"]["reported_metrics"][
-        "observations"
-    ] += 1
+    benchmark = changed_snapshot["benchmarks"][0]
+    accuracy = benchmark["accuracy_reference"]
+    accuracy["reported_metrics"]["observations"] += 1
     with pytest.raises(LatencyBenchmarkError, match="reported_metrics"):
-        validate_model_latency_report(changed_snapshot, program_root=PROJECT_ROOT)
+        model_latency._validate_accuracy_reference(
+            accuracy,
+            benchmark=benchmark,
+            program_root=PROJECT_ROOT,
+        )
 
     changed_binding = deepcopy(report)
-    changed_binding["benchmarks"][0]["accuracy_reference"][
-        "aggregate_walk_forward_model_family_binding"
-    ]["parameter_config_sha256"] = "sha256:" + "0" * 64
-    _rehash_report(changed_binding)
+    benchmark = changed_binding["benchmarks"][0]
+    accuracy = benchmark["accuracy_reference"]
+    accuracy["aggregate_walk_forward_model_family_binding"][
+        "parameter_config_sha256"
+    ] = "sha256:" + "0" * 64
     with pytest.raises(LatencyBenchmarkError, match="aggregate"):
-        validate_model_latency_report(changed_binding, program_root=PROJECT_ROOT)
+        model_latency._validate_accuracy_reference(
+            accuracy,
+            benchmark=benchmark,
+            program_root=PROJECT_ROOT,
+        )
 
 
 def test_accuracy_reference_rejects_single_latency_fit_binding() -> None:
@@ -365,13 +787,16 @@ def test_accuracy_reference_rejects_single_latency_fit_binding() -> None:
     ] = reintroduced["benchmarks"][0]["governance"][
         "model_parameter_sha256"
     ]
-    _rehash_report(reintroduced)
 
     with pytest.raises(LatencyBenchmarkError, match="fitted parameter"):
-        validate_model_latency_report(reintroduced, program_root=PROJECT_ROOT)
+        model_latency._validate_accuracy_reference(
+            accuracy,
+            benchmark=reintroduced["benchmarks"][0],
+            program_root=PROJECT_ROOT,
+        )
 
 
-def test_latency_report_rejects_synchronized_parameter_hash_forgery() -> None:
+def test_rehashing_legacy_parameter_forgery_cannot_bypass_retirement() -> None:
     artifact_path = (
         PROJECT_ROOT / "artifacts" / "game-state" / "model_latency_v0.json"
     )
@@ -383,5 +808,5 @@ def test_latency_report_rejects_synchronized_parameter_hash_forgery() -> None:
     ] = forged_hash
     _rehash_report(forged)
 
-    with pytest.raises(LatencyBenchmarkError, match="parameter snapshot"):
+    with pytest.raises(LatencyBenchmarkError, match="version is invalid"):
         validate_model_latency_report(forged, program_root=PROJECT_ROOT)

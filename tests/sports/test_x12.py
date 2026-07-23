@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import FrozenInstanceError, replace
-from decimal import Decimal
+from dataclasses import FrozenInstanceError, asdict, replace
 from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,7 +11,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from prediction_market import contracts, experiments, program_audit
 from prediction_market.sports import x12
 from prediction_market.sports.statsbomb import (
     inspect_statsbomb_event,
@@ -75,7 +73,12 @@ def _match_index_bytes(specs: list[dict[str, object]] | None = None) -> bytes:
     ).encode()
 
 
-def _event_bytes(match: dict[str, object], *, bad_second: bool = False) -> bytes:
+def _event_bytes(
+    match: dict[str, object],
+    *,
+    bad_second: bool = False,
+    dismissal_side: str | None = None,
+) -> bytes:
     home = match["home_team"]
     away = match["away_team"]
     assert isinstance(home, dict)
@@ -89,13 +92,25 @@ def _event_bytes(match: dict[str, object], *, bad_second: bool = False) -> bytes
         second: int,
         event_type: str,
         team: dict[str, object],
+        period: int | None = None,
+        period_minute: int | None = None,
         goal: bool = False,
+        player_id: int | None = None,
+        card: str | None = None,
     ) -> dict[str, object]:
+        native_period = period if period is not None else 1 if minute < 45 else 2
+        native_period_minute = (
+            period_minute
+            if period_minute is not None
+            else minute % 45
+        )
         value: dict[str, object] = {
             "id": f"{match['match_id']}-{index}",
             "index": index,
-            "period": 1 if minute < 45 else 2,
-            "timestamp": f"00:{minute % 45:02d}:{second:02d}.000",
+            "period": native_period,
+            "timestamp": (
+                f"00:{native_period_minute:02d}:{second:02d}.000"
+            ),
             "minute": minute,
             "second": second,
             "type": {"id": 16 if event_type == "Shot" else 35, "name": event_type},
@@ -113,6 +128,19 @@ def _event_bytes(match: dict[str, object], *, bad_second: bool = False) -> bytes
         if event_type == "Shot":
             value["shot"] = {
                 "outcome": {"id": 97 if goal else 96, "name": "Goal" if goal else "Saved"}
+            }
+        if player_id is not None:
+            value["player"] = {
+                "id": player_id,
+                "name": f"Player {player_id}",
+            }
+        if event_type == "Bad Behaviour":
+            assert card in {"Red Card", "Second Yellow"}
+            value["bad_behaviour"] = {
+                "card": {
+                    "id": 5 if card == "Red Card" else 6,
+                    "name": card,
+                }
             }
         return value
 
@@ -153,6 +181,46 @@ def _event_bytes(match: dict[str, object], *, bad_second: bool = False) -> bytes
             )
         )
         index += 1
+    if dismissal_side is not None:
+        assert dismissal_side in {"home", "away"}
+        team = home if dismissal_side == "home" else away
+        team_id_key = (
+            "home_team_id" if dismissal_side == "home" else "away_team_id"
+        )
+        events.append(
+            event(
+                index=index,
+                minute=35,
+                second=30,
+                event_type="Bad Behaviour",
+                team=team,
+                player_id=int(team[team_id_key]) * 100 + 1,
+                card="Red Card",
+            )
+        )
+        index += 1
+    events.extend(
+        (
+            event(
+                index=index,
+                minute=45,
+                second=0,
+                event_type="Half End",
+                team=home,
+                period=1,
+                period_minute=45,
+            ),
+            event(
+                index=index + 1,
+                minute=90,
+                second=0,
+                event_type="Half End",
+                team=home,
+                period=2,
+                period_minute=45,
+            ),
+        )
+    )
     events.sort(key=lambda value: int(value["index"]))
     return json.dumps(events, sort_keys=True, separators=(",", ":")).encode()
 
@@ -222,6 +290,13 @@ def _install_reader(
             payload=_event_bytes(
                 match,
                 bad_second=match_id == bad_event_match_id,
+                dismissal_side=(
+                    "home"
+                    if match_id % 31 == 0
+                    else "away"
+                    if match_id % 37 == 0
+                    else None
+                ),
             ),
             match_id=match_id,
         )
@@ -282,6 +357,13 @@ def test_inventory_requires_index_plus_all_380_verified_event_manifests(
     assert loaded.goal_timeline_sha256 == x12.goal_timeline_sha256(
         loaded.goals
     )
+    assert loaded.dismissal_timeline_sha256 == x12.dismissal_timeline_sha256(
+        loaded.dismissals
+    )
+    assert set(loaded.dismissals["dismissal_side"]) == {
+        "home_dismissal",
+        "away_dismissal",
+    }
     assert loaded.matches["match_id"].nunique() == 380
     assert loaded.matches["event_manifest_sha256"].nunique() == 380
     assert loaded.matches["played_at"].dt.tz is not None
@@ -372,15 +454,135 @@ def test_loader_rejects_event_score_mismatch(
         )
 
 
-def test_expanding_dixon_coles_reports_calibration_baseline_ci_and_transitions(
+def _period_timeline_fixture() -> tuple[pd.DataFrame, pd.DataFrame]:
+    goals = pd.DataFrame(
+        [
+            {
+                "match_id": 1,
+                "period": 1,
+                "period_clock_ms": 45 * 60 * 1_000 + 57_718,
+                "global_elapsed_ms": 45 * 60 * 1_000 + 57_718,
+                "source_clock_ms": 45 * 60 * 1_000 + 57_718,
+                "event_index": 10,
+                "native_event_id": "goal-first-half-stoppage",
+                "scoring_side": "home_goal",
+            },
+            {
+                "match_id": 1,
+                "period": 2,
+                "period_clock_ms": 0,
+                "global_elapsed_ms": 45 * 60 * 1_000 + 57_719,
+                "source_clock_ms": 45 * 60 * 1_000,
+                "event_index": 20,
+                "native_event_id": "goal-second-half-cutoff",
+                "scoring_side": "away_goal",
+            },
+            {
+                "match_id": 1,
+                "period": 2,
+                "period_clock_ms": 5 * 60 * 1_000,
+                "global_elapsed_ms": 50 * 60 * 1_000 + 57_719,
+                "source_clock_ms": 50 * 60 * 1_000,
+                "event_index": 30,
+                "native_event_id": "goal-second-half-window-end",
+                "scoring_side": "home_goal",
+            },
+            {
+                "match_id": 1,
+                "period": 2,
+                "period_clock_ms": 10 * 60 * 1_000,
+                "global_elapsed_ms": 55 * 60 * 1_000 + 57_719,
+                "source_clock_ms": 55 * 60 * 1_000,
+                "event_index": 40,
+                "native_event_id": "goal-future",
+                "scoring_side": "away_goal",
+            },
+        ]
+    )
+    dismissals = pd.DataFrame(
+        columns=(
+            "match_id",
+            "period",
+            "period_clock_ms",
+            "global_elapsed_ms",
+            "source_clock_ms",
+            "event_index",
+            "native_event_id",
+            "player_id",
+            "dismissal_side",
+            "card",
+        )
+    )
+    return goals, dismissals
+
+
+def test_period_local_cutoff_consumes_boundary_and_excludes_first_half_stoppage() -> None:
+    goals, dismissals = _period_timeline_fixture()
+
+    state = x12._state_at_cutoff(
+        goals,
+        dismissals,
+        period=2,
+        period_clock_ms=0,
+    )
+    window = x12._events_in_transition_window(
+        goals,
+        period=2,
+        cutoff_period_clock_ms=0,
+    )
+
+    assert state == (1, 1, 0, 0)
+    assert window["native_event_id"].tolist() == [
+        "goal-second-half-window-end"
+    ]
+
+
+def test_prefix_state_hash_is_invariant_to_future_event_mutation() -> None:
+    goals, dismissals = _period_timeline_fixture()
+    match = SimpleNamespace(
+        match_id=1,
+        home_team_id=10,
+        away_team_id=20,
+    )
+    before = x12._source_state_sha256(
+        match,
+        goals,
+        dismissals,
+        period=2,
+        period_clock_ms=0,
+        home_score=1,
+        away_score=1,
+        home_dismissals=0,
+        away_dismissals=0,
+    )
+    mutated = goals.copy()
+    mutated.loc[
+        mutated["native_event_id"] == "goal-future",
+        "scoring_side",
+    ] = "home_goal"
+    after = x12._source_state_sha256(
+        match,
+        mutated,
+        dismissals,
+        period=2,
+        period_clock_ms=0,
+        home_score=1,
+        away_score=1,
+        home_dismissals=0,
+        away_dismissals=0,
+    )
+
+    assert after == before
+
+
+def test_dynamic_transition_reports_disjoint_calibration_and_test_metrics(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     loaded = _load_fixture(monkeypatch, tmp_path)
 
-    evaluation = x12.run_x12_walk_forward(
+    evaluation = x12.run_x12_dynamic_transition(
         loaded,
-        minimum_train_matches=100,
         evaluation_match_limit=90,
         bootstrap_samples=40,
         minimum_valid_bootstrap_samples=20,
@@ -388,41 +590,26 @@ def test_expanding_dixon_coles_reports_calibration_baseline_ci_and_transitions(
         optimizer_max_iterations=120,
     )
 
-    assert evaluation.result_label == "POC_NO_PIT_MARKET_PRIOR"
-    assert evaluation.contract_result_label == "PRELIMINARY"
+    assert evaluation.result_label == "PRELIMINARY"
     assert evaluation.experiment_id == "X-12"
-    assert evaluation.authorization_scope == "poc_result"
+    assert evaluation.model_id == "MODEL-SOCCER-DYNAMIC-INTENSITY"
+    assert evaluation.model_version == "v1"
+    assert (
+        evaluation.authorization_scope
+        == "team_h_soccer_dynamic_transition_reproduction_v1"
+    )
     assert evaluation.is_formal_result is False
-    assert len(evaluation.predictions) == 90
-    assert all(
-        fold.train_max_played_at < fold.test_min_played_at
-        and fold.train_match_count >= 100
-        for fold in evaluation.folds
-    )
-    probability_columns = [f"probability_{label}" for label in x12.OUTCOME_CLASSES]
-    assert np.allclose(
-        evaluation.predictions[probability_columns].sum(axis=1).to_numpy(),
-        np.ones(len(evaluation.predictions)),
-        rtol=0,
-        atol=1e-12,
-    )
-    metrics = evaluation.outcome_metrics
-    assert metrics["classes"] == x12.OUTCOME_CLASSES
-    assert metrics["bootstrap_samples_requested"] == 40
-    assert metrics["bootstrap_samples_valid"] >= 20
-    assert set(metrics["ovr_calibration"]) == set(x12.OUTCOME_CLASSES)
-    assert metrics["market_prior"] == {
-        "available": False,
-        "reason": "no_point_in_time_market_prior",
-    }
-    comparison = metrics["simple_baseline_comparison"]
-    assert comparison["available"] is True
-    assert comparison["delta_definition"] == "model_minus_simple_baseline"
-    assert set(comparison["delta_bootstrap_ci"]) == {"brier", "log_loss"}
+    assert not hasattr(x12, "run_x12_walk_forward")
+    assert not hasattr(evaluation, "predictions")
+    assert not hasattr(evaluation, "outcome_metrics")
+    assert not hasattr(evaluation, "folds")
 
     transitions = evaluation.transition_predictions
     transition_columns = [
         f"probability_{label}" for label in x12.TRANSITION_CLASSES
+    ]
+    raw_transition_columns = [
+        f"raw_probability_{label}" for label in x12.TRANSITION_CLASSES
     ]
     assert len(transitions) == 90 * 18
     assert transitions["horizon_seconds"].eq(300).all()
@@ -430,6 +617,17 @@ def test_expanding_dixon_coles_reports_calibration_baseline_ci_and_transitions(
     assert transitions["model_parameter_sha256"].str.match(
         r"^sha256:[0-9a-f]{64}$"
     ).all()
+    assert transitions["dynamic_parameter_sha256"].str.match(
+        r"^sha256:[0-9a-f]{64}$"
+    ).all()
+    assert transitions["temperature_parameter_sha256"].str.match(
+        r"^sha256:[0-9a-f]{64}$"
+    ).all()
+    assert transitions["source_state_sha256"].str.match(
+        r"^sha256:[0-9a-f]{64}$"
+    ).all()
+    assert transitions["home_dismissals_at_cutoff"].ge(0).all()
+    assert transitions["away_dismissals_at_cutoff"].ge(0).all()
     assert np.allclose(
         transitions[transition_columns].sum(axis=1).to_numpy(),
         np.ones(len(transitions)),
@@ -437,17 +635,70 @@ def test_expanding_dixon_coles_reports_calibration_baseline_ci_and_transitions(
         atol=1e-12,
     )
     assert transitions[transition_columns].ge(0).all().all()
+    assert np.allclose(
+        transitions[raw_transition_columns].sum(axis=1).to_numpy(),
+        np.ones(len(transitions)),
+        rtol=0,
+        atol=1e-12,
+    )
+    assert not np.allclose(
+        transitions[transition_columns].to_numpy(dtype=float),
+        transitions[raw_transition_columns].to_numpy(dtype=float),
+        rtol=0,
+        atol=1e-15,
+    )
     assert set(transitions["observed_transition"]) == set(x12.TRANSITION_CLASSES)
-    assert evaluation.transition_metrics["bootstrap_samples_requested"] == 40
-    assert evaluation.transition_metrics["bootstrap_samples_valid"] == 40
-    assert len({fold.parameter_sha256 for fold in evaluation.folds}) > 1
+    transition_metrics = evaluation.transition_metrics
+    assert transition_metrics["bootstrap_samples_requested"] == 40
+    assert transition_metrics["bootstrap_samples_valid"] >= 20
+    assert transition_metrics["probability_variant"] == (
+        "temperature_calibrated"
+    )
+    assert transition_metrics["raw_model_metrics"]["probability_variant"] == (
+        "uncalibrated"
+    )
+    assert set(transition_metrics["ovr_calibration"]) == set(
+        x12.TRANSITION_CLASSES
+    )
+    assert set(
+        transition_metrics["ovr_calibration_bootstrap_ci"]
+    ) == set(x12.TRANSITION_CLASSES)
+    static_comparison = transition_metrics["static_comparison"]
+    assert static_comparison["available"] is True
+    assert static_comparison["comparator"] == (
+        "pregame_dixon_coles_competing_poisson"
+    )
+    assert static_comparison["delta_definition"] == (
+        "temperature_calibrated_model_minus_static_comparator"
+    )
+    assert set(static_comparison["delta_bootstrap_ci"]) == {
+        "brier",
+        "log_loss",
+    }
+    split = evaluation.transition_split
+    assert split.method == "frozen_chronological_date_group_holdout_50_25_25"
+    assert split.base_fit_match_count == 190
+    assert split.calibration_match_count == 90
+    assert split.final_test_match_count == 100
+    assert split.final_test_evaluated_match_count == 90
+    assert split.base_fit_last_date < split.calibration_first_date
+    assert split.calibration_last_date < split.final_test_first_date
     assert (
-        evaluation.predictions[
-            ["expected_home_goals", "expected_away_goals"]
-        ]
-        .drop_duplicates()
-        .shape[0]
-        > 1
+        split.dixon_coles_parameter_sha256
+        == transitions["dixon_coles_parameter_sha256"].iloc[0]
+    )
+    assert (
+        split.dynamic_parameter_sha256
+        == transitions["dynamic_parameter_sha256"].iloc[0]
+    )
+    assert (
+        split.temperature_parameter_sha256
+        == transitions["temperature_parameter_sha256"].iloc[0]
+    )
+    assert evaluation.temperature_calibration.calibration_match_count == 90
+    assert (
+        evaluation.temperature_calibration.calibration_observation_count
+        == 90 * 18
     )
     assert (
         transitions[
@@ -460,22 +711,6 @@ def test_expanding_dixon_coles_reports_calibration_baseline_ci_and_transitions(
         .drop_duplicates()
         .shape[0]
         > 1
-    )
-    assert all(
-        fold.optimizer_projected_gradient_inf_norm <= 1e-4
-        and (
-            fold.optimizer_initial_projected_gradient_inf_norm <= 1e-4
-            or (
-                fold.optimizer_objective_improvement > 0
-                and fold.optimizer_parameter_displacement > 0
-            )
-        )
-        for fold in evaluation.folds
-    )
-    assert any(
-        fold.optimizer_objective_improvement > 0
-        and fold.optimizer_parameter_displacement > 0
-        for fold in evaluation.folds
     )
 
 
@@ -801,7 +1036,7 @@ def test_stationary_warm_start_rejects_objective_regression_explicitly(
         )
 
 
-def test_walk_forward_rejects_mutated_chronology(
+def test_dynamic_transition_rejects_mutated_chronology(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -810,9 +1045,8 @@ def test_walk_forward_rejects_mutated_chronology(
     mutated_matches.loc[0, "played_at"] += np.timedelta64(1, "D")
 
     with pytest.raises(x12.X12DataError, match="chronology"):
-        x12.run_x12_walk_forward(
+        x12.run_x12_dynamic_transition(
             replace(loaded, matches=mutated_matches),
-            minimum_train_matches=100,
             evaluation_match_limit=30,
             bootstrap_samples=40,
             minimum_valid_bootstrap_samples=20,
@@ -830,11 +1064,11 @@ def test_walk_forward_rejects_mutated_chronology(
                 "away_goal" if value == "home_goal" else "home_goal"
             ),
         ),
-        ("elapsed_seconds", lambda value: int(value) + 1),
+        ("period_clock_ms", lambda value: int(value) + 1),
         ("event_index", lambda value: int(value) + 100_000),
     ],
 )
-def test_walk_forward_rejects_mutated_goal_timeline_before_fitting(
+def test_dynamic_transition_rejects_mutated_goal_timeline_before_fitting(
     column: str,
     mutator: object,
     monkeypatch: pytest.MonkeyPatch,
@@ -850,9 +1084,51 @@ def test_walk_forward_rejects_mutated_goal_timeline_before_fitting(
 
     monkeypatch.setattr(x12, "_fit_dixon_coles", optimizer_must_not_run)
     with pytest.raises(x12.X12DataError, match="goal timeline"):
-        x12.run_x12_walk_forward(
+        x12.run_x12_dynamic_transition(
             replace(loaded, goals=mutated_goals),
-            minimum_train_matches=100,
+            evaluation_match_limit=30,
+            bootstrap_samples=40,
+            minimum_valid_bootstrap_samples=20,
+            confidence_level=0.90,
+            optimizer_max_iterations=60,
+        )
+
+
+@pytest.mark.parametrize(
+    ("column", "mutator"),
+    [
+        (
+            "dismissal_side",
+            lambda value: (
+                "away_dismissal"
+                if value == "home_dismissal"
+                else "home_dismissal"
+            ),
+        ),
+        ("period_clock_ms", lambda value: int(value) + 1),
+        ("event_index", lambda value: int(value) + 100_000),
+        ("player_id", lambda value: int(value) + 100_000),
+    ],
+)
+def test_dynamic_transition_rejects_mutated_dismissal_timeline_before_fitting(
+    column: str,
+    mutator: object,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    loaded = _load_fixture(monkeypatch, tmp_path)
+    mutated = loaded.dismissals.copy()
+    assert not mutated.empty
+    assert callable(mutator)
+    mutated.loc[0, column] = mutator(mutated.loc[0, column])
+
+    def optimizer_must_not_run(*_: object, **__: object) -> object:
+        raise AssertionError("optimizer reached before dismissal lineage validation")
+
+    monkeypatch.setattr(x12, "_fit_dixon_coles", optimizer_must_not_run)
+    with pytest.raises(x12.X12DataError, match="dismissal timeline"):
+        x12.run_x12_dynamic_transition(
+            replace(loaded, dismissals=mutated),
             evaluation_match_limit=30,
             bootstrap_samples=40,
             minimum_valid_bootstrap_samples=20,
@@ -866,68 +1142,114 @@ def test_evidence_is_self_hashed_and_cannot_claim_formal_or_market_prior(
     tmp_path: Path,
 ) -> None:
     loaded = _load_fixture(monkeypatch, tmp_path)
-    evaluation = x12.run_x12_walk_forward(
+    evaluation = x12.run_x12_dynamic_transition(
         loaded,
-        minimum_train_matches=100,
         evaluation_match_limit=30,
         bootstrap_samples=40,
         minimum_valid_bootstrap_samples=20,
         confidence_level=0.90,
         optimizer_max_iterations=120,
     )
-    real_validate_contract_v1 = contracts.validate_contract_v1
-    validation_calls: list[
-        tuple[Path, str, dict[str, object], contracts.ModelOutputV1]
-    ] = []
-
-    def validate_contract_v1_spy(
-        program_root: str | Path,
-        schema_name: str,
-        document: object,
-    ) -> contracts.ModelOutputV1:
-        validated = real_validate_contract_v1(
-            program_root,
-            schema_name,
-            document,
-        )
-        assert isinstance(document, dict)
-        assert isinstance(validated, contracts.ModelOutputV1)
-        validation_calls.append(
-            (Path(program_root), schema_name, document, validated)
-        )
-        return validated
-
-    monkeypatch.setattr(
-        contracts,
-        "validate_contract_v1",
-        validate_contract_v1_spy,
+    expected_path = (
+        tmp_path
+        / "artifacts"
+        / "game-state"
+        / "soccer"
+        / "x12_dynamic_transition_poc_v1.json"
     )
-
+    with pytest.raises(x12.X12DataError, match="reproduction registration"):
+        x12.build_x12_evidence(
+            loaded,
+            evaluation,
+            program_root=PROJECT_ROOT,
+            execution_mode="bounded_smoke",
+        )
+    assert not (
+        PROJECT_ROOT / x12.X12_DYNAMIC_EVIDENCE_RELATIVE_PATH
+    ).exists()
+    synthetic_preflight = {
+        "experiment_id": "X-12",
+        "scope": (
+            "team_h_soccer_dynamic_transition_reproduction_v1"
+        ),
+        "result_label": "PRELIMINARY",
+        "dataset_ids": ["DS-STATSBOMB-OPEN"],
+        "model_ids": [
+            "MODEL-SOCCER-DIXON-COLES",
+            "MODEL-SOCCER-DYNAMIC-INTENSITY",
+        ],
+        "required_lock_ids": [
+            "synthetic_fixture_lock",
+            "reproduction:synthetic_fixture",
+        ],
+        "resolved_locks": [
+            {
+                "id": "synthetic_fixture_lock",
+                "evidence_ref": "sha256:" + "a" * 64,
+            },
+            {
+                "id": "reproduction:synthetic_fixture",
+                "evidence_ref": "sha256:" + "b" * 64,
+            },
+        ],
+        "reproduction_lock_id": "reproduction:synthetic_fixture",
+        "reproduction_spec_sha256": "sha256:" + "b" * 64,
+        "code_sha256": "sha256:" + "c" * 64,
+        "data_sha256": "sha256:" + "d" * 64,
+        "registered_at": "2026-07-23T00:00:02Z",
+        "registration_head_sha256": "sha256:" + "e" * 64,
+        "status": "resolved",
+    }
+    historical_reference = x12._historical_x12_1x2_reference(
+        PROJECT_ROOT
+    )
+    monkeypatch.setattr(
+        x12,
+        "_validate_x12_reproduction_preflight",
+        lambda _: synthetic_preflight,
+    )
+    monkeypatch.setattr(
+        x12,
+        "_historical_x12_1x2_reference",
+        lambda _: historical_reference,
+    )
     evidence = x12.build_x12_evidence(
         loaded,
         evaluation,
-        program_root=PROJECT_ROOT,
+        program_root=tmp_path,
         execution_mode="bounded_smoke",
     )
-    path = tmp_path / "x12_evidence.json"
-    x12.write_x12_evidence(path, evidence)
+    path = x12.write_x12_evidence(
+        program_root=tmp_path,
+        evidence=evidence,
+    )
 
+    assert path == expected_path
     assert json.loads(path.read_text()) == evidence
     assert evidence["experiment_id"] == "X-12"
-    assert evidence["authorization_scope"] == "poc_result"
-    assert evidence["result_label"] == "POC_NO_PIT_MARKET_PRIOR"
-    assert evidence["contract_result_label"] == "PRELIMINARY"
+    assert evidence["model_id"] == "MODEL-SOCCER-DYNAMIC-INTENSITY"
+    assert evidence["model_version"] == "v1"
+    assert evidence["authorization_scope"] == (
+        "team_h_soccer_dynamic_transition_reproduction_v1"
+    )
+    assert evidence["result_label"] == "PRELIMINARY"
     assert evidence["is_formal_result"] is False
     assert evidence["formal_result_eligible"] is False
     assert evidence["market_prior"]["available"] is False
-    assert evidence["model"]["optimizer"] == "SLSQP"
-    assert evidence["model"]["optimizer_gradient"] == "analytic"
+    assert "outcome_evaluation" not in evidence
+    assert "walk_forward" not in evidence
+    base_rate_model = evidence["model"]["transition_model"][
+        "base_rate_model"
+    ]
+    assert base_rate_model["new_1x2_output_produced"] is False
+    assert base_rate_model["optimizer"] == "SLSQP"
+    assert base_rate_model["optimizer_gradient"] == "analytic"
     assert (
-        evidence["model"]["parameter_bound_machine_roundoff_tolerance_ulps"]
+        base_rate_model["parameter_bound_machine_roundoff_tolerance_ulps"]
         == 8
     )
-    assert evidence["model"]["kkt_boundary_absolute_tolerance"] == 1e-10
-    assert evidence["model"]["optimizer_fail_closed_checks"] == [
+    assert base_rate_model["kkt_boundary_absolute_tolerance"] == 1e-10
+    assert base_rate_model["optimizer_fail_closed_checks"] == [
         (
             "initial_and_final_parameter_bounds_with_8_ulp_"
             "machine_roundoff_tolerance"
@@ -939,122 +1261,52 @@ def test_evidence_is_self_hashed_and_cannot_claim_formal_or_market_prior(
         "parameter_displacement",
         "projected_gradient_inf_norm_lte_1e-4",
     ]
+    assert evidence["historical_1x2_reference"] == historical_reference
+    assert historical_reference["file_sha256"] == (
+        x12.X12_HISTORICAL_1X2_FILE_SHA256
+    )
+    assert historical_reference["recomputed_for_v1"] is False
+    assert historical_reference["metrics_migrated_to_v1"] is False
+    assert historical_reference["referenced_component"] == (
+        "outcome_evaluation"
+    )
+    assert (
+        historical_reference["historical_transition_output_reused"]
+        is False
+    )
     assert evidence["input_inventory"]["manifest_count"] == 381
     assert len(evidence["input_inventory"]["manifest_paths"]) == 381
     assert evidence["evidence_sha256"] == x12.evidence_sha256(evidence)
     assert evidence["open_gates"] == [
-        "Team H lock approval",
         "point-in-time market prior unavailable",
         "StatsBomb O-004 remains research-only",
         "offline event availability is not a live PIT feed",
+        "transition snapshots lack real EventEnvelope state_event_id",
         "formal promotion unauthorized",
     ]
     assert all(
         abs(sum(item["probabilities"].values()) - 1.0) <= 1e-12
         for item in evidence["transition_output"]["distributions"]
     )
-    assert len(validation_calls) == len(evaluation.transition_predictions)
-    assert all(
-        program_root == PROJECT_ROOT
-        and schema_name == "model-output/v1.schema.yaml"
-        and validated.experiment_id == "X-12"
-        and validated.model_id == "MODEL-SOCCER-FIVE-MINUTE-TRANSITION"
-        for program_root, schema_name, _, validated in validation_calls
+    transition = evidence["transition_output"]["distributions"][0]
+    assert set(transition["probabilities"]) == set(x12.TRANSITION_CLASSES)
+    assert set(transition["raw_probabilities"]) == set(
+        x12.TRANSITION_CLASSES
     )
-    contract_output = evidence["transition_output"]["distributions"][0][
-        "contract_output"
+    calibration = evidence["model"]["transition_model"][
+        "temperature_calibration"
     ]
-    validated = real_validate_contract_v1(
-        PROJECT_ROOT,
-        "model-output/v1.schema.yaml",
-        contract_output,
+    assert calibration["parameter_sha256"] == (
+        evaluation.temperature_calibration.parameter_sha256
     )
-    assert isinstance(validated, contracts.ModelOutputV1)
-    assert validated.model_id == "MODEL-SOCCER-FIVE-MINUTE-TRANSITION"
-    assert validated.model_version == "v1"
-    assert validated.experiment_id == "X-12"
-    assert validated.transition_unit == "five_minute_interval"
-    assert validated.data_sha256 == loaded.inventory.inventory_sha256
-    assert sum(
-        (
-            Decimal(value["atoms"]).scaleb(-value["scale"])
-            for value in contract_output["probabilities"].values()
-        ),
-        start=Decimal(0),
-    ) == Decimal(1)
-    assert contract_output["quality_flags"] == [
-        "preliminary_rules",
-        "source_clock_unverified",
-    ]
-
-
-def _contract_transition_row() -> SimpleNamespace:
-    return SimpleNamespace(
-        match_id=3750000,
-        prediction_at=pd.Timestamp("2015-08-01T12:00:00Z"),
-        home_score_at_cutoff=0,
-        away_score_at_cutoff=0,
-        probability_home_goal=0.10,
-        probability_away_goal=0.05,
-        probability_no_goal=0.85,
-        object_sha256=_digest("event-object"),
-        pit_status=x12.OFFLINE_PIT_STATUS,
-        model_parameter_sha256=_digest("model-parameters"),
-        inventory_sha256=_digest("inventory"),
+    assert evidence["model"]["transition_model"]["split"] == (
+        x12._json_ready(asdict(evaluation.transition_split))
     )
-
-
-@pytest.mark.parametrize(
-    ("missing_foreign_key", "expected_message"),
-    [
-        ("experiment", "experiment X-12 is not registered"),
-        (
-            "model",
-            (
-                "model MODEL-SOCCER-FIVE-MINUTE-TRANSITION "
-                "is not registered"
-            ),
-        ),
-    ],
-)
-def test_transition_contract_fails_closed_on_unknown_registry_foreign_key(
-    missing_foreign_key: str,
-    expected_message: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    if missing_foreign_key == "experiment":
-        registered = experiments.load_experiment_registry(PROJECT_ROOT)
-        monkeypatch.setattr(
-            experiments,
-            "load_experiment_registry",
-            lambda _: {
-                experiment_id: card
-                for experiment_id, card in registered.items()
-                if experiment_id != "X-12"
-            },
-        )
-    else:
-        registered_models = program_audit.load_model_registry(PROJECT_ROOT)
-        monkeypatch.setattr(
-            program_audit,
-            "load_model_registry",
-            lambda _: tuple(
-                row
-                for row in registered_models
-                if row.model_id
-                != "MODEL-SOCCER-FIVE-MINUTE-TRANSITION"
-            ),
-        )
-
-    with pytest.raises(x12.X12DataError) as exc_info:
-        x12._transition_contract_output(
-            _contract_transition_row(),
-            evaluation=SimpleNamespace(seed=x12.X12_SEED),
-            program_root=PROJECT_ROOT,
-        )
-
-    assert isinstance(exc_info.value.__cause__, contracts.ContractValidationError)
-    assert expected_message in str(exc_info.value.__cause__)
+    assert transition["contract_output"] is None
+    assert transition["contract_output_status"] == {
+        "available": False,
+        "reason": "offline_snapshot_not_bound_to_reducer_event_envelope",
+    }
 
 
 def test_checked_in_real_x12_poc_is_nonconstant_and_poc_only() -> None:
