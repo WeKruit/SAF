@@ -102,7 +102,7 @@ def test_fetch_preserves_byte_exact_partition_with_governed_manifest(
     assert result.record.version == NFLVERSE_RELEASE_VERSION
     assert result.record.partition == "season-2025"
     assert result.record.manifest.dataset_id == "DS-NFLVERSE"
-    assert result.record.manifest.license_ref == "I-018"
+    assert result.record.manifest.license_ref == "O-010"
     assert result.record.manifest.license_status == "approved"
     assert result.record.manifest.object_sha256 == result.audit.object_sha256
     verified = read_verified_static_object(
