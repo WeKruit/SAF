@@ -23,6 +23,9 @@ from prediction_market.pmxt.archive import ArchiveEntry
 from prediction_market.pmxt.full_day import (
     FullDayInputError,
     FullDayManifest,
+    LockedHourlyObject,
+    _resolve_locked_path,
+    _sha256_path,
     _verified_paths,
     validate_full_day_manifest,
 )
@@ -65,6 +68,8 @@ class TimestampAuditReport:
 class TimestampSampleAuditReport:
     version: str
     days: tuple[str, ...]
+    input_bundle_path: str
+    input_bundle_file_sha256: str
     input_bundle_sha256: str
     input_manifest_sha256s: tuple[str, ...]
     day_count: int
@@ -112,6 +117,21 @@ class _TimestampMetrics:
     timestamp_semantics: str
 
 
+@dataclass(frozen=True, slots=True)
+class _TimestampInputBundle:
+    relative_path: str
+    file_sha256: str
+    bundle_sha256: str
+    manifests: tuple[FullDayManifest, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _GovernedX02Input:
+    bundle_path: str
+    bundle_file_sha256: str
+    bundle_sha256: str
+
+
 def _canonical_bytes(value: object) -> bytes:
     return json.dumps(
         value,
@@ -120,6 +140,355 @@ def _canonical_bytes(value: object) -> bytes:
         ensure_ascii=False,
         allow_nan=False,
     ).encode("utf-8")
+
+
+def _strict_json_object(payload: bytes, *, context: str) -> dict[str, object]:
+    def no_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        value: dict[str, object] = {}
+        for key, item in pairs:
+            if key in value:
+                raise TimestampAuditError(f"duplicate JSON key: {key}")
+            value[key] = item
+        return value
+
+    try:
+        parsed = json.loads(
+            payload.decode("utf-8"),
+            object_pairs_hook=no_duplicates,
+            parse_constant=lambda constant: (_ for _ in ()).throw(
+                TimestampAuditError(f"non-finite JSON value: {constant}")
+            ),
+        )
+    except (UnicodeError, json.JSONDecodeError, TimestampAuditError) as exc:
+        raise TimestampAuditError(f"{context} is not strict JSON") from exc
+    if type(parsed) is not dict:
+        raise TimestampAuditError(f"{context} must be a JSON object")
+    return parsed
+
+
+def _require_exact_keys(
+    value: dict[str, object], expected: set[str], *, context: str
+) -> None:
+    if set(value) != expected:
+        raise TimestampAuditError(f"{context} fields do not match the v1 contract")
+
+
+def _require_string(value: object, *, field: str) -> str:
+    if type(value) is not str or not value:
+        raise TimestampAuditError(f"{field} must be a non-empty string")
+    return value
+
+
+def _require_integer(value: object, *, field: str) -> int:
+    if type(value) is not int:
+        raise TimestampAuditError(f"{field} must be an integer")
+    return value
+
+
+def _load_governed_x02_input(program_root: str | Path) -> _GovernedX02Input:
+    from prediction_market.experiments import (
+        ExperimentRegistryError,
+        load_experiment_registry,
+    )
+
+    try:
+        registry = load_experiment_registry(program_root)
+    except ExperimentRegistryError as exc:
+        raise TimestampAuditError(
+            f"X-02 governance validation failed before measurement: {exc}"
+        ) from exc
+    card = registry.get("X-02")
+    if type(card) is not dict:
+        raise TimestampAuditError("X-02 governance registration is missing")
+    binding = card.get("timestamp_input_manifest_binding")
+    if type(binding) is not dict:
+        raise TimestampAuditError("X-02 governed input binding is missing")
+    _require_exact_keys(
+        binding,
+        {"bundle_path", "bundle_file_sha256", "bundle_sha256"},
+        context="X-02 governed input binding",
+    )
+    governed = _GovernedX02Input(
+        bundle_path=_require_string(
+            binding["bundle_path"], field="X-02 governed bundle_path"
+        ),
+        bundle_file_sha256=_require_string(
+            binding["bundle_file_sha256"],
+            field="X-02 governed bundle_file_sha256",
+        ),
+        bundle_sha256=_require_string(
+            binding["bundle_sha256"], field="X-02 governed bundle_sha256"
+        ),
+    )
+    if any(
+        _SHA256_PATTERN.fullmatch(value) is None
+        for value in (governed.bundle_file_sha256, governed.bundle_sha256)
+    ):
+        raise TimestampAuditError("X-02 governed bundle hashes are invalid")
+
+    preregistered = card.get("preregistered_inputs")
+    if type(preregistered) is not dict:
+        raise TimestampAuditError("X-02 governed preregistered inputs are missing")
+    formal = preregistered.get("formal_result")
+    if type(formal) is not dict:
+        raise TimestampAuditError(
+            "X-02 formal runner code and data hashes are not preregistered"
+        )
+    _require_exact_keys(
+        formal,
+        {
+            "code_sha256",
+            "data_sha256",
+            "dataset_ids",
+            "model_ids",
+            "registered_at",
+        },
+        context="X-02 formal preregistered input",
+    )
+    code_sha256 = _require_string(
+        formal["code_sha256"], field="X-02 preregistered code_sha256"
+    )
+    data_sha256 = _require_string(
+        formal["data_sha256"], field="X-02 preregistered data_sha256"
+    )
+    if code_sha256 != _sha256_path(Path(__file__)):
+        raise TimestampAuditError(
+            "X-02 runner source does not match the preregistered code SHA-256"
+        )
+    if data_sha256 != governed.bundle_sha256:
+        raise TimestampAuditError(
+            "X-02 governed bundle does not match preregistered data SHA-256"
+        )
+    if formal["dataset_ids"] != ["DS-PMXT-V2"] or formal["model_ids"] != []:
+        raise TimestampAuditError(
+            "X-02 formal preregistered dataset/model binding is invalid"
+        )
+    return governed
+
+
+def _parse_full_day_manifest(
+    payload: bytes, *, context: str
+) -> FullDayManifest:
+    document = _strict_json_object(payload, context=context)
+    _require_exact_keys(
+        document,
+        {
+            "version",
+            "day",
+            "inventory_sha256",
+            "canonicalization_version",
+            "objects",
+            "manifest_sha256",
+        },
+        context=context,
+    )
+    raw_objects = document["objects"]
+    if type(raw_objects) is not list:
+        raise TimestampAuditError(f"{context}.objects must be a list")
+    objects: list[LockedHourlyObject] = []
+    for index, raw_object in enumerate(raw_objects):
+        object_context = f"{context}.objects[{index}]"
+        if type(raw_object) is not dict:
+            raise TimestampAuditError(f"{object_context} must be an object")
+        _require_exact_keys(
+            raw_object,
+            {
+                "hour",
+                "source_url",
+                "object_path",
+                "object_sha256",
+                "static_manifest_sha256",
+                "inventory_size_bytes",
+            },
+            context=object_context,
+        )
+        inventory_size = raw_object["inventory_size_bytes"]
+        if inventory_size is not None and type(inventory_size) is not int:
+            raise TimestampAuditError(
+                f"{object_context}.inventory_size_bytes must be an integer or null"
+            )
+        objects.append(
+            LockedHourlyObject(
+                hour=_require_string(raw_object["hour"], field=f"{object_context}.hour"),
+                source_url=_require_string(
+                    raw_object["source_url"], field=f"{object_context}.source_url"
+                ),
+                object_path=_require_string(
+                    raw_object["object_path"], field=f"{object_context}.object_path"
+                ),
+                object_sha256=_require_string(
+                    raw_object["object_sha256"],
+                    field=f"{object_context}.object_sha256",
+                ),
+                static_manifest_sha256=_require_string(
+                    raw_object["static_manifest_sha256"],
+                    field=f"{object_context}.static_manifest_sha256",
+                ),
+                inventory_size_bytes=inventory_size,
+            )
+        )
+    manifest = FullDayManifest(
+        version=_require_string(document["version"], field=f"{context}.version"),
+        day=_require_string(document["day"], field=f"{context}.day"),
+        inventory_sha256=_require_string(
+            document["inventory_sha256"], field=f"{context}.inventory_sha256"
+        ),
+        canonicalization_version=_require_string(
+            document["canonicalization_version"],
+            field=f"{context}.canonicalization_version",
+        ),
+        objects=tuple(objects),
+        manifest_sha256=_require_string(
+            document["manifest_sha256"], field=f"{context}.manifest_sha256"
+        ),
+    )
+    try:
+        return validate_full_day_manifest(manifest)
+    except FullDayInputError as exc:
+        raise TimestampAuditError(f"{context} is invalid: {exc}") from exc
+
+
+def _load_timestamp_input_bundle(
+    program_root: str | Path, relative_path: str
+) -> _TimestampInputBundle:
+    try:
+        bundle_path = _resolve_locked_path(Path(program_root), relative_path)
+    except FullDayInputError as exc:
+        raise TimestampAuditError(f"invalid X-02 input bundle path: {exc}") from exc
+    bundle_payload = bundle_path.read_bytes()
+    document = _strict_json_object(bundle_payload, context="X-02 input bundle")
+    _require_exact_keys(
+        document,
+        {
+            "additional_days",
+            "bundle_sha256",
+            "day_count",
+            "day_manifests",
+            "formal_result",
+            "inventory_path",
+            "inventory_sha256",
+            "object_count",
+            "purpose",
+            "selection_procedure",
+            "selection_seed",
+            "version",
+            "x01_day",
+        },
+        context="X-02 input bundle",
+    )
+    if document["version"] != "x02-timestamp-input-bundle-v1":
+        raise TimestampAuditError("unsupported X-02 input bundle version")
+    if document["formal_result"] is not False:
+        raise TimestampAuditError("X-02 input bundle formal_result must be false")
+    if document["purpose"] != "frozen_input_only_before_X02_evaluation":
+        raise TimestampAuditError("X-02 input bundle purpose is invalid")
+    if _require_integer(document["selection_seed"], field="selection_seed") != 20260722:
+        raise TimestampAuditError("X-02 input bundle selection_seed is not locked")
+    if document["x01_day"] != "2026-05-28":
+        raise TimestampAuditError("X-02 input bundle x01_day is not locked")
+    bundle_sha256 = _require_string(
+        document["bundle_sha256"], field="bundle_sha256"
+    )
+    if _SHA256_PATTERN.fullmatch(bundle_sha256) is None:
+        raise TimestampAuditError("bundle_sha256 must be a lowercase sha256: digest")
+    material = dict(document)
+    material.pop("bundle_sha256")
+    expected_bundle_sha256 = (
+        "sha256:" + hashlib.sha256(_canonical_bytes(material)).hexdigest()
+    )
+    if bundle_sha256 != expected_bundle_sha256:
+        raise TimestampAuditError("bundle_sha256 does not match bundle content")
+
+    raw_entries = document["day_manifests"]
+    if type(raw_entries) is not list:
+        raise TimestampAuditError("day_manifests must be a list")
+    day_count = _require_integer(document["day_count"], field="day_count")
+    if day_count != 4 or len(raw_entries) != 4:
+        raise TimestampAuditError(
+            "X-02 timestamp sample must contain exactly four UTC days"
+        )
+
+    manifests: list[FullDayManifest] = []
+    artifact_paths: set[str] = set()
+    for index, raw_entry in enumerate(raw_entries):
+        context = f"day_manifests[{index}]"
+        if type(raw_entry) is not dict:
+            raise TimestampAuditError(f"{context} must be an object")
+        _require_exact_keys(
+            raw_entry,
+            {
+                "artifact_file_sha256",
+                "day",
+                "full_day_manifest_sha256",
+                "object_count",
+                "path",
+            },
+            context=context,
+        )
+        artifact_path = _require_string(raw_entry["path"], field=f"{context}.path")
+        if artifact_path in artifact_paths:
+            raise TimestampAuditError("day manifest artifact paths must be unique")
+        artifact_paths.add(artifact_path)
+        try:
+            resolved = _resolve_locked_path(Path(program_root), artifact_path)
+        except FullDayInputError as exc:
+            raise TimestampAuditError(f"invalid {context}.path: {exc}") from exc
+        payload = resolved.read_bytes()
+        expected_file_sha256 = _require_string(
+            raw_entry["artifact_file_sha256"],
+            field=f"{context}.artifact_file_sha256",
+        )
+        if _SHA256_PATTERN.fullmatch(expected_file_sha256) is None:
+            raise TimestampAuditError(
+                f"{context}.artifact_file_sha256 must be a lowercase sha256: digest"
+            )
+        actual_file_sha256 = "sha256:" + hashlib.sha256(payload).hexdigest()
+        if actual_file_sha256 != expected_file_sha256:
+            raise TimestampAuditError(
+                f"{context} artifact file SHA-256 does not match the bundle"
+            )
+        manifest = _parse_full_day_manifest(payload, context=context)
+        if manifest.day != raw_entry["day"]:
+            raise TimestampAuditError(f"{context}.day does not match its manifest")
+        if manifest.manifest_sha256 != raw_entry["full_day_manifest_sha256"]:
+            raise TimestampAuditError(
+                f"{context}.full_day_manifest_sha256 does not match its manifest"
+            )
+        if _require_integer(raw_entry["object_count"], field=f"{context}.object_count") != len(
+            manifest.objects
+        ):
+            raise TimestampAuditError(f"{context}.object_count does not match")
+        manifests.append(manifest)
+
+    days = tuple(manifest.day for manifest in manifests)
+    if list(days) != sorted(days) or len(set(days)) != len(days):
+        raise TimestampAuditError(
+            "X-02 timestamp sample days must be unique and strictly increasing"
+        )
+    if document["x01_day"] not in days:
+        raise TimestampAuditError("X-02 timestamp sample does not contain x01_day")
+    additional_days = document["additional_days"]
+    expected_additional = [day for day in days if day != document["x01_day"]]
+    if additional_days != expected_additional:
+        raise TimestampAuditError("additional_days does not match bound day manifests")
+    if any(
+        manifest.inventory_sha256 != document["inventory_sha256"]
+        for manifest in manifests
+    ):
+        raise TimestampAuditError("day manifest inventory SHA-256 differs from bundle")
+    object_count = _require_integer(document["object_count"], field="object_count")
+    if object_count != sum(len(manifest.objects) for manifest in manifests):
+        raise TimestampAuditError("bundle object_count does not match day manifests")
+    if object_count != 96:
+        raise TimestampAuditError(
+            "X-02 timestamp sample must bind exactly 96 hourly objects"
+        )
+    return _TimestampInputBundle(
+        relative_path=relative_path,
+        file_sha256=_sha256_path(bundle_path),
+        bundle_sha256=bundle_sha256,
+        manifests=tuple(manifests),
+    )
 
 
 def _report_hash(
@@ -565,24 +934,28 @@ def audit_full_day_timestamps(
 
 def audit_timestamp_sample(
     raw_root: str | Path,
-    manifests: Iterable[FullDayManifest],
     *,
-    input_bundle_sha256: str,
+    program_root: str | Path,
+    input_bundle_path: str,
 ) -> TimestampSampleAuditReport:
     """Audit the exact four-day X-02 sample as one preregistered unit."""
 
-    frozen = tuple(manifests)
-    if len(frozen) != 4:
+    if type(input_bundle_path) is not str or not input_bundle_path:
+        raise TimestampAuditError("input_bundle_path must be a non-empty string")
+    governed = _load_governed_x02_input(program_root)
+    if input_bundle_path != governed.bundle_path:
         raise TimestampAuditError(
-            "X-02 timestamp sample must contain exactly four UTC days"
+            "input_bundle_path does not match the governed X-02 binding"
         )
+    bundle = _load_timestamp_input_bundle(program_root, input_bundle_path)
     if (
-        type(input_bundle_sha256) is not str
-        or _SHA256_PATTERN.fullmatch(input_bundle_sha256) is None
+        bundle.file_sha256 != governed.bundle_file_sha256
+        or bundle.bundle_sha256 != governed.bundle_sha256
     ):
         raise TimestampAuditError(
-            "input_bundle_sha256 must be a lowercase sha256: digest"
+            "X-02 input bundle does not match the governed file/self hashes"
         )
+    frozen = bundle.manifests
 
     verified_by_day: list[tuple[Path, ...]] = []
     try:
@@ -595,10 +968,6 @@ def audit_timestamp_sample(
         ) from exc
 
     days = tuple(manifest.day for manifest in frozen)
-    if list(days) != sorted(days) or len(set(days)) != len(days):
-        raise TimestampAuditError(
-            "X-02 timestamp sample days must be unique and strictly increasing"
-        )
     paths = tuple(path for day_paths in verified_by_day for path in day_paths)
     if len(paths) != 96:
         raise TimestampAuditError(
@@ -615,7 +984,9 @@ def audit_timestamp_sample(
     provisional = TimestampSampleAuditReport(
         version="pmxt-timestamp-sample-audit-v1",
         days=days,
-        input_bundle_sha256=input_bundle_sha256,
+        input_bundle_path=bundle.relative_path,
+        input_bundle_file_sha256=bundle.file_sha256,
+        input_bundle_sha256=bundle.bundle_sha256,
         input_manifest_sha256s=tuple(
             manifest.manifest_sha256 for manifest in frozen
         ),
@@ -637,6 +1008,16 @@ def audit_timestamp_sample(
     if post_verified != tuple(verified_by_day):
         raise TimestampAuditError(
             "frozen input paths changed during timestamp sample audit"
+        )
+    post_bundle = _load_timestamp_input_bundle(program_root, input_bundle_path)
+    if post_bundle != bundle:
+        raise TimestampAuditError(
+            "frozen input bundle or day manifests changed during timestamp audit"
+        )
+    post_governed = _load_governed_x02_input(program_root)
+    if post_governed != governed:
+        raise TimestampAuditError(
+            "X-02 governance binding changed during timestamp audit"
         )
     return report
 

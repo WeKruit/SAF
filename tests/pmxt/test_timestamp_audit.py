@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections import Counter
+from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -10,8 +12,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+import prediction_market.experiments as experiments_module
+import prediction_market.pmxt.timestamp_audit as timestamp_audit_module
 from prediction_market.pmxt.archive import ArchiveEntry
 from prediction_market.pmxt.full_day import (
+    FullDayManifest,
     HourlyObjectRef,
     build_full_day_manifest,
     select_complete_utc_day,
@@ -32,6 +37,16 @@ MARKET = "0x" + "7" * 64
 
 def _digest(value: bytes) -> str:
     return "sha256:" + hashlib.sha256(value).hexdigest()
+
+
+def _canonical(value: object) -> bytes:
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
 
 
 def _inventory(days: list[date], *, incomplete: date | None = None):
@@ -148,6 +163,95 @@ def _manifest(
     )
 
 
+def _write_timestamp_bundle(
+    program_root: Path,
+    manifests: tuple[FullDayManifest, ...],
+) -> tuple[str, str, str]:
+    audit_root = program_root / "artifacts" / "data-audit"
+    audit_root.mkdir(parents=True, exist_ok=True)
+    entries: list[dict[str, object]] = []
+    for manifest in manifests:
+        relative = (
+            "artifacts/data-audit/"
+            f"x02_full_day_input_manifest_{manifest.day}_v1.json"
+        )
+        payload = (
+            json.dumps(
+                asdict(manifest),
+                indent=2,
+                sort_keys=True,
+                ensure_ascii=False,
+                allow_nan=False,
+            )
+            + "\n"
+        ).encode()
+        (program_root / relative).write_bytes(payload)
+        entries.append(
+            {
+                "artifact_file_sha256": _digest(payload),
+                "day": manifest.day,
+                "full_day_manifest_sha256": manifest.manifest_sha256,
+                "object_count": len(manifest.objects),
+                "path": relative,
+            }
+        )
+    days = [manifest.day for manifest in manifests]
+    material = {
+        "additional_days": [day for day in days if day != "2026-05-28"],
+        "day_count": len(manifests),
+        "day_manifests": entries,
+        "formal_result": False,
+        "inventory_path": "artifacts/data-audit/phase0_inventory.json",
+        "inventory_sha256": _digest(b"inventory"),
+        "object_count": sum(len(manifest.objects) for manifest in manifests),
+        "purpose": "frozen_input_only_before_X02_evaluation",
+        "selection_procedure": "fixture_exact_four_day_selection",
+        "selection_seed": 20260722,
+        "version": "x02-timestamp-input-bundle-v1",
+        "x01_day": "2026-05-28",
+    }
+    bundle_sha256 = _digest(_canonical(material))
+    bundle = {**material, "bundle_sha256": bundle_sha256}
+    relative = "artifacts/data-audit/x02_timestamp_input_bundle_v1.json"
+    bundle_payload = (
+        json.dumps(bundle, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    ).encode("utf-8")
+    (program_root / relative).write_bytes(bundle_payload)
+    return relative, bundle_sha256, _digest(bundle_payload)
+
+
+@pytest.fixture
+def governed_x02(monkeypatch: pytest.MonkeyPatch) -> None:
+    def load_registry(program_root: str | Path) -> dict[str, dict[str, object]]:
+        root = Path(program_root)
+        relative = "artifacts/data-audit/x02_timestamp_input_bundle_v1.json"
+        payload = (root / relative).read_bytes()
+        document = json.loads(payload)
+        bundle_sha256 = document["bundle_sha256"]
+        return {
+            "X-02": {
+                "timestamp_input_manifest_binding": {
+                    "bundle_path": relative,
+                    "bundle_file_sha256": _digest(payload),
+                    "bundle_sha256": bundle_sha256,
+                },
+                "preregistered_inputs": {
+                    "formal_result": {
+                        "code_sha256": _digest(
+                            Path(timestamp_audit_module.__file__).read_bytes()
+                        ),
+                        "data_sha256": bundle_sha256,
+                        "dataset_ids": ["DS-PMXT-V2"],
+                        "model_ids": [],
+                        "registered_at": "2026-07-23T05:30:00Z",
+                    }
+                },
+            }
+        }
+
+    monkeypatch.setattr(experiments_module, "load_experiment_registry", load_registry)
+
+
 def test_x02_day_selection_is_seeded_and_complete() -> None:
     days = [date(2026, 5, day) for day in range(24, 30)]
     incomplete = days[0]
@@ -220,6 +324,7 @@ def test_full_day_timestamp_audit_reports_locked_metrics(tmp_path: Path) -> None
 
 def test_four_day_timestamp_sample_aggregates_the_preregistered_unit(
     tmp_path: Path,
+    governed_x02: None,
 ) -> None:
     days = (
         date(2026, 4, 22),
@@ -228,16 +333,20 @@ def test_four_day_timestamp_sample_aggregates_the_preregistered_unit(
         date(2026, 6, 25),
     )
     manifests = tuple(_manifest(tmp_path, day=day) for day in days)
-    bundle_sha256 = _digest(b"x02-four-day-input-bundle")
+    bundle_path, bundle_sha256, bundle_file_sha256 = _write_timestamp_bundle(
+        tmp_path, manifests
+    )
 
     report = audit_timestamp_sample(
         tmp_path,
-        manifests,
-        input_bundle_sha256=bundle_sha256,
+        program_root=tmp_path,
+        input_bundle_path=bundle_path,
     )
 
     assert report.version == "pmxt-timestamp-sample-audit-v1"
     assert report.days == tuple(day.isoformat() for day in days)
+    assert report.input_bundle_path == bundle_path
+    assert report.input_bundle_file_sha256 == bundle_file_sha256
     assert report.input_bundle_sha256 == bundle_sha256
     assert report.input_manifest_sha256s == tuple(
         manifest.manifest_sha256 for manifest in manifests
@@ -258,6 +367,7 @@ def test_four_day_timestamp_sample_aggregates_the_preregistered_unit(
 
 def test_timestamp_sample_rejects_noncanonical_four_day_membership(
     tmp_path: Path,
+    governed_x02: None,
 ) -> None:
     days = (
         date(2026, 4, 22),
@@ -267,18 +377,92 @@ def test_timestamp_sample_rejects_noncanonical_four_day_membership(
     )
     manifests = tuple(_manifest(tmp_path, day=day) for day in days)
 
+    three_day_bundle, _, _ = _write_timestamp_bundle(tmp_path, manifests[:3])
     with pytest.raises(TimestampAuditError, match="exactly four"):
         audit_timestamp_sample(
             tmp_path,
-            manifests[:3],
-            input_bundle_sha256=_digest(b"bundle"),
+            program_root=tmp_path,
+            input_bundle_path=three_day_bundle,
         )
+
+    reversed_root = tmp_path / "reversed"
+    reversed_root.mkdir()
+    reversed_manifests = tuple(
+        _manifest(reversed_root, day=day) for day in reversed(days)
+    )
+    reversed_bundle, _, _ = _write_timestamp_bundle(
+        reversed_root, reversed_manifests
+    )
     with pytest.raises(TimestampAuditError, match="strictly increasing"):
         audit_timestamp_sample(
-            tmp_path,
-            tuple(reversed(manifests)),
-            input_bundle_sha256=_digest(b"bundle"),
+            reversed_root,
+            program_root=reversed_root,
+            input_bundle_path=reversed_bundle,
         )
+
+
+def test_timestamp_sample_rejects_tampered_bound_day_manifest(
+    tmp_path: Path,
+    governed_x02: None,
+) -> None:
+    days = (
+        date(2026, 4, 22),
+        date(2026, 5, 28),
+        date(2026, 6, 5),
+        date(2026, 6, 25),
+    )
+    manifests = tuple(_manifest(tmp_path, day=day) for day in days)
+    bundle_path, _, _ = _write_timestamp_bundle(tmp_path, manifests)
+    bound_path = (
+        tmp_path
+        / "artifacts/data-audit/x02_full_day_input_manifest_2026-04-22_v1.json"
+    )
+    bound_path.write_bytes(bound_path.read_bytes() + b" ")
+
+    with pytest.raises(TimestampAuditError, match="artifact file SHA-256"):
+        audit_timestamp_sample(
+            tmp_path,
+            program_root=tmp_path,
+            input_bundle_path=bundle_path,
+        )
+
+
+def test_timestamp_sample_rejects_missing_governance_before_metrics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    days = (
+        date(2026, 4, 22),
+        date(2026, 5, 28),
+        date(2026, 6, 5),
+        date(2026, 6, 25),
+    )
+    manifests = tuple(_manifest(tmp_path, day=day) for day in days)
+    bundle_path, _, _ = _write_timestamp_bundle(tmp_path, manifests)
+    metric_calls = 0
+
+    def reject_registry(program_root: str | Path) -> dict[str, dict[str, object]]:
+        raise experiments_module.ExperimentRegistryError("missing sidecar")
+
+    def forbidden_metrics(paths: list[str]):
+        nonlocal metric_calls
+        metric_calls += 1
+        raise AssertionError("metrics must not run before governance")
+
+    monkeypatch.setattr(
+        experiments_module, "load_experiment_registry", reject_registry
+    )
+    monkeypatch.setattr(
+        timestamp_audit_module, "_compute_timestamp_metrics", forbidden_metrics
+    )
+
+    with pytest.raises(TimestampAuditError, match="governance"):
+        audit_timestamp_sample(
+            tmp_path,
+            program_root=tmp_path,
+            input_bundle_path=bundle_path,
+        )
+    assert metric_calls == 0
 
 
 def test_timestamp_audit_fails_closed_when_native_file_order_is_broken(
