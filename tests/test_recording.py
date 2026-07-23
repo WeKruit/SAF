@@ -3,12 +3,15 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import zstandard
 
+from prediction_market import recording as recording_module
+from prediction_market.contracts import VenueRuleSnapshotV0
 from prediction_market.raw_store import verify_segment
 from prediction_market.recording import (
     FormalReplayRejected,
@@ -172,6 +175,7 @@ async def test_polymarket_reconnect_is_bounded_and_counts_continuity_gaps(
     assert sleeps == [0.25]
     assert result.counters.reconnects == 1
     assert result.counters.gaps == 1
+    assert result.counters.continuity_unknown == 1
     assert result.counters.frames == 1
     assert all(verify_segment(manifest.path).valid for manifest in result.manifests)
 
@@ -233,6 +237,7 @@ async def test_kalshi_frames_are_exact_and_sequence_gaps_are_counted(
     assert result.complete is True
     assert result.counters.frames == 2
     assert result.counters.gaps == 1
+    assert result.counters.continuity_unknown == 0
     assert result.counters.out_of_order == 0
     assert _raw_payloads(result.manifests[0].object_path) == frames
 
@@ -283,7 +288,7 @@ async def test_kalshi_subscription_ack_is_preserved_without_parse_error(
 
 
 @pytest.mark.asyncio
-async def test_kalshi_reconnect_is_bounded_and_keeps_native_sequence_state(
+async def test_kalshi_reconnect_starts_a_new_sequence_epoch_and_marks_boundary(
     tmp_path: Path,
 ) -> None:
     sockets = [
@@ -292,7 +297,7 @@ async def test_kalshi_reconnect_is_bounded_and_keeps_native_sequence_state(
             terminal_error=ConnectionError("disconnect"),
         ),
         FakeWebSocket(
-            [b'{"type":"orderbook_delta","sid":7,"seq":42,"msg":{}}']
+            [b'{"type":"orderbook_delta","sid":7,"seq":100,"msg":{}}']
         ),
     ]
     attempts = 0
@@ -321,6 +326,8 @@ async def test_kalshi_reconnect_is_bounded_and_keeps_native_sequence_state(
     assert attempts == 2
     assert result.counters.reconnects == 1
     assert result.counters.gaps == 1
+    assert result.counters.continuity_unknown == 1
+    assert result.counters.out_of_order == 0
     assert result.counters.frames == 2
     assert len(result.manifests) == 2
 
@@ -331,7 +338,7 @@ def _valid_rule_document() -> dict[str, object]:
         "game_start_time": "2026-07-22T19:00:00Z",
         "seconds_delay": 1,
         "cancel_during_delay": False,
-        "start_time_cancel_policy": "clear at official start; shifted starts may not clear",
+        "start_time_cancel_policy": "cancel_all_with_schedule_change_exception",
         "fees_enabled": True,
         "fee_rate": "0.05",
         "fee_exponent": "2",
@@ -359,7 +366,8 @@ def test_rule_response_is_sealed_before_normalization(tmp_path: Path) -> None:
         raw_response,
         raw_root=tmp_path,
         venue="polymarket",
-        condition_id="condition-1",
+        market_id="market_rule_1",
+        condition_id="condition_rule_1",
         fetched_at=UTC_TIME,
         source_document_version=(
             "https://docs.polymarket.com/trading/orders/create#sports-markets"
@@ -369,13 +377,25 @@ def test_rule_response_is_sealed_before_normalization(tmp_path: Path) -> None:
     )
 
     assert parser_observation == [capture.raw_manifest.path]
-    assert capture.snapshot.valid is True
-    assert capture.snapshot.quality_flags == ()
-    assert capture.snapshot.require_formal_replay() is capture.snapshot
+    assert capture.valid is True
+    assert capture.quality_flags == ()
+    assert capture.validation_errors == ()
+    assert isinstance(capture.snapshot, VenueRuleSnapshotV0)
+    assert capture.snapshot.seconds_delay.to_decimal() == Decimal("1")
     assert capture.snapshot.raw_response_hash == (
         "sha256:" + hashlib.sha256(raw_response).hexdigest()
     )
     assert _raw_payloads(capture.raw_manifest.object_path) == [raw_response]
+    assert verify_segment(capture.canonical_manifest.path).valid
+    canonical_record = json.loads(
+        _raw_payloads(capture.canonical_manifest.object_path)[0]
+    )
+    assert canonical_record["valid"] is True
+    assert canonical_record["quality_flags"] == []
+    assert canonical_record["market_id"] == "market_rule_1"
+    assert canonical_record["condition_id"] == "condition_rule_1"
+    assert canonical_record["source_document_version"].endswith("@2026-07-22")
+    assert canonical_record["snapshot"] == capture.snapshot.model_dump(mode="json")
 
 
 def test_missing_rule_field_is_quality_marked_and_formal_replay_rejects(
@@ -389,15 +409,23 @@ def test_missing_rule_field_is_quality_marked_and_formal_replay_rejects(
         raw_response,
         raw_root=tmp_path,
         venue="polymarket",
-        condition_id="condition-1",
+        market_id="market_rule_1",
+        condition_id="condition_rule_1",
         fetched_at=UTC_TIME,
         source_document_version="official-response@2026-07-22",
     )
 
-    assert capture.snapshot.valid is False
-    assert "MISSING_RULE_FIELD:fee_rate" in capture.snapshot.quality_flags
-    with pytest.raises(FormalReplayRejected, match="fee_rate"):
-        capture.snapshot.require_formal_replay()
+    assert capture.valid is False
+    assert capture.snapshot is None
+    assert capture.quality_flags == ("preliminary_rules",)
+    assert "MISSING_RULE_FIELD:fee_rate" in capture.validation_errors
+    assert verify_segment(capture.canonical_manifest.path).valid
+    canonical_record = json.loads(
+        _raw_payloads(capture.canonical_manifest.object_path)[0]
+    )
+    assert canonical_record["valid"] is False
+    assert canonical_record["quality_flags"] == ["preliminary_rules"]
+    assert "MISSING_RULE_FIELD:fee_rate" in canonical_record["validation_errors"]
     assert verify_segment(capture.raw_manifest.path).valid
     assert _raw_payloads(capture.raw_manifest.object_path) == [raw_response]
 
@@ -413,16 +441,16 @@ def test_rule_numeric_fields_reject_binary_float_in_formal_snapshot(
         raw_response,
         raw_root=tmp_path,
         venue="polymarket",
-        condition_id="condition-1",
+        market_id="market_rule_1",
+        condition_id="condition_rule_1",
         fetched_at=UTC_TIME,
         source_document_version="official-response@2026-07-22",
         parser=lambda payload, _manifest_path: json.loads(payload),
     )
 
-    assert capture.snapshot.valid is False
-    assert "INVALID_RULE_FIELD:fee_rate" in capture.snapshot.quality_flags
-    with pytest.raises(FormalReplayRejected):
-        capture.snapshot.require_formal_replay()
+    assert capture.valid is False
+    assert capture.snapshot is None
+    assert "INVALID_RULE_FIELD:fee_rate" in capture.validation_errors
 
 
 def test_rule_timestamps_must_use_canonical_utc_form(tmp_path: Path) -> None:
@@ -434,13 +462,132 @@ def test_rule_timestamps_must_use_canonical_utc_form(tmp_path: Path) -> None:
         raw_response,
         raw_root=tmp_path,
         venue="polymarket",
-        condition_id="condition-1",
+        market_id="market_rule_1",
+        condition_id="condition_rule_1",
         fetched_at=UTC_TIME,
         source_document_version="official-response@2026-07-22",
     )
 
-    assert capture.snapshot.valid is False
-    assert "INVALID_RULE_FIELD:effective_from" in capture.snapshot.quality_flags
+    assert capture.valid is False
+    assert capture.snapshot is None
+    assert "INVALID_RULE_FIELD:effective_from" in capture.validation_errors
+
+
+def test_rule_store_selects_latest_strict_as_of_snapshot(tmp_path: Path) -> None:
+    first_document = _valid_rule_document()
+    first = capture_venue_rule_snapshot(
+        json.dumps(first_document, separators=(",", ":")).encode(),
+        raw_root=tmp_path,
+        venue="polymarket",
+        market_id="market_rule_1",
+        condition_id="condition_rule_1",
+        fetched_at="2026-07-22T14:00:00Z",
+        source_document_version="official-response@2026-07-22T14:00:00Z",
+    )
+    second_document = _valid_rule_document()
+    second_document["minimum_order_size"] = "10"
+    second_document["effective_from"] = "2026-07-22T14:05:00Z"
+    second = capture_venue_rule_snapshot(
+        json.dumps(second_document, separators=(",", ":")).encode(),
+        raw_root=tmp_path,
+        venue="polymarket",
+        market_id="market_rule_1",
+        condition_id="condition_rule_1",
+        fetched_at="2026-07-22T14:05:00Z",
+        source_document_version="official-response@2026-07-22T14:05:00Z",
+    )
+    future_document = _valid_rule_document()
+    future_document["minimum_order_size"] = "15"
+    future_document["effective_from"] = "2026-07-22T14:10:00Z"
+    future = capture_venue_rule_snapshot(
+        json.dumps(future_document, separators=(",", ":")).encode(),
+        raw_root=tmp_path,
+        venue="polymarket",
+        market_id="market_rule_1",
+        condition_id="condition_rule_1",
+        fetched_at="2026-07-22T14:05:30Z",
+        source_document_version="official-response@2026-07-22T14:05:30Z",
+    )
+    store = recording_module.VenueRuleStore(tmp_path)
+
+    before_change = store.require_as_of(
+        venue="polymarket",
+        market_id="market_rule_1",
+        condition_id="condition_rule_1",
+        at="2026-07-22T14:04:00Z",
+        max_age_seconds=600,
+    )
+    after_change = store.require_as_of(
+        venue="polymarket",
+        market_id="market_rule_1",
+        condition_id="condition_rule_1",
+        at="2026-07-22T14:06:00Z",
+        max_age_seconds=600,
+    )
+
+    assert before_change == first.snapshot
+    assert after_change == second.snapshot
+    assert before_change.minimum_order_size.to_decimal() == Decimal("5")
+    assert after_change.minimum_order_size.to_decimal() == Decimal("10")
+    assert first.canonical_manifest.path != second.canonical_manifest.path
+    assert second.canonical_manifest.path != future.canonical_manifest.path
+    assert first.canonical_manifest.path.exists()
+    assert second.canonical_manifest.path.exists()
+    assert future.canonical_manifest.path.exists()
+
+
+def test_rule_store_rejects_missing_stale_and_latest_invalid_state(
+    tmp_path: Path,
+) -> None:
+    valid_document = _valid_rule_document()
+    capture_venue_rule_snapshot(
+        json.dumps(valid_document, separators=(",", ":")).encode(),
+        raw_root=tmp_path,
+        venue="polymarket",
+        market_id="market_rule_1",
+        condition_id="condition_rule_1",
+        fetched_at="2026-07-22T14:00:00Z",
+        source_document_version="official-response@2026-07-22T14:00:00Z",
+    )
+    store = recording_module.VenueRuleStore(tmp_path)
+
+    with pytest.raises(FormalReplayRejected, match="missing"):
+        store.require_as_of(
+            venue="polymarket",
+            market_id="market_missing",
+            condition_id="condition_missing",
+            at="2026-07-22T14:01:00Z",
+            max_age_seconds=300,
+        )
+    with pytest.raises(FormalReplayRejected, match="stale"):
+        store.require_as_of(
+            venue="polymarket",
+            market_id="market_rule_1",
+            condition_id="condition_rule_1",
+            at="2026-07-22T15:00:00Z",
+            max_age_seconds=300,
+        )
+
+    invalid_document = _valid_rule_document()
+    del invalid_document["fee_rate"]
+    capture_venue_rule_snapshot(
+        json.dumps(invalid_document, separators=(",", ":")).encode(),
+        raw_root=tmp_path,
+        venue="polymarket",
+        market_id="market_rule_1",
+        condition_id="condition_rule_1",
+        fetched_at="2026-07-22T14:02:00Z",
+        source_document_version="official-response@2026-07-22T14:02:00Z",
+    )
+
+    with pytest.raises(FormalReplayRejected, match="fee_rate"):
+        store.require_as_of(
+            venue="polymarket",
+            market_id="market_rule_1",
+            condition_id="condition_rule_1",
+            at="2026-07-22T14:03:00Z",
+            max_age_seconds=300,
+        )
 
 
 def test_connectivity_artifacts_record_evidence_and_credential_blocker() -> None:
@@ -451,6 +598,15 @@ def test_connectivity_artifacts_record_evidence_and_credential_blocker() -> None
     credentials = (
         project_root / "artifacts/venue-connectivity/kalshi_credentials.md"
     ).read_text(encoding="utf-8")
+    smoke_report_path = (
+        project_root
+        / "artifacts/venue-connectivity/polymarket_public_smoke_v0.json"
+    )
+    smoke_report = json.loads(smoke_report_path.read_text(encoding="utf-8"))
+    smoke_root = (
+        project_root
+        / "artifacts/venue-connectivity/polymarket-public-smoke-v0"
+    )
 
     assert "https://docs.polymarket.com/market-data/websocket/market-channel" in matrix
     assert "https://docs.kalshi.com/getting_started/api_keys" in matrix
@@ -458,6 +614,26 @@ def test_connectivity_artifacts_record_evidence_and_credential_blocker() -> None
     assert "KALSHI_PRIVATE_KEY_PATH" in credentials
     assert "blocked" in credentials.lower()
     assert "BEGIN PRIVATE KEY" not in credentials
+    assert "artifacts/venue-connectivity/polymarket_public_smoke_v0.json" in matrix
+    assert smoke_report["evidence_scope"] == (
+        "operational_observation_not_x08_evidence"
+    )
+    assert smoke_report["configuration"]["max_frames"] == 5
+    assert smoke_report["counters"]["frames"] == 5
+    assert smoke_report["counters"]["parse_errors"] == 0
+    for segment in smoke_report["segments"]:
+        manifest_path = smoke_root / segment["manifest_path"]
+        object_path = smoke_root / segment["object_path"]
+        assert verify_segment(manifest_path, root=smoke_root).valid
+        assert segment["manifest_sha256"] == (
+            "sha256:" + hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+        )
+        assert segment["object_sha256"] == (
+            "sha256:" + hashlib.sha256(object_path.read_bytes()).hexdigest()
+        )
+    committed_evidence = smoke_report_path.read_text(encoding="utf-8")
+    assert "BEGIN PRIVATE KEY" not in committed_evidence
+    assert "KALSHI-ACCESS-" not in committed_evidence
 
 
 def test_polymarket_cli_fails_explicitly_when_no_active_sports_market(
@@ -487,7 +663,7 @@ def test_polymarket_cli_fails_explicitly_when_no_active_sports_market(
     assert not raw_root.exists()
 
 
-def test_polymarket_cli_reports_only_manifests_returned_by_capture(
+def test_polymarket_cli_writes_reproducible_operational_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     from prediction_market.cli import record_markets
@@ -499,6 +675,12 @@ def test_polymarket_cli_reports_only_manifests_returned_by_capture(
 
     async def capture(asset_ids: tuple[str, ...], raw_root: Path, **kwargs: object):
         captured.update(asset_ids=asset_ids, raw_root=raw_root, **kwargs)
+        object_path = raw_root / "raw" / "object.jsonl.zst"
+        manifest_path = raw_root / "manifests" / "object.manifest.json"
+        object_path.parent.mkdir(parents=True)
+        manifest_path.parent.mkdir(parents=True)
+        object_path.write_bytes(b"sealed raw object")
+        manifest_path.write_bytes(b'{"sealed":true}\n')
         return SimpleNamespace(
             complete=True,
             terminal_reason="max_frames reached",
@@ -507,14 +689,26 @@ def test_polymarket_cli_reports_only_manifests_returned_by_capture(
                 parse_errors=0,
                 reconnects=0,
                 gaps=0,
+                continuity_unknown=0,
                 out_of_order=0,
             ),
-            manifests=(SimpleNamespace(path=raw_root / "real.manifest.json"),),
+            manifests=(
+                SimpleNamespace(
+                    path=manifest_path,
+                    object_path=object_path,
+                    object_sha256=(
+                        "sha256:" + hashlib.sha256(object_path.read_bytes()).hexdigest()
+                    ),
+                    record_count=1,
+                    capture_session_id="capture-public-smoke",
+                ),
+            ),
         )
 
     monkeypatch.setattr(record_markets, "discover_active_sports_assets", assets)
     monkeypatch.setattr(record_markets, "capture_public_polymarket", capture)
     raw_root = tmp_path / "raw"
+    output = tmp_path / "polymarket-public-smoke.json"
 
     exit_code = record_markets.main(
         [
@@ -528,15 +722,56 @@ def test_polymarket_cli_reports_only_manifests_returned_by_capture(
             "3",
             "--raw-root",
             str(raw_root),
+            "--output",
+            str(output),
         ]
     )
-    report = json.loads(capsys.readouterr().out)
+    report = json.loads(output.read_text(encoding="utf-8"))
 
     assert exit_code == 0
     assert captured["asset_ids"] == ("asset-1",)
     assert captured["raw_root"] == raw_root
     assert captured["max_frames"] == 1
     assert captured["timeout_seconds"] == 3.0
+    assert report["report_version"] == "v0"
+    assert report["evidence_scope"] == "operational_observation_not_x08_evidence"
     assert report["source"] == "polymarket"
-    assert report["frames"] == 1
-    assert report["manifest_paths"] == [str(raw_root / "real.manifest.json")]
+    assert report["endpoint"] == (
+        "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+    )
+    assert report["subscription"] == {
+        "asset_ids": ["asset-1"],
+        "channel": "market",
+    }
+    assert report["configuration"] == {
+        "discover_sports": True,
+        "market_limit": 100,
+        "max_assets": 2,
+        "max_frames": 1,
+        "max_reconnects": 2,
+        "timeout_seconds": 3.0,
+    }
+    assert report["counters"] == {
+        "continuity_unknown": 0,
+        "frames": 1,
+        "gaps": 0,
+        "out_of_order": 0,
+        "parse_errors": 0,
+        "reconnects": 0,
+    }
+    assert report["segments"] == [
+        {
+            "capture_session_id": "capture-public-smoke",
+            "manifest_path": "manifests/object.manifest.json",
+            "manifest_sha256": (
+                "sha256:" + hashlib.sha256(b'{"sealed":true}\n').hexdigest()
+            ),
+            "object_path": "raw/object.jsonl.zst",
+            "object_sha256": (
+                "sha256:" + hashlib.sha256(b"sealed raw object").hexdigest()
+            ),
+            "record_count": 1,
+        }
+    ]
+    assert "manifest_paths" not in report
+    assert "wrote" in capsys.readouterr().out

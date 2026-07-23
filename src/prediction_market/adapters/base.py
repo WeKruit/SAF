@@ -33,6 +33,7 @@ class CaptureCounters:
     parse_errors: int = 0
     reconnects: int = 0
     gaps: int = 0
+    continuity_unknown: int = 0
     out_of_order: int = 0
 
 

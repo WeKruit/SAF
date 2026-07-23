@@ -1,0 +1,41 @@
+{
+  "complete": true,
+  "configuration": {
+    "discover_sports": true,
+    "market_limit": 20,
+    "max_assets": 2,
+    "max_frames": 5,
+    "max_reconnects": 1,
+    "timeout_seconds": 30.0
+  },
+  "counters": {
+    "continuity_unknown": 0,
+    "frames": 5,
+    "gaps": 0,
+    "out_of_order": 0,
+    "parse_errors": 0,
+    "reconnects": 0
+  },
+  "endpoint": "wss://ws-subscriptions-clob.polymarket.com/ws/market",
+  "evidence_scope": "operational_observation_not_x08_evidence",
+  "report_version": "v0",
+  "segments": [
+    {
+      "capture_session_id": "capture-19c04ae3f0b747688beb87f2ab7503ef",
+      "manifest_path": "manifests/source=polymarket/stream=market/date=2026-07-22/hour=23/0f39c4edf0263bc52df8b1a00e6cd745f81d6a818e907dda8b15cc223e371742.manifest.json",
+      "manifest_sha256": "sha256:ca80e7b550a69961a619dee97217bb03d9db7681d08f991f2cb360b8bfca82b5",
+      "object_path": "raw/source=polymarket/stream=market/date=2026-07-22/hour=23/0f39c4edf0263bc52df8b1a00e6cd745f81d6a818e907dda8b15cc223e371742.jsonl.zst",
+      "object_sha256": "sha256:0f39c4edf0263bc52df8b1a00e6cd745f81d6a818e907dda8b15cc223e371742",
+      "record_count": 5
+    }
+  ],
+  "source": "polymarket",
+  "subscription": {
+    "asset_ids": [
+      "64778757908501179476331390591326653229579537200061619395979045269181713848562",
+      "69222761152567422456550754954182616722608546823277879350969354961713727175064"
+    ],
+    "channel": "market"
+  },
+  "terminal_reason": "max_frames reached"
+}

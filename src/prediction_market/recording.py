@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import re
@@ -12,6 +13,8 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
+
+import zstandard
 
 from prediction_market.adapters.base import (
     CaptureCounters,
@@ -30,10 +33,12 @@ from prediction_market.adapters.polymarket import (
     build_market_subscription,
     parse_market_frame,
 )
+from prediction_market.contracts import FixedPointV0, VenueRuleSnapshotV0
 from prediction_market.raw_store import (
     PartitionBoundaryError,
     RawSegmentWriter,
     SegmentManifest,
+    verify_segment,
 )
 
 
@@ -279,7 +284,6 @@ async def record_polymarket_with_reconnect(
         max_frames=max_frames,
         max_reconnects=max_reconnects,
         backoff_seconds=backoff_seconds,
-        reconnect_is_gap=True,
         sleep=sleep,
     )
 
@@ -296,13 +300,12 @@ async def record_kalshi_with_reconnect(
     clock: Clock = utc_now_text,
     sleep: Sleep = asyncio.sleep,
 ) -> CaptureResult:
-    """Reconnect Kalshi while retaining native sid/seq continuity state."""
-
-    tracker = SequenceTracker()
+    """Reconnect Kalshi with one native sequence epoch per subscription."""
 
     async def record_session(
         websocket: WebSocketTransport, remaining: int
     ) -> CaptureResult:
+        tracker = SequenceTracker()
         return await _record_kalshi_connection(
             websocket,
             market_tickers,
@@ -319,7 +322,6 @@ async def record_kalshi_with_reconnect(
         max_frames=max_frames,
         max_reconnects=max_reconnects,
         backoff_seconds=backoff_seconds,
-        reconnect_is_gap=False,
         sleep=sleep,
     )
 
@@ -331,7 +333,6 @@ async def _record_with_reconnect(
     max_frames: int,
     max_reconnects: int,
     backoff_seconds: Sequence[float],
-    reconnect_is_gap: bool,
     sleep: Sleep,
 ) -> CaptureResult:
     """Aggregate bounded connection attempts without inventing missing frames."""
@@ -343,6 +344,7 @@ async def _record_with_reconnect(
     parse_errors = 0
     reconnects = 0
     gaps = 0
+    continuity_unknown = 0
     out_of_order = 0
     reason = "capture did not start"
 
@@ -369,6 +371,7 @@ async def _record_with_reconnect(
                         parse_errors=parse_errors,
                         reconnects=reconnects,
                         gaps=gaps,
+                        continuity_unknown=continuity_unknown,
                         out_of_order=out_of_order,
                     ),
                     complete=True,
@@ -383,6 +386,7 @@ async def _record_with_reconnect(
                     parse_errors=parse_errors,
                     reconnects=reconnects,
                     gaps=gaps,
+                    continuity_unknown=continuity_unknown,
                     out_of_order=out_of_order,
                 ),
                 complete=False,
@@ -390,14 +394,15 @@ async def _record_with_reconnect(
             )
         await sleep(delays[reconnects])
         reconnects += 1
-        if reconnect_is_gap:
-            # Polymarket documents no native sequence number; every reconnect is
-            # an observed interval whose continuity cannot be proven.
-            gaps += 1
+        # A reconnect starts a new WebSocket/subscription epoch.  Native
+        # sequence numbers cannot prove continuity across that boundary, even
+        # when the next epoch happens to reuse the same sid or seq value.
+        gaps += 1
+        continuity_unknown += 1
 
 
 class FormalReplayRejected(RuntimeError):
-    """A venue-rule snapshot is incomplete or non-canonical."""
+    """No valid, current canonical venue-rule snapshot is available."""
 
 
 _RULE_FIELDS = (
@@ -425,55 +430,30 @@ _DECIMAL_RULE_FIELDS = (
 
 
 @dataclass(frozen=True, slots=True)
-class VenueRuleSnapshot:
-    venue: str
-    condition_id: str
-    fetched_at: str
-    effective_from: str | None
-    game_start_time: str | None
-    seconds_delay: int | None
-    cancel_during_delay: bool | None
-    start_time_cancel_policy: str | None
-    fees_enabled: bool | None
-    fee_rate: str | None
-    fee_exponent: str | None
-    taker_only: bool | None
-    maker_fee_rate: str | None
-    minimum_tick_size: str | None
-    minimum_order_size: str | None
-    order_types_supported: tuple[str, ...]
-    source_document_version: str
-    raw_response_hash: str
-    valid: bool
-    quality_flags: tuple[str, ...]
-
-    def require_formal_replay(self) -> VenueRuleSnapshot:
-        if not self.valid:
-            raise FormalReplayRejected(
-                "venue-rule snapshot rejected: " + ", ".join(self.quality_flags)
-            )
-        return self
-
-
-@dataclass(frozen=True, slots=True)
 class VenueRuleCapture:
     raw_manifest: SegmentManifest
-    snapshot: VenueRuleSnapshot
+    canonical_manifest: SegmentManifest
+    snapshot: VenueRuleSnapshotV0 | None
+    valid: bool
+    quality_flags: tuple[str, ...]
+    validation_errors: tuple[str, ...]
+
+
+def _object_no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
 
 
 def _strict_rule_json(payload: bytes, _manifest_path: Path) -> Mapping[str, Any]:
-    def object_no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for key, value in pairs:
-            if key in result:
-                raise ValueError(f"duplicate JSON key: {key}")
-            result[key] = value
-        return result
 
     value = json.loads(
         payload.decode("utf-8"),
         parse_float=Decimal,
-        object_pairs_hook=object_no_duplicates,
+        object_pairs_hook=_object_no_duplicates,
         parse_constant=lambda value: (_ for _ in ()).throw(
             ValueError(f"non-finite number: {value}")
         ),
@@ -491,6 +471,13 @@ def _is_utc_timestamp(value: Any) -> bool:
     except ValueError:
         return False
     return parsed.utcoffset() == timezone.utc.utcoffset(parsed)
+
+
+def _utc_instant(value: Any, *, field: str) -> datetime:
+    if not _is_utc_timestamp(value):
+        raise ValueError(f"{field} must be a canonical UTC timestamp")
+    assert isinstance(value, str)
+    return datetime.fromisoformat(value[:-1] + "+00:00")
 
 
 def _decimal_text(value: Any) -> str | None:
@@ -515,7 +502,7 @@ def _normalize_rule_document(
     fetched_at: str,
     source_document_version: str,
     raw_response_hash: str,
-) -> VenueRuleSnapshot:
+) -> tuple[VenueRuleSnapshotV0 | None, tuple[str, ...]]:
     flags: list[str] = []
     for field in _RULE_FIELDS:
         if field not in document:
@@ -554,11 +541,11 @@ def _normalize_rule_document(
             booleans[field] = value
 
     policy_value = document.get("start_time_cancel_policy")
-    policy = (
-        policy_value
-        if type(policy_value) is str and bool(policy_value.strip())
-        else None
-    )
+    policy = policy_value if policy_value in {
+        "cancel_all_at_game_start",
+        "cancel_all_with_schedule_change_exception",
+        "preserve_orders_at_game_start",
+    } else None
     if "start_time_cancel_policy" in document and policy is None:
         flags.append("INVALID_RULE_FIELD:start_time_cancel_policy")
 
@@ -581,29 +568,91 @@ def _normalize_rule_document(
     elif "order_types_supported" in document:
         flags.append("INVALID_RULE_FIELD:order_types_supported")
 
-    quality_flags = tuple(sorted(set(flags)))
-    return VenueRuleSnapshot(
-        venue=venue,
-        condition_id=condition_id,
-        fetched_at=fetched_at,
-        effective_from=timestamps["effective_from"],
-        game_start_time=timestamps["game_start_time"],
-        seconds_delay=seconds_delay,
-        cancel_during_delay=booleans["cancel_during_delay"],
-        start_time_cancel_policy=policy,
-        fees_enabled=booleans["fees_enabled"],
-        fee_rate=decimals["fee_rate"],
-        fee_exponent=decimals["fee_exponent"],
-        taker_only=booleans["taker_only"],
-        maker_fee_rate=decimals["maker_fee_rate"],
-        minimum_tick_size=decimals["minimum_tick_size"],
-        minimum_order_size=decimals["minimum_order_size"],
-        order_types_supported=orders,
-        source_document_version=source_document_version,
-        raw_response_hash=raw_response_hash,
-        valid=not quality_flags,
-        quality_flags=quality_flags,
-    )
+    validation_errors = tuple(sorted(set(flags)))
+    if validation_errors:
+        return None, validation_errors
+
+    try:
+        snapshot = VenueRuleSnapshotV0.model_validate(
+            {
+                "venue": venue,
+                "condition_id": condition_id,
+                "fetched_at": fetched_at,
+                "effective_from": timestamps["effective_from"],
+                "game_start_time": timestamps["game_start_time"],
+                "seconds_delay": FixedPointV0.from_value(seconds_delay),
+                "cancel_during_delay": booleans["cancel_during_delay"],
+                "start_time_cancel_policy": policy,
+                "fees_enabled": booleans["fees_enabled"],
+                "fee_rate": FixedPointV0.from_value(decimals["fee_rate"]),
+                "fee_exponent": FixedPointV0.from_value(decimals["fee_exponent"]),
+                "taker_only": booleans["taker_only"],
+                "maker_fee_rate": FixedPointV0.from_value(
+                    decimals["maker_fee_rate"]
+                ),
+                "minimum_tick_size": FixedPointV0.from_value(
+                    decimals["minimum_tick_size"]
+                ),
+                "minimum_order_size": FixedPointV0.from_value(
+                    decimals["minimum_order_size"]
+                ),
+                "order_types_supported": orders,
+                "source_document_version": source_document_version,
+                "raw_response_hash": raw_response_hash,
+            }
+        )
+    except (TypeError, ValueError) as exc:
+        return None, (f"INVALID_CANONICAL_RULE:{type(exc).__name__}",)
+    return snapshot, ()
+
+
+def _canonical_json_bytes(value: Mapping[str, Any]) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _relative_to_store(path: Path, root: Path) -> str:
+    try:
+        return path.resolve(strict=True).relative_to(root).as_posix()
+    except (OSError, ValueError) as exc:
+        raise ValueError("venue-rule artifact escapes canonical store root") from exc
+
+
+def _rule_record(
+    *,
+    root: Path,
+    raw_manifest: SegmentManifest,
+    venue: str,
+    market_id: str,
+    condition_id: str,
+    fetched_at: str,
+    source_document_version: str,
+    raw_response_hash: str,
+    snapshot: VenueRuleSnapshotV0 | None,
+    validation_errors: tuple[str, ...],
+) -> dict[str, Any]:
+    valid = snapshot is not None and not validation_errors
+    return {
+        "record_version": "v0",
+        "venue": venue,
+        "market_id": market_id,
+        "condition_id": condition_id,
+        "fetched_at": fetched_at,
+        "source_document_version": source_document_version,
+        "raw_response_hash": raw_response_hash,
+        "raw_manifest_path": _relative_to_store(raw_manifest.path, root),
+        "raw_object_sha256": raw_manifest.object_sha256,
+        "raw_record_ordinal": 0,
+        "valid": valid,
+        "quality_flags": [] if valid else ["preliminary_rules"],
+        "validation_errors": list(validation_errors),
+        "snapshot": snapshot.model_dump(mode="json") if snapshot is not None else None,
+    }
 
 
 def capture_venue_rule_snapshot(
@@ -611,6 +660,7 @@ def capture_venue_rule_snapshot(
     *,
     raw_root: str | Path,
     venue: str,
+    market_id: str,
     condition_id: str,
     fetched_at: str,
     source_document_version: str,
@@ -620,10 +670,17 @@ def capture_venue_rule_snapshot(
 
     if type(raw_response) is not bytes:
         raise TypeError("raw_response must be bytes")
-    if type(condition_id) is not str or not condition_id:
-        raise ValueError("condition_id must be non-empty")
+    if type(market_id) is not str or re.fullmatch(
+        r"market_[A-Za-z0-9][A-Za-z0-9._:-]*", market_id
+    ) is None:
+        raise ValueError("market_id must be a canonical market ID")
+    if type(condition_id) is not str or re.fullmatch(
+        r"condition_[A-Za-z0-9][A-Za-z0-9._:-]*", condition_id
+    ) is None:
+        raise ValueError("condition_id must be a canonical condition ID")
     if type(source_document_version) is not str or not source_document_version:
         raise ValueError("source_document_version must be non-empty")
+    _utc_instant(fetched_at, field="fetched_at")
 
     writer = RawSegmentWriter(raw_root, source=venue, stream="venue-rules")
     writer.append(raw_response, receive_at=fetched_at)
@@ -635,30 +692,10 @@ def capture_venue_rule_snapshot(
         if not isinstance(document, Mapping):
             raise ValueError("rule parser must return a mapping")
     except Exception as exc:
-        snapshot = VenueRuleSnapshot(
-            venue=venue,
-            condition_id=condition_id,
-            fetched_at=fetched_at,
-            effective_from=None,
-            game_start_time=None,
-            seconds_delay=None,
-            cancel_during_delay=None,
-            start_time_cancel_policy=None,
-            fees_enabled=None,
-            fee_rate=None,
-            fee_exponent=None,
-            taker_only=None,
-            maker_fee_rate=None,
-            minimum_tick_size=None,
-            minimum_order_size=None,
-            order_types_supported=(),
-            source_document_version=source_document_version,
-            raw_response_hash=raw_response_hash,
-            valid=False,
-            quality_flags=(f"RULE_RESPONSE_PARSE_ERROR:{type(exc).__name__}",),
-        )
+        snapshot = None
+        validation_errors = (f"RULE_RESPONSE_PARSE_ERROR:{type(exc).__name__}",)
     else:
-        snapshot = _normalize_rule_document(
+        snapshot, validation_errors = _normalize_rule_document(
             document,
             venue=venue,
             condition_id=condition_id,
@@ -666,7 +703,206 @@ def capture_venue_rule_snapshot(
             source_document_version=source_document_version,
             raw_response_hash=raw_response_hash,
         )
-    return VenueRuleCapture(raw_manifest=raw_manifest, snapshot=snapshot)
+
+    root = Path(raw_root).resolve(strict=True)
+    record = _rule_record(
+        root=root,
+        raw_manifest=raw_manifest,
+        venue=venue,
+        market_id=market_id,
+        condition_id=condition_id,
+        fetched_at=fetched_at,
+        source_document_version=source_document_version,
+        raw_response_hash=raw_response_hash,
+        snapshot=snapshot,
+        validation_errors=validation_errors,
+    )
+    canonical_writer = RawSegmentWriter(
+        root, source=venue, stream="venue-rule-snapshots"
+    )
+    canonical_writer.append(_canonical_json_bytes(record), receive_at=fetched_at)
+    canonical_manifest = canonical_writer.seal()
+    valid = snapshot is not None and not validation_errors
+    return VenueRuleCapture(
+        raw_manifest=raw_manifest,
+        canonical_manifest=canonical_manifest,
+        snapshot=snapshot,
+        valid=valid,
+        quality_flags=() if valid else ("preliminary_rules",),
+        validation_errors=validation_errors,
+    )
+
+
+_RULE_RECORD_KEYS = frozenset(
+    {
+        "record_version",
+        "venue",
+        "market_id",
+        "condition_id",
+        "fetched_at",
+        "source_document_version",
+        "raw_response_hash",
+        "raw_manifest_path",
+        "raw_object_sha256",
+        "raw_record_ordinal",
+        "valid",
+        "quality_flags",
+        "validation_errors",
+        "snapshot",
+    }
+)
+
+
+def _single_segment_payload(manifest: SegmentManifest) -> bytes:
+    try:
+        with manifest.object_path.open("rb") as compressed:
+            with zstandard.ZstdDecompressor().stream_reader(compressed) as reader:
+                raw = reader.read()
+        lines = raw.splitlines()
+        if len(lines) != 1:
+            raise ValueError("venue-rule segment must contain exactly one record")
+        outer = json.loads(
+            lines[0].decode("utf-8"), object_pairs_hook=_object_no_duplicates
+        )
+        return base64.b64decode(outer["payload_base64"], validate=True)
+    except (KeyError, OSError, UnicodeError, ValueError, zstandard.ZstdError) as exc:
+        raise FormalReplayRejected("canonical venue-rule segment is unreadable") from exc
+
+
+def _load_rule_record(root: Path, manifest_path: Path) -> dict[str, Any]:
+    verification = verify_segment(manifest_path, root=root)
+    if not verification.valid or verification.manifest is None:
+        raise FormalReplayRejected(
+            "canonical venue-rule segment failed integrity verification"
+        )
+    payload = _single_segment_payload(verification.manifest)
+    try:
+        record = json.loads(
+            payload.decode("utf-8"), object_pairs_hook=_object_no_duplicates
+        )
+    except (UnicodeError, ValueError) as exc:
+        raise FormalReplayRejected("canonical venue-rule record is invalid JSON") from exc
+    if type(record) is not dict or set(record) != _RULE_RECORD_KEYS:
+        raise FormalReplayRejected("canonical venue-rule record fields are invalid")
+    if payload != _canonical_json_bytes(record):
+        raise FormalReplayRejected("canonical venue-rule record is not canonical JSON")
+
+    raw_manifest_value = record["raw_manifest_path"]
+    if type(raw_manifest_value) is not str:
+        raise FormalReplayRejected("venue-rule raw manifest reference is invalid")
+    raw_verification = verify_segment(root / raw_manifest_value, root=root)
+    if not raw_verification.valid or raw_verification.manifest is None:
+        raise FormalReplayRejected("venue-rule raw response failed integrity verification")
+    if raw_verification.manifest.object_sha256 != record["raw_object_sha256"]:
+        raise FormalReplayRejected("venue-rule raw object reference does not match")
+    raw_response = _single_segment_payload(raw_verification.manifest)
+    if "sha256:" + hashlib.sha256(raw_response).hexdigest() != record["raw_response_hash"]:
+        raise FormalReplayRejected("venue-rule raw response hash does not match")
+    return record
+
+
+class VenueRuleStore:
+    """Append-only canonical venue-rule observations with strict PIT lookup."""
+
+    def __init__(self, root: str | Path) -> None:
+        self._root = Path(root).resolve(strict=True)
+
+    def _records(self) -> tuple[dict[str, Any], ...]:
+        pattern = (
+            "manifests/source=*/stream=venue-rule-snapshots/"
+            "date=*/hour=*/*.manifest.json"
+        )
+        return tuple(
+            _load_rule_record(self._root, path)
+            for path in sorted(self._root.glob(pattern))
+        )
+
+    def require_as_of(
+        self,
+        *,
+        venue: str,
+        market_id: str,
+        condition_id: str,
+        at: str,
+        max_age_seconds: int,
+    ) -> VenueRuleSnapshotV0:
+        """Return the latest valid observation available at ``at`` or fail closed."""
+
+        instant = _utc_instant(at, field="at")
+        if (
+            isinstance(max_age_seconds, bool)
+            or type(max_age_seconds) is not int
+            or max_age_seconds <= 0
+        ):
+            raise ValueError("max_age_seconds must be a positive integer")
+        candidates = [
+            record
+            for record in self._records()
+            if record.get("venue") == venue
+            and record.get("market_id") == market_id
+            and record.get("condition_id") == condition_id
+            and _utc_instant(record.get("fetched_at"), field="fetched_at") <= instant
+        ]
+        if not candidates:
+            raise FormalReplayRejected("venue-rule snapshot is missing as of replay time")
+        active: list[tuple[datetime, datetime, dict[str, Any], VenueRuleSnapshotV0]] = []
+        invalid: list[tuple[datetime, str]] = []
+        for record in candidates:
+            fetched = _utc_instant(record["fetched_at"], field="fetched_at")
+            validation_errors = record.get("validation_errors")
+            if record.get("valid") is not True or record.get("snapshot") is None:
+                detail = (
+                    ", ".join(validation_errors)
+                    if type(validation_errors) is list
+                    else ""
+                )
+                invalid.append((fetched, detail))
+                continue
+            try:
+                snapshot = VenueRuleSnapshotV0.model_validate(record["snapshot"])
+            except (TypeError, ValueError):
+                invalid.append((fetched, "stored snapshot is non-canonical"))
+                continue
+            if (
+                snapshot.venue != venue
+                or snapshot.condition_id != condition_id
+                or snapshot.source_document_version
+                != record.get("source_document_version")
+                or snapshot.raw_response_hash != record.get("raw_response_hash")
+            ):
+                invalid.append((fetched, "stored snapshot lineage does not match"))
+                continue
+            effective = _utc_instant(snapshot.effective_from, field="effective_from")
+            if effective <= instant:
+                active.append((effective, fetched, record, snapshot))
+
+        if not active:
+            if invalid:
+                detail = max(invalid, key=lambda value: value[0])[1]
+                raise FormalReplayRejected(
+                    "venue-rule snapshot is invalid" + (f": {detail}" if detail else "")
+                )
+            raise FormalReplayRejected(
+                "venue-rule snapshot is not yet effective as of replay time"
+            )
+
+        _, fetched, selected, snapshot = max(
+            active,
+            key=lambda value: (
+                value[0],
+                value[1],
+                value[2]["raw_response_hash"],
+            ),
+        )
+        blocking_invalid = [value for value in invalid if value[0] >= fetched]
+        if blocking_invalid:
+            detail = max(blocking_invalid, key=lambda value: value[0])[1]
+            raise FormalReplayRejected(
+                "venue-rule snapshot is invalid" + (f": {detail}" if detail else "")
+            )
+        if (instant - fetched).total_seconds() > max_age_seconds:
+            raise FormalReplayRejected("venue-rule snapshot is stale as of replay time")
+        return snapshot
 
 
 __all__ = [
@@ -674,7 +910,7 @@ __all__ = [
     "CaptureResult",
     "FormalReplayRejected",
     "VenueRuleCapture",
-    "VenueRuleSnapshot",
+    "VenueRuleStore",
     "capture_venue_rule_snapshot",
     "record_kalshi",
     "record_kalshi_with_reconnect",
