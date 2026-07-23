@@ -9,9 +9,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pandas as pd
 import pytest
 
-from prediction_market import contracts
+from prediction_market import contracts, experiments, program_audit
 from prediction_market.sports import x12
 from prediction_market.sports.statsbomb import (
     inspect_statsbomb_event,
@@ -874,10 +875,38 @@ def test_evidence_is_self_hashed_and_cannot_claim_formal_or_market_prior(
         confidence_level=0.90,
         optimizer_max_iterations=120,
     )
+    real_validate_contract_v1 = contracts.validate_contract_v1
+    validation_calls: list[
+        tuple[Path, str, dict[str, object], contracts.ModelOutputV1]
+    ] = []
+
+    def validate_contract_v1_spy(
+        program_root: str | Path,
+        schema_name: str,
+        document: object,
+    ) -> contracts.ModelOutputV1:
+        validated = real_validate_contract_v1(
+            program_root,
+            schema_name,
+            document,
+        )
+        assert isinstance(document, dict)
+        assert isinstance(validated, contracts.ModelOutputV1)
+        validation_calls.append(
+            (Path(program_root), schema_name, document, validated)
+        )
+        return validated
+
+    monkeypatch.setattr(
+        contracts,
+        "validate_contract_v1",
+        validate_contract_v1_spy,
+    )
 
     evidence = x12.build_x12_evidence(
         loaded,
         evaluation,
+        program_root=PROJECT_ROOT,
         execution_mode="bounded_smoke",
     )
     path = tmp_path / "x12_evidence.json"
@@ -924,10 +953,18 @@ def test_evidence_is_self_hashed_and_cannot_claim_formal_or_market_prior(
         abs(sum(item["probabilities"].values()) - 1.0) <= 1e-12
         for item in evidence["transition_output"]["distributions"]
     )
+    assert len(validation_calls) == len(evaluation.transition_predictions)
+    assert all(
+        program_root == PROJECT_ROOT
+        and schema_name == "model-output/v1.schema.yaml"
+        and validated.experiment_id == "X-12"
+        and validated.model_id == "MODEL-SOCCER-FIVE-MINUTE-TRANSITION"
+        for program_root, schema_name, _, validated in validation_calls
+    )
     contract_output = evidence["transition_output"]["distributions"][0][
         "contract_output"
     ]
-    validated = contracts.validate_contract_v1(
+    validated = real_validate_contract_v1(
         PROJECT_ROOT,
         "model-output/v1.schema.yaml",
         contract_output,
@@ -949,6 +986,75 @@ def test_evidence_is_self_hashed_and_cannot_claim_formal_or_market_prior(
         "preliminary_rules",
         "source_clock_unverified",
     ]
+
+
+def _contract_transition_row() -> SimpleNamespace:
+    return SimpleNamespace(
+        match_id=3750000,
+        prediction_at=pd.Timestamp("2015-08-01T12:00:00Z"),
+        home_score_at_cutoff=0,
+        away_score_at_cutoff=0,
+        probability_home_goal=0.10,
+        probability_away_goal=0.05,
+        probability_no_goal=0.85,
+        object_sha256=_digest("event-object"),
+        pit_status=x12.OFFLINE_PIT_STATUS,
+        model_parameter_sha256=_digest("model-parameters"),
+        inventory_sha256=_digest("inventory"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("missing_foreign_key", "expected_message"),
+    [
+        ("experiment", "experiment X-12 is not registered"),
+        (
+            "model",
+            (
+                "model MODEL-SOCCER-FIVE-MINUTE-TRANSITION "
+                "is not registered"
+            ),
+        ),
+    ],
+)
+def test_transition_contract_fails_closed_on_unknown_registry_foreign_key(
+    missing_foreign_key: str,
+    expected_message: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if missing_foreign_key == "experiment":
+        registered = experiments.load_experiment_registry(PROJECT_ROOT)
+        monkeypatch.setattr(
+            experiments,
+            "load_experiment_registry",
+            lambda _: {
+                experiment_id: card
+                for experiment_id, card in registered.items()
+                if experiment_id != "X-12"
+            },
+        )
+    else:
+        registered_models = program_audit.load_model_registry(PROJECT_ROOT)
+        monkeypatch.setattr(
+            program_audit,
+            "load_model_registry",
+            lambda _: tuple(
+                row
+                for row in registered_models
+                if row.model_id
+                != "MODEL-SOCCER-FIVE-MINUTE-TRANSITION"
+            ),
+        )
+
+    with pytest.raises(x12.X12DataError) as exc_info:
+        x12._transition_contract_output(
+            _contract_transition_row(),
+            evaluation=SimpleNamespace(seed=x12.X12_SEED),
+            program_root=PROJECT_ROOT,
+        )
+
+    assert isinstance(exc_info.value.__cause__, contracts.ContractValidationError)
+    assert expected_message in str(exc_info.value.__cause__)
 
 
 def test_checked_in_real_x12_poc_is_nonconstant_and_poc_only() -> None:

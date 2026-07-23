@@ -2011,6 +2011,7 @@ def _transition_contract_output(
     row: Any,
     *,
     evaluation: X12Evaluation,
+    program_root: str | Path,
 ) -> dict[str, object]:
     probabilities = {
         label: float(getattr(row, f"probability_{label}"))
@@ -2076,11 +2077,19 @@ def _transition_contract_output(
         ],
     }
     try:
-        validated = contracts.ModelOutputV1.model_validate(document)
+        validated = contracts.validate_contract_v1(
+            program_root,
+            "model-output/v1.schema.yaml",
+            document,
+        )
     except ValueError as error:
         raise X12DataError(
             "five-minute transition failed model-output v1 validation"
         ) from error
+    if not isinstance(validated, contracts.ModelOutputV1):
+        raise X12DataError(
+            "five-minute transition validator returned an invalid contract type"
+        )
     return validated.model_dump(mode="json")
 
 
@@ -2088,6 +2097,7 @@ def build_x12_evidence(
     loaded: X12LoadedDataset,
     evaluation: X12Evaluation,
     *,
+    program_root: str | Path,
     execution_mode: str,
 ) -> dict[str, object]:
     """Build a self-hashed X-12 POC artifact without upgrading its status."""
@@ -2176,6 +2186,7 @@ def build_x12_evidence(
                 "contract_output": _transition_contract_output(
                     row,
                     evaluation=evaluation,
+                    program_root=program_root,
                 ),
                 "pit_status": str(row.pit_status),
                 "lineage": {
