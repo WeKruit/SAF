@@ -1,7 +1,7 @@
 backlog_id,team,work_item,deliverable,status,blocker,owner,version,due_gate
 W1-001,A,Publish event envelope and deterministic ordering,contracts/event-envelope/v0.schema.yaml,COMPLETE,-,A,v0,first_round_artifact_gate
 W1-002,A,Publish canonical ID registry and native boundary,contracts/id-registry/v0/entity.schema.yaml,COMPLETE,-,A,v0,first_round_artifact_gate
-W1-003,A,Publish model output contract and ADR set,contracts/model-output/v0.schema.yaml,COMPLETE,-,A,v0,first_round_artifact_gate
+W1-003,A,Publish model output contract and ADR set,contracts/model-output/v1.schema.yaml,COMPLETE,-,A,v1,first_round_artifact_gate
 W1-004,H,Create strict append-only experiment registry,registries/experiment_registry.csv,COMPLETE,-,H,v0,first_round_artifact_gate
 W1-005,H,Preregister X-01 through X-10 and validation standard,artifacts/validation/validation_standard_v0.md,COMPLETE,-,H,v0,first_round_artifact_gate
 W1-006,C,Publish immutable raw capture store,contracts/raw-capture/v0.schema.yaml,COMPLETE,Production WORM ACL remains deployment work,C,v0,X01_L2_reconstruction

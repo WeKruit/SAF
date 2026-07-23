@@ -31,7 +31,7 @@ from prediction_market.experiments import (  # noqa: E402
 )
 
 
-EXPECTED_EXPERIMENT_IDS = {f"X-{number:02d}" for number in range(1, 11)}
+EXPECTED_EXPERIMENT_IDS = {f"X-{number:02d}" for number in range(1, 13)}
 EXPECTED_MEASUREMENT_EXEMPTIONS = {"X-02", "X-03", "X-07"}
 EXPECTED_NO_GOS = {
     "real_money_execution",
@@ -52,7 +52,7 @@ EXPECTED_TASK_3_PATHS = {
     "artifacts/validation/validation_standard_v0.md",
     "src/prediction_market/experiments.py",
     "tests/test_experiment_registry.py",
-    *(f"registries/experiments/X-{number:02d}.yaml" for number in range(1, 11)),
+    *(f"registries/experiments/X-{number:02d}.yaml" for number in range(1, 13)),
 }
 
 
@@ -342,6 +342,18 @@ def test_catalog_first_artifact_gates_use_stable_catalog_ids(
         catalog_rows = list(csv.DictReader(handle))
 
     for experiment_id, card in registry.items():
+        if experiment_id in {"X-11", "X-12"}:
+            catalog_by_id = {
+                row["catalog_item_id"]: row for row in catalog_rows
+            }
+            assert card["linked_first_artifact_due_gates"] == [
+                {
+                    "catalog_item_id": catalog_id,
+                    "due_gate": catalog_by_id[catalog_id]["due_gate"],
+                }
+                for catalog_id in card["source_lineage"]["catalog_item_ids"]
+            ]
+            continue
         expected = [
             {
                 "catalog_item_id": row["catalog_item_id"],
@@ -405,7 +417,7 @@ def test_partial_authorization_scopes_fail_closed(program_root: Path) -> None:
     assert x07["authorization_scopes"]["go_no_go"]["authorized"] is False
 
     x08 = registry["X-08"]
-    assert x08["execution_authorized"] is False
+    assert x08["execution_authorized"] is True
     assert x08["authorization_scopes"]["archive_audit"]["authorized"] is True
     assert x08["authorization_scopes"]["polymarket_capture"]["authorized"] is True
     assert x08["authorization_scopes"]["kalshi_capture"]["authorized"] is False
@@ -426,8 +438,108 @@ def test_partial_authorization_scopes_fail_closed(program_root: Path) -> None:
     assert x10["authorization_scopes"]["live_arbitrage"]["authorized"] is False
     assert x10["authorization_scopes"]["live_arbitrage"]["permanent_no_go"] is True
 
-    for experiment_id in EXPECTED_EXPERIMENT_IDS - {"X-05", "X-07", "X-08", "X-10"}:
+    for experiment_id in EXPECTED_EXPERIMENT_IDS - {
+        "X-05",
+        "X-06",
+        "X-07",
+        "X-08",
+        "X-04",
+        "X-09",
+        "X-10",
+        "X-11",
+        "X-12",
+    }:
         assert registry[experiment_id]["execution_authorized"] is True
+
+
+def test_x06_uses_prior_as_model_input_and_is_license_blocked(
+    program_root: Path,
+) -> None:
+    x06 = load_experiment_registry(program_root)["X-06"]
+
+    assert x06["execution_authorized"] is True
+    assert x06["authorization_scopes"]["formal_result"]["authorized"] is False
+    assert "nba_license_clearance" in {
+        lock["id"] for lock in x06["registration_locks"]
+    }
+    assert all(lock["status"] == "unresolved" for lock in x06["registration_locks"])
+    assert "prior as an input feature" in x06["method"].lower()
+    assert x06["dataset_ids"] == ["DS-NBA-CANDIDATE"]
+    assert x06["output_contract"] == {
+        "contract": "model-output/v1.schema.yaml",
+        "output_kind": "state_transition",
+        "transition_unit": "possession",
+        "state_space": ["home_score", "away_score", "no_score"],
+    }
+
+
+def test_x11_preregisters_nfl_walk_forward_ties_and_required_locks(
+    program_root: Path,
+) -> None:
+    x11 = load_experiment_registry(program_root)["X-11"]
+    combined = " ".join(
+        [x11["method"], x11["split"], x11["pass_criteria"], x11["tie_policy"]]
+    ).lower()
+
+    assert "2015-2025" in combined
+    assert "2015-2019" in combined
+    assert "2020-2025" in combined
+    assert "regular" in combined and "postseason" in combined
+    assert "game-grouped" in combined and "chronological" in combined
+    assert all(
+        name in combined
+        for name in ("spread", "logistic", "gbdt", "nflfastr")
+    )
+    assert "ties" in combined and "binary" in combined
+    assert x11["dataset_ids"] == ["DS-NFLVERSE"]
+    assert x11["output_contract"]["transition_unit"] == "drive"
+    lock_ids = {lock["id"] for lock in x11["registration_locks"]}
+    assert {
+        "nfl_data_manifest_and_version",
+        "pit_feature_contract",
+        "model_config_and_seed",
+        "bootstrap_parameters",
+    } <= lock_ids
+
+
+def test_x12_is_statsbomb_poc_without_market_prior_or_formal_promotion(
+    program_root: Path,
+) -> None:
+    x12 = load_experiment_registry(program_root)["X-12"]
+    combined = " ".join(
+        [x12["method"], x12["split"], *x12["metrics"]]
+    ).lower()
+
+    assert "statsbomb" in x12["data"][0]["source"].lower()
+    assert "2015/16" in combined
+    assert "expanding-window" in combined
+    assert "dixon-coles" in combined
+    assert "1x2" in combined and "multiclass" in combined
+    assert "no point-in-time market prior" in combined
+    assert x12["authorization_scopes"]["poc_result"]["authorized"] is True
+    assert x12["authorization_scopes"]["formal_promotion"]["authorized"] is False
+    assert x12["promotion_restriction"] == "POC_ONLY_FORMAL_PROMOTION_UNAUTHORIZED"
+    assert x12["dataset_ids"] == ["DS-STATSBOMB-OPEN"]
+    assert x12["output_contract"]["transition_unit"] == "five_minute_interval"
+
+
+def test_phase_execution_authorization_is_exact_and_fail_closed(
+    program_root: Path,
+) -> None:
+    registry = load_experiment_registry(program_root)
+    authorized = {
+        experiment_id
+        for experiment_id, card in registry.items()
+        if card["execution_authorized"]
+    }
+
+    assert authorized == {"X-01", "X-02", "X-03", "X-06", "X-08"}
+    assert registry["X-04"]["authorization_scopes"]["formal_result"][
+        "authorized"
+    ] is False
+    assert registry["X-09"]["authorization_scopes"]["formal_result"][
+        "authorized"
+    ] is False
 
 
 def test_x08_is_prospective_and_preserves_the_decision_band(program_root: Path) -> None:
@@ -559,10 +671,10 @@ def test_result_rejects_unresolved_registration_locks(tmp_path: Path) -> None:
 
 def test_result_rejects_unfinished_dependencies(tmp_path: Path) -> None:
     root = _copy_program_fixture(tmp_path)
-    x04 = _read_card(root, "X-04")
+    x02 = _read_card(root, "X-02")
     amendment = _append_amendment(
         root,
-        "X-04",
+        "X-02",
         amended_at="2026-07-23T00:00:01Z",
         changes={
             "resolve_locks": [
@@ -570,7 +682,7 @@ def test_result_rejects_unfinished_dependencies(tmp_path: Path) -> None:
                     "lock_id": lock["id"],
                     "evidence_ref": "sha256:" + "8" * 64,
                 }
-                for lock in x04["registration_locks"]
+                for lock in x02["registration_locks"]
             ],
             "preregistered_inputs": [
                 {
@@ -586,7 +698,7 @@ def test_result_rejects_unfinished_dependencies(tmp_path: Path) -> None:
         registration_head_sha256=amendment["amendment_sha256"],
     )
     with pytest.raises(UnresolvedDependencyError):
-        validate_result_ref(root, "X-04", result_ref)
+        validate_result_ref(root, "X-02", result_ref)
 
 
 def test_registry_rejects_card_hash_tampering(tmp_path: Path) -> None:
@@ -1030,11 +1142,15 @@ def test_seed_cards_reject_results_until_scope_inputs_are_preregistered(
 ) -> None:
     registry = load_experiment_registry(program_root)
     for experiment_id, card in registry.items():
-        scope_name, scope = next(
+        authorized_scopes = [
             (name, value)
             for name, value in card["authorization_scopes"].items()
             if value["authorized"] and not value.get("permanent_no_go", False)
-        )
+        ]
+        if not authorized_scopes:
+            assert card["execution_authorized"] is False
+            continue
+        scope_name, scope = authorized_scopes[0]
         result_ref = _valid_result_ref(
             scope=scope_name,
             result_label=scope["required_result_label"],

@@ -1,0 +1,131 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: urn:prediction-market:static-dataset-manifest:v0
+title: Static Dataset Manifest v0
+contract_version: v0
+x-normative-semantic-validator:
+  callable: prediction_market.contracts.validate_contract_v0
+  schema_name: static-dataset-manifest/v0.schema.yaml
+  required: true
+  fail_closed_without_runtime: true
+description: Byte-exact provenance for a static upstream object or an explicitly source-derived extract.
+type: object
+additionalProperties: false
+required:
+  - manifest_version
+  - dataset_id
+  - object_kind
+  - source_url
+  - source_request
+  - source_cursor
+  - fetched_at
+  - coverage
+  - etag
+  - last_modified
+  - byte_length
+  - object_sha256
+  - native_object_path
+  - media_type
+  - schema_fingerprint
+  - license_ref
+  - license_status
+  - upstream_partition
+  - lineage
+  - manifest_sha256
+properties:
+  manifest_version:
+    const: v0
+  dataset_id:
+    type: string
+    pattern: ^DS-[A-Z0-9][A-Z0-9-]*$
+  object_kind:
+    enum: [byte_exact_original, source_derived_extract]
+  source_url:
+    type: string
+    pattern: ^https://
+  source_request:
+    type: object
+  source_cursor:
+    type: [string, 'null']
+    minLength: 1
+  fetched_at:
+    $ref: '#/$defs/utc_timestamp'
+  coverage:
+    type: string
+    minLength: 1
+  etag:
+    type: [string, 'null']
+    minLength: 1
+  last_modified:
+    type: [string, 'null']
+    minLength: 1
+  byte_length:
+    type: integer
+    minimum: 0
+  object_sha256:
+    $ref: '#/$defs/sha256'
+  native_object_path:
+    type: string
+    minLength: 1
+    pattern: ^(?!/)(?!.*(?:^|/)\.\.(?:/|$))(?!.*\\).+$
+  media_type:
+    type: string
+    minLength: 1
+  schema_fingerprint:
+    $ref: '#/$defs/sha256'
+  license_ref:
+    type: string
+    pattern: ^O-[0-9]{3}$
+  license_status:
+    enum: [approved, research_only, pending, unknown, blocked]
+  upstream_partition:
+    type: string
+    minLength: 1
+  lineage:
+    $ref: '#/$defs/lineage'
+  manifest_sha256:
+    $ref: '#/$defs/sha256'
+    x-derived-from: canonical full manifest excluding manifest_sha256
+allOf:
+  - if:
+      properties:
+        object_kind:
+          const: source_derived_extract
+      required: [object_kind]
+    then:
+      properties:
+        lineage:
+          properties:
+            source_object_refs:
+              minItems: 1
+            query_sha256:
+              $ref: '#/$defs/sha256'
+    else:
+      properties:
+        lineage:
+          properties:
+            source_object_refs:
+              maxItems: 0
+            query_sha256:
+              type: 'null'
+$defs:
+  sha256:
+    type: string
+    pattern: ^sha256:[0-9a-f]{64}$
+  utc_timestamp:
+    type: string
+    format: date-time
+    pattern: ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z$
+  lineage:
+    type: object
+    additionalProperties: false
+    required: [source_object_refs, query_sha256]
+    properties:
+      source_object_refs:
+        type: array
+        uniqueItems: true
+        items:
+          $ref: '#/$defs/sha256'
+      query_sha256:
+        oneOf:
+          - $ref: '#/$defs/sha256'
+          - type: 'null'

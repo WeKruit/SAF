@@ -15,7 +15,7 @@ from typing import Any
 import yaml
 
 
-EXPERIMENT_IDS = tuple(f"X-{number:02d}" for number in range(1, 11))
+EXPERIMENT_IDS = tuple(f"X-{number:02d}" for number in range(1, 13))
 _EXPERIMENT_ID_SET = frozenset(EXPERIMENT_IDS)
 _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _UTC_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
@@ -45,13 +45,15 @@ _TRUSTED_BASE_REGISTRATIONS = {
     "X-01": "sha256:d1cea6987540e3889cb81dd896a01a1d8267e80fbd0356a6721115c1d0bc1b30",
     "X-02": "sha256:e10cfb92cc066c8e7d16475a808187e546ea807cad048f0ade74ae66273147ad",
     "X-03": "sha256:404dd65a81bb12ff6cd0bd8ad631d495c1e64c093e3fcf533a492e674ff45fd7",
-    "X-04": "sha256:339b90b011cdf2c71a5ac9d1b50cc5511a18e826559f0a5b9fc0b2007f50d2c9",
+    "X-04": "sha256:5e2265e8d9d992a27024a4af5914fd94bdb172efb97b2a9d819b9b4f7aafedb9",
     "X-05": "sha256:ab0dc941408c59ea5f509e2ef1650c515fba19374223ef8827d48ef04b99e10a",
-    "X-06": "sha256:4f169608167ca9153e7228abfc111b78a07e405fbf209b66a2d55822230694f9",
+    "X-06": "sha256:a3547b65f22a6ddac0fb127025c5decd77d3c912ed59993dd8f57d0866fc6452",
     "X-07": "sha256:44acdd9db4be6dd50b375384fe419dcaef631f381d37a054152f85e26a3295d5",
-    "X-08": "sha256:67aaa454cda3852c293e448e4f762d317c5358c6ac0a927df0da53fe1a44452a",
-    "X-09": "sha256:3c47f6556e11a330f08d8925a1c61516edb07a2169f903c67b20181d549a1173",
+    "X-08": "sha256:c29024677af968b41f2c6da746f0850c32cad2d1e8b029f2ded71623b5ef6da4",
+    "X-09": "sha256:645beda90eaf30ba770ec57e889e5fccfbdfaeecab24d4c80129b416c72da567",
     "X-10": "sha256:bb1fc8aca25e10250bdef744b682788afab1b83357855b7c6a6231086623911a",
+    "X-11": "sha256:bd4449592825c677f096079fcab4d24ba4a538662c853763ecb076784ff69924",
+    "X-12": "sha256:7d485dce11d941809ae7354ebd5db54db2bd8b0461052cc0a3e139dd68d96c9b",
 }
 
 _COMMON_CARD_FIELDS = frozenset(
@@ -94,11 +96,13 @@ _OPTIONAL_CARD_FIELDS = {
     "X-03": set(),
     "X-04": set(),
     "X-05": {"artifact_dependencies", "midpoint_allowed"},
-    "X-06": {"decision_gates"},
+    "X-06": {"decision_gates", "dataset_ids", "output_contract"},
     "X-07": {"midpoint_allowed"},
     "X-08": {"prospective_observation", "unresolved_decision_band"},
     "X-09": {"artifact_dependencies", "deterministic_replay_required_levels", "signal"},
     "X-10": {"recall_denominator_registered"},
+    "X-11": {"dataset_ids", "output_contract", "tie_policy"},
+    "X-12": {"dataset_ids", "output_contract", "promotion_restriction"},
 }
 _EXPERIMENT_REGISTRY_FIELDS = [
     "experiment_id",
@@ -149,7 +153,10 @@ _REQUIRED_TASK3_ARTIFACTS = frozenset(
         "artifacts/validation/validation_standard_v0.md",
         "src/prediction_market/experiments.py",
         "tests/test_experiment_registry.py",
-        *(f"registries/experiments/X-{number:02d}.yaml" for number in range(1, 11)),
+        "contracts/model-output/v1.schema.yaml",
+        "registries/dataset_registry.csv",
+        "registries/model_registry.csv",
+        *(f"registries/experiments/X-{number:02d}.yaml" for number in range(1, 13)),
     }
 )
 _RESULT_FIELDS = frozenset(
@@ -334,7 +341,7 @@ def _validate_card_inventory(root: Path) -> None:
         raise ExperimentRegistryError("cannot enumerate experiment card inventory") from exc
     expected = {f"{experiment_id}.yaml" for experiment_id in EXPERIMENT_IDS}
     if names != expected:
-        raise ExperimentRegistryError("experiment card inventory must be exactly X-01 through X-10")
+        raise ExperimentRegistryError("experiment card inventory must be exactly X-01 through X-12")
 
 
 def _validate_artifact_registry(root: Path) -> None:
@@ -585,6 +592,46 @@ def _validate_card_structure(card: dict[str, Any], experiment_id: str) -> None:
             observation["fixtures_can_satisfy_elapsed_time"]
         ) is not bool:
             raise ExperimentRegistryError(f"{experiment_id}: invalid prospective observation")
+    if "dataset_ids" in card:
+        dataset_ids = card["dataset_ids"]
+        if (
+            type(dataset_ids) is not list
+            or not dataset_ids
+            or any(
+                type(dataset_id) is not str
+                or re.fullmatch(r"DS-[A-Z0-9][A-Z0-9-]*", dataset_id) is None
+                for dataset_id in dataset_ids
+            )
+            or len(dataset_ids) != len(set(dataset_ids))
+        ):
+            raise ExperimentRegistryError(f"{experiment_id}: invalid dataset_ids")
+    if "output_contract" in card:
+        output = _exact_keys(
+            card["output_contract"],
+            {"contract", "output_kind", "transition_unit", "state_space"},
+            f"{experiment_id} output contract",
+        )
+        if output["contract"] != "model-output/v1.schema.yaml":
+            raise ExperimentRegistryError(f"{experiment_id}: wrong output contract")
+        if output["output_kind"] != "state_transition":
+            raise ExperimentRegistryError(f"{experiment_id}: output must be state_transition")
+        expected_states = {
+            "possession": ["home_score", "away_score", "no_score"],
+            "drive": ["touchdown", "field_goal", "punt", "turnover", "other"],
+            "five_minute_interval": ["home_goal", "away_goal", "no_goal"],
+        }
+        if output["transition_unit"] not in expected_states or output[
+            "state_space"
+        ] != expected_states[output["transition_unit"]]:
+            raise ExperimentRegistryError(
+                f"{experiment_id}: transition unit/state_space mismatch"
+            )
+    if "tie_policy" in card:
+        _nonempty_string(card["tie_policy"], f"{experiment_id} tie_policy")
+    if "promotion_restriction" in card and card["promotion_restriction"] != (
+        "POC_ONLY_FORMAL_PROMOTION_UNAUTHORIZED"
+    ):
+        raise ExperimentRegistryError(f"{experiment_id}: invalid promotion restriction")
     if type(card["amendments"]) is not list:
         raise ExperimentRegistryError(f"{experiment_id}: amendments must be a list")
 
@@ -618,6 +665,19 @@ def _catalog_gates(root: Path) -> dict[str, list[dict[str, str]]]:
             result[experiment_id].append(
                 {"catalog_item_id": catalog_id, "due_gate": row["due_gate"]}
             )
+    row_by_id = {row["catalog_item_id"]: row for row in rows}
+    expansion_catalog_ids = {
+        "X-11": ["R-014", "R-017", "R-018", "I-018"],
+        "X-12": ["R-006", "R-007", "R-017", "R-018", "I-019", "O-004"],
+    }
+    for experiment_id, catalog_ids in expansion_catalog_ids.items():
+        result[experiment_id] = [
+            {
+                "catalog_item_id": catalog_id,
+                "due_gate": row_by_id[catalog_id]["due_gate"],
+            }
+            for catalog_id in catalog_ids
+        ]
     return result
 
 
@@ -1026,7 +1086,7 @@ def _load_registry_internal(
             raise ExperimentRegistryError(f"duplicate experiment registry row: {experiment_id}")
         row_by_id[experiment_id] = row
     if set(row_by_id) != _EXPERIMENT_ID_SET:
-        raise ExperimentRegistryError("registry must contain exactly X-01 through X-10")
+        raise ExperimentRegistryError("registry must contain exactly X-01 through X-12")
 
     catalog_gates = _catalog_gates(root)
     base_cards: dict[str, dict[str, Any]] = {}

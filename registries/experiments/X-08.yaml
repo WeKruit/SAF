@@ -33,7 +33,7 @@ experiment_card:
   due_gate: null
   results_ref: []
   promotion_decision: ''
-  execution_authorized: false
+  execution_authorized: true
   completion_required_scopes: [dual_venue_result]
   authorization_scopes:
     archive_audit:
@@ -81,4 +81,4 @@ experiment_card:
     - readme_return_strategy_selection
     - unregistered_quick_backtest
   amendments: []
-  registration_record_sha256: sha256:67aaa454cda3852c293e448e4f762d317c5358c6ac0a927df0da53fe1a44452a
+  registration_record_sha256: sha256:c29024677af968b41f2c6da746f0850c32cad2d1e8b029f2ded71623b5ef6da4

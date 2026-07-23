@@ -1,0 +1,78 @@
+experiment_card:
+  id: X-12
+  name: Soccer Dixon-Coles POC and five-minute transition
+  owner_team: D3+H+I
+  status: registered
+  hypothesis: A StatsBomb Premier League 2015/16 expanding-window Dixon-Coles POC can produce calibrated 1X2 estimates and a separate five-minute goal transition without a point-in-time market prior.
+  data:
+    - source: StatsBomb open data DS-STATSBOMB-OPEN Premier League 2015/16 competition 2 season 27
+      version: commit:b0bc9f22dd77c206ddedc1d742893b3bbe64baec;manifest:unresolved
+      pit_basis: event order within the frozen static source snapshot
+  method: Fit expanding-window Dixon-Coles on StatsBomb Premier League 2015/16 and report 1X2 multiclass calibration plus home_goal away_goal or no_goal five-minute transitions; no point-in-time market prior is available or imputed.
+  leakage_checks:
+    - Every training match precedes each held-out match in source chronology.
+    - No revised final-match field is used before its prediction cutoff.
+    - No current market price or future point-in-time market prior is synthesized.
+  split: expanding-window chronological match evaluation on Premier League 2015/16
+  metrics: [1X2 multiclass Brier score, multiclass log loss, 1X2 calibration, five-minute transition log loss, season-time stability]
+  pass_criteria: A fully locked reproducible POC report with multiclass 1X2 calibration and five-minute transition metrics; the result remains POC only.
+  fail_criteria: Missing StatsBomb manifest license context PIT feature/config/seed lock or chronological isolation invalidates the POC. Formal promotion remains unauthorized regardless of POC metrics.
+  cost_estimate: {compute: unresolved, human_days: unresolved}
+  dependencies: []
+  registered_at: '2026-07-22'
+  result_acceptance_not_before: '2026-07-23T00:00:00Z'
+  due_gate: null
+  results_ref: []
+  promotion_decision: POC_ONLY
+  execution_authorized: false
+  completion_required_scopes: [poc_result]
+  authorization_scopes:
+    poc_result:
+      authorized: true
+      required_result_label: PRELIMINARY
+      required_lock_ids: [statsbomb_manifest_and_version, statsbomb_research_license, pit_feature_contract, dixon_coles_config_and_seed, expanding_window_split, transition_definition, h_split_approval]
+    formal_promotion:
+      authorized: false
+      required_result_label: FORMAL
+      required_lock_ids: [statsbomb_manifest_and_version, statsbomb_research_license, pit_feature_contract, dixon_coles_config_and_seed, expanding_window_split, transition_definition, h_split_approval]
+  registration_locks:
+    - {id: statsbomb_manifest_and_version, status: unresolved, reason: Byte-exact source snapshot and static manifest hash are unset.}
+    - {id: statsbomb_research_license, status: unresolved, reason: O-004 permits only the explicitly approved research context after review.}
+    - {id: pit_feature_contract, status: unresolved, reason: Event availability and feature hashes are unset.}
+    - {id: dixon_coles_config_and_seed, status: unresolved, reason: Dixon-Coles parameters optimizer configuration and seed are unset.}
+    - {id: expanding_window_split, status: unresolved, reason: Exact ordered match folds are unset.}
+    - {id: transition_definition, status: unresolved, reason: Five-minute boundary and terminal-horizon logic are unset.}
+    - {id: h_split_approval, status: unresolved, reason: Team H has not approved the split.}
+  measurement_exemption: false
+  falsified_direction_is_valid_measurement: false
+  dataset_ids: [DS-STATSBOMB-OPEN]
+  output_contract:
+    contract: model-output/v1.schema.yaml
+    output_kind: state_transition
+    transition_unit: five_minute_interval
+    state_space: [home_goal, away_goal, no_goal]
+  promotion_restriction: POC_ONLY_FORMAL_PROMOTION_UNAUTHORIZED
+  linked_first_artifact_due_gates:
+    - {catalog_item_id: R-006, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: R-007, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: R-017, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: R-018, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: I-019, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: O-004, due_gate: Team_I_compliance_green}
+  source_lineage:
+    charter_file: charter/research_program_charter_v0.2.md
+    charter_sections: ['Team D3', '§4 soccer', 'Appendix A.6 StatsBomb']
+    catalog_item_ids: [R-006, R-007, R-017, R-018, I-019, O-004]
+  program_no_go_restrictions:
+    - real_money_execution
+    - maker_strategy_live
+    - exact_queue_fill_claim_from_pmxt_l2
+    - multi_venue_simultaneous_execution_arbitrage
+    - live_copy_trading
+    - llm_hot_path
+    - reinforcement_learning
+    - large_scale_microservices
+    - readme_return_strategy_selection
+    - unregistered_quick_backtest
+  amendments: []
+  registration_record_sha256: sha256:7d485dce11d941809ae7354ebd5db54db2bd8b0461052cc0a3e139dd68d96c9b

@@ -13,6 +13,8 @@ import re
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from datetime import datetime, timedelta
 from decimal import Decimal
+from pathlib import PurePosixPath
+from pathlib import Path
 from typing import Annotated, Any, Generic, Literal, TypeVar
 
 from pydantic import (
@@ -406,6 +408,10 @@ ExperimentIdV0 = Literal[
     "X-09",
     "X-10",
 ]
+ExperimentIdV1 = Annotated[
+    str,
+    StringConstraints(strict=True, pattern=r"^X-[0-9]{2,}$"),
+]
 EventTypeV0 = Literal[
     "raw_observation",
     "normalized_observation",
@@ -544,6 +550,10 @@ _SET_SEMANTIC_PATHS = frozenset(
         ("event_envelope", "quality_flags"),
         ("model_output", "state_space"),
         ("model_output", "quality_flags"),
+        ("static_dataset_manifest", "lineage", "source_object_refs"),
+        ("market_metadata_snapshot", "participants"),
+        ("market_metadata_snapshot", "canonical_refs", "participant_ids"),
+        ("market_metadata_snapshot", "quality_flags"),
         ("venue_rule_snapshot", "order_types_supported"),
     }
 )
@@ -553,15 +563,23 @@ def _canonical_root(value: Any) -> tuple[str, ...]:
     model_name = type(value).__name__ if isinstance(value, BaseModel) else ""
     if model_name == "EventEnvelopeV0":
         return ("event_envelope",)
-    if model_name == "ModelOutputV0":
+    if model_name == "ModelOutputV1":
         return ("model_output",)
+    if model_name == "StaticDatasetManifestV0":
+        return ("static_dataset_manifest",)
+    if model_name == "MarketMetadataSnapshotV0":
+        return ("market_metadata_snapshot",)
     if model_name == "VenueRuleSnapshotV0":
         return ("venue_rule_snapshot",)
     if isinstance(value, Mapping):
         if value.get("envelope_version") == "v0" and "event_type" in value:
             return ("event_envelope",)
-        if value.get("contract_version") == "v0" and "probabilities" in value:
+        if value.get("contract_version") == "v1" and "probabilities" in value:
             return ("model_output",)
+        if value.get("manifest_version") == "v0" and "object_kind" in value:
+            return ("static_dataset_manifest",)
+        if value.get("snapshot_version") == "v0" and "native_token_id" in value:
+            return ("market_metadata_snapshot",)
         if "condition_id" in value and "raw_response_hash" in value:
             return ("venue_rule_snapshot",)
     return ("value",)
@@ -856,19 +874,214 @@ class EventEnvelopeV0(_ContractModel):
         return cls.model_validate(material)
 
 
-class ModelOutputV0(_ContractModel):
+class StaticDatasetLineageV0(_ContractModel):
+    source_object_refs: tuple[Sha256V0, ...]
+    query_sha256: Sha256V0 | None
+
+    @field_validator("source_object_refs", mode="before")
+    @classmethod
+    def _source_object_refs_input_is_tuple(cls, value: Any) -> Any:
+        return _as_tuple(value)
+
+    @field_validator("source_object_refs")
+    @classmethod
+    def _source_object_refs_are_unique(
+        cls, value: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        if len(value) != len(set(value)):
+            raise ValueError("source_object_refs must be unique")
+        return tuple(sorted(value))
+
+
+def _content_hash_excluding(value: Any, hash_field: str) -> str:
+    if isinstance(value, BaseModel):
+        material = thaw_contract_v0(value)
+    elif isinstance(value, Mapping):
+        material = dict(value)
+    else:
+        raise TypeError("content hash input must be a mapping or contract model")
+    material.pop(hash_field, None)
+    return canonical_sha256(material)
+
+
+def static_dataset_manifest_sha256(value: Any) -> str:
+    """Hash every manifest field except ``manifest_sha256`` itself."""
+
+    return _content_hash_excluding(value, "manifest_sha256")
+
+
+class StaticDatasetManifestV0(_ContractModel):
+    """Immutable publication record for one static source object or extract."""
+
+    manifest_version: Literal["v0"]
+    dataset_id: Annotated[
+        str,
+        StringConstraints(strict=True, pattern=r"^DS-[A-Z0-9][A-Z0-9-]*$"),
+    ]
+    object_kind: Literal["byte_exact_original", "source_derived_extract"]
+    source_url: NonBlankStr
+    source_request: Mapping[str, Any]
+    source_cursor: NonBlankStr | None
+    fetched_at: UtcTimestampV0
+    coverage: NonBlankStr
+    etag: NonBlankStr | None
+    last_modified: NonBlankStr | None
+    byte_length: int = Field(ge=0)
+    object_sha256: Sha256V0
+    native_object_path: NonBlankStr
+    media_type: NonBlankStr
+    schema_fingerprint: Sha256V0
+    license_ref: Annotated[
+        str,
+        StringConstraints(strict=True, pattern=r"^O-[0-9]{3}$"),
+    ]
+    license_status: Literal[
+        "approved", "research_only", "pending", "unknown", "blocked"
+    ]
+    upstream_partition: NonBlankStr
+    lineage: StaticDatasetLineageV0
+    manifest_sha256: Sha256V0
+
+    @field_validator("source_url")
+    @classmethod
+    def _source_url_is_https(cls, value: str) -> str:
+        if not value.startswith("https://"):
+            raise ValueError("source_url must use HTTPS")
+        return value
+
+    @field_validator("source_request", mode="before")
+    @classmethod
+    def _source_request_is_canonical(cls, value: Any) -> Any:
+        if not isinstance(value, Mapping):
+            raise ValueError("source_request must be an object")
+        _canonical_value(value, path=("static_dataset_manifest", "source_request"))
+        return _freeze(value)
+
+    @field_serializer("source_request")
+    def _serialize_source_request(self, value: Any) -> dict[str, Any]:
+        return thaw_contract_v0(value)
+
+    @field_validator("native_object_path")
+    @classmethod
+    def _native_object_path_is_canonical(cls, value: str) -> str:
+        path = PurePosixPath(value)
+        if (
+            "\\" in value
+            or path.is_absolute()
+            or any(part in {"", ".", ".."} for part in path.parts)
+        ):
+            raise ValueError("native_object_path must be a canonical relative POSIX path")
+        return value
+
+    @model_validator(mode="after")
+    def _lineage_and_hash_are_consistent(self) -> "StaticDatasetManifestV0":
+        refs = self.lineage.source_object_refs
+        query_hash = self.lineage.query_sha256
+        if self.object_kind == "source_derived_extract":
+            if not refs or query_hash is None:
+                raise ValueError(
+                    "source_derived_extract requires source_object_refs and query_sha256"
+                )
+        elif refs or query_hash is not None:
+            raise ValueError(
+                "byte_exact_original cannot claim source-derived lineage"
+            )
+        expected = static_dataset_manifest_sha256(self)
+        if self.manifest_sha256 != expected:
+            raise ValueError(f"manifest_sha256 mismatch: expected {expected}")
+        return self
+
+
+def market_metadata_snapshot_sha256(value: Any) -> str:
+    """Hash every metadata snapshot field except ``snapshot_sha256`` itself."""
+
+    return _content_hash_excluding(value, "snapshot_sha256")
+
+
+class MarketMetadataSnapshotV0(_ContractModel):
+    """Point-in-time venue metadata for one outcome/token mapping."""
+
+    snapshot_version: Literal["v0"]
+    venue: VenueSlugV0
+    native_event_id: NonBlankStr
+    native_market_id: NonBlankStr
+    native_condition_id: NonBlankStr
+    native_outcome_id: NonBlankStr
+    native_token_id: NonBlankStr
+    canonical_refs: CanonicalReferencesV0
+    sport: NonBlankStr
+    competition: NonBlankStr
+    participants: tuple[NonBlankStr, ...]
+    game_start_at: UtcTimestampV0
+    rules: NonBlankStr
+    resolution: NonBlankStr | None
+    closed: bool
+    resolved: bool
+    captured_at: UtcTimestampV0
+    source_updated_at: UtcTimestampV0
+    raw_object_hash: Sha256V0
+    quality_flags: tuple[QualityFlagV0, ...]
+    snapshot_sha256: Sha256V0
+
+    @field_validator("participants", "quality_flags", mode="before")
+    @classmethod
+    def _set_inputs_are_tuples(cls, value: Any) -> Any:
+        return _as_tuple(value)
+
+    @field_validator("participants")
+    @classmethod
+    def _participants_are_unique(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if not value:
+            raise ValueError("participants must not be empty")
+        if len(value) != len(set(value)):
+            raise ValueError("participants must be unique")
+        return tuple(sorted(value))
+
+    @field_validator("quality_flags")
+    @classmethod
+    def _metadata_quality_flags_are_unique(
+        cls, value: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        if len(value) != len(set(value)):
+            raise ValueError("quality_flags must be unique")
+        return tuple(sorted(value))
+
+    @model_validator(mode="after")
+    def _point_in_time_and_hash_are_consistent(
+        self,
+    ) -> "MarketMetadataSnapshotV0":
+        if _timestamp_order_value(self.source_updated_at) > _timestamp_order_value(
+            self.captured_at
+        ):
+            raise ValueError("source_updated_at cannot be after captured_at")
+        if self.resolved and (not self.closed or self.resolution is None):
+            raise ValueError("resolved metadata requires closed=true and a resolution")
+        if not self.resolved and self.resolution is not None:
+            raise ValueError("unresolved metadata cannot declare a resolution")
+        expected = market_metadata_snapshot_sha256(self)
+        if self.snapshot_sha256 != expected:
+            raise ValueError(f"snapshot_sha256 mismatch: expected {expected}")
+        return self
+
+
+TransitionUnitV1 = Literal["possession", "drive", "five_minute_interval"]
+
+
+class ModelOutputV1(_ContractModel):
     """A point-in-time state-transition distribution."""
 
-    contract_version: Literal["v0"]
+    contract_version: Literal["v1"]
     model_id: NonBlankStr
     model_version: NonBlankStr
-    experiment_id: ExperimentIdV0
+    experiment_id: ExperimentIdV1
     run_id: NonBlankStr
     game_id: GameIdV0
     state_event_id: EventIdV0
     pit_cutoff_at: UtcTimestampV0
+    output_kind: Literal["state_transition"]
+    transition_unit: TransitionUnitV1
     state_space: tuple[NonBlankStr, ...]
-    horizon: NonBlankStr
+    horizon: Literal["next_state_transition"]
     probabilities: Mapping[str, FixedPointV0]
     feature_sha256: Sha256V0
     data_sha256: Sha256V0
@@ -917,7 +1130,7 @@ class ModelOutputV0(_ContractModel):
         return tuple(sorted(value))
 
     @model_validator(mode="after")
-    def _probabilities_form_distribution(self) -> "ModelOutputV0":
+    def _probabilities_form_distribution(self) -> "ModelOutputV1":
         if not self.probabilities:
             raise ValueError("probabilities must not be empty")
         if set(self.probabilities) != set(self.state_space):
@@ -1222,9 +1435,13 @@ _MODEL_BY_SCHEMA_NAME: dict[str, type[BaseModel]] = {
     "id-registry/v0/entity.schema.yaml": EntityAssertionV0,
     "id-registry/v0/native-assertion.schema.yaml": NativeAssertionV0,
     "id-registry/v0/relation-assertion.schema.yaml": RelationAssertionV0,
-    "model-output/v0.schema.yaml": ModelOutputV0,
+    "market-metadata-snapshot/v0.schema.yaml": MarketMetadataSnapshotV0,
+    "static-dataset-manifest/v0.schema.yaml": StaticDatasetManifestV0,
     "tca/v0.schema.yaml": TcaRecordV0,
     "venue-rule-snapshot/v0.schema.yaml": VenueRuleSnapshotV0,
+}
+_V1_MODEL_BY_SCHEMA_NAME: dict[str, type[BaseModel]] = {
+    "model-output/v1.schema.yaml": ModelOutputV1,
 }
 _QUALITY_FLAG_ADAPTER = TypeAdapter(QualityFlagV0)
 _MARKET_RELATION_ADAPTER = TypeAdapter(MarketRelationV0)
@@ -1241,6 +1458,26 @@ def validate_contract_v0(schema_name: str, instance: Any) -> Any:
     if schema_name == "market-relations/v0.yaml":
         return _MARKET_RELATION_ADAPTER.validate_python(instance, strict=True)
     raise ValueError(f"unknown v0 contract schema: {schema_name}")
+
+
+def validate_contract_v1(
+    program_root: str | Path, schema_name: str, instance: Any
+) -> Any:
+    """Validate one v1 contract including all runtime registry foreign keys."""
+
+    model = _V1_MODEL_BY_SCHEMA_NAME.get(schema_name)
+    if model is None:
+        raise ValueError(f"unknown v1 contract schema: {schema_name}")
+    validated = model.model_validate(_untrusted_round_trip_input(instance))
+    if isinstance(validated, ModelOutputV1):
+        from prediction_market.experiments import load_experiment_registry
+
+        registered = load_experiment_registry(program_root)
+        if validated.experiment_id not in registered:
+            raise ContractValidationError(
+                f"experiment {validated.experiment_id} is not registered"
+            )
+    return validated
 
 
 # Short aliases keep consumers from inventing parallel v0 names.
@@ -1270,7 +1507,8 @@ __all__ = [
     "LineageV0",
     "LEVEL2_STREAM_DOMAIN_TAG",
     "MARKET_RELATIONS",
-    "ModelOutputV0",
+    "MarketMetadataSnapshotV0",
+    "ModelOutputV1",
     "NativeAssertionV0",
     "NativeRefV0",
     "NativeReferenceV0",
@@ -1282,6 +1520,8 @@ __all__ = [
     "START_TIME_CANCEL_POLICIES",
     "Sha256V0",
     "SourceV0",
+    "StaticDatasetLineageV0",
+    "StaticDatasetManifestV0",
     "TimeV0",
     "TcaMarkoutV0",
     "TcaRecordV0",
@@ -1295,8 +1535,11 @@ __all__ = [
     "event_id_for",
     "level2_stream_frame",
     "level2_stream_sha256",
+    "market_metadata_snapshot_sha256",
     "payload_sha256",
     "replay_order_key",
+    "static_dataset_manifest_sha256",
     "thaw_contract_v0",
     "validate_contract_v0",
+    "validate_contract_v1",
 ]

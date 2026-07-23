@@ -30,6 +30,13 @@ def _contracts():
     return contracts
 
 
+def _validate_contract(schema_name: str, value: Any):
+    contracts = _contracts()
+    if schema_name == "model-output/v1.schema.yaml":
+        return contracts.validate_contract_v1(PROJECT_ROOT, schema_name, value)
+    return contracts.validate_contract_v0(schema_name, value)
+
+
 def _digest(fill: str = "0") -> str:
     return f"sha256:{fill * 64}"
 
@@ -135,7 +142,7 @@ def _derived_event() -> dict[str, Any]:
 
 def _model_output() -> dict[str, Any]:
     return {
-        "contract_version": "v0",
+        "contract_version": "v1",
         "model_id": "nba-state-baseline",
         "model_version": "2026-07-22.1",
         "experiment_id": "X-06",
@@ -143,6 +150,8 @@ def _model_output() -> dict[str, Any]:
         "game_id": "game_nba_2026_001",
         "state_event_id": _event_id("d"),
         "pit_cutoff_at": "2026-07-22T12:00:00Z",
+        "output_kind": "state_transition",
+        "transition_unit": "possession",
         "state_space": ["away_possession", "home_possession", "game_over"],
         "horizon": "next_state_transition",
         "probabilities": {
@@ -224,17 +233,17 @@ def _copied_contract_with_hidden_field(contract_kind: str, *, nested: bool):
         return "event-envelope/v0.schema.yaml", copied, injected
 
     if contract_kind == "model_output":
-        output = contracts.ModelOutputV0.model_validate(_model_output())
+        output = contracts.ModelOutputV1.model_validate(_model_output())
         if not nested:
             copied = output.model_copy(update=hidden_field)
-            return "model-output/v0.schema.yaml", copied, copied
+            return "model-output/v1.schema.yaml", copied, copied
 
         state = output.state_space[0]
         probabilities = dict(output.probabilities)
         injected = probabilities[state].model_copy(update=hidden_field)
         probabilities[state] = injected
         copied = output.model_copy(update={"probabilities": probabilities})
-        return "model-output/v0.schema.yaml", copied, injected
+        return "model-output/v1.schema.yaml", copied, injected
 
     if contract_kind == "venue_rule_snapshot":
         snapshot = contracts.VenueRuleSnapshotV0.model_validate(_rule_snapshot())
@@ -264,7 +273,7 @@ def _contract_with_declared_name_extra(contract_kind: str, extra_case: str):
         return "event-envelope/v0.schema.yaml", copied
 
     if contract_kind == "model_output":
-        copied = contracts.ModelOutputV0.model_validate(_model_output()).model_copy()
+        copied = contracts.ModelOutputV1.model_validate(_model_output()).model_copy()
         extra_value = (
             copied
             if extra_case == "cycle"
@@ -277,7 +286,7 @@ def _contract_with_declared_name_extra(contract_kind: str, extra_case: str):
             "__pydantic_extra__",
             {"state_space": extra_value},
         )
-        return "model-output/v0.schema.yaml", copied
+        return "model-output/v1.schema.yaml", copied
 
     if contract_kind == "venue_rule_snapshot":
         copied = contracts.VenueRuleSnapshotV0.model_validate(
@@ -329,8 +338,8 @@ def _contract_with_attacker_controlled_extra(
         copied = contracts.EventEnvelopeV0.model_validate(_raw_event()).model_copy()
         declared_name = "payload"
     elif contract_kind == "model_output":
-        schema_name = "model-output/v0.schema.yaml"
-        copied = contracts.ModelOutputV0.model_validate(_model_output()).model_copy()
+        schema_name = "model-output/v1.schema.yaml"
+        copied = contracts.ModelOutputV1.model_validate(_model_output()).model_copy()
         declared_name = "state_space"
     elif contract_kind == "venue_rule_snapshot":
         schema_name = "venue-rule-snapshot/v0.schema.yaml"
@@ -375,7 +384,7 @@ def _valid_schema_instances() -> dict[str, Any]:
             "asserted_at": "2026-07-22T12:00:00Z",
             "evidence_refs": ["X-10"],
         },
-        "model-output/v0.schema.yaml": _model_output(),
+        "model-output/v1.schema.yaml": _model_output(),
         "quality-flags/v0.yaml": "gap_detected",
         "market-relations/v0.yaml": "identity",
         "venue-rule-snapshot/v0.schema.yaml": _rule_snapshot(),
@@ -796,7 +805,7 @@ def test_normative_validation_rejects_hidden_fields_on_copied_model_graphs(
 
     assert injected.__dict__["unexpected_contract_field"] == "injected"
     with pytest.raises(ValueError, match="unexpected_contract_field"):
-        contracts.validate_contract_v0(schema_name, copied)
+        _validate_contract(schema_name, copied)
 
 
 @pytest.mark.parametrize(
@@ -893,7 +902,7 @@ def test_normative_validation_rejects_declared_name_pydantic_extras(
     assert extra_names
     assert extra_names <= set(type(copied).model_fields)
     with pytest.raises(contracts.ContractValidationError, match="__pydantic_extra__"):
-        contracts.validate_contract_v0(schema_name, copied)
+        _validate_contract(schema_name, copied)
 
 
 @pytest.mark.parametrize(
@@ -945,7 +954,7 @@ def test_normative_validation_requires_pydantic_extras_to_be_absent(
     with pytest.raises(
         contracts.ContractValidationError, match="__pydantic_extra__"
     ):
-        contracts.validate_contract_v0(schema_name, copied)
+        _validate_contract(schema_name, copied)
 
 
 def test_all_structural_event_collections_are_tuples() -> None:
@@ -977,9 +986,9 @@ def test_event_accepts_valid_raw_and_derived_contracts() -> None:
 
 
 def test_model_output_is_complete_state_transition_distribution() -> None:
-    ModelOutputV0 = _contracts().ModelOutputV0
+    ModelOutputV1 = _contracts().ModelOutputV1
 
-    output = ModelOutputV0.model_validate(_model_output())
+    output = ModelOutputV1.model_validate(_model_output())
 
     assert set(output.probabilities) == set(output.state_space)
     assert sum(
@@ -992,7 +1001,7 @@ def test_model_output_and_rule_snapshot_have_no_mutable_field_values() -> None:
     contracts = _contracts()
     output_input = _model_output()
     snapshot_input = _rule_snapshot()
-    output = contracts.ModelOutputV0.model_validate(output_input)
+    output = contracts.ModelOutputV1.model_validate(output_input)
     snapshot = contracts.VenueRuleSnapshotV0.model_validate(snapshot_input)
 
     output_input["state_space"].append("mutated")
@@ -1029,21 +1038,23 @@ def test_normative_validation_rejects_empty_order_types_on_copied_snapshot() -> 
 
 def test_normative_validation_rejects_duplicate_mutable_state_space_on_copy() -> None:
     contracts = _contracts()
-    output = contracts.ModelOutputV0.model_validate(_model_output())
+    output = contracts.ModelOutputV1.model_validate(_model_output())
     copied = output.model_copy(
         update={"state_space": ["home_possession", "home_possession"]}
     )
 
     assert isinstance(copied.state_space, list)
     with pytest.raises(ValidationError, match="state_space must be unique"):
-        contracts.validate_contract_v0("model-output/v0.schema.yaml", copied)
+        contracts.validate_contract_v1(
+            PROJECT_ROOT, "model-output/v1.schema.yaml", copied
+        )
 
 
 def test_immutable_contracts_thaw_deterministically_for_serialization() -> None:
     contracts = _contracts()
     models = (
         contracts.EventEnvelopeV0.model_validate(_raw_event()),
-        contracts.ModelOutputV0.model_validate(_model_output()),
+        contracts.ModelOutputV1.model_validate(_model_output()),
         contracts.VenueRuleSnapshotV0.model_validate(_rule_snapshot()),
     )
 
@@ -1079,23 +1090,23 @@ def test_immutable_contracts_thaw_deterministically_for_serialization() -> None:
 def test_model_output_rejects_invalid_probability_distribution(
     probabilities: dict[str, Any],
 ) -> None:
-    ModelOutputV0 = _contracts().ModelOutputV0
+    ModelOutputV1 = _contracts().ModelOutputV1
     output = _model_output()
     output["probabilities"] = probabilities
 
     with pytest.raises(ValidationError):
-        ModelOutputV0.model_validate(output)
+        ModelOutputV1.model_validate(output)
 
 
 def test_model_output_rejects_final_win_probability_shortcut() -> None:
-    ModelOutputV0 = _contracts().ModelOutputV0
+    ModelOutputV1 = _contracts().ModelOutputV1
     output = _model_output()
     output.pop("state_space")
     output.pop("probabilities")
     output["win_probability"] = {"atoms": "5", "scale": 1}
 
     with pytest.raises(ValidationError):
-        ModelOutputV0.model_validate(output)
+        ModelOutputV1.model_validate(output)
 
 
 def test_venue_rule_snapshot_requires_observed_per_market_values() -> None:
@@ -1212,9 +1223,11 @@ SCHEMA_PATHS = (
     "id-registry/v0/entity.schema.yaml",
     "id-registry/v0/native-assertion.schema.yaml",
     "id-registry/v0/relation-assertion.schema.yaml",
-    "model-output/v0.schema.yaml",
+    "market-metadata-snapshot/v0.schema.yaml",
+    "model-output/v1.schema.yaml",
     "quality-flags/v0.yaml",
     "market-relations/v0.yaml",
+    "static-dataset-manifest/v0.schema.yaml",
     "venue-rule-snapshot/v0.schema.yaml",
 )
 
@@ -1227,7 +1240,8 @@ def test_machine_readable_contract_documents_load(relative_path: str) -> None:
     document = yaml.safe_load(path.read_text(encoding="utf-8"))
 
     assert isinstance(document, dict)
-    assert document.get("contract_version") == "v0"
+    expected_version = "v1" if relative_path == "model-output/v1.schema.yaml" else "v0"
+    assert document.get("contract_version") == expected_version
     assert document.get("title")
 
 
@@ -1239,19 +1253,33 @@ def test_every_yaml_contract_requires_one_normative_runtime_validator(
         (CONTRACTS_ROOT / relative_path).read_text(encoding="utf-8")
     )
 
-    assert document["x-normative-semantic-validator"] == {
-        "callable": "prediction_market.contracts.validate_contract_v0",
-        "schema_name": relative_path,
-        "required": True,
-        "fail_closed_without_runtime": True,
-    }
+    validator = document["x-normative-semantic-validator"]
+    assert validator["schema_name"] == relative_path
+    assert validator["required"] is True
+    assert validator["fail_closed_without_runtime"] is True
+    if relative_path == "model-output/v1.schema.yaml":
+        assert validator["callable"] == (
+            "prediction_market.contracts.validate_contract_v1"
+        )
+        assert validator["requires_program_root"] is True
+    else:
+        assert validator["callable"] == (
+            "prediction_market.contracts.validate_contract_v0"
+        )
 
 
-def test_normative_runtime_validator_accepts_every_v0_contract_family() -> None:
+def test_normative_runtime_validator_accepts_registered_contract_families() -> None:
     contracts = _contracts()
 
     for schema_name, instance in _valid_schema_instances().items():
-        assert contracts.validate_contract_v0(schema_name, instance) is not None
+        validator = (
+            lambda name, value: contracts.validate_contract_v1(
+                PROJECT_ROOT, name, value
+            )
+            if schema_name == "model-output/v1.schema.yaml"
+            else contracts.validate_contract_v0
+        )
+        assert validator(schema_name, instance) is not None
 
 
 def test_normative_runtime_validator_rejects_cross_type_id_assertion() -> None:
@@ -1271,7 +1299,9 @@ def test_normative_runtime_validator_rejects_non_unit_probability_sum() -> None:
     output["probabilities"]["game_over"] = {"atoms": "24", "scale": 2}
 
     with pytest.raises(ValidationError, match="sum exactly to 1"):
-        contracts.validate_contract_v0("model-output/v0.schema.yaml", output)
+        contracts.validate_contract_v1(
+            PROJECT_ROOT, "model-output/v1.schema.yaml", output
+        )
 
 
 @pytest.mark.parametrize(
@@ -1307,7 +1337,7 @@ def _contains_mapping_key(value: Any, searched_key: str) -> bool:
 
 def test_numeric_yaml_patterns_match_runtime_sign_constraints() -> None:
     model_schema = yaml.safe_load(
-        (CONTRACTS_ROOT / "model-output" / "v0.schema.yaml").read_text(
+        (CONTRACTS_ROOT / "model-output" / "v1.schema.yaml").read_text(
             encoding="utf-8"
         )
     )
@@ -1349,7 +1379,7 @@ def test_schema_contracts_forbid_extensions_and_require_core_keys() -> None:
             "payload",
             "payload_sha256",
         },
-        "model-output/v0.schema.yaml": {
+        "model-output/v1.schema.yaml": {
             "contract_version",
             "model_id",
             "model_version",
@@ -1358,6 +1388,8 @@ def test_schema_contracts_forbid_extensions_and_require_core_keys() -> None:
             "game_id",
             "state_event_id",
             "pit_cutoff_at",
+            "output_kind",
+            "transition_unit",
             "state_space",
             "horizon",
             "probabilities",

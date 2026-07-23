@@ -1,13 +1,14 @@
 $schema: https://json-schema.org/draft/2020-12/schema
-$id: urn:prediction-market:model-output:v0
-title: State Transition Model Output v0
-contract_version: v0
+$id: urn:prediction-market:model-output:v1
+title: State Transition Model Output v1
+contract_version: v1
 x-normative-semantic-validator:
-  callable: prediction_market.contracts.validate_contract_v0
-  schema_name: model-output/v0.schema.yaml
+  callable: prediction_market.contracts.validate_contract_v1
+  schema_name: model-output/v1.schema.yaml
   required: true
+  requires_program_root: true
   fail_closed_without_runtime: true
-description: Point-in-time state-transition distribution; a final win-probability-only output is not this contract.
+description: Registry-backed point-in-time state-transition distribution; final-win-only output is forbidden.
 type: object
 additionalProperties: false
 required:
@@ -19,6 +20,8 @@ required:
   - game_id
   - state_event_id
   - pit_cutoff_at
+  - output_kind
+  - transition_unit
   - state_space
   - horizon
   - probabilities
@@ -28,18 +31,14 @@ required:
   - quality_flags
 properties:
   contract_version:
-    const: v0
-  model_id:
-    type: string
-    minLength: 1
-  model_version:
-    type: string
-    minLength: 1
+    const: v1
+  model_id: {type: string, minLength: 1}
+  model_version: {type: string, minLength: 1}
   experiment_id:
-    enum: [X-01, X-02, X-03, X-04, X-05, X-06, X-07, X-08, X-09, X-10]
-  run_id:
     type: string
-    minLength: 1
+    pattern: ^X-[0-9]{2,}$
+    x-foreign-key: registries/experiment_registry.csv#experiment_id
+  run_id: {type: string, minLength: 1}
   game_id:
     type: string
     pattern: ^game_[A-Za-z0-9][A-Za-z0-9._:-]*$
@@ -48,33 +47,30 @@ properties:
     pattern: ^evt_[0-9a-f]{64}$
   pit_cutoff_at:
     $ref: '#/$defs/utc_timestamp'
+  output_kind:
+    const: state_transition
+  transition_unit:
+    enum: [possession, drive, five_minute_interval]
   state_space:
     type: array
     minItems: 1
     uniqueItems: true
-    items:
-      type: string
-      minLength: 1
+    items: {type: string, minLength: 1}
   horizon:
-    type: string
-    minLength: 1
+    const: next_state_transition
   probabilities:
     type: object
     minProperties: 1
     additionalProperties:
       $ref: '#/$defs/probability_fixed_point'
-    description: Runtime semantic validation requires keys equal state_space, values in [0,1], and an exact Decimal sum of 1.
-  feature_sha256:
-    $ref: '#/$defs/sha256'
-  data_sha256:
-    $ref: '#/$defs/sha256'
-  config_sha256:
-    $ref: '#/$defs/sha256'
+    description: Runtime validation requires keys equal state_space and exact Decimal sum 1.
+  feature_sha256: {$ref: '#/$defs/sha256'}
+  data_sha256: {$ref: '#/$defs/sha256'}
+  config_sha256: {$ref: '#/$defs/sha256'}
   quality_flags:
     type: array
     uniqueItems: true
-    items:
-      $ref: '#/$defs/quality_flag'
+    items: {$ref: '#/$defs/quality_flag'}
 $defs:
   fixed_point:
     type: object

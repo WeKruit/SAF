@@ -27,11 +27,11 @@ experiment_card:
   due_gate: null
   results_ref: []
   promotion_decision: ''
-  execution_authorized: true
+  execution_authorized: false
   completion_required_scopes: [formal_result]
   authorization_scopes:
     formal_result:
-      authorized: true
+      authorized: false
       required_result_label: FORMAL
       required_lock_ids: [x09_input_manifest, x09_rule_manifest, risk_and_fill_config, serializer_seed_and_lockfile, h_split_approval]
   registration_locks:
@@ -67,4 +67,4 @@ experiment_card:
     - readme_return_strategy_selection
     - unregistered_quick_backtest
   amendments: []
-  registration_record_sha256: sha256:3c47f6556e11a330f08d8925a1c61516edb07a2169f903c67b20181d549a1173
+  registration_record_sha256: sha256:645beda90eaf30ba770ec57e889e5fccfbdfaeecab24d4c80129b416c72da567

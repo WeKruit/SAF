@@ -1,0 +1,137 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: urn:prediction-market:market-metadata-snapshot:v0
+title: Market Metadata Snapshot v0
+contract_version: v0
+x-normative-semantic-validator:
+  callable: prediction_market.contracts.validate_contract_v0
+  schema_name: market-metadata-snapshot/v0.schema.yaml
+  required: true
+  fail_closed_without_runtime: true
+description: Point-in-time venue event, market, condition, outcome, and token metadata.
+type: object
+additionalProperties: false
+required:
+  - snapshot_version
+  - venue
+  - native_event_id
+  - native_market_id
+  - native_condition_id
+  - native_outcome_id
+  - native_token_id
+  - canonical_refs
+  - sport
+  - competition
+  - participants
+  - game_start_at
+  - rules
+  - resolution
+  - closed
+  - resolved
+  - captured_at
+  - source_updated_at
+  - raw_object_hash
+  - quality_flags
+  - snapshot_sha256
+properties:
+  snapshot_version:
+    const: v0
+  venue:
+    type: string
+    pattern: ^[a-z0-9][a-z0-9._-]*$
+  native_event_id: {type: string, minLength: 1}
+  native_market_id: {type: string, minLength: 1}
+  native_condition_id: {type: string, minLength: 1}
+  native_outcome_id: {type: string, minLength: 1}
+  native_token_id: {type: string, minLength: 1}
+  canonical_refs:
+    $ref: '#/$defs/canonical_refs'
+  sport: {type: string, minLength: 1}
+  competition: {type: string, minLength: 1}
+  participants:
+    type: array
+    minItems: 1
+    uniqueItems: true
+    items: {type: string, minLength: 1}
+  game_start_at:
+    $ref: '#/$defs/utc_timestamp'
+  rules: {type: string, minLength: 1}
+  resolution:
+    type: [string, 'null']
+    minLength: 1
+  closed: {type: boolean}
+  resolved: {type: boolean}
+  captured_at:
+    $ref: '#/$defs/utc_timestamp'
+  source_updated_at:
+    $ref: '#/$defs/utc_timestamp'
+  raw_object_hash:
+    $ref: '#/$defs/sha256'
+  quality_flags:
+    type: array
+    uniqueItems: true
+    items:
+      $ref: '#/$defs/quality_flag'
+  snapshot_sha256:
+    $ref: '#/$defs/sha256'
+    x-derived-from: canonical full snapshot excluding snapshot_sha256
+$defs:
+  sha256:
+    type: string
+    pattern: ^sha256:[0-9a-f]{64}$
+  utc_timestamp:
+    type: string
+    format: date-time
+    pattern: ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z$
+  quality_flag:
+    enum:
+      - clock_jump
+      - crossed_book
+      - duplicate_event
+      - gap_detected
+      - missing_initial_snapshot
+      - missing_side
+      - negative_time_delta
+      - non_positive_size
+      - out_of_order
+      - pause_observed
+      - preliminary_rules
+      - reconstruction_divergence
+      - source_clock_unverified
+      - stale_as_of_join
+      - tick_size_change
+  canonical_refs:
+    type: object
+    additionalProperties: false
+    required:
+      - competition_id
+      - game_id
+      - participant_ids
+      - venue_event_id
+      - market_id
+      - outcome_id
+      - condition_id
+    properties:
+      competition_id:
+        type: [string, 'null']
+        pattern: ^cmp_[A-Za-z0-9][A-Za-z0-9._:-]*$
+      game_id:
+        type: [string, 'null']
+        pattern: ^game_[A-Za-z0-9][A-Za-z0-9._:-]*$
+      participant_ids:
+        type: array
+        uniqueItems: true
+        items:
+          type: string
+          pattern: ^participant_[A-Za-z0-9][A-Za-z0-9._:-]*$
+      venue_event_id:
+        type: [string, 'null']
+        pattern: ^venue_event_[A-Za-z0-9][A-Za-z0-9._:-]*$
+      market_id:
+        type: [string, 'null']
+        pattern: ^market_[A-Za-z0-9][A-Za-z0-9._:-]*$
+      outcome_id:
+        type: [string, 'null']
+        pattern: ^outcome_[A-Za-z0-9][A-Za-z0-9._:-]*$
+      condition_id:
+        type: [string, 'null']
+        pattern: ^condition_[A-Za-z0-9][A-Za-z0-9._:-]*$

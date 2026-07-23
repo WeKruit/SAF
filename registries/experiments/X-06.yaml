@@ -5,20 +5,21 @@ experiment_card:
   status: registered
   hypothesis: Prior plus simple logistic and GBDT features is calibrated and no worse than the market prior under game-grouped walk-forward validation
   data:
-    - source: Multi-season NBA play-by-play
-      version: unresolved:nba_pbp_manifest
-      pit_basis: source_event_time
+    - source: NBA play-by-play candidate DS-NBA-CANDIDATE
+      version: unresolved:nba_pbp_static_dataset_manifest
+      pit_basis: source_event_time with a separately locked availability contract
     - source: Historical pregame odds or X-01 archive pregame market price
       version: unresolved:pregame_prior_manifest
       pit_basis: frozen_before_game_start
-  method: Compare market prior, logistic regression, and histogram GBDT with game-grouped chronological walk-forward evaluation and game-cluster bootstrap.
+  method: Compare the market prior then feed that same point-in-time prior as an input feature to logistic regression and GBDT; evaluate game-grouped chronological walk-forward calibration and emit a next-possession scoring-outcome transition distribution.
   leakage_checks:
     - No game crosses folds; training games precede test games.
     - Features are production-time available and the prior is frozen before game start.
+    - The possession transition target is derived only from events after the state event.
   split: game-grouped + chronological + walk-forward
-  metrics: [Brier score versus prior, log loss versus prior, calibration slope, calibration intercept, game-cluster bootstrap confidence interval, game-phase stability, season stability]
+  metrics: [Brier score versus prior, log loss versus prior, calibration slope, calibration intercept, game-cluster bootstrap confidence interval, possession-transition log loss, game-phase stability, season stability]
   pass_criteria: Gate 1 requires slope 0.9-1.1, intercept near zero under a preregistered tolerance, Brier no worse than prior, and bootstrap-CI support. Gate 2 separately requires a positive prior increment under CI comparable to X-07 cost.
-  fail_criteria: Gate 1 failure blocks Reaction Model promotion; Gate 2 failure blocks any trading-relevance claim. Gate 1 never implies Gate 2.
+  fail_criteria: Gate 1 failure blocks Reaction Model promotion; Gate 2 failure blocks any trading-relevance claim. Gate 1 never implies Gate 2. Any unresolved NBA license or static manifest blocks an empirical formal result.
   cost_estimate: {compute: unresolved, human_days: unresolved}
   dependencies: []
   registered_at: '2026-07-22'
@@ -29,29 +30,40 @@ experiment_card:
   execution_authorized: true
   completion_required_scopes: [formal_result]
   authorization_scopes:
+    contract_harness:
+      authorized: true
+      required_result_label: PRELIMINARY
+      required_lock_ids: []
     formal_result:
-      authorized: true
+      authorized: false
       required_result_label: FORMAL
-      required_lock_ids: [nba_pbp_manifest, pregame_prior_manifest, seasons_features_and_models, calibration_and_bootstrap_parameters]
+      required_lock_ids: [nba_pbp_manifest, pregame_prior_manifest, nba_license_clearance, seasons_features_and_models, calibration_and_bootstrap_parameters]
     gate_1_reaction_model:
-      authorized: true
+      authorized: false
       required_result_label: FORMAL
-      required_lock_ids: [nba_pbp_manifest, pregame_prior_manifest, seasons_features_and_models, calibration_and_bootstrap_parameters]
+      required_lock_ids: [nba_pbp_manifest, pregame_prior_manifest, nba_license_clearance, seasons_features_and_models, calibration_and_bootstrap_parameters]
     gate_2_trading_relevance:
       authorized: false
       required_result_label: FORMAL
-      required_lock_ids: [nba_pbp_manifest, pregame_prior_manifest, seasons_features_and_models, calibration_and_bootstrap_parameters, x07_cost_comparability]
+      required_lock_ids: [nba_pbp_manifest, pregame_prior_manifest, nba_license_clearance, seasons_features_and_models, calibration_and_bootstrap_parameters, x07_cost_comparability]
   registration_locks:
-    - {id: nba_pbp_manifest, status: unresolved, reason: 'Seasons, source version, and hashes are unset.'}
+    - {id: nba_pbp_manifest, status: unresolved, reason: Byte-exact source or derived-extract manifest and hashes are unset.}
     - {id: pregame_prior_manifest, status: unresolved, reason: Historical prior source and PIT manifest are unset.}
-    - {id: seasons_features_and_models, status: unresolved, reason: 'Cutoffs, PIT feature list, model parameters, and seeds are unset.'}
-    - {id: calibration_and_bootstrap_parameters, status: unresolved, reason: 'Intercept tolerance, CI level, repetitions, and clustering rules are unset.'}
+    - {id: nba_license_clearance, status: unresolved, reason: O-005 blocks empirical use until licensed data or written clearance exists.}
+    - {id: seasons_features_and_models, status: unresolved, reason: Cutoffs PIT feature list transition target model parameters and seeds are unset.}
+    - {id: calibration_and_bootstrap_parameters, status: unresolved, reason: Intercept tolerance CI level repetitions and clustering rules are unset.}
     - {id: x07_cost_comparability, status: unresolved, reason: X-07 cost floor and increment-comparison definition do not yet exist.}
   measurement_exemption: false
   falsified_direction_is_valid_measurement: false
   decision_gates:
     gate_1_reaction_model: calibration and prior-comparison gate
     gate_2_trading_relevance: incremental-value and X-07 cost-comparability gate
+  dataset_ids: [DS-NBA-CANDIDATE]
+  output_contract:
+    contract: model-output/v1.schema.yaml
+    output_kind: state_transition
+    transition_unit: possession
+    state_space: [home_score, away_score, no_score]
   linked_first_artifact_due_gates:
     - {catalog_item_id: R-009, due_gate: 2026-08-05_W2_review}
     - {catalog_item_id: R-010, due_gate: 2026-08-05_W2_review}
@@ -75,4 +87,4 @@ experiment_card:
     - readme_return_strategy_selection
     - unregistered_quick_backtest
   amendments: []
-  registration_record_sha256: sha256:4f169608167ca9153e7228abfc111b78a07e405fbf209b66a2d55822230694f9
+  registration_record_sha256: sha256:a3547b65f22a6ddac0fb127025c5decd77d3c912ed59993dd8f57d0866fc6452

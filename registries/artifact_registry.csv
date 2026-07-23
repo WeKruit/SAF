@@ -5,6 +5,8 @@ ART-H-003,artifacts/validation/validation_standard_v0.md,H,v0,first_round_artifa
 ART-H-004,src/prediction_market/experiments.py,H,v0,first_round_artifact_gate,registered
 ART-H-005,tests/test_experiment_registry.py,H,v0,first_round_artifact_gate,registered
 ART-H-006,registries/experiment_amendment_ledger.csv,H,v0,first_round_artifact_gate,registered
+ART-H-007,registries/dataset_registry.csv,H+C+I,v0,first_round_artifact_gate,registered
+ART-H-008,registries/model_registry.csv,H+D1+D2+D3,v0,first_round_artifact_gate,registered
 ART-X-001,registries/experiments/X-01.yaml,C,v0,first_round_artifact_gate,registered
 ART-X-002,registries/experiments/X-02.yaml,C+H,v0,first_round_artifact_gate,registered
 ART-X-003,registries/experiments/X-03.yaml,C+E,v0,first_round_artifact_gate,registered
@@ -15,11 +17,13 @@ ART-X-007,registries/experiments/X-07.yaml,F+E,v0,first_round_artifact_gate,regi
 ART-X-008,registries/experiments/X-08.yaml,C+B,v0,first_round_artifact_gate,registered
 ART-X-009,registries/experiments/X-09.yaml,B+A+H,v0,first_round_artifact_gate,registered
 ART-X-010,registries/experiments/X-10.yaml,G+A,v0,first_round_artifact_gate,registered
+ART-X-011,registries/experiments/X-11.yaml,D2+H,v0,first_round_artifact_gate,registered
+ART-X-012,registries/experiments/X-12.yaml,D3+H+I,v0,first_round_artifact_gate,registered
 ART-A-001,contracts/event-envelope/v0.schema.yaml,A,v0,first_round_artifact_gate,complete
 ART-A-002,contracts/id-registry/v0/entity.schema.yaml,A,v0,first_round_artifact_gate,complete
 ART-A-003,contracts/id-registry/v0/native-assertion.schema.yaml,A,v0,first_round_artifact_gate,complete
 ART-A-004,contracts/id-registry/v0/relation-assertion.schema.yaml,A,v0,first_round_artifact_gate,complete
-ART-A-005,contracts/model-output/v0.schema.yaml,A,v0,first_round_artifact_gate,complete
+ART-A-005,contracts/model-output/v1.schema.yaml,A,v1,first_round_artifact_gate,complete
 ART-A-006,contracts/venue-rule-snapshot/v0.schema.yaml,A+B+C,v0,first_round_artifact_gate,complete
 ART-A-007,contracts/deterministic-replay/v0.md,A,v0,X09_deterministic_vertical_slice,complete
 ART-A-008,artifacts/architecture/adr/0001-engine-decision-deferred.md,A,v0,first_round_artifact_gate,complete
@@ -29,6 +33,8 @@ ART-A-011,artifacts/architecture/adr/0004-event-sourcing.md,A,v0,first_round_art
 ART-A-012,artifacts/architecture/adr/0005-fail-closed.md,A,v0,first_round_artifact_gate,complete
 ART-A-013,contracts/market-relations/v0.yaml,A+G,v0,first_round_artifact_gate,complete
 ART-A-014,contracts/quality-flags/v0.yaml,A+C,v0,first_round_artifact_gate,complete
+ART-A-015,contracts/static-dataset-manifest/v0.schema.yaml,A+C,v0,first_round_artifact_gate,complete
+ART-A-016,contracts/market-metadata-snapshot/v0.schema.yaml,A+C,v0,first_round_artifact_gate,complete
 ART-C-001,contracts/raw-capture/v0.schema.yaml,C,v0,X01_L2_reconstruction,complete
 ART-C-002,data/raw/README.md,C,v0,X01_L2_reconstruction,complete
 ART-C-003,data/manifests/README.md,C,v0,X01_L2_reconstruction,complete

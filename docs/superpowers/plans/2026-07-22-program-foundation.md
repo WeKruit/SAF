@@ -75,7 +75,7 @@ git commit -m "build: establish governed program repository"
 - Create: `contracts/id-registry/v0/entity.schema.yaml`
 - Create: `contracts/id-registry/v0/native-assertion.schema.yaml`
 - Create: `contracts/id-registry/v0/relation-assertion.schema.yaml`
-- Create: `contracts/model-output/v0.schema.yaml`
+- Create: `contracts/model-output/v1.schema.yaml`
 - Create: `contracts/quality-flags/v0.yaml`
 - Create: `contracts/market-relations/v0.yaml`
 - Create: `contracts/venue-rule-snapshot/v0.schema.yaml`
@@ -111,7 +111,7 @@ Expected: missing contract models.
 
 - [ ] **Step 3: Implement the v0 models and machine-readable schemas**
 
-Implement `FixedPointV0(atoms: str, scale: int)`, source/timestamp/reference/lineage models, `EventEnvelopeV0`, `ModelOutputV0`, and `VenueRuleSnapshotV0`. Enforce lowercase SHA-256, UTC `Z` timestamps, controlled quality flags, no extra top-level fields, and conditional lineage/experiment/rule references.
+Implement `FixedPointV0(atoms: str, scale: int)`, source/timestamp/reference/lineage models, `EventEnvelopeV0`, `ModelOutputV1`, and `VenueRuleSnapshotV0`. Enforce lowercase SHA-256, UTC `Z` timestamps, controlled quality flags, no extra top-level fields, and conditional lineage/experiment/rule references.
 
 - [ ] **Step 4: Verify contracts and governance**
 
@@ -634,4 +634,3 @@ git commit -m "docs: publish first-round program execution status"
 - [ ] **Step 5: Request final spec and code-quality review**
 
 Review every direct user requirement and Charter NO-GO item against the implementation, then run the complete verification command again after all review fixes.
-

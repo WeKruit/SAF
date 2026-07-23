@@ -1,0 +1,79 @@
+experiment_card:
+  id: X-11
+  name: NFL Game State baseline and drive transition
+  owner_team: D2+H
+  status: registered
+  hypothesis: Spread-derived prior plus PIT logistic and GBDT features can improve calibrated NFL outcome estimates while a separate model emits next-drive outcome transitions.
+  data:
+    - source: nflverse DS-NFLVERSE play-by-play 2015-2025 REG and POST
+      version: unresolved:nfl_data_manifest_and_version
+      pit_basis: play availability at or before each prediction cutoff
+    - source: Point-in-time pregame spread-derived prior
+      version: unresolved:spread_prior_manifest
+      pit_basis: frozen_before_game_start
+  method: Use NFL 2015-2025 regular and postseason games; 2015-2019 is warmup only and 2020-2025 is evaluated one game at a time with game-grouped chronological walk-forward. Compare spread-derived prior logistic GBDT and nflfastR comparator and separately emit next-drive outcome transitions.
+  leakage_checks:
+    - Every training game strictly precedes its held-out test game.
+    - No game or revised postgame feature crosses a fold boundary.
+    - Data version PIT features seed model config and bootstrap scheme are locked before evaluation.
+  split: 2015-2019 warmup then 2020-2025 per-game game-grouped chronological walk-forward across regular and postseason games
+  metrics: [Brier score versus spread prior, log loss versus spread prior, calibration slope, calibration intercept, game-cluster bootstrap confidence interval, drive-transition log loss, season stability]
+  pass_criteria: Report spread prior logistic GBDT and nflfastR comparator on identical 2020-2025 folds with all data/version/features/seed/bootstrap locks resolved; ties are separate and never enter binary final-win calibration.
+  fail_criteria: Missing manifest PIT feature contract seed/bootstrap lock or chronological game isolation invalidates the run; unresolved ties policy blocks binary calibration evidence.
+  cost_estimate: {compute: unresolved, human_days: unresolved}
+  dependencies: []
+  registered_at: '2026-07-22'
+  result_acceptance_not_before: '2026-07-23T00:00:00Z'
+  due_gate: null
+  results_ref: []
+  promotion_decision: ''
+  execution_authorized: false
+  completion_required_scopes: [formal_result]
+  authorization_scopes:
+    preregistered_pipeline:
+      authorized: true
+      required_result_label: PRELIMINARY
+      required_lock_ids: [nfl_data_manifest_and_version, spread_prior_manifest, pit_feature_contract, model_config_and_seed, bootstrap_parameters, tie_policy, h_split_approval]
+    formal_result:
+      authorized: false
+      required_result_label: FORMAL
+      required_lock_ids: [nfl_data_manifest_and_version, spread_prior_manifest, pit_feature_contract, model_config_and_seed, bootstrap_parameters, tie_policy, h_split_approval]
+  registration_locks:
+    - {id: nfl_data_manifest_and_version, status: unresolved, reason: nflverse source version partitions and static manifest hash are unset.}
+    - {id: spread_prior_manifest, status: unresolved, reason: Historical spread source version and PIT manifest are unset.}
+    - {id: pit_feature_contract, status: unresolved, reason: Feature availability cutoffs and hashes are unset.}
+    - {id: model_config_and_seed, status: unresolved, reason: Logistic GBDT comparator transition configs and seed are unset.}
+    - {id: bootstrap_parameters, status: unresolved, reason: CI level repetitions game clustering and minimum valid resamples are unset.}
+    - {id: tie_policy, status: unresolved, reason: Tie reporting and exclusion mechanics must be frozen before evaluation.}
+    - {id: h_split_approval, status: unresolved, reason: Team H has not approved the chronological split.}
+  measurement_exemption: false
+  falsified_direction_is_valid_measurement: false
+  dataset_ids: [DS-NFLVERSE]
+  output_contract:
+    contract: model-output/v1.schema.yaml
+    output_kind: state_transition
+    transition_unit: drive
+    state_space: [touchdown, field_goal, punt, turnover, other]
+  tie_policy: Ties are reported as a separate outcome and excluded from binary final-win calibration.
+  linked_first_artifact_due_gates:
+    - {catalog_item_id: R-014, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: R-017, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: R-018, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: I-018, due_gate: 2026-08-05_W2_review}
+  source_lineage:
+    charter_file: charter/research_program_charter_v0.2.md
+    charter_sections: ['Team D2', '§4 NFL', '§9 preregistration discipline']
+    catalog_item_ids: [R-014, R-017, R-018, I-018]
+  program_no_go_restrictions:
+    - real_money_execution
+    - maker_strategy_live
+    - exact_queue_fill_claim_from_pmxt_l2
+    - multi_venue_simultaneous_execution_arbitrage
+    - live_copy_trading
+    - llm_hot_path
+    - reinforcement_learning
+    - large_scale_microservices
+    - readme_return_strategy_selection
+    - unregistered_quick_backtest
+  amendments: []
+  registration_record_sha256: sha256:bd4449592825c677f096079fcab4d24ba4a538662c853763ecb076784ff69924

@@ -22,7 +22,50 @@ _ARTIFACT_COLUMNS = (
     "due_gate",
     "status",
 )
+_DATASET_COLUMNS = (
+    "dataset_id",
+    "name",
+    "use_class",
+    "catalog_item_ids",
+    "canonical_url",
+    "source_version",
+    "coverage",
+    "grain",
+    "auth",
+    "license",
+    "license_status",
+    "timestamp_semantics",
+    "allowed_experiments",
+    "manifest_sha256",
+    "status",
+    "owner",
+    "version",
+    "due_gate",
+)
+_MODEL_COLUMNS = (
+    "model_id",
+    "model_version",
+    "source_catalog_item_ids",
+    "experiment_id",
+    "target",
+    "horizon",
+    "state_space",
+    "pit_feature_contract",
+    "data_manifest_sha256",
+    "training_manifest_sha256",
+    "parameter_config_sha256",
+    "seed",
+    "metrics",
+    "status",
+    "owner",
+    "due_gate",
+)
 _ARTIFACT_ID = re.compile(r"ART-[A-Z0-9][A-Z0-9-]*")
+_DATASET_ID = re.compile(r"DS-[A-Z0-9][A-Z0-9-]*")
+_MODEL_ID = re.compile(r"MODEL-[A-Z0-9][A-Z0-9-]*")
+_CATALOG_ID = re.compile(r"(?:R|I|O)-[0-9]{3}")
+_EXPERIMENT_ID = re.compile(r"X-[0-9]{2,}")
+_SHA256 = re.compile(r"sha256:[0-9a-f]{64}")
 _VERSION = re.compile(r"v[0-9]+(?:\.[0-9]+)?")
 _ALLOWED_STATUS = frozenset(
     {"registered", "complete", "blocked", "in_progress", "harness_pass"}
@@ -33,6 +76,14 @@ class ProgramAuditError(ValueError):
     """A program artifact registry cannot be trusted."""
 
 
+class ResearchRegistryError(ProgramAuditError):
+    """A dataset or model registry is malformed or has a broken foreign key."""
+
+
+class FormalResearchInputError(ResearchRegistryError):
+    """A formal result uses untrusted or incompletely registered research inputs."""
+
+
 @dataclass(frozen=True, slots=True)
 class ArtifactRegistryRow:
     artifact_id: str
@@ -41,6 +92,48 @@ class ArtifactRegistryRow:
     version: str
     due_gate: str
     status: str
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetRegistryRow:
+    dataset_id: str
+    name: str
+    use_class: str
+    catalog_item_ids: tuple[str, ...]
+    canonical_url: str
+    source_version: str
+    coverage: str
+    grain: str
+    auth: str
+    license: str
+    license_status: str
+    timestamp_semantics: str
+    allowed_experiments: tuple[str, ...]
+    manifest_sha256: str
+    status: str
+    owner: str
+    version: str
+    due_gate: str
+
+
+@dataclass(frozen=True, slots=True)
+class ModelRegistryRow:
+    model_id: str
+    model_version: str
+    source_catalog_item_ids: tuple[str, ...]
+    experiment_id: str
+    target: str
+    horizon: str
+    state_space: tuple[str, ...]
+    pit_feature_contract: str
+    data_manifest_sha256: str
+    training_manifest_sha256: str
+    parameter_config_sha256: str
+    seed: str
+    metrics: tuple[str, ...]
+    status: str
+    owner: str
+    due_gate: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +208,372 @@ def load_artifact_registry(root: str | Path) -> tuple[ArtifactRegistryRow, ...]:
     if not rows:
         raise ProgramAuditError("artifact registry must not be empty")
     return tuple(rows)
+
+
+def _strict_registry_rows(
+    root: Path,
+    relative_path: str,
+    columns: tuple[str, ...],
+    *,
+    allow_empty_fields: frozenset[str] = frozenset(),
+) -> list[dict[str, str]]:
+    path = _safe_artifact(root, relative_path)
+    try:
+        text = path.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise ResearchRegistryError(
+            f"{relative_path} must be readable UTF-8"
+        ) from error
+    reader = csv.DictReader(io.StringIO(text, newline=""), strict=True)
+    if tuple(reader.fieldnames or ()) != columns:
+        raise ResearchRegistryError(f"{relative_path} columns do not match contract")
+    rows: list[dict[str, str]] = []
+    try:
+        for raw in reader:
+            if None in raw or set(raw) != set(columns):
+                raise ResearchRegistryError(f"malformed row in {relative_path}")
+            row: dict[str, str] = {}
+            for field in columns:
+                value = raw[field]
+                if (
+                    value is None
+                    or value != value.strip()
+                    or (not value and field not in allow_empty_fields)
+                ):
+                    raise ResearchRegistryError(
+                        f"{relative_path} has empty or non-canonical cells"
+                    )
+                row[field] = value
+            rows.append(row)
+    except csv.Error as error:
+        raise ResearchRegistryError(f"invalid registry CSV: {relative_path}") from error
+    if not rows:
+        raise ResearchRegistryError(f"{relative_path} must not be empty")
+    return rows
+
+
+def _split_registry_values(
+    value: str, separator: str, label: str
+) -> tuple[str, ...]:
+    if value == "INVENTORY_ONLY":
+        return ()
+    values = tuple(value.split(separator))
+    if (
+        not values
+        or any(not item or item != item.strip() for item in values)
+        or len(values) != len(set(values))
+    ):
+        raise ResearchRegistryError(f"invalid or duplicate {label}")
+    return values
+
+
+def _catalog_ids(root: Path) -> set[str]:
+    rows = _strict_registry_rows(
+        root,
+        "charter/catalog_registry.csv",
+        (
+            "catalog_item_id",
+            "source_catalog_id",
+            "catalog",
+            "title",
+            "primary_team",
+            "secondary_teams",
+            "priority",
+            "program_stage",
+            "first_artifact",
+            "linked_experiments",
+            "status",
+            "due_gate",
+        ),
+        allow_empty_fields=frozenset({"secondary_teams"}),
+    )
+    return {row["catalog_item_id"] for row in rows}
+
+
+def load_dataset_registry(root: str | Path) -> tuple[DatasetRegistryRow, ...]:
+    program_root = Path(root).resolve()
+    raw_rows = _strict_registry_rows(
+        program_root, "registries/dataset_registry.csv", _DATASET_COLUMNS
+    )
+    known_catalog_ids = _catalog_ids(program_root)
+    known_experiment_ids = set(load_experiment_registry(program_root))
+    rows: list[DatasetRegistryRow] = []
+    seen: set[str] = set()
+    for raw in raw_rows:
+        dataset_id = raw["dataset_id"]
+        if not _DATASET_ID.fullmatch(dataset_id) or dataset_id in seen:
+            raise ResearchRegistryError(f"invalid or duplicate dataset_id: {dataset_id}")
+        seen.add(dataset_id)
+        catalog_ids = _split_registry_values(
+            raw["catalog_item_ids"], ";", "dataset catalog_item_ids"
+        )
+        if any(
+            not _CATALOG_ID.fullmatch(item) or item not in known_catalog_ids
+            for item in catalog_ids
+        ):
+            raise ResearchRegistryError(f"{dataset_id}: unknown catalog foreign key")
+        experiments = _split_registry_values(
+            raw["allowed_experiments"], ";", "allowed_experiments"
+        )
+        if any(
+            not _EXPERIMENT_ID.fullmatch(item) or item not in known_experiment_ids
+            for item in experiments
+        ):
+            raise ResearchRegistryError(
+                f"{dataset_id}: unknown experiment foreign key"
+            )
+        if raw["use_class"] not in {"canonical", "secondary", "blocked"}:
+            raise ResearchRegistryError(f"{dataset_id}: invalid use_class")
+        if raw["license_status"] not in {
+            "approved",
+            "research_only",
+            "pending",
+            "unknown",
+            "blocked",
+        }:
+            raise ResearchRegistryError(f"{dataset_id}: invalid license_status")
+        if raw["status"] not in {"registered", "blocked"}:
+            raise ResearchRegistryError(f"{dataset_id}: invalid status")
+        if (raw["use_class"] == "blocked") != (raw["status"] == "blocked"):
+            raise ResearchRegistryError(
+                f"{dataset_id}: blocked use_class and status must agree"
+            )
+        if not raw["canonical_url"].startswith("https://"):
+            raise ResearchRegistryError(f"{dataset_id}: canonical_url must use HTTPS")
+        manifest = raw["manifest_sha256"]
+        if manifest != "UNRESOLVED" and not _SHA256.fullmatch(manifest):
+            raise ResearchRegistryError(f"{dataset_id}: invalid manifest_sha256")
+        if not _VERSION.fullmatch(raw["version"]):
+            raise ResearchRegistryError(f"{dataset_id}: invalid registry version")
+        rows.append(
+            DatasetRegistryRow(
+                dataset_id=dataset_id,
+                name=raw["name"],
+                use_class=raw["use_class"],
+                catalog_item_ids=catalog_ids,
+                canonical_url=raw["canonical_url"],
+                source_version=raw["source_version"],
+                coverage=raw["coverage"],
+                grain=raw["grain"],
+                auth=raw["auth"],
+                license=raw["license"],
+                license_status=raw["license_status"],
+                timestamp_semantics=raw["timestamp_semantics"],
+                allowed_experiments=experiments,
+                manifest_sha256=manifest,
+                status=raw["status"],
+                owner=raw["owner"],
+                version=raw["version"],
+                due_gate=raw["due_gate"],
+            )
+        )
+    return tuple(rows)
+
+
+def load_model_registry(root: str | Path) -> tuple[ModelRegistryRow, ...]:
+    program_root = Path(root).resolve()
+    raw_rows = _strict_registry_rows(
+        program_root, "registries/model_registry.csv", _MODEL_COLUMNS
+    )
+    known_catalog_ids = _catalog_ids(program_root)
+    known_experiment_ids = set(load_experiment_registry(program_root))
+    rows: list[ModelRegistryRow] = []
+    seen: set[str] = set()
+    for raw in raw_rows:
+        model_id = raw["model_id"]
+        if not _MODEL_ID.fullmatch(model_id) or model_id in seen:
+            raise ResearchRegistryError(f"invalid or duplicate model_id: {model_id}")
+        seen.add(model_id)
+        catalog_ids = _split_registry_values(
+            raw["source_catalog_item_ids"], ";", "model catalog_item_ids"
+        )
+        if any(
+            not _CATALOG_ID.fullmatch(item) or item not in known_catalog_ids
+            for item in catalog_ids
+        ):
+            raise ResearchRegistryError(f"{model_id}: unknown catalog foreign key")
+        experiment_id = raw["experiment_id"]
+        if (
+            not _EXPERIMENT_ID.fullmatch(experiment_id)
+            or experiment_id not in known_experiment_ids
+        ):
+            raise ResearchRegistryError(f"{model_id}: unknown experiment foreign key")
+        state_space = _split_registry_values(raw["state_space"], "|", "state_space")
+        if len(state_space) < 2:
+            raise ResearchRegistryError(f"{model_id}: state_space must have multiple states")
+        if raw["horizon"] not in {"game_end", "next_state_transition"}:
+            raise ResearchRegistryError(f"{model_id}: invalid horizon")
+        if raw["model_version"] not in {"v0", "v1"}:
+            raise ResearchRegistryError(f"{model_id}: invalid model_version")
+        if raw["horizon"] == "next_state_transition" and raw["model_version"] != "v1":
+            raise ResearchRegistryError(f"{model_id}: transition output must use v1")
+        for field in (
+            "data_manifest_sha256",
+            "training_manifest_sha256",
+            "parameter_config_sha256",
+        ):
+            value = raw[field]
+            if value != "UNRESOLVED" and not _SHA256.fullmatch(value):
+                raise ResearchRegistryError(f"{model_id}: invalid {field}")
+        pit_contract = raw["pit_feature_contract"]
+        if not (
+            pit_contract.startswith("unresolved:")
+            or _SHA256.fullmatch(pit_contract)
+        ):
+            raise ResearchRegistryError(f"{model_id}: invalid pit_feature_contract")
+        if raw["status"] not in {"registered", "blocked", "poc_only"}:
+            raise ResearchRegistryError(f"{model_id}: invalid status")
+        if raw["seed"] != "UNRESOLVED" and not raw["seed"].isdigit():
+            raise ResearchRegistryError(f"{model_id}: invalid seed")
+        metrics = _split_registry_values(raw["metrics"], "|", "metrics")
+        rows.append(
+            ModelRegistryRow(
+                model_id=model_id,
+                model_version=raw["model_version"],
+                source_catalog_item_ids=catalog_ids,
+                experiment_id=experiment_id,
+                target=raw["target"],
+                horizon=raw["horizon"],
+                state_space=state_space,
+                pit_feature_contract=pit_contract,
+                data_manifest_sha256=raw["data_manifest_sha256"],
+                training_manifest_sha256=raw["training_manifest_sha256"],
+                parameter_config_sha256=raw["parameter_config_sha256"],
+                seed=raw["seed"],
+                metrics=metrics,
+                status=raw["status"],
+                owner=raw["owner"],
+                due_gate=raw["due_gate"],
+            )
+        )
+    return tuple(rows)
+
+
+def validate_research_inputs(
+    root: str | Path,
+    *,
+    experiment_id: str,
+    dataset_ids: list[str] | tuple[str, ...],
+    model_ids: list[str] | tuple[str, ...],
+    result_class: str,
+) -> tuple[tuple[DatasetRegistryRow, ...], tuple[ModelRegistryRow, ...]]:
+    """Fail closed unless every source, model, scope, and lock is eligible."""
+
+    if result_class not in {"formal", "poc"}:
+        raise FormalResearchInputError("result_class must be formal or poc")
+
+    program_root = Path(root).resolve()
+    try:
+        experiments = load_experiment_registry(program_root)
+    except Exception as error:
+        raise FormalResearchInputError("experiment registry is not valid") from error
+    if experiment_id not in experiments:
+        raise FormalResearchInputError(f"experiment {experiment_id} is not registered")
+    datasets_by_id = {row.dataset_id: row for row in load_dataset_registry(program_root)}
+    models_by_id = {row.model_id: row for row in load_model_registry(program_root)}
+    selected_datasets: list[DatasetRegistryRow] = []
+    for dataset_id in dataset_ids:
+        row = datasets_by_id.get(dataset_id)
+        if row is None:
+            raise FormalResearchInputError(f"dataset {dataset_id} is not registered")
+        allowed_licenses = (
+            {"approved"} if result_class == "formal" else {"approved", "research_only"}
+        )
+        if row.status == "blocked" or row.license_status not in allowed_licenses:
+            raise FormalResearchInputError(
+                f"dataset {dataset_id} license/status is blocked for {result_class} use"
+            )
+        if row.manifest_sha256 == "UNRESOLVED":
+            raise FormalResearchInputError(
+                f"dataset {dataset_id} has no resolved manifest hash"
+            )
+        if experiment_id not in row.allowed_experiments:
+            raise FormalResearchInputError(
+                f"dataset {dataset_id} is not allowed for experiment {experiment_id}"
+            )
+        selected_datasets.append(row)
+    selected_models: list[ModelRegistryRow] = []
+    for model_id in model_ids:
+        row = models_by_id.get(model_id)
+        if row is None:
+            raise FormalResearchInputError(f"model {model_id} is not registered")
+        allowed_model_statuses = (
+            {"registered"}
+            if result_class == "formal"
+            else {"registered", "poc_only"}
+        )
+        if (
+            row.experiment_id != experiment_id
+            or row.status not in allowed_model_statuses
+        ):
+            raise FormalResearchInputError(
+                f"model {model_id} is not authorized for {result_class} experiment use"
+            )
+        missing = [
+            field
+            for field, value in (
+                ("PIT feature contract", row.pit_feature_contract),
+                ("data manifest", row.data_manifest_sha256),
+                ("training manifest", row.training_manifest_sha256),
+                ("parameter/config hash", row.parameter_config_sha256),
+            )
+            if not _SHA256.fullmatch(value)
+        ]
+        if not row.seed.isdigit():
+            missing.append("seed")
+        if missing:
+            raise FormalResearchInputError(
+                f"model {model_id} lacks " + ", ".join(missing)
+            )
+        selected_models.append(row)
+    card = experiments[experiment_id]
+    scope_names = (
+        ("formal_result", "formal_promotion")
+        if result_class == "formal"
+        else ("poc_result",)
+    )
+    scope = next(
+        (
+            card["authorization_scopes"][name]
+            for name in scope_names
+            if name in card["authorization_scopes"]
+        ),
+        None,
+    )
+    if scope is None or scope["authorized"] is not True:
+        raise FormalResearchInputError(
+            f"experiment {experiment_id} {result_class} scope is not authorized"
+        )
+    lock_by_id = {lock["id"]: lock for lock in card["registration_locks"]}
+    unresolved = [
+        lock_id
+        for lock_id in scope["required_lock_ids"]
+        if lock_by_id[lock_id]["status"] != "resolved"
+    ]
+    if unresolved:
+        raise FormalResearchInputError(
+            f"experiment {experiment_id} has unresolved required locks: "
+            + ", ".join(unresolved)
+        )
+    return tuple(selected_datasets), tuple(selected_models)
+
+
+def validate_formal_research_inputs(
+    root: str | Path,
+    *,
+    experiment_id: str,
+    dataset_ids: list[str] | tuple[str, ...],
+    model_ids: list[str] | tuple[str, ...],
+) -> tuple[tuple[DatasetRegistryRow, ...], tuple[ModelRegistryRow, ...]]:
+    """Fail closed unless every formal source and model is fully registered."""
+
+    return validate_research_inputs(
+        root,
+        experiment_id=experiment_id,
+        dataset_ids=dataset_ids,
+        model_ids=model_ids,
+        result_class="formal",
+    )
 
 
 def audit_no_go(root: str | Path) -> NoGoAuditReport:
@@ -198,8 +657,16 @@ def audit_no_go(root: str | Path) -> NoGoAuditReport:
 
 __all__ = [
     "ArtifactRegistryRow",
+    "DatasetRegistryRow",
+    "FormalResearchInputError",
+    "ModelRegistryRow",
     "NoGoAuditReport",
     "ProgramAuditError",
+    "ResearchRegistryError",
     "audit_no_go",
     "load_artifact_registry",
+    "load_dataset_registry",
+    "load_model_registry",
+    "validate_formal_research_inputs",
+    "validate_research_inputs",
 ]

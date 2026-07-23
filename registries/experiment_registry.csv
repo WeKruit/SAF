@@ -2,10 +2,12 @@ experiment_id,card_path,owner_team,status,execution_authorized,registered_at,due
 X-01,registries/experiments/X-01.yaml,C,registered,true,2026-07-22,,sha256:f73f02cb561f63e5342fdd2764742e7bc1708c05d82f267b2e8e3ca6ba53fa8c
 X-02,registries/experiments/X-02.yaml,C+H,registered,true,2026-07-22,,sha256:0d9b4f64eefa3ed503faf476b68c2b0fb40e3ff2a4594f9e153fc43d45531211
 X-03,registries/experiments/X-03.yaml,C+E,registered,true,2026-07-22,,sha256:574eaabfb11a64d95b353059f9d5ead3ab130715f187dc986306c80bbc6c09d7
-X-04,registries/experiments/X-04.yaml,E,registered,true,2026-07-22,,sha256:c440f8c5c94a7139430357421464d42cceee5f88c85adfa0952e14ef30029121
+X-04,registries/experiments/X-04.yaml,E,registered,false,2026-07-22,,sha256:f9bcdfb4004c68baf40da4c1d16a7931da723b6bc66012e6ffea8adc77e680bb
 X-05,registries/experiments/X-05.yaml,E+H,registered,false,2026-07-22,,sha256:1771500998ce466e29075c81e18a0f104b5837f82606468c89099815fcca0ef8
-X-06,registries/experiments/X-06.yaml,D1+H,registered,true,2026-07-22,,sha256:14c0df7e8daefd84cb39c92cdce633fd70729e3909cda8aa46553db27ef587ce
+X-06,registries/experiments/X-06.yaml,D1+H,registered,true,2026-07-22,,sha256:3ac3e24e6ca6bdac17bfdc2452eedeee77e861e21c44f8255850f22c83af1634
 X-07,registries/experiments/X-07.yaml,F+E,registered,false,2026-07-22,,sha256:82280bb28f5b419ffb8b1732048cbc52ef063520e60e4ff80dae45d49ae0bcce
-X-08,registries/experiments/X-08.yaml,C+B,registered,false,2026-07-22,,sha256:4ab694422efc4ef21c924c0c62483720f0344d4fe079bf176da102b7f80aba15
-X-09,registries/experiments/X-09.yaml,B+A+H,registered,true,2026-07-22,,sha256:1e7a493ab9f0f1296251f59cdc2763cd632c7d7591cfd2dafe3ef3855339b059
+X-08,registries/experiments/X-08.yaml,C+B,registered,true,2026-07-22,,sha256:f1c91e97c742f5db02f504a6135d760eea96f8bd5599bb999665e0156845c894
+X-09,registries/experiments/X-09.yaml,B+A+H,registered,false,2026-07-22,,sha256:ef71e84d27ed1efeda3026bca348d4d40037d50b877813cba168d647cea11219
 X-10,registries/experiments/X-10.yaml,G+A,registered,false,2026-07-22,,sha256:bb8dfd3ed8a94422059dc7f5c471574012a2e7784f506d3782dc982ac8f8494a
+X-11,registries/experiments/X-11.yaml,D2+H,registered,false,2026-07-22,,sha256:6d84ab0ed24c452aeb49f173ab94399ce15fdf2ccf9f42a0e1ad7387c1b9e193
+X-12,registries/experiments/X-12.yaml,D3+H+I,registered,false,2026-07-22,,sha256:3ac4345cffba96785429c4aee8c642de4fc06f9c5f26469db3370913dc73f622
