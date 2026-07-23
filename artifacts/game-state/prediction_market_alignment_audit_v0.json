@@ -1,0 +1,189 @@
+{
+  "artifact_type": "prediction_market_alignment_audit",
+  "version": "v0",
+  "owner": "C+E+H",
+  "audited_at": "2026-07-23T16:20:54Z",
+  "status": "not_aligned",
+  "formal_result": false,
+  "bounded_matched_as_of_executed": false,
+  "decision": "No current evidence bundle contains an exact canonical sport outcome, a point-in-time model probability, and a same-time executable two-sided quote with depth, pause state, and venue-rule snapshot.",
+  "global_gap_counts": {
+    "canonical_game_condition_outcome_assertion_instances": 0,
+    "market_metadata_snapshot_v0_instances": 0,
+    "venue_rule_snapshot_instances": 0,
+    "model_output_v1_instances_available_for_join": 0,
+    "matched_as_of_rows": 0
+  },
+  "polymarket_forward_capture_cutoff": {
+    "scope": "sealed local manifests through hour=15; later or open segments excluded",
+    "sealed_manifest_count": 17,
+    "capture_record_count": 39624,
+    "decoded_json_record_count": 35714,
+    "decoded_market_event_count": 35811,
+    "array_expansion_extra_event_count": 97,
+    "heartbeat_or_non_json_record_count": 3910,
+    "event_type_counts": {
+      "price_change": 29949,
+      "new_market": 4938,
+      "book": 432,
+      "best_bid_ask": 328,
+      "last_trade_price": 164
+    },
+    "native_sport_new_market_messages": 3212,
+    "native_sport_condition_ids": 3212,
+    "quote_market_count": 10,
+    "quote_asset_count": 20,
+    "book_events_with_both_sides": 0,
+    "book_events_missing_at_least_one_side": 432,
+    "best_bid_ask_events_with_positive_bid_and_ask_below_one": 0,
+    "best_bid_ask_events_with_depth": 0,
+    "canonical_sport_game_mappings": 0,
+    "latest_sealed_manifest": "var/raw/manifests/source=polymarket/stream=market/date=2026-07-23/hour=15/9bf52567b84f6f373026773a9dcb00a76f9f03854896dc90a3cb2eff91e8047f.manifest.json",
+    "latest_sealed_manifest_sha256": "sha256:9078e00738651274a30b8bcf01b3ec6b5f9b9d5ebc83ba2c9afcacfbfc638443",
+    "interpretation": "Raw native market discovery is not a canonical game join. best_bid_ask omits depth, and the available full books are not two-sided executable observations."
+  },
+  "other_market_evidence": {
+    "pmxt_full_day_preflight": {
+      "day": "2026-05-28",
+      "object_count": 24,
+      "row_count": 1971336963,
+      "reconstruction_executed": false,
+      "independent_price_and_size_comparison_complete": false,
+      "matched_model_output_count": 0,
+      "evidence_ref": "artifacts/data-audit/x01_full_day_preflight_v1.json"
+    },
+    "polymarket_v1_bounded_nfl_extract": {
+      "day": "2023-01-01",
+      "condition_count": 4,
+      "fill_row_count": 17,
+      "contains_l2": false,
+      "local_receive_time_available": false,
+      "canonical_game_bindings_materialized": 0,
+      "matched_model_output_count": 0,
+      "evidence_ref": "artifacts/data-audit/polymarket_v1_bounded_sports_extract_v0.json"
+    }
+  },
+  "sport_join_status": {
+    "nfl": {
+      "status": "not_aligned",
+      "game_state_evidence": "X-11 has a real 2015-2025 nflverse walk-forward POC and replay evidence, but only aggregate artifacts and hashes are retained; no joinable ModelOutputV1 rows are present.",
+      "market_evidence": "Four 2023-01-01 native NFL conditions and 17 fills are frozen, but fills are not L2, have no local receive time, and have no executable bid/ask depth.",
+      "canonical_game_condition_outcome_bindings": 0,
+      "matched_as_of_rows": 0,
+      "required_next_evidence": [
+        "materialized PIT ModelOutputV1 rows for the exact NFL games and outcomes",
+        "canonical native game and condition and outcome assertions",
+        "same-time two-sided L2 with local receive time and positive depth",
+        "PIT metadata and venue-rule snapshots"
+      ]
+    },
+    "soccer": {
+      "status": "not_aligned",
+      "game_state_evidence": "X-12 is a 2015-2016 StatsBomb POC; it has no point-in-time market prior and no joinable ModelOutputV1 rows.",
+      "market_evidence": "The forward capture contains unnormalized native sports markets, but no live soccer game-state stream or canonical game-condition assertions exist.",
+      "canonical_game_condition_outcome_bindings": 0,
+      "matched_as_of_rows": 0,
+      "required_next_evidence": [
+        "same-game live or historical PIT soccer state observations",
+        "materialized outcome-aligned ModelOutputV1 rows",
+        "canonical game and condition and outcome assertions",
+        "two-sided executable quotes with local receive time, depth, pause state, and PIT rules"
+      ]
+    },
+    "nba": {
+      "status": "not_aligned",
+      "game_state_evidence": "The current X-06 fixture is synthetic contract validation only; formal empirical NBA output is blocked on licensed play-by-play rights.",
+      "market_evidence": "PMXT has a 24-object 2026-05-28 preflight and one documented native NBA condition candidate, but the day is not reconstructed and no canonical MarketMetadataSnapshotV0 exists.",
+      "canonical_game_condition_outcome_bindings": 0,
+      "matched_as_of_rows": 0,
+      "required_next_evidence": [
+        "licensed PIT NBA play-by-play and materialized ModelOutputV1 rows",
+        "canonical game and condition and outcome assertions",
+        "completed full-day L2 reconstruction",
+        "same-time two-sided depth and PIT pause and venue-rule evidence"
+      ]
+    },
+    "mlb": {
+      "status": "not_aligned",
+      "game_state_evidence": "A 2025 Retrosheet reducer replay exists, but no registered probabilistic ModelOutputV1 series exists.",
+      "market_evidence": "No canonical MLB game-condition mapping or same-time L2 bundle is materialized.",
+      "canonical_game_condition_outcome_bindings": 0,
+      "matched_as_of_rows": 0,
+      "required_next_evidence": [
+        "registered PIT MLB probabilistic output",
+        "canonical game and condition and outcome assertions",
+        "same-time executable L2 with local receive time and positive depth",
+        "PIT metadata, pause state, and venue-rule snapshot"
+      ]
+    },
+    "f1": {
+      "status": "not_aligned",
+      "game_state_evidence": "Only 2025 source feasibility inventory exists; no state reducer prediction series or ModelOutputV1 output exists.",
+      "market_evidence": "No canonical race-condition-outcome mapping or same-time L2 bundle is materialized.",
+      "canonical_game_condition_outcome_bindings": 0,
+      "matched_as_of_rows": 0,
+      "required_next_evidence": [
+        "registered PIT F1 state and probabilistic output",
+        "canonical race and condition and outcome assertions",
+        "same-time executable L2 with local receive time and positive depth",
+        "PIT metadata, pause state, and venue-rule snapshot"
+      ]
+    }
+  },
+  "executable_checker_contract": {
+    "implementation": "src/prediction_market/sports/market_alignment.py",
+    "required_identity_fields": [
+      "canonical game_id",
+      "canonical condition_id",
+      "canonical outcome_id",
+      "metadata_snapshot_ref"
+    ],
+    "required_model_fields": [
+      "model cutoff_at",
+      "exact Decimal outcome probability",
+      "model_output_ref"
+    ],
+    "required_quote_fields": [
+      "local received_at no later than model cutoff",
+      "best bid and best ask",
+      "positive bid depth and ask depth",
+      "pause state"
+    ],
+    "required_rule_fields": [
+      "venue rule snapshot hash",
+      "rule snapshot observed no later than model cutoff"
+    ],
+    "registered_join_lock": "max_quote_age_ms",
+    "accepted_statuses": [
+      "alignment_ready",
+      "not_aligned",
+      "predictive_disagreement"
+    ],
+    "midpoint_only_is_accepted": false,
+    "profitability_or_execution_conclusion_supported": false
+  },
+  "fail_closed_tests": {
+    "future_quote": "covered",
+    "midpoint_only": "covered",
+    "missing_bid": "covered",
+    "missing_ask": "covered",
+    "stale_join": "covered",
+    "wrong_game": "covered",
+    "wrong_condition": "covered",
+    "wrong_outcome": "covered",
+    "pause": "covered",
+    "missing_or_future_rule_snapshot": "covered",
+    "missing_depth": "covered",
+    "binary_float": "covered"
+  },
+  "no_go_attestation": {
+    "real_money_action": false,
+    "maker_model_or_action": false,
+    "queue_fill_claim": false,
+    "multi_venue_live_action": false,
+    "copy_trading": false,
+    "llm_hot_path": false,
+    "reinforcement_learning": false,
+    "unregistered_backtest": false
+  }
+}
