@@ -1,0 +1,131 @@
+{
+  "artifact_id": "KALSHI-PUBLIC-BACKFILL-V1",
+  "artifact_version": "v1",
+  "artifact_type": "bounded_public_rest_backfill_evidence",
+  "owner": "Team C",
+  "status": "BOUNDED_INCOMPLETE_LICENSE_PENDING",
+  "verified_at": "2026-07-23T06:10:53Z",
+  "dataset_id": "DS-KALSHI-HISTORICAL",
+  "source": {
+    "api_root": "https://external-api.kalshi.com/trade-api/v2",
+    "version": "official-rest-20260722",
+    "authentication": "none_for_public_rest",
+    "markets_url": "https://external-api.kalshi.com/trade-api/v2/historical/markets",
+    "trades_url": "https://external-api.kalshi.com/trade-api/v2/historical/trades"
+  },
+  "verification": {
+    "reader": "prediction_market.static_store.read_verified_static_object",
+    "main_page_manifests_verified": 200,
+    "main_page_objects_verified": 200,
+    "main_page_manifest_sha256_unique": 200,
+    "main_page_object_sha256_unique": 200,
+    "cutoff_manifest_bindings_verified": 2,
+    "cutoff_object_reads_verified": 2,
+    "cutoff_unique_object_sha256_count": 1,
+    "cursor_chains_reconstructed": 2,
+    "cursor_chain_rule": "Start at request_cursor ROOT; for each page require its response cursor to equal the next page request cursor; reject missing or repeated cursors.",
+    "main_page_bundle_order": "All 100 markets pages in reconstructed cursor order, followed by all 100 trades pages in reconstructed cursor order.",
+    "canonical_json": "UTF-8 JSON with sort_keys=true, separators=(',', ':'), ensure_ascii=false, allow_nan=false.",
+    "hash_material": {
+      "ordered_manifest_bundle_sha256": "SHA-256 of the canonical JSON array of sha256-prefixed manifest hashes in cursor order.",
+      "ordered_object_bundle_sha256": "SHA-256 of the canonical JSON array of sha256-prefixed object hashes in cursor order.",
+      "cursor_chain_sha256": "SHA-256 of the canonical JSON array of objects with request_cursor and response_cursor; the root request_cursor is null.",
+      "ordered_page_pair_bundle_sha256": "SHA-256 of the canonical JSON array of objects with page_index, manifest_sha256, object_sha256, byte_length, and item_count. The combined material additionally includes resource on every object.",
+      "stable_id_sha256": "SHA-256 of the canonical JSON array sorted by stable_id, with each element containing stable_id and the unprefixed SHA-256 hex digest of that record's canonical JSON bytes.",
+      "artifact_sha256": "SHA-256 of the canonical JSON artifact after removing only the top-level artifact_sha256 field."
+    }
+  },
+  "runs": {
+    "markets": {
+      "resource": "markets",
+      "fetched_at": "2026-07-23T06:01:57.168848Z",
+      "page_limit": 1000,
+      "page_budget": 100,
+      "page_count": 100,
+      "page_budget_exhausted": true,
+      "complete": false,
+      "initial_request_cursor": null,
+      "terminal_response_cursor": "CgsI2OjD0AYQkKPRSxI5S1hNVkVTUE9SVFNNVUxUSUdBTUVFWFRFTkRFRC1TMjAyNjdGMDc3MDEwNEJBLUM2N0ExMDJDQkFG",
+      "terminal_cursor_empty": false,
+      "raw_item_count": 100000,
+      "unique_item_count": 100000,
+      "exact_duplicate_count": 0,
+      "total_bytes": 295771609,
+      "stable_id_field": "ticker",
+      "stable_id_sha256": "sha256:38b480e637beec6ed331d724090e24c53c70812bded21ab5fd5124d7a6428fec",
+      "ordered_manifest_bundle_sha256": "sha256:b6fd8c38a89b646a091bd009955e1f72a84ea10b0d9aa342288b97976e842920",
+      "ordered_object_bundle_sha256": "sha256:5f85ec7ea478e82551d70791a82bfc64efc7631ca04dc8078a62d73c7b413288",
+      "cursor_chain_sha256": "sha256:220656c20a1becd1c7ec8c2d56a5160b9a34351a295112de18abeb33c5785c6f",
+      "ordered_page_pair_bundle_sha256": "sha256:c5d3ab5b790fe3c94e3401c08037031ffb47dc5ba19373b76d9ee6933a5625e1",
+      "first_page_manifest_sha256": "sha256:29b593c555b001c22953019c1182c48f384e898d683c6dfa9c2052e58e75bfa3",
+      "last_page_manifest_sha256": "sha256:1c12d4c4bf87fdf4c1254b478c4ed42da791599d5e229cc081eab946aba45bd7",
+      "first_page_object_sha256": "sha256:c237d3f09a914d68515513f2f50fc908a32d9d25bc0fddfc5786ddc796dfdb7d",
+      "last_page_object_sha256": "sha256:6b9b0403a1d4976cb231e22db749635357252da4ce4f5fa2f4a3b3174d49ed44",
+      "cutoff": {
+        "manifest_sha256": "sha256:ac10720ab83ccbc61d674a52fd72ad5fb49fcbe7be406e1c8bc9bb69fa4ce0b1",
+        "object_sha256": "sha256:f929a2ef3869c14dea6492341b3ec163e727a0a5eaac8eaeebd93d4b71746238",
+        "market_settled_ts": "2026-05-23T00:00:00Z",
+        "orders_updated_ts": "2026-05-23T00:00:00Z",
+        "trades_created_ts": "2026-05-23T00:00:00Z"
+      }
+    },
+    "trades": {
+      "resource": "trades",
+      "fetched_at": "2026-07-23T06:02:50.255375Z",
+      "page_limit": 1000,
+      "page_budget": 100,
+      "page_count": 100,
+      "page_budget_exhausted": true,
+      "complete": false,
+      "initial_request_cursor": null,
+      "terminal_response_cursor": "EhIKEJBbJKu-zVcsCSHBDnUJbgAaDAjr8sjQBhDQ1dLJAQ",
+      "terminal_cursor_empty": false,
+      "raw_item_count": 100000,
+      "unique_item_count": 100000,
+      "exact_duplicate_count": 0,
+      "total_bytes": 30945438,
+      "stable_id_field": "trade_id",
+      "stable_id_sha256": "sha256:0596904588737782aada65a294cd5c7fb863e86704d14a8f82d8e21a221f1bce",
+      "ordered_manifest_bundle_sha256": "sha256:2a621ca26f40558559e705a51417f7c0661699006a6096b7d37f87797179e10c",
+      "ordered_object_bundle_sha256": "sha256:7ff78a51183cdc8b6e4895cd7d3a6790a20256fff0d6bfa415c610ddffac7929",
+      "cursor_chain_sha256": "sha256:af3a2cfb3dea13cbec2474d2b95b5d244ff140a86632206b42bcdb5d8a32df60",
+      "ordered_page_pair_bundle_sha256": "sha256:2e8529208f4e9ec4c72ebcaaa916cd97b0bd4c868652e383d094da2c52c20ab7",
+      "first_page_manifest_sha256": "sha256:5f585e1acb0501ad43475dd079037c6007d041e951a812458682d734f5a4b21d",
+      "last_page_manifest_sha256": "sha256:344c873b2ca2bb17f4e27f62858b2fa42eabd5e08db9c324d0f411b870a43ef3",
+      "first_page_object_sha256": "sha256:834a82546f43923be1f9cbb28a377fd5873d282da350f6f329224bbda89aaaba",
+      "last_page_object_sha256": "sha256:aa0231019a1d66281c431c47d04823e9f20eb43ae737df3bf896db8fd854743b",
+      "cutoff": {
+        "manifest_sha256": "sha256:5d466922c17a291b3cde34f057bf52d9ca08df1cf75182b9e5b707da6d020057",
+        "object_sha256": "sha256:f929a2ef3869c14dea6492341b3ec163e727a0a5eaac8eaeebd93d4b71746238",
+        "market_settled_ts": "2026-05-23T00:00:00Z",
+        "orders_updated_ts": "2026-05-23T00:00:00Z",
+        "trades_created_ts": "2026-05-23T00:00:00Z"
+      }
+    }
+  },
+  "combined_main_pages": {
+    "page_count": 200,
+    "object_count": 200,
+    "total_bytes": 326717047,
+    "ordered_manifest_bundle_sha256": "sha256:cde63d9172c1d8bec633f37ffe754b7618ef7eb09183245b5a15d9da851e1ba6",
+    "ordered_object_bundle_sha256": "sha256:30eeb715f5303407c92fa3c31dd8db644837ae0f8d824ae74b664f456f6ec5c3",
+    "ordered_page_pair_bundle_sha256": "sha256:00eff93e2c01a3b3f9a4108cc5607b68b769720d7d178a2613360a622c44ffe9"
+  },
+  "boundaries": {
+    "complete": false,
+    "historical_l2_claimed": false,
+    "license_review_id": "O-003",
+    "license_status": "pending",
+    "formal_result_eligible": false,
+    "overlap_claimed": false,
+    "live_historical_overlap_result": "NOT_RUN"
+  },
+  "limitations": [
+    "Both resources exhausted the 100-page budget with a non-empty terminal cursor, so neither backfill is complete.",
+    "These public REST objects contain historical market metadata and public trades, not historical L2 order-book events.",
+    "No live-side dataset was supplied to this run, so no live/historical overlap count, hash, or reconciliation result is claimed.",
+    "O-003 remains pending; this bounded evidence is not eligible for formal empirical promotion.",
+    "The item counts describe exactly the preserved 100-page cursor prefixes and do not claim full Kalshi historical coverage."
+  ],
+  "artifact_sha256": "sha256:c8dc4176f50eed1494bfd47af5a2d0590496cd01972f731e8cd34e27669b1e77"
+}
