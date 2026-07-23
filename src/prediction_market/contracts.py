@@ -11,7 +11,7 @@ import hashlib
 import json
 import re
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Annotated, Any, Generic, Literal, TypeVar
 
@@ -450,6 +450,7 @@ StartTimeCancelPolicyV0 = Literal[
 OrderTypeV0 = Literal[
     "DAY", "FAK", "FOK", "GTC", "GTD", "IOC", "LIMIT", "MARKET", "POST_ONLY"
 ]
+FeeFormulaV0 = Literal["C_X_RATE_X_P_ONE_MINUS_P_POW_EXPONENT"]
 
 
 class EventSourceV0(_ContractModel):
@@ -1002,6 +1003,121 @@ class VenueRuleSnapshotV0(_ContractModel):
         return self
 
 
+class TcaMarkoutV0(_ContractModel):
+    """One executable-bid X-07 markout with point-in-time exit costs."""
+
+    horizon_microseconds: int = Field(gt=0)
+    local_receive_at: UtcTimestampV0
+    executable_bid_vwap: FixedPointV0
+    gross_markout_per_unit: FixedPointV0
+    exit_fee: FixedPointV0
+    net_markout_per_unit: FixedPointV0
+    exit_levels_consumed: int = Field(gt=0)
+    rule_snapshot_ref: Sha256V0
+    book_snapshot_ref: Sha256V0
+
+    @model_validator(mode="after")
+    def _markout_values_are_executable(self) -> "TcaMarkoutV0":
+        bid = self.executable_bid_vwap.to_decimal()
+        if not Decimal(0) <= bid <= Decimal(1):
+            raise ValueError("executable_bid_vwap must be in [0, 1]")
+        if self.exit_fee.to_decimal() < 0:
+            raise ValueError("exit_fee must be non-negative")
+        return self
+
+
+class TcaRecordV0(_ContractModel):
+    """Canonical PRELIMINARY-only TCA output for the X-07 taker simulator."""
+
+    tca_version: Literal["v0"]
+    order_id: Annotated[
+        str,
+        StringConstraints(
+            strict=True, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        ),
+    ]
+    experiment_id: Literal["X-07"]
+    result_label: Literal["PRELIMINARY"]
+    fee_formula: FeeFormulaV0
+    venue: VenueSlugV0
+    market_id: MarketIdV0
+    condition_id: ConditionIdV0
+    created_at: UtcTimestampV0
+    executed_at: UtcTimestampV0
+    filled_quantity: FixedPointV0
+    entry_vwap: FixedPointV0
+    gross_entry_cost: FixedPointV0
+    entry_fee: FixedPointV0
+    total_entry_cost: FixedPointV0
+    entry_levels_consumed: int = Field(gt=0)
+    own_delay_microseconds: int = Field(ge=0)
+    venue_delay_microseconds: int = Field(ge=0)
+    entry_rule_snapshot_ref: Sha256V0
+    entry_book_snapshot_ref: Sha256V0
+    markouts: tuple[TcaMarkoutV0, ...]
+
+    @field_validator("markouts", mode="before")
+    @classmethod
+    def _markout_input_is_tuple(cls, value: Any) -> Any:
+        return _as_tuple(value)
+
+    @field_validator("markouts")
+    @classmethod
+    def _markouts_are_nonempty_unique_and_ordered(
+        cls, value: tuple[TcaMarkoutV0, ...]
+    ) -> tuple[TcaMarkoutV0, ...]:
+        if not value:
+            raise ValueError("markouts must not be empty")
+        horizons = tuple(markout.horizon_microseconds for markout in value)
+        if horizons != tuple(sorted(horizons)) or len(horizons) != len(set(horizons)):
+            raise ValueError("markout horizons must be unique and ascending")
+        return value
+
+    @model_validator(mode="after")
+    def _costs_and_markouts_are_exact(self) -> "TcaRecordV0":
+        quantity = self.filled_quantity.to_decimal()
+        entry_vwap = self.entry_vwap.to_decimal()
+        gross_cost = self.gross_entry_cost.to_decimal()
+        entry_fee = self.entry_fee.to_decimal()
+        total_cost = self.total_entry_cost.to_decimal()
+        if quantity <= 0:
+            raise ValueError("filled_quantity must be positive")
+        if not Decimal(0) <= entry_vwap <= Decimal(1):
+            raise ValueError("entry_vwap must be in [0, 1]")
+        if gross_cost < 0 or entry_fee < 0 or total_cost < 0:
+            raise ValueError("entry costs must be non-negative")
+        if gross_cost != quantity * entry_vwap:
+            raise ValueError("gross_entry_cost does not match quantity times VWAP")
+        if total_cost != gross_cost + entry_fee:
+            raise ValueError("total_entry_cost does not match gross cost plus fee")
+
+        created = datetime.fromisoformat(self.created_at[:-1] + "+00:00")
+        executed = datetime.fromisoformat(self.executed_at[:-1] + "+00:00")
+        if executed < created:
+            raise ValueError("executed_at cannot precede created_at")
+        for markout in self.markouts:
+            observed = datetime.fromisoformat(
+                markout.local_receive_at[:-1] + "+00:00"
+            )
+            elapsed_microseconds = (observed - executed) // timedelta(
+                microseconds=1
+            )
+            if elapsed_microseconds < markout.horizon_microseconds:
+                raise ValueError("markout observation precedes its horizon")
+            bid = markout.executable_bid_vwap.to_decimal()
+            gross_markout = bid - entry_vwap
+            if markout.gross_markout_per_unit.to_decimal() != gross_markout:
+                raise ValueError("gross markout does not match executable prices")
+            net_markout = (
+                quantity * bid
+                - markout.exit_fee.to_decimal()
+                - total_cost
+            ) / quantity
+            if markout.net_markout_per_unit.to_decimal() != net_markout:
+                raise ValueError("net markout does not match entry and exit costs")
+        return self
+
+
 EntityTypeV0 = Literal[
     "competition",
     "game",
@@ -1107,6 +1223,7 @@ _MODEL_BY_SCHEMA_NAME: dict[str, type[BaseModel]] = {
     "id-registry/v0/native-assertion.schema.yaml": NativeAssertionV0,
     "id-registry/v0/relation-assertion.schema.yaml": RelationAssertionV0,
     "model-output/v0.schema.yaml": ModelOutputV0,
+    "tca/v0.schema.yaml": TcaRecordV0,
     "venue-rule-snapshot/v0.schema.yaml": VenueRuleSnapshotV0,
 }
 _QUALITY_FLAG_ADAPTER = TypeAdapter(QualityFlagV0)
@@ -1147,6 +1264,7 @@ __all__ = [
     "EventLineageV0",
     "EventSourceV0",
     "EventTimeV0",
+    "FeeFormulaV0",
     "FixedPointV0",
     "FrozenDict",
     "LineageV0",
@@ -1165,6 +1283,8 @@ __all__ = [
     "Sha256V0",
     "SourceV0",
     "TimeV0",
+    "TcaMarkoutV0",
+    "TcaRecordV0",
     "UtcTimestampV0",
     "VenueRuleSnapshotV0",
     "canonical_json",

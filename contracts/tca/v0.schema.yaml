@@ -9,53 +9,76 @@ required:
   - experiment_id
   - result_label
   - fee_formula
+  - venue
+  - market_id
   - condition_id
   - created_at
   - executed_at
   - filled_quantity
-  - vwap
-  - gross_cost
-  - fee
-  - total_cost
-  - levels_consumed
+  - entry_vwap
+  - gross_entry_cost
+  - entry_fee
+  - total_entry_cost
+  - entry_levels_consumed
   - own_delay_microseconds
   - venue_delay_microseconds
-  - rule_snapshot_ref
+  - entry_rule_snapshot_ref
+  - entry_book_snapshot_ref
   - markouts
 properties:
   tca_version: {const: v0}
-  order_id: {type: string, minLength: 1}
+  order_id: {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]*$'}
   experiment_id: {const: X-07}
   result_label: {const: PRELIMINARY}
   fee_formula: {const: C_X_RATE_X_P_ONE_MINUS_P_POW_EXPONENT}
+  venue: {type: string, pattern: '^[a-z0-9][a-z0-9._-]*$'}
+  market_id: {type: string, pattern: '^market_[A-Za-z0-9][A-Za-z0-9._:-]*$'}
   condition_id: {type: string, pattern: '^condition_[A-Za-z0-9][A-Za-z0-9._:-]*$'}
   created_at: {$ref: '#/$defs/utcTimestamp'}
   executed_at: {$ref: '#/$defs/utcTimestamp'}
   filled_quantity: {$ref: '#/$defs/fixedPoint'}
-  vwap: {$ref: '#/$defs/fixedPoint'}
-  gross_cost: {$ref: '#/$defs/fixedPoint'}
-  fee: {$ref: '#/$defs/fixedPoint'}
-  total_cost: {$ref: '#/$defs/fixedPoint'}
-  levels_consumed: {type: integer, minimum: 1}
+  entry_vwap: {$ref: '#/$defs/fixedPoint'}
+  gross_entry_cost: {$ref: '#/$defs/fixedPoint'}
+  entry_fee: {$ref: '#/$defs/fixedPoint'}
+  total_entry_cost: {$ref: '#/$defs/fixedPoint'}
+  entry_levels_consumed: {type: integer, minimum: 1}
   own_delay_microseconds: {type: integer, minimum: 0}
   venue_delay_microseconds: {type: integer, minimum: 0}
-  rule_snapshot_ref: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+  entry_rule_snapshot_ref: {$ref: '#/$defs/sha256'}
+  entry_book_snapshot_ref: {$ref: '#/$defs/sha256'}
   markouts:
     type: array
     minItems: 1
     items:
       type: object
       additionalProperties: false
-      required: [horizon_microseconds, observed_at, executable_bid_vwap, gross_markout_per_unit]
+      required:
+        - horizon_microseconds
+        - local_receive_at
+        - executable_bid_vwap
+        - gross_markout_per_unit
+        - exit_fee
+        - net_markout_per_unit
+        - exit_levels_consumed
+        - rule_snapshot_ref
+        - book_snapshot_ref
       properties:
         horizon_microseconds: {type: integer, minimum: 1}
-        observed_at: {$ref: '#/$defs/utcTimestamp'}
+        local_receive_at: {$ref: '#/$defs/utcTimestamp'}
         executable_bid_vwap: {$ref: '#/$defs/fixedPoint'}
         gross_markout_per_unit: {$ref: '#/$defs/fixedPoint'}
+        exit_fee: {$ref: '#/$defs/fixedPoint'}
+        net_markout_per_unit: {$ref: '#/$defs/fixedPoint'}
+        exit_levels_consumed: {type: integer, minimum: 1}
+        rule_snapshot_ref: {$ref: '#/$defs/sha256'}
+        book_snapshot_ref: {$ref: '#/$defs/sha256'}
 $defs:
   utcTimestamp:
     type: string
     pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$'
+  sha256:
+    type: string
+    pattern: '^sha256:[0-9a-f]{64}$'
   fixedPoint:
     type: object
     additionalProperties: false
