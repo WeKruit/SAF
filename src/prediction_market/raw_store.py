@@ -114,6 +114,14 @@ class SegmentVerification:
     manifest: SegmentManifest | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class VerifiedSegment:
+    """One manifest and the exact payloads verified from single open file handles."""
+
+    manifest: SegmentManifest
+    payloads: tuple[bytes, ...]
+
+
 def _canonical_json_bytes(value: dict[str, Any]) -> bytes:
     return json.dumps(
         value,
@@ -983,7 +991,7 @@ def _validate_record(
     canonical_line: bytes,
     manifest: SegmentManifest,
     expected_ordinal: int,
-) -> str:
+) -> tuple[str, bytes]:
     _require_exact_keys(record, _RECORD_KEYS, f"record {expected_ordinal}")
     for field in (
         "capture_version",
@@ -1022,16 +1030,20 @@ def _validate_record(
         raise RawStoreError(f"record {expected_ordinal} payload_base64 is non-canonical")
     if _sha256_bytes(payload) != record["payload_sha256"]:
         raise RawStoreError(f"record {expected_ordinal} payload SHA-256 mismatch")
-    return record["receive_at"]
+    return record["receive_at"], payload
 
 
-def verify_segment(
-    manifest_path: str | Path, *, root: str | Path | None = None
-) -> SegmentVerification:
-    """Verify path safety, manifest invariants, object hash, and every raw record."""
+def _inspect_segment(
+    manifest_path: str | Path,
+    *,
+    root: str | Path | None,
+    collect_payloads: bool,
+) -> tuple[SegmentVerification, tuple[bytes, ...]]:
+    """Verify one segment, optionally retaining payloads from the verified object fd."""
 
     errors: list[str] = []
     manifest: SegmentManifest | None = None
+    payloads: list[bytes] = []
     root_fd = -1
     manifest_fd = -1
     manifest_parent_fd = -1
@@ -1101,14 +1113,15 @@ def verify_segment(
                         record = _load_json_object(
                             canonical_line, f"record {record_count}"
                         )
-                        receive_times.append(
-                            _validate_record(
-                                record,
-                                canonical_line=canonical_line,
-                                manifest=manifest,
-                                expected_ordinal=record_count,
-                            )
+                        receive_at, payload = _validate_record(
+                            record,
+                            canonical_line=canonical_line,
+                            manifest=manifest,
+                            expected_ordinal=record_count,
                         )
+                        receive_times.append(receive_at)
+                        if collect_payloads:
+                            payloads.append(payload)
                         record_count += 1
         except zstandard.ZstdError as exc:
             errors.append(f"object is not a valid Zstandard stream: {exc}")
@@ -1134,6 +1147,13 @@ def verify_segment(
             errors.append("first_receive_at mismatch")
         if actual_last != manifest.last_receive_at:
             errors.append("last_receive_at mismatch")
+        if not _fd_and_path_unchanged(
+            manifest_fd,
+            manifest_before,
+            manifest_parent_fd,
+            manifest_name,
+        ):
+            errors.append("manifest changed during verification")
     except (OSError, RawStoreError, ValueError) as exc:
         errors.append(str(exc))
     finally:
@@ -1146,7 +1166,41 @@ def verify_segment(
         ):
             if descriptor >= 0:
                 os.close(descriptor)
-    return SegmentVerification(valid=not errors, errors=tuple(errors), manifest=manifest)
+    verification = SegmentVerification(
+        valid=not errors,
+        errors=tuple(errors),
+        manifest=manifest,
+    )
+    return verification, tuple(payloads)
+
+
+def verify_segment(
+    manifest_path: str | Path, *, root: str | Path | None = None
+) -> SegmentVerification:
+    """Verify path safety, manifest invariants, object hash, and every raw record."""
+
+    verification, _ = _inspect_segment(
+        manifest_path,
+        root=root,
+        collect_payloads=False,
+    )
+    return verification
+
+
+def read_verified_segment(
+    manifest_path: str | Path, *, root: str | Path | None = None
+) -> VerifiedSegment:
+    """Return exact payloads only when the manifest and object verify in one read."""
+
+    verification, payloads = _inspect_segment(
+        manifest_path,
+        root=root,
+        collect_payloads=True,
+    )
+    if not verification.valid or verification.manifest is None:
+        detail = "; ".join(verification.errors) or "unknown verification failure"
+        raise RawStoreError(f"segment verification failed: {detail}")
+    return VerifiedSegment(manifest=verification.manifest, payloads=payloads)
 
 
 __all__ = [
@@ -1157,5 +1211,7 @@ __all__ = [
     "RawStorePathError",
     "SegmentManifest",
     "SegmentVerification",
+    "VerifiedSegment",
+    "read_verified_segment",
     "verify_segment",
 ]

@@ -22,6 +22,7 @@ from prediction_market.raw_store import (  # noqa: E402
     PartitionBoundaryError,
     RawSegmentWriter,
     RawStorePathError,
+    read_verified_segment,
     verify_segment,
 )
 
@@ -548,6 +549,56 @@ def test_verifier_rejects_path_inode_replacement_between_hash_and_parse(
     assert replaced is True
     assert verification.valid is False
     assert any("changed during verification" in error for error in verification.errors)
+
+
+def test_verifier_rechecks_manifest_inode_after_object_verification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from prediction_market import raw_store
+
+    _, _, manifest = _make_segment(tmp_path)
+    replacement = manifest.path.parent / "replacement.manifest.json"
+    replacement.write_bytes(b'{"replacement":true}\n')
+    original_sha256_fd = raw_store._sha256_fd
+    replaced = False
+
+    def replace_manifest_then_hash(descriptor: int) -> str:
+        nonlocal replaced
+        if not replaced:
+            os.replace(replacement, manifest.path)
+            replaced = True
+        return original_sha256_fd(descriptor)
+
+    monkeypatch.setattr(raw_store, "_sha256_fd", replace_manifest_then_hash)
+
+    verification = verify_segment(manifest.path, root=tmp_path)
+
+    assert replaced is True
+    assert verification.valid is False
+    assert any(
+        "manifest changed during verification" in error
+        for error in verification.errors
+    )
+
+
+def test_verified_segment_reader_returns_exact_validated_payloads(
+    tmp_path: Path,
+) -> None:
+    payloads = (b"first exact payload", b"\x00second\xff")
+    writer = RawSegmentWriter(
+        tmp_path,
+        source="polymarket",
+        stream="market",
+        capture_session_id="verified-reader",
+    )
+    for payload in payloads:
+        writer.append(payload, receive_at=UTC_TIME)
+    manifest = writer.seal()
+
+    verified = read_verified_segment(manifest.path, root=tmp_path)
+
+    assert verified.manifest == manifest
+    assert verified.payloads == payloads
 
 
 def test_record_ordinals_are_contiguous_and_payload_duplicates_are_preserved(

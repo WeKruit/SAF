@@ -590,6 +590,43 @@ def test_rule_store_rejects_missing_stale_and_latest_invalid_state(
         )
 
 
+def test_rule_store_never_reopens_verified_segment_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    document = _valid_rule_document()
+    capture = capture_venue_rule_snapshot(
+        json.dumps(document, separators=(",", ":")).encode(),
+        raw_root=tmp_path,
+        venue="polymarket",
+        market_id="market_rule_1",
+        condition_id="condition_rule_1",
+        fetched_at="2026-07-22T14:00:00Z",
+        source_document_version="official-response@2026-07-22T14:00:00Z",
+    )
+    forbidden = {
+        capture.canonical_manifest.object_path,
+        capture.raw_manifest.object_path,
+    }
+    original_open = Path.open
+
+    def reject_verified_path_reopen(path: Path, *args: object, **kwargs: object):
+        if path in forbidden:
+            raise AssertionError("verified segment object was reopened by path")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", reject_verified_path_reopen)
+
+    selected = recording_module.VenueRuleStore(tmp_path).require_as_of(
+        venue="polymarket",
+        market_id="market_rule_1",
+        condition_id="condition_rule_1",
+        at="2026-07-22T14:04:00Z",
+        max_age_seconds=300,
+    )
+
+    assert selected == capture.snapshot
+
+
 def test_connectivity_artifacts_record_evidence_and_credential_blocker() -> None:
     project_root = Path(__file__).resolve().parents[1]
     matrix = (

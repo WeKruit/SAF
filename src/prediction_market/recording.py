@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
 import json
 import re
@@ -13,8 +12,6 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
-
-import zstandard
 
 from prediction_market.adapters.base import (
     CaptureCounters,
@@ -37,8 +34,9 @@ from prediction_market.contracts import FixedPointV0, VenueRuleSnapshotV0
 from prediction_market.raw_store import (
     PartitionBoundaryError,
     RawSegmentWriter,
+    RawStoreError,
     SegmentManifest,
-    verify_segment,
+    read_verified_segment,
 )
 
 
@@ -753,29 +751,18 @@ _RULE_RECORD_KEYS = frozenset(
 )
 
 
-def _single_segment_payload(manifest: SegmentManifest) -> bytes:
-    try:
-        with manifest.object_path.open("rb") as compressed:
-            with zstandard.ZstdDecompressor().stream_reader(compressed) as reader:
-                raw = reader.read()
-        lines = raw.splitlines()
-        if len(lines) != 1:
-            raise ValueError("venue-rule segment must contain exactly one record")
-        outer = json.loads(
-            lines[0].decode("utf-8"), object_pairs_hook=_object_no_duplicates
-        )
-        return base64.b64decode(outer["payload_base64"], validate=True)
-    except (KeyError, OSError, UnicodeError, ValueError, zstandard.ZstdError) as exc:
-        raise FormalReplayRejected("canonical venue-rule segment is unreadable") from exc
-
-
 def _load_rule_record(root: Path, manifest_path: Path) -> dict[str, Any]:
-    verification = verify_segment(manifest_path, root=root)
-    if not verification.valid or verification.manifest is None:
+    try:
+        canonical = read_verified_segment(manifest_path, root=root)
+    except RawStoreError as exc:
         raise FormalReplayRejected(
             "canonical venue-rule segment failed integrity verification"
+        ) from exc
+    if len(canonical.payloads) != 1:
+        raise FormalReplayRejected(
+            "canonical venue-rule segment must contain exactly one record"
         )
-    payload = _single_segment_payload(verification.manifest)
+    payload = canonical.payloads[0]
     try:
         record = json.loads(
             payload.decode("utf-8"), object_pairs_hook=_object_no_duplicates
@@ -790,12 +777,19 @@ def _load_rule_record(root: Path, manifest_path: Path) -> dict[str, Any]:
     raw_manifest_value = record["raw_manifest_path"]
     if type(raw_manifest_value) is not str:
         raise FormalReplayRejected("venue-rule raw manifest reference is invalid")
-    raw_verification = verify_segment(root / raw_manifest_value, root=root)
-    if not raw_verification.valid or raw_verification.manifest is None:
-        raise FormalReplayRejected("venue-rule raw response failed integrity verification")
-    if raw_verification.manifest.object_sha256 != record["raw_object_sha256"]:
+    try:
+        raw = read_verified_segment(root / raw_manifest_value, root=root)
+    except RawStoreError as exc:
+        raise FormalReplayRejected(
+            "venue-rule raw response failed integrity verification"
+        ) from exc
+    if raw.manifest.object_sha256 != record["raw_object_sha256"]:
         raise FormalReplayRejected("venue-rule raw object reference does not match")
-    raw_response = _single_segment_payload(raw_verification.manifest)
+    if len(raw.payloads) != 1:
+        raise FormalReplayRejected(
+            "venue-rule raw response segment must contain exactly one record"
+        )
+    raw_response = raw.payloads[0]
     if "sha256:" + hashlib.sha256(raw_response).hexdigest() != record["raw_response_hash"]:
         raise FormalReplayRejected("venue-rule raw response hash does not match")
     return record
