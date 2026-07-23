@@ -11,10 +11,16 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from decimal import Decimal
 from numbers import Integral, Real
+from pathlib import Path
 from typing import Any
+
+from prediction_market.contracts import EventEnvelopeV0
+from prediction_market.sports.event_envelopes import (
+    validate_static_sport_observation_bundle,
+)
 
 
 NFL_SPORT = "nfl"
@@ -217,7 +223,6 @@ class NFLGameState:
     game_seconds_remaining: int
     source_play_id: str
     drive_id: str | None
-    next_play_type: str | None
     play_clock_seconds: int | None
     possession_team: str | None
     down: int | None
@@ -243,8 +248,6 @@ class NFLGameState:
         _require_text(self.source_play_id, "state.source_play_id")
         if self.drive_id is not None:
             _require_text(self.drive_id, "state.drive_id")
-        if self.next_play_type is not None:
-            _require_text(self.next_play_type, "state.next_play_type")
         if self.play_clock_seconds is not None:
             _require_int(
                 self.play_clock_seconds,
@@ -312,7 +315,6 @@ class NFLPlayEvent:
     game_seconds_remaining: int
     next_source_play_id: str
     next_drive_id: str | None
-    next_play_type: str | None
     next_play_clock_seconds: int | None
     possession_team: str | None
     down: int | None
@@ -331,6 +333,7 @@ class NFLPlayEvent:
     timeout_team: str | None
     period_changed: bool
     terminal: bool
+    quality_flags: tuple[str, ...]
 
     def __post_init__(self) -> None:
         if self.sport != NFL_SPORT:
@@ -349,8 +352,6 @@ class NFLPlayEvent:
         _require_text(self.next_source_play_id, "event.next_source_play_id")
         if self.next_drive_id is not None:
             _require_text(self.next_drive_id, "event.next_drive_id")
-        if self.next_play_type is not None:
-            _require_text(self.next_play_type, "event.next_play_type")
         if self.next_play_clock_seconds is not None:
             _require_int(
                 self.next_play_clock_seconds,
@@ -411,6 +412,16 @@ class NFLPlayEvent:
             raise NFLGameStateError(
                 "event.event_id must be supplied by EventEnvelopeV0"
             )
+        if (
+            type(self.quality_flags) is not tuple
+            or len(self.quality_flags) != len(set(self.quality_flags))
+            or tuple(sorted(self.quality_flags)) != self.quality_flags
+        ):
+            raise NFLGameStateError(
+                "event.quality_flags must be a sorted unique tuple"
+            )
+        for flag in self.quality_flags:
+            _require_text(flag, "event.quality_flags[]")
 
 
 def _validate_clock_transition(state: NFLGameState, event: NFLPlayEvent) -> None:
@@ -557,7 +568,6 @@ def reduce(state: NFLGameState, event: NFLPlayEvent) -> NFLGameState:
         game_seconds_remaining=event.game_seconds_remaining,
         source_play_id=event.next_source_play_id,
         drive_id=event.next_drive_id,
-        next_play_type=event.next_play_type,
         play_clock_seconds=event.next_play_clock_seconds,
         possession_team=event.possession_team,
         down=event.down,
@@ -799,7 +809,6 @@ def _snapshot_from_row(
         "game_seconds_remaining": _row_int(row, "game_seconds_remaining"),
         "source_play_id": _source_play_id(row),
         "drive_id": _stable_optional_scalar(row, "fixed_drive"),
-        "next_play_type": _row_text(row, "play_type", required=False),
         "play_clock_seconds": _play_clock_seconds(row),
         "possession_team": _row_text(row, "posteam", required=False),
         "down": down,
@@ -857,15 +866,15 @@ def _turnover_observed(row: Mapping[str, object]) -> bool:
     return False
 
 
-def event_from_nflverse_rows(
+def nflverse_transition_payload(
     pre_row: Mapping[str, object],
     post_row: Mapping[str, object],
     *,
-    event_id: str,
     sequence: int = 1,
     terminal: bool | None = None,
-) -> NFLPlayEvent:
-    """Normalize consecutive nflverse pre/post observations into one event."""
+    quality_flags: tuple[str, ...] = (),
+) -> dict[str, object]:
+    """Normalize consecutive nflverse rows into a complete envelope payload."""
 
     pre = _normalized_row(pre_row, "pre_row")
     post = _normalized_row(post_row, "post_row")
@@ -916,112 +925,146 @@ def event_from_nflverse_rows(
     )
     turnover = _turnover_observed(pre) and possession_changed
 
+    if (
+        type(quality_flags) is not tuple
+        or len(quality_flags) != len(set(quality_flags))
+    ):
+        raise NFLGameStateError("quality_flags must be a unique tuple")
     target_terminal = _infer_terminal(post) if terminal is None else terminal
-    event = NFLPlayEvent(
-        sport=NFL_SPORT,
-        game_id=str(post_snapshot["game_id"]),
-        sequence=sequence,
-        event_id=event_id,
-        source_play_id=_source_play_id(pre),
-        observation_mode=NFLVERSE_OBSERVATION_MODE,
-        play_type=_row_text(pre, "play_type", required=False),
-        description=_row_text(pre, "desc", required=False),
-        period=int(post_snapshot["period"]),
-        period_seconds_remaining=int(
+    _require_bool(target_terminal, "terminal")
+    return {
+        "sport": NFL_SPORT,
+        "game_id": str(post_snapshot["game_id"]),
+        "sequence": sequence,
+        "source_play_id": _source_play_id(pre),
+        "observation_mode": NFLVERSE_OBSERVATION_MODE,
+        "play_type": _row_text(pre, "play_type", required=False),
+        "description": _row_text(pre, "desc", required=False),
+        "period": int(post_snapshot["period"]),
+        "period_seconds_remaining": int(
             post_snapshot["period_seconds_remaining"]
         ),
-        game_seconds_remaining=int(post_snapshot["game_seconds_remaining"]),
-        next_source_play_id=str(post_snapshot["source_play_id"]),
-        next_drive_id=(
+        "game_seconds_remaining": int(post_snapshot["game_seconds_remaining"]),
+        "next_source_play_id": str(post_snapshot["source_play_id"]),
+        "next_drive_id": (
             None
             if post_snapshot["drive_id"] is None
             else str(post_snapshot["drive_id"])
         ),
-        next_play_type=(
-            None
-            if post_snapshot["next_play_type"] is None
-            else str(post_snapshot["next_play_type"])
-        ),
-        next_play_clock_seconds=(
+        "next_play_clock_seconds": (
             None
             if post_snapshot["play_clock_seconds"] is None
             else int(post_snapshot["play_clock_seconds"])
         ),
-        possession_team=(
+        "possession_team": (
             None
             if post_snapshot["possession_team"] is None
             else str(post_snapshot["possession_team"])
         ),
-        down=(
+        "down": (
             None if post_snapshot["down"] is None else int(post_snapshot["down"])
         ),
-        distance=(
+        "distance": (
             None
             if post_snapshot["distance"] is None
             else int(post_snapshot["distance"])
         ),
-        yardline_100=(
+        "yardline_100": (
             None
             if post_snapshot["yardline_100"] is None
             else int(post_snapshot["yardline_100"])
         ),
-        goal_to_go=bool(post_snapshot["goal_to_go"]),
-        home_score=int(post_snapshot["home_score"]),
-        away_score=int(post_snapshot["away_score"]),
-        home_timeouts_remaining=int(
+        "goal_to_go": bool(post_snapshot["goal_to_go"]),
+        "home_score": int(post_snapshot["home_score"]),
+        "away_score": int(post_snapshot["away_score"]),
+        "home_timeouts_remaining": int(
             post_snapshot["home_timeouts_remaining"]
         ),
-        away_timeouts_remaining=int(
+        "away_timeouts_remaining": int(
             post_snapshot["away_timeouts_remaining"]
         ),
-        first_down=first_down,
-        turnover=turnover,
-        possession_changed=possession_changed,
-        score=score,
-        timeout=timeout_observed,
-        timeout_team=timeout_team,
-        period_changed=period_changed,
-        terminal=target_terminal,
+        "first_down": first_down,
+        "turnover": turnover,
+        "possession_changed": possession_changed,
+        "score": score,
+        "timeout": timeout_observed,
+        "timeout_team": timeout_team,
+        "period_changed": period_changed,
+        "terminal": target_terminal,
+        "quality_flags": list(sorted(quality_flags)),
+    }
+
+
+def event_from_nflverse_envelope(
+    envelope: EventEnvelopeV0,
+    *,
+    program_root: str | Path,
+    raw_parents: tuple[EventEnvelopeV0, ...],
+) -> NFLPlayEvent:
+    """Construct an NFL event only from a fully bound normalized envelope."""
+
+    validated = validate_static_sport_observation_bundle(
+        program_root,
+        envelope,
+        raw_parents=raw_parents,
+        expected_experiment_id="X-11",
+        expected_dataset_id="DS-NFLVERSE",
+        expected_source_system="nflverse",
+        expected_source_stream="play_by_play",
+        expected_native_namespace="nflverse.play",
     )
-    # Validate the pair now so the adapter cannot emit an unreducible event.
-    pre_state = NFLGameState(
-        sport=NFL_SPORT,
-        sequence=sequence - 1,
-        terminal=False,
-        last_event_id=None,
-        **pre_snapshot,
+    if len(raw_parents) != 2:
+        raise NFLGameStateError(
+            "an nflverse transition requires exactly two raw row parents"
+        )
+    payload = dict(validated.payload)
+    expected_payload_fields = {
+        item.name for item in fields(NFLPlayEvent)
+    } - {"event_id"}
+    if set(payload) != expected_payload_fields:
+        raise NFLGameStateError(
+            "normalized nflverse payload fields are incomplete or unexpected"
+        )
+    if payload["sport"] != NFL_SPORT:
+        raise NFLGameStateError("normalized nflverse payload sport must be nfl")
+
+    canonical_game_id = validated.canonical_refs.game_id
+    if canonical_game_id is None or not canonical_game_id.startswith(
+        "game_nflverse_"
+    ):
+        raise NFLGameStateError(
+            "normalized nflverse envelope requires a canonical nflverse game_id"
+        )
+    native_game_id = canonical_game_id.removeprefix("game_nflverse_")
+    ordered_parents = tuple(
+        sorted(
+            raw_parents,
+            key=lambda parent: int(parent.lineage.raw_record_ordinal),
+        )
     )
-    reduce(pre_state, event)
+    expected_native_ids = (
+        f"{native_game_id}:{payload['source_play_id']}",
+        f"{native_game_id}:{payload['next_source_play_id']}",
+    )
+    actual_native_ids = tuple(
+        parent.native_refs[0].native_id for parent in ordered_parents
+    )
+    if actual_native_ids != expected_native_ids:
+        raise NFLGameStateError(
+            "normalized nflverse payload does not match raw native play identity"
+        )
+
+    payload["quality_flags"] = tuple(payload["quality_flags"])
+    event = NFLPlayEvent(event_id=validated.event_id, **payload)
+    if event.game_id != canonical_game_id:
+        raise NFLGameStateError(
+            "normalized nflverse event game does not match envelope game"
+        )
     return event
 
 
-def adapt_nflverse_observations(
-    pre_row: Mapping[str, object],
-    post_row: Mapping[str, object],
-    *,
-    event_id: str,
-    state_sequence: int = 0,
-    terminal: bool | None = None,
-) -> tuple[NFLGameState, NFLPlayEvent]:
-    """Return a validated state/event pair from consecutive offline rows."""
-
-    state = state_from_nflverse_row(pre_row, sequence=state_sequence)
-    event = event_from_nflverse_rows(
-        pre_row,
-        post_row,
-        event_id=event_id,
-        sequence=state_sequence + 1,
-        terminal=terminal,
-    )
-    # The event adapter already validates a structurally equal pre-state, while
-    # this call binds it to the exact state object returned to the caller.
-    reduce(state, event)
-    return state, event
-
-
-# Descriptive aliases for callers that use "observation" rather than "row".
+# Descriptive alias for callers that use "observation" rather than "row".
 state_from_nflverse_observation = state_from_nflverse_row
-event_from_nflverse_observations = event_from_nflverse_rows
 
 
 __all__ = [
@@ -1033,9 +1076,8 @@ __all__ = [
     "NFLVERSE_LEAKAGE_FIELDS",
     "NFLVERSE_OBSERVATION_MODE",
     "NFL_SPORT",
-    "adapt_nflverse_observations",
-    "event_from_nflverse_observations",
-    "event_from_nflverse_rows",
+    "event_from_nflverse_envelope",
+    "nflverse_transition_payload",
     "reduce",
     "state_from_nflverse_observation",
     "state_from_nflverse_row",

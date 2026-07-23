@@ -35,6 +35,10 @@ ART-A-013,contracts/market-relations/v0.yaml,A+G,v0,first_round_artifact_gate,co
 ART-A-014,contracts/quality-flags/v0.yaml,A+C,v0,first_round_artifact_gate,complete
 ART-A-015,contracts/static-dataset-manifest/v0.schema.yaml,A+C,v0,first_round_artifact_gate,complete
 ART-A-016,contracts/market-metadata-snapshot/v0.schema.yaml,A+C,v0,first_round_artifact_gate,complete
+ART-A-017,contracts/game-state-step/v0.schema.yaml,A,v0,2026-08-05_W2_review,complete
+ART-A-018,src/prediction_market/sports/game_state.py,A+D1+D2+D3+D4,v0,2026-08-05_W2_review,complete
+ART-A-019,src/prediction_market/sports/event_envelopes.py,A+C+H,v0,2026-08-05_W2_review,complete
+ART-A-020,artifacts/game-state/prediction_market_alignment_audit_v0.json,A+C+H,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
 ART-C-001,contracts/raw-capture/v0.schema.yaml,C,v0,X01_L2_reconstruction,complete
 ART-C-002,data/raw/README.md,C,v0,X01_L2_reconstruction,complete
 ART-C-003,data/manifests/README.md,C,v0,X01_L2_reconstruction,complete
@@ -63,11 +67,15 @@ ART-B-005,artifacts/venue-connectivity/polymarket-public-smoke-v0/manifests/sour
 ART-B-006,artifacts/venue-connectivity/polymarket_recorder_supervisor_v1.md,B+C,v1,X08_prospective_recorder_continuity,complete
 ART-B-007,artifacts/venue-connectivity/polymarket_recorder_smoke_20260722_v1.json,B+C,v1,X08_prospective_recorder_continuity,PRELIMINARY_RESEARCH_ONLY
 ART-D1-001,artifacts/game-state/nba/baseline_v0.md,D1+H,v0,X06_calibration_gate,complete
+ART-D1-003,artifacts/game-state/nba_state_engine_validation_v0.json,D1+H,v0,X06_contract_harness,PRELIMINARY_RESEARCH_ONLY
 ART-D2-001,artifacts/game-state/nfl/evidence_pipeline_poc_v0.md,D2,v0,2026-08-05_W2_review,complete
 ART-D2-002,artifacts/game-state/nfl/x11_real_data_pipeline_evidence_v0.json,D2+H,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
+ART-D2-003,artifacts/game-state/nfl_real_replay_validation_v0.json,D2+C,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
 ART-D3-001,artifacts/game-state/soccer/evidence_pipeline_poc_v0.md,D3,v0,2026-08-05_W2_review,complete
 ART-D3-002,artifacts/game-state/soccer/x12_real_data_poc_v0.json,D3+H+I,v0,2026-08-05_W2_review,POC_ONLY
+ART-D3-003,artifacts/game-state/soccer_real_replay_validation_v0.json,D3+C,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
 ART-D4-001,artifacts/game-state/mlb/source_inventory_v0.json,D4+I,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
+ART-D4-002,artifacts/game-state/mlb_real_replay_validation_v0.json,D4+C,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
 ART-D5-001,artifacts/game-state/f1/source_inventory_v0.json,D5+I,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
 ART-E-001,artifacts/reaction-labels/x05_barrier_label_spec_v0.md,E+H,v0,X05_label_approval,complete
 ART-F-001,contracts/tca/v0.schema.yaml,F,v0,2026-08-05_W2_review,complete
@@ -91,4 +99,6 @@ ART-P-001,artifacts/architecture/week1_backlog_v0.csv,A+H,v0,first_round_artifac
 ART-P-002,artifacts/architecture/risk_blocker_register_v0.csv,A+I,v0,first_round_artifact_gate,complete
 ART-P-003,artifacts/architecture/program_status_v0.md,A,v0,first_round_artifact_gate,complete
 ART-P-004,artifacts/architecture/x09_vertical_slice_v0.md,B+A+H,v0,X09_deterministic_vertical_slice,harness_pass
+ART-P-005,artifacts/game-state/current_validation_report_zh_v0.md,A+H,v0,2026-08-05_W2_review,complete
 ART-D1-002,artifacts/game-state/nba/x06_contract_fixture_v0.json,D1+H,v0,X06_contract_harness,registered
+ART-H-009,artifacts/game-state/model_latency_v0.json,H+D2+D3,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY

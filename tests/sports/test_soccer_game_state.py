@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import re
-from dataclasses import FrozenInstanceError, asdict
+from dataclasses import FrozenInstanceError, asdict, replace
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from prediction_market.sports.event_envelopes import (
+    build_static_sport_observation_bundle,
+)
 from prediction_market.sports.game_state import advance_state
 from prediction_market.sports.soccer_game_state import (
     SOCCER_GAME_STATE_REDUCER,
@@ -19,31 +23,60 @@ from prediction_market.sports.soccer_game_state import (
     adapt_statsbomb_event as _adapt_statsbomb_event,
     initial_soccer_game_state,
     reduce_soccer_game_state,
+    statsbomb_event_payload,
 )
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 GAME_ID = "game_statsbomb_100000"
 HOME_TEAM_ID = 10
 AWAY_TEAM_ID = 20
-
-
-def _fixture_event_id(sequence: int) -> str:
-    return f"evt_{sequence:064x}"
 
 
 def adapt_statsbomb_event(
     raw_event: dict[str, Any],
     *,
     game_id: str,
+    quality_flags: tuple[str, ...] = (),
 ) -> SoccerGameEvent:
-    """Supply the synthetic EventEnvelope identity outside production code."""
+    """Build the validated synthetic envelope used by unit tests."""
 
     sequence = raw_event["index"]
     assert type(sequence) is int
-    return _adapt_statsbomb_event(
+    native_id = raw_event["id"]
+    assert type(native_id) is str
+    payload = statsbomb_event_payload(
         raw_event,
         game_id=game_id,
-        event_id=_fixture_event_id(sequence),
+        quality_flags=quality_flags,
+    )
+    bundle = build_static_sport_observation_bundle(
+        program_root=PROJECT_ROOT,
+        experiment_id="X-12",
+        dataset_id="DS-STATSBOMB-OPEN",
+        source_system="statsbomb",
+        source_stream="events",
+        raw_object_hash="sha256:" + "8" * 64,
+        raw_record_ordinals=(sequence - 1,),
+        partition="synthetic-fixture",
+        fetched_at="2026-07-22T12:00:00Z",
+        source_at=None,
+        competition_id="cmp_statsbomb_2",
+        game_id=game_id,
+        participant_ids=(
+            f"participant_statsbomb_{HOME_TEAM_ID}",
+            f"participant_statsbomb_{AWAY_TEAM_ID}",
+        ),
+        native_namespace="statsbomb.event",
+        native_ids=(native_id,),
+        normalized_source_sequence=sequence,
+        normalized_payload=payload,
+        quality_flags=quality_flags,
+    )
+    return _adapt_statsbomb_event(
+        bundle.normalized,
+        program_root=PROJECT_ROOT,
+        raw_parents=bundle.raw,
     )
 
 
@@ -168,29 +201,21 @@ def test_adapter_builds_immutable_canonical_event_without_future_data() -> None:
     )
 
 
-def test_adapter_requires_external_envelope_event_id_and_only_validates_it() -> None:
+def test_adapter_requires_a_fully_bound_event_envelope() -> None:
     raw = _starting_xi_event(
         index=1,
         native_id="statsbomb-native-1",
         team_id=HOME_TEAM_ID,
     )
-    external_event_id = "evt_" + "a" * 64
+    event = adapt_statsbomb_event(raw, game_id=GAME_ID)
+    assert re.fullmatch(r"evt_[0-9a-f]{64}", event.event_id)
 
-    with pytest.raises(TypeError, match="event_id"):
-        _adapt_statsbomb_event(raw, game_id=GAME_ID)  # type: ignore[call-arg]
-    with pytest.raises(SoccerGameStateError, match="event_id"):
-        _adapt_statsbomb_event(
+    with pytest.raises(TypeError, match="EventEnvelopeV0"):
+        _adapt_statsbomb_event(  # type: ignore[arg-type]
             raw,
-            game_id=GAME_ID,
-            event_id="not-an-envelope-id",
+            program_root=PROJECT_ROOT,
+            raw_parents=(),
         )
-
-    event = _adapt_statsbomb_event(
-        raw,
-        game_id=GAME_ID,
-        event_id=external_event_id,
-    )
-    assert event.event_id == external_event_id
 
 
 def test_adapter_normalizes_pass_clock_possession_and_coordinates_to_integers() -> None:
@@ -589,7 +614,10 @@ def test_reducer_rejects_game_sequence_period_and_time_invariant_violations() ->
     with pytest.raises(SoccerGameStateError, match="game_id"):
         reduce_soccer_game_state(
             state,
-            adapt_statsbomb_event(valid_pass_raw, game_id="game_other"),
+            replace(
+                valid_pass,
+                game_id="game_statsbomb_other",
+            ),
         )
 
     skipped = adapt_statsbomb_event(
@@ -613,11 +641,35 @@ def test_reducer_rejects_game_sequence_period_and_time_invariant_violations() ->
         ),
         game_id=GAME_ID,
     )
-    after_regressed_clock = reduce_soccer_game_state(state, regressed_clock)
+    with pytest.raises(SoccerGameStateError, match="clock regression"):
+        reduce_soccer_game_state(state, regressed_clock)
+
+    authorized_regression = adapt_statsbomb_event(
+        _event(
+            index=4,
+            native_id="statsbomb-native-4",
+            action="Pass",
+            team_id=HOME_TEAM_ID,
+            minute=9,
+            second=59,
+            timestamp="00:09:59.000",
+            **{"pass": {"end_location": [50, 40]}},
+        ),
+        game_id=GAME_ID,
+        quality_flags=("clock_jump", "out_of_order"),
+    )
+    after_regressed_clock = reduce_soccer_game_state(
+        state,
+        authorized_regression,
+    )
     assert regressed_clock.clock_ms == 599_000
     assert regressed_clock.period_clock_ms == 599_000
-    assert after_regressed_clock.clock_ms == 600_000
-    assert after_regressed_clock.period_clock_ms == 600_000
+    assert after_regressed_clock.clock_ms == 599_000
+    assert after_regressed_clock.period_clock_ms == 599_000
+    assert after_regressed_clock.quality_flags == (
+        "clock_jump",
+        "out_of_order",
+    )
 
     non_starting_next_period = adapt_statsbomb_event(
         _event(
@@ -762,7 +814,7 @@ def test_replay_and_canonical_hashes_are_deterministic() -> None:
     first = replay()
     second = replay()
 
-    assert event.event_id == _fixture_event_id(3)
+    assert re.fullmatch(r"evt_[0-9a-f]{64}", event.event_id)
     assert first == second
     assert first.state_sha256 == second.state_sha256
     assert hash(first) == hash(second)

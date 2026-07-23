@@ -1,319 +1,359 @@
-"""Fail-closed game-state probability to executable-market alignment.
+"""Fail-closed audit of current sport/market alignment prerequisites.
 
-This module performs one narrow comparison: an exact canonical sport outcome
-probability at a model point-in-time versus an executable bid/ask observation
-known at that same point-in-time.  It does not estimate profitability,
-execution, or causality.
+The program has no registered game-state-to-market outcome binding and no
+registered maximum quote-age policy.  Consequently this v0 module can verify
+content-addressed prerequisite documents, but it cannot emit a comparison,
+disagreement, profitability, or alpha result.  A future comparison interface
+requires those governed inputs rather than caller-selected hashes or policy.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from decimal import Decimal
-import re
-from typing import Literal
+from pathlib import Path
+from types import MappingProxyType
+from typing import Literal, Mapping
+
+from prediction_market.contracts import (
+    EventEnvelopeV0,
+    FixedPointV0,
+    MarketMetadataSnapshotV0,
+    ModelOutputV1,
+    VenueRuleSnapshotV0,
+    thaw_contract_v0,
+    validate_event_envelope_v0,
+)
 
 
-_CANONICAL_PATTERNS = {
-    "game_id": re.compile(r"^game_[A-Za-z0-9][A-Za-z0-9._:-]*$"),
-    "condition_id": re.compile(
-        r"^condition_[A-Za-z0-9][A-Za-z0-9._:-]*$"
-    ),
-    "outcome_id": re.compile(r"^outcome_[A-Za-z0-9][A-Za-z0-9._:-]*$"),
-}
-_SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ZERO = Decimal("0")
 _ONE = Decimal("1")
+_QUOTE_PAYLOAD_FIELDS = frozenset(
+    {
+        "kind",
+        "best_bid",
+        "best_ask",
+        "bid_depth",
+        "ask_depth",
+        "paused",
+    }
+)
 
 
 class MarketAlignmentInputError(ValueError):
-    """Raised when an alignment input cannot be represented exactly."""
+    """Raised when claimed evidence is not a validated governed document."""
 
 
-def _require_canonical_id(value: object, field: str) -> None:
-    if type(value) is not str or _CANONICAL_PATTERNS[field].fullmatch(value) is None:
-        raise MarketAlignmentInputError(f"{field} must be a canonical {field}")
-
-
-def _require_sha256(value: object, field: str) -> None:
-    if type(value) is not str or _SHA256_RE.fullmatch(value) is None:
-        raise MarketAlignmentInputError(f"{field} must be sha256:<64 lowercase hex>")
-
-
-def _require_utc(value: object, field: str) -> None:
-    if type(value) is not datetime:
-        raise MarketAlignmentInputError(f"{field} must be a datetime")
-    if value.tzinfo is None or value.utcoffset() != timedelta(0):
-        raise MarketAlignmentInputError(f"{field} must be timezone-aware UTC")
-
-
-def _require_probability(value: object, field: str) -> None:
-    if type(value) is float:
+def _require_tuple_of(
+    value: object,
+    expected_type: type[object],
+    field_name: str,
+) -> None:
+    if type(value) is not tuple:
+        raise MarketAlignmentInputError(f"{field_name} must be a tuple")
+    if any(not isinstance(item, expected_type) for item in value):
         raise MarketAlignmentInputError(
-            f"{field} uses a binary float; use Decimal for exact comparison"
+            f"{field_name} must contain validated {expected_type.__name__} documents"
         )
-    if type(value) is not Decimal:
-        raise MarketAlignmentInputError(f"{field} must be Decimal")
-    if not value.is_finite() or value < _ZERO or value > _ONE:
-        raise MarketAlignmentInputError(f"{field} must be finite and in [0, 1]")
 
 
-def _require_depth(value: object | None, field: str) -> None:
-    if value is None:
-        return
-    if type(value) is float:
-        raise MarketAlignmentInputError(
-            f"{field} uses a binary float; use Decimal for exact comparison"
+@dataclass(frozen=True, slots=True)
+class CurrentAlignmentEvidence:
+    """The governed documents currently available to the prerequisite audit."""
+
+    metadata_snapshots: tuple[MarketMetadataSnapshotV0, ...] = ()
+    model_output_events: tuple[EventEnvelopeV0, ...] = ()
+    quote_events: tuple[EventEnvelopeV0, ...] = ()
+    rule_snapshots: tuple[VenueRuleSnapshotV0, ...] = ()
+
+    def __post_init__(self) -> None:
+        _require_tuple_of(
+            self.metadata_snapshots,
+            MarketMetadataSnapshotV0,
+            "metadata_snapshots",
         )
-    if type(value) is not Decimal:
-        raise MarketAlignmentInputError(f"{field} must be Decimal or None")
-    if not value.is_finite() or value < _ZERO:
-        raise MarketAlignmentInputError(f"{field} must be finite and nonnegative")
-
-
-def _decimal_text(value: Decimal | None) -> str | None:
-    return None if value is None else format(value, "f")
-
-
-@dataclass(frozen=True, slots=True)
-class CanonicalGameConditionBinding:
-    """Point-in-time proof that one venue condition represents one sport outcome."""
-
-    game_id: str
-    condition_id: str
-    outcome_id: str
-    metadata_snapshot_ref: str
-    metadata_observed_at: datetime
-
-    def __post_init__(self) -> None:
-        _require_canonical_id(self.game_id, "game_id")
-        _require_canonical_id(self.condition_id, "condition_id")
-        _require_canonical_id(self.outcome_id, "outcome_id")
-        _require_sha256(self.metadata_snapshot_ref, "metadata_snapshot_ref")
-        _require_utc(self.metadata_observed_at, "metadata_observed_at")
+        _require_tuple_of(
+            self.model_output_events,
+            EventEnvelopeV0,
+            "model_output_events",
+        )
+        _require_tuple_of(
+            self.quote_events,
+            EventEnvelopeV0,
+            "quote_events",
+        )
+        _require_tuple_of(
+            self.rule_snapshots,
+            VenueRuleSnapshotV0,
+            "rule_snapshots",
+        )
 
 
 @dataclass(frozen=True, slots=True)
-class ModelProbabilityObservation:
-    """One exact outcome probability emitted from information available by cutoff."""
+class CurrentAlignmentDecision:
+    """A non-promotional statement about verified prerequisite availability."""
 
-    game_id: str
-    outcome_id: str
-    cutoff_at: datetime
-    probability: Decimal
-    model_output_ref: str
-
-    def __post_init__(self) -> None:
-        _require_canonical_id(self.game_id, "game_id")
-        _require_canonical_id(self.outcome_id, "outcome_id")
-        _require_utc(self.cutoff_at, "cutoff_at")
-        _require_probability(self.probability, "probability")
-        _require_sha256(self.model_output_ref, "model_output_ref")
-
-
-@dataclass(frozen=True, slots=True)
-class ExecutableQuoteObservation:
-    """Top-of-book quote and the PIT evidence required to interpret it."""
-
-    game_id: str
-    condition_id: str
-    outcome_id: str
-    received_at: datetime
-    best_bid: Decimal | None
-    best_ask: Decimal | None
-    bid_depth: Decimal | None
-    ask_depth: Decimal | None
-    midpoint: Decimal | None
-    paused: bool
-    metadata_snapshot_ref: str
-    rule_snapshot_ref: str | None
-    rule_snapshot_observed_at: datetime | None
-
-    def __post_init__(self) -> None:
-        _require_canonical_id(self.game_id, "game_id")
-        _require_canonical_id(self.condition_id, "condition_id")
-        _require_canonical_id(self.outcome_id, "outcome_id")
-        _require_utc(self.received_at, "received_at")
-        for field in ("best_bid", "best_ask", "midpoint"):
-            value = getattr(self, field)
-            if value is not None:
-                _require_probability(value, field)
-        _require_depth(self.bid_depth, "bid_depth")
-        _require_depth(self.ask_depth, "ask_depth")
-        if type(self.paused) is not bool:
-            raise MarketAlignmentInputError("paused must be bool")
-        _require_sha256(self.metadata_snapshot_ref, "metadata_snapshot_ref")
-        if self.rule_snapshot_ref is not None:
-            _require_sha256(self.rule_snapshot_ref, "rule_snapshot_ref")
-        if self.rule_snapshot_observed_at is not None:
-            _require_utc(
-                self.rule_snapshot_observed_at,
-                "rule_snapshot_observed_at",
-            )
-
-
-AlignmentStatus = Literal[
-    "alignment_ready",
-    "not_aligned",
-    "predictive_disagreement",
-]
-
-
-@dataclass(frozen=True, slots=True)
-class AlignmentDecision:
-    """Machine-readable result with intentionally non-trading semantics."""
-
-    status: AlignmentStatus
+    status: Literal["not_aligned"]
     reason_codes: tuple[str, ...]
-    as_of_age_ms: int | None
-    spread: Decimal | None
-    probability_distance_to_executable_interval: Decimal | None
-    comparison_basis: Literal["executable_bid_ask"] = "executable_bid_ask"
+    verified_document_counts: Mapping[str, int]
+    matched_as_of_rows: Literal[0] = 0
+    comparison_basis: Literal[
+        "verified_prerequisites_only"
+    ] = "verified_prerequisites_only"
 
     def to_dict(self) -> dict[str, object]:
         return {
             "status": self.status,
             "reason_codes": list(self.reason_codes),
+            "verified_document_counts": dict(self.verified_document_counts),
+            "matched_as_of_rows": self.matched_as_of_rows,
             "comparison_basis": self.comparison_basis,
-            "as_of_age_ms": self.as_of_age_ms,
-            "spread": _decimal_text(self.spread),
-            "probability_distance_to_executable_interval": _decimal_text(
-                self.probability_distance_to_executable_interval
-            ),
         }
 
 
-def _elapsed_microseconds(later: datetime, earlier: datetime) -> int:
-    delta = later - earlier
-    return (
-        delta.days * 86_400_000_000
-        + delta.seconds * 1_000_000
-        + delta.microseconds
-    )
+def _utc(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.removesuffix("Z") + "+00:00")
+    except (TypeError, ValueError) as exc:
+        raise MarketAlignmentInputError("contract timestamp is not valid UTC") from exc
+    if parsed.utcoffset() is None or parsed.utcoffset().total_seconds() != 0:
+        raise MarketAlignmentInputError("contract timestamp is not valid UTC")
+    return parsed
 
 
-def evaluate_market_alignment(
+def _revalidate_metadata(
+    snapshot: MarketMetadataSnapshotV0,
+) -> MarketMetadataSnapshotV0:
+    try:
+        return MarketMetadataSnapshotV0.model_validate(
+            snapshot.model_dump(mode="python", round_trip=True)
+        )
+    except (TypeError, ValueError) as exc:
+        raise MarketAlignmentInputError(
+            "invalid MarketMetadataSnapshotV0 evidence"
+        ) from exc
+
+
+def _revalidate_rule(snapshot: VenueRuleSnapshotV0) -> VenueRuleSnapshotV0:
+    try:
+        return VenueRuleSnapshotV0.model_validate(
+            snapshot.model_dump(mode="python", round_trip=True)
+        )
+    except (TypeError, ValueError) as exc:
+        raise MarketAlignmentInputError(
+            "invalid VenueRuleSnapshotV0 evidence"
+        ) from exc
+
+
+def _validated_model_event(
+    program_root: Path,
+    event: EventEnvelopeV0,
+) -> tuple[EventEnvelopeV0, ModelOutputV1]:
+    try:
+        validated = validate_event_envelope_v0(program_root, event)
+    except (TypeError, ValueError) as exc:
+        raise MarketAlignmentInputError(
+            "invalid registry-backed model-output EventEnvelopeV0"
+        ) from exc
+    if validated.event_type != "model_output":
+        raise MarketAlignmentInputError(
+            "model_output_events must be model_output EventEnvelopeV0 documents"
+        )
+    try:
+        output = ModelOutputV1.model_validate(thaw_contract_v0(validated.payload))
+    except (TypeError, ValueError) as exc:
+        raise MarketAlignmentInputError("invalid ModelOutputV1 payload") from exc
+    if validated.canonical_refs.game_id != output.game_id:
+        raise MarketAlignmentInputError(
+            "model-output envelope game_id does not match its payload"
+        )
+    if _utc(validated.time.receive_at) < _utc(output.pit_cutoff_at):
+        raise MarketAlignmentInputError(
+            "model-output availability precedes its PIT cutoff"
+        )
+    return validated, output
+
+
+def _fixed_point(
+    value: object,
+    field_name: str,
     *,
-    binding: CanonicalGameConditionBinding,
-    model: ModelProbabilityObservation,
-    quote: ExecutableQuoteObservation,
-    max_quote_age_ms: int,
-) -> AlignmentDecision:
-    """Compare only when canonical identity, PIT time, and execution facts all hold."""
+    probability: bool,
+) -> Decimal:
+    try:
+        fixed = FixedPointV0.model_validate(value)
+    except (TypeError, ValueError) as exc:
+        raise MarketAlignmentInputError(
+            f"quote {field_name} must be exact FixedPointV0"
+        ) from exc
+    decimal_value = fixed.to_decimal()
+    if probability:
+        if decimal_value < _ZERO or decimal_value > _ONE:
+            raise MarketAlignmentInputError(
+                f"quote {field_name} must be in [0, 1]"
+            )
+    elif decimal_value <= _ZERO:
+        raise MarketAlignmentInputError(
+            f"quote {field_name} must be positive"
+        )
+    return decimal_value
 
+
+def _validated_quote_event(
+    program_root: Path,
+    event: EventEnvelopeV0,
+) -> EventEnvelopeV0:
+    try:
+        validated = validate_event_envelope_v0(program_root, event)
+    except (TypeError, ValueError) as exc:
+        raise MarketAlignmentInputError(
+            "invalid quote EventEnvelopeV0 evidence"
+        ) from exc
+    if validated.event_type != "normalized_observation":
+        raise MarketAlignmentInputError(
+            "quote evidence must be a normalized_observation"
+        )
+    if validated.time.receive_basis != "local_recorder":
+        raise MarketAlignmentInputError(
+            "quote evidence requires local_recorder receive time"
+        )
+    if validated.source.venue is None:
+        raise MarketAlignmentInputError("quote evidence requires an observed venue")
+    canonical = validated.canonical_refs
     if (
-        type(max_quote_age_ms) is not int
-        or max_quote_age_ms < 0
+        canonical.game_id is None
+        or canonical.condition_id is None
+        or canonical.outcome_id is None
     ):
         raise MarketAlignmentInputError(
-            "max_quote_age_ms must be a nonnegative integer"
+            "quote evidence requires canonical game/condition/outcome"
         )
-
-    reasons: list[str] = []
-    if model.game_id != binding.game_id:
-        reasons.append("model_game_mismatch")
-    if model.outcome_id != binding.outcome_id:
-        reasons.append("model_outcome_mismatch")
-    if quote.game_id != binding.game_id:
-        reasons.append("quote_game_mismatch")
-    if quote.condition_id != binding.condition_id:
-        reasons.append("quote_condition_mismatch")
-    if quote.outcome_id != binding.outcome_id:
-        reasons.append("quote_outcome_mismatch")
-    if quote.metadata_snapshot_ref != binding.metadata_snapshot_ref:
-        reasons.append("metadata_snapshot_mismatch")
-    if binding.metadata_observed_at > model.cutoff_at:
-        reasons.append("future_metadata_snapshot")
-
-    age_microseconds: int | None
-    if quote.received_at > model.cutoff_at:
-        reasons.append("future_quote")
-        age_microseconds = None
-    else:
-        age_microseconds = _elapsed_microseconds(
-            model.cutoff_at,
-            quote.received_at,
+    payload = thaw_contract_v0(validated.payload)
+    if set(payload) != _QUOTE_PAYLOAD_FIELDS:
+        raise MarketAlignmentInputError(
+            "quote payload must contain the exact executable-quote fields"
         )
-        if age_microseconds > max_quote_age_ms * 1_000:
-            reasons.append("stale_quote")
+    if payload["kind"] != "executable_quote":
+        raise MarketAlignmentInputError(
+            "quote payload kind must be executable_quote"
+        )
+    if type(payload["paused"]) is not bool or payload["paused"]:
+        raise MarketAlignmentInputError(
+            "quote evidence must explicitly observe paused=false"
+        )
+    bid = _fixed_point(payload["best_bid"], "best_bid", probability=True)
+    ask = _fixed_point(payload["best_ask"], "best_ask", probability=True)
+    _fixed_point(payload["bid_depth"], "bid_depth", probability=False)
+    _fixed_point(payload["ask_depth"], "ask_depth", probability=False)
+    if bid > ask:
+        raise MarketAlignmentInputError("quote evidence contains a crossed book")
+    return validated
 
-    if quote.rule_snapshot_ref is None:
-        reasons.append("missing_rule_snapshot")
-    if quote.rule_snapshot_observed_at is None:
-        if quote.rule_snapshot_ref is not None:
-            reasons.append("missing_rule_snapshot_observed_at")
-    elif quote.rule_snapshot_observed_at > model.cutoff_at:
-        reasons.append("future_rule_snapshot")
-    if quote.paused:
-        reasons.append("market_paused")
 
-    midpoint_only = (
-        quote.best_bid is None
-        and quote.best_ask is None
-        and quote.midpoint is not None
-    )
-    if midpoint_only:
-        reasons.append("midpoint_only_forbidden")
-    else:
-        if quote.best_bid is None:
-            reasons.append("missing_executable_bid")
-        elif quote.bid_depth is None or quote.bid_depth <= _ZERO:
-            reasons.append("non_executable_bid_depth")
-        if quote.best_ask is None:
-            reasons.append("missing_executable_ask")
-        elif quote.ask_depth is None or quote.ask_depth <= _ZERO:
-            reasons.append("non_executable_ask_depth")
-
+def _validate_mutual_identity(
+    metadata: tuple[MarketMetadataSnapshotV0, ...],
+    models: tuple[tuple[EventEnvelopeV0, ModelOutputV1], ...],
+    quotes: tuple[EventEnvelopeV0, ...],
+    rules: tuple[VenueRuleSnapshotV0, ...],
+) -> None:
+    if not (len(metadata) == len(models) == len(quotes) == len(rules) == 1):
+        return
+    metadata_item = metadata[0]
+    model_event, model_output = models[0]
+    quote = quotes[0]
+    rule = rules[0]
+    canonical = metadata_item.canonical_refs
     if (
-        quote.best_bid is not None
-        and quote.best_ask is not None
-        and quote.best_bid > quote.best_ask
+        quote.canonical_refs.game_id != canonical.game_id
+        or quote.canonical_refs.condition_id != canonical.condition_id
+        or quote.canonical_refs.outcome_id != canonical.outcome_id
+        or model_event.canonical_refs.game_id != canonical.game_id
+        or model_output.game_id != canonical.game_id
     ):
-        reasons.append("crossed_book")
-
-    age_ms = (
-        None
-        if age_microseconds is None
-        else age_microseconds // 1_000
-    )
-    if reasons:
-        return AlignmentDecision(
-            status="not_aligned",
-            reason_codes=tuple(reasons),
-            as_of_age_ms=age_ms,
-            spread=None,
-            probability_distance_to_executable_interval=None,
+        raise MarketAlignmentInputError(
+            "metadata/model/quote canonical identity mismatch"
+        )
+    if (
+        rule.venue != metadata_item.venue
+        or rule.venue != quote.source.venue
+        or rule.condition_id != canonical.condition_id
+    ):
+        raise MarketAlignmentInputError(
+            "metadata/quote/rule venue or condition mismatch"
+        )
+    cutoff = _utc(model_output.pit_cutoff_at)
+    if _utc(metadata_item.captured_at) > cutoff:
+        raise MarketAlignmentInputError(
+            "metadata snapshot is later than the model cutoff"
+        )
+    if _utc(quote.time.receive_at) > cutoff:
+        raise MarketAlignmentInputError(
+            "quote observation is later than the model cutoff"
+        )
+    if _utc(rule.fetched_at) > cutoff or _utc(rule.effective_from) > cutoff:
+        raise MarketAlignmentInputError(
+            "venue-rule snapshot is later than the model cutoff"
         )
 
-    assert quote.best_bid is not None
-    assert quote.best_ask is not None
-    spread = quote.best_ask - quote.best_bid
-    if model.probability < quote.best_bid:
-        distance = quote.best_bid - model.probability
-    elif model.probability > quote.best_ask:
-        distance = model.probability - quote.best_ask
-    else:
-        distance = _ZERO
-    return AlignmentDecision(
-        status=(
-            "predictive_disagreement"
-            if distance > _ZERO
-            else "alignment_ready"
+
+def audit_current_market_alignment_evidence(
+    *,
+    program_root: str | Path,
+    evidence: CurrentAlignmentEvidence,
+) -> CurrentAlignmentDecision:
+    """Verify current documents without inventing missing binding or age policy."""
+
+    if not isinstance(evidence, CurrentAlignmentEvidence):
+        raise MarketAlignmentInputError(
+            "evidence must be CurrentAlignmentEvidence"
+        )
+    root = Path(program_root)
+    metadata = tuple(
+        _revalidate_metadata(snapshot)
+        for snapshot in evidence.metadata_snapshots
+    )
+    models = tuple(
+        _validated_model_event(root, event)
+        for event in evidence.model_output_events
+    )
+    quotes = tuple(
+        _validated_quote_event(root, event)
+        for event in evidence.quote_events
+    )
+    rules = tuple(
+        _revalidate_rule(snapshot)
+        for snapshot in evidence.rule_snapshots
+    )
+    _validate_mutual_identity(metadata, models, quotes, rules)
+
+    reasons = ["missing_canonical_game_condition_outcome_binding"]
+    if not metadata:
+        reasons.append("missing_market_metadata_snapshot")
+    if not models:
+        reasons.append("missing_model_output")
+    if not quotes:
+        reasons.append("missing_local_receive_executable_quote")
+    if not rules:
+        reasons.append("missing_venue_rule_snapshot")
+    reasons.append("missing_registered_join_policy")
+    return CurrentAlignmentDecision(
+        status="not_aligned",
+        reason_codes=tuple(reasons),
+        verified_document_counts=MappingProxyType(
+            {
+                "metadata_snapshots": len(metadata),
+                "model_output_events": len(models),
+                "quote_events": len(quotes),
+                "rule_snapshots": len(rules),
+            }
         ),
-        reason_codes=(),
-        as_of_age_ms=age_ms,
-        spread=spread,
-        probability_distance_to_executable_interval=distance,
     )
 
 
 __all__ = [
-    "AlignmentDecision",
-    "AlignmentStatus",
-    "CanonicalGameConditionBinding",
-    "ExecutableQuoteObservation",
+    "CurrentAlignmentDecision",
+    "CurrentAlignmentEvidence",
     "MarketAlignmentInputError",
-    "ModelProbabilityObservation",
-    "evaluate_market_alignment",
+    "audit_current_market_alignment_evidence",
 ]

@@ -1,0 +1,94 @@
+{
+  "artifact_type": "nba_game_state_reducer_validation",
+  "artifact_version": "v0",
+  "experiment_id": "X-06",
+  "owner": "D1+H",
+  "result_label": "PRELIMINARY_ENGINEERING_VALIDATION",
+  "data_class": "synthetic_contract_only",
+  "formal_evidence_eligible": false,
+  "scope": "deterministic source-observed NBA state transitions only",
+  "fixture": {
+    "path": "artifacts/game-state/nba/x06_contract_fixture_v0.json",
+    "sha256": "sha256:0ebca90ba56b45252c6d310fd176ba2eb1ac615995b3eacf92e2e3f9c962a15f",
+    "registered_authorization_scope": "contract_harness"
+  },
+  "implementation": {
+    "path": "src/prediction_market/sports/nba_game_state.py",
+    "sha256": "sha256:f801c5b8fa0bdd31e0b28489457e9c8b27a4df0b20f6a26b1e69b30eb0ccc603",
+    "reducer_id": "saf.nba.game_state",
+    "reducer_version": "v0",
+    "event_identity": "external_validated_EventEnvelopeV0_id",
+    "observation_mode": "synthetic_fixture",
+    "state_kind": "source_observed",
+    "bonus_semantics": "explicit_post_event_source_observation_not_hardcoded_threshold",
+    "prediction_fields_in_state": false
+  },
+  "validated_state_fields": [
+    "period",
+    "clock_ms",
+    "home_score",
+    "away_score",
+    "possession_team",
+    "home_team_fouls",
+    "away_team_fouls",
+    "home_timeouts_remaining",
+    "away_timeouts_remaining",
+    "home_in_bonus",
+    "away_in_bonus",
+    "shot_clock_ms",
+    "live_ball",
+    "terminal"
+  ],
+  "validated_transition_types": [
+    "score",
+    "foul",
+    "timeout",
+    "possession",
+    "period",
+    "terminal"
+  ],
+  "replay": {
+    "events": 12,
+    "deterministic": true,
+    "first_replay_sha256": "sha256:d730dc093701910cbcde7ff4275c9acbb3ec594eeb3ca227905e731cd20105ad",
+    "second_replay_sha256": "sha256:d730dc093701910cbcde7ff4275c9acbb3ec594eeb3ca227905e731cd20105ad",
+    "final_state_sha256": "sha256:f3582b5f9964e42a0d98ac3f0743e3afaabc6ada8335b2d06d87452731e9f5cd"
+  },
+  "latency": {
+    "measurement": "reducer_only",
+    "timer": "time.perf_counter_ns",
+    "unit": "nanoseconds",
+    "warmup_iterations": 200,
+    "timed_iterations": 10000,
+    "p50_ns": 3416,
+    "p95_ns": 3500,
+    "p99_ns": 3542,
+    "max_ns": 11208,
+    "mean_ns": 3405,
+    "includes_model_inference": false,
+    "python_version": "3.13.12",
+    "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+    "processor": "arm"
+  },
+  "accuracy": {
+    "measured": false,
+    "real_nba_games": 0,
+    "reason": "O-005 blocks empirical NBA data use; synthetic reducer correctness is not predictive accuracy"
+  },
+  "model_inference": {
+    "measured": false,
+    "reason": "no eligible fitted NBA model exists under the current license and experiment locks"
+  },
+  "license_gate": {
+    "id": "O-005",
+    "status": "BLOCKED",
+    "required_to_unblock": "licensed NBA point-in-time feed or written permission compatible with the program use"
+  },
+  "claims_excluded": [
+    "real_nba_accuracy",
+    "model_inference_latency",
+    "prediction_market_alpha",
+    "production_readiness",
+    "live_sla"
+  ]
+}

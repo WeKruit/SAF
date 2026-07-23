@@ -15,15 +15,16 @@
       "The replay demonstrates prediction-market alpha."
     ]
   },
-  "generated_at": "2026-07-23T16:10:27Z",
+  "generated_at": "2026-07-23T16:58:58Z",
   "implementation": {
     "adapter": "prediction_market.sports.soccer_game_state.adapt_statsbomb_event",
     "reducer": "prediction_market.sports.soccer_game_state.reduce_soccer_game_state",
     "reducer_id": "soccer.statsbomb.event-reducer",
     "reducer_version": "v1",
-    "implementation_sha256": "sha256:0ddd8229c352869ce4fb735523927e16473fb2174c6f06d04821476e13cf66ac",
+    "implementation_sha256": "sha256:458cc0d0f77d87524b2b8c673994b87f71e88887be65e3aa954ce3366f6f339c",
+    "event_envelope_module_sha256": "sha256:07f0ea533433e8601713f33f1060c46bc19f449b6dd4c483774951257e67247d",
     "integration_test": "tests/sports/test_soccer_real_replay.py",
-    "integration_test_sha256": "sha256:fe00598fa525350b51a1895991ccb38fd40c1332f9029caf220bdc585ff8ab48"
+    "integration_test_sha256": "sha256:0c07e1b9cf1cb0f3c4321514ec8838e9b56fa9db9c805a0b215c5731a9081186"
   },
   "source": {
     "dataset_id": "DS-STATSBOMB-OPEN",
@@ -58,7 +59,10 @@
   "point_in_time_audit": {
     "adapter_reads_one_event_at_a_time": true,
     "future_event_fields_are_not_read": true,
-    "event_id_is_required_from_external_event_envelope": true,
+    "event_is_constructed_only_from_complete_normalized_envelope_payload": true,
+    "normalized_envelope_parent_raw_lineage_is_verified": true,
+    "program_registry_revalidated_at_adapter_boundary": true,
+    "raw_parent_dataset_id_required": "DS-STATSBOMB-OPEN",
     "authoritative_order_key": "StatsBomb index",
     "contiguous_index_required": true,
     "source_clock_is_not_used_as_an_order_key": true
@@ -68,7 +72,7 @@
     "both_replays_completed": true,
     "both_final_states_equal": true,
     "both_final_hashes_equal": true,
-    "final_state_sha256": "sha256:7730bff147058bec4b6ddd72c9abd42a35287aa697b2aa0049fa0fae4da43277",
+    "final_state_sha256": "sha256:59ce8ce4e1cda704ea0c5723ec69b21198085aaf6e6f869fea5bc657aae4a787",
     "final_state": {
       "sequence": 3175,
       "period": 2,
@@ -84,6 +88,10 @@
       "away_active_player_count": 10,
       "in_play": false,
       "last_action": "Half End",
+      "quality_flags": [
+        "clock_jump",
+        "out_of_order"
+      ],
       "terminal": false,
       "terminal_reason": null
     },
@@ -94,13 +102,14 @@
       "cards_applied": true,
       "second_yellow_removes_active_player": true,
       "substitutions_applied": true,
-      "terminal_fields_consistent": true
+      "terminal_fields_consistent": true,
+      "clock_anomaly_evidence_persisted_in_state": true
     },
     "terminal_semantics": "This StatsBomb file ends with Half End and has no explicit Match End event. The reducer therefore leaves terminal=false rather than infer terminal status from future knowledge."
   },
   "source_clock_anomalies": {
     "count": 1,
-    "handling": "The event is accepted in authoritative index order; state clocks remain same-period high-water marks while the immutable event retains the source clock.",
+    "handling": "Same-period clock regression fails closed by default. This registered event is accepted only because its normalized envelope carries clock_jump and out_of_order; the regressed source clock is committed to state and both flags persist in state.",
     "required_envelope_quality_flags": [
       "clock_jump",
       "out_of_order"
@@ -133,12 +142,12 @@
     "timer": "time.perf_counter_ns",
     "quantile_method": "nearest-rank",
     "latency_ns": {
-      "min": 23416,
-      "p50": 34000,
-      "p95": 45541,
-      "p99": 77583,
-      "max": 24285791,
-      "mean": 33351.689
+      "min": 25083,
+      "p50": 36416,
+      "p95": 47500,
+      "p99": 52208,
+      "max": 19385625,
+      "mean": 34561.525
     },
     "runtime": {
       "python": "3.13.12",

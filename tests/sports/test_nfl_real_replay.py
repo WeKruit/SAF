@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-import hashlib
 from dataclasses import asdict
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
-from prediction_market.sports.event_envelopes import (
-    build_static_sport_observation_envelopes,
-)
+from prediction_market.contracts import EventEnvelopeV0
+from prediction_market.experiments import load_experiment_registry
 from prediction_market.sports.game_state import canonical_state_sha256
 from prediction_market.sports import nfl_game_state as nfl
 
@@ -61,11 +61,14 @@ NFLVERSE_REPLAY_COLUMNS = (
 )
 
 
-def _event_id(game_id: str, ordinal: int, source_play_id: object) -> str:
-    material = (
-        f"{RAW_OBJECT_SHA256}:{game_id}:{ordinal}:{source_play_id}"
-    ).encode()
-    return "evt_" + hashlib.sha256(material).hexdigest()
+@lru_cache(maxsize=1)
+def _assert_x11_registered() -> None:
+    assert "X-11" in load_experiment_registry(PROJECT_ROOT)
+
+
+@lru_cache(maxsize=1)
+def _cached_registry() -> dict[str, dict[str, Any]]:
+    return load_experiment_registry(PROJECT_ROOT)
 
 
 def _real_game_rows() -> list[dict[str, Any]]:
@@ -83,6 +86,115 @@ def _real_game_rows() -> list[dict[str, Any]]:
     return rows
 
 
+def _event_for_rows(
+    pre_row: dict[str, Any],
+    post_row: dict[str, Any],
+    *,
+    sequence: int,
+) -> nfl.NFLPlayEvent:
+    payload = nfl.nflverse_transition_payload(
+        pre_row,
+        post_row,
+        sequence=sequence,
+    )
+    _assert_x11_registered()
+    canonical_refs = {
+        "competition_id": "cmp_nfl",
+        "game_id": f"game_nflverse_{GAME_ID}",
+        "participant_ids": ("participant_ARI", "participant_NO"),
+        "venue_event_id": None,
+        "market_id": None,
+        "outcome_id": None,
+        "condition_id": None,
+    }
+    event_time = {
+        "receive_at": "2026-07-23T03:30:50.704643Z",
+        "receive_basis": "upstream_exporter",
+        "source_at": None,
+        "publish_at": None,
+        "exchange_at": None,
+    }
+    raw_parents = tuple(
+        EventEnvelopeV0.create(
+            envelope_version="v0",
+            event_type="raw_observation",
+            payload_schema_version="v0",
+            source={
+                "system": "nflverse",
+                "stream": "play_by_play",
+                "venue": None,
+                "sequence": ordinal,
+                "capture_session_id": f"static:{RAW_OBJECT_SHA256}",
+                "record_ordinal": ordinal,
+            },
+            time=event_time,
+            canonical_refs=canonical_refs,
+            native_refs=(
+                {
+                    "namespace": "nflverse.play",
+                    "native_id": f"{GAME_ID}:{int(row['play_id'])}",
+                },
+            ),
+            lineage={
+                "raw_object_hash": RAW_OBJECT_SHA256,
+                "raw_record_ordinal": ordinal,
+                "parent_event_ids": (),
+            },
+            experiment_id=None,
+            rule_snapshot_ref=None,
+            quality_flags=(),
+            payload={
+                "dataset_id": "DS-NFLVERSE",
+                "partition": "season-2025",
+                "raw_object_hash": RAW_OBJECT_SHA256,
+                "raw_record_ordinal": ordinal,
+            },
+        )
+        for ordinal, row in (
+            (sequence - 1, pre_row),
+            (sequence, post_row),
+        )
+    )
+    normalized = EventEnvelopeV0.create(
+        envelope_version="v0",
+        event_type="normalized_observation",
+        payload_schema_version="v0",
+        source={
+            "system": "nflverse",
+            "stream": "play_by_play.normalized",
+            "venue": None,
+            "sequence": sequence,
+            "capture_session_id": None,
+            "record_ordinal": None,
+        },
+        time=event_time,
+        canonical_refs=canonical_refs,
+        native_refs=tuple(
+            parent.native_refs[0] for parent in raw_parents
+        ),
+        lineage={
+            "raw_object_hash": None,
+            "raw_record_ordinal": None,
+            "parent_event_ids": tuple(
+                parent.event_id for parent in raw_parents
+            ),
+        },
+        experiment_id="X-11",
+        rule_snapshot_ref=None,
+        quality_flags=(),
+        payload=payload,
+    )
+    with patch(
+        "prediction_market.experiments.load_experiment_registry",
+        return_value=_cached_registry(),
+    ):
+        return nfl.event_from_nflverse_envelope(
+            normalized,
+            program_root=PROJECT_ROOT,
+            raw_parents=raw_parents,
+        )
+
+
 def _replay_once() -> tuple[str, int]:
     rows = _real_game_rows()
     state = nfl.state_from_nflverse_row(rows[0], sequence=0)
@@ -91,11 +203,9 @@ def _replay_once() -> tuple[str, int]:
         zip(rows, rows[1:]),
         start=1,
     ):
-        event_id = _event_id(GAME_ID, sequence, pre_row["play_id"])
-        event = nfl.event_from_nflverse_rows(
+        event = _event_for_rows(
             pre_row,
             post_row,
-            event_id=event_id,
             sequence=sequence,
         )
         state = nfl.reduce(state, event)
@@ -103,7 +213,7 @@ def _replay_once() -> tuple[str, int]:
             post_row,
             sequence=sequence,
             terminal=event.terminal,
-            last_event_id=event_id,
+            last_event_id=event.event_id,
         )
         assert asdict(state) == asdict(expected)
 
@@ -113,10 +223,9 @@ def _replay_once() -> tuple[str, int]:
 def test_real_snapshot_flags_are_committed_only_when_transition_verifies_them() -> None:
     rows = _real_game_rows()
 
-    first_down_before_quarter_end = nfl.event_from_nflverse_rows(
+    first_down_before_quarter_end = _event_for_rows(
         rows[38],
         rows[39],
-        event_id=_event_id(GAME_ID, 39, rows[38]["play_id"]),
         sequence=39,
     )
     assert rows[38]["first_down"] == 1
@@ -128,22 +237,22 @@ def test_future_drive_result_cannot_change_a_normalized_transition() -> None:
     rows = _real_game_rows()
     pre_row = rows[20]
     post_row = rows[21]
-    event_id = _event_id(GAME_ID, 21, pre_row["play_id"])
-
-    baseline = nfl.event_from_nflverse_rows(
+    baseline = _event_for_rows(
         pre_row,
         post_row,
-        event_id=event_id,
         sequence=21,
     )
     mutated_pre = {**pre_row, "series_result": "Future impossible outcome"}
-    mutated_post = {**post_row, "series_result": "Another future outcome"}
+    mutated_post = {
+        **post_row,
+        "series_result": "Another future outcome",
+        "play_type": "future play must not leak",
+    }
 
     assert "series_result" in nfl.NFLVERSE_LEAKAGE_FIELDS
-    assert nfl.event_from_nflverse_rows(
+    assert _event_for_rows(
         mutated_pre,
         mutated_post,
-        event_id=event_id,
         sequence=21,
     ) == baseline
 
@@ -156,36 +265,14 @@ def test_real_complete_game_replays_twice_to_identical_hash() -> None:
     assert first_hash == second_hash
 
 
-def test_adapter_requires_an_external_event_envelope_id() -> None:
+def test_adapter_requires_a_fully_bound_event_envelope() -> None:
     rows = _real_game_rows()
-    pair = build_static_sport_observation_envelopes(
-        program_root=PROJECT_ROOT,
-        experiment_id="X-11",
-        dataset_id="DS-NFLVERSE",
-        source_system="nflverse",
-        source_stream="play_by_play",
-        raw_object_hash=RAW_OBJECT_SHA256,
-        raw_record_ordinal=1,
-        partition="season-2025",
-        fetched_at="2026-07-23T03:30:50.704643Z",
-        source_at=None,
-        competition_id="cmp_nfl",
-        game_id=f"game_nflverse_{GAME_ID}",
-        participant_ids=("participant_ARI", "participant_NO"),
-        native_namespace="nflverse.play",
-        native_id=f"{GAME_ID}:{int(rows[0]['play_id'])}",
-        normalized_payload={
-            "sport": "nfl",
-            "source_play_id": str(int(rows[0]["play_id"])),
-        },
-    )
+    event = _event_for_rows(rows[0], rows[1], sequence=1)
+    assert event.source_play_id == str(int(rows[0]["play_id"]))
 
-    event = nfl.event_from_nflverse_rows(
-        rows[0],
-        rows[1],
-        event_id=pair.normalized.event_id,
-    )
-    assert event.event_id == pair.normalized.event_id
-
-    with pytest.raises(TypeError, match="event_id"):
-        nfl.event_from_nflverse_rows(rows[0], rows[1])
+    with pytest.raises(TypeError, match="EventEnvelopeV0"):
+        nfl.event_from_nflverse_envelope(  # type: ignore[arg-type]
+            rows[0],
+            program_root=PROJECT_ROOT,
+            raw_parents=(),
+        )

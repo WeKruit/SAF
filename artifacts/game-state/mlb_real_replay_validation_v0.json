@@ -1,7 +1,7 @@
 {
   "artifact_type": "ENGINEERING_VALIDATION",
   "artifact_version": "v0",
-  "generated_at": "2026-07-23T16:13:18Z",
+  "generated_at": "2026-07-23T17:04:19Z",
   "owner": "Team D4+C",
   "formal_result_eligible": false,
   "sport": "mlb",
@@ -14,14 +14,88 @@
     "native_game_id": "ANA202504040",
     "canonical_game_id": "game_retrosheet_ANA202504040",
     "parser": "chadwick.cwevent",
-    "parser_version": "0.10.0",
-    "events": 88
+    "events": 88,
+    "cwevent_runtime": {
+      "executable": "/opt/homebrew/Cellar/chadwick/0.10.0/bin/cwevent",
+      "version": "0.10.0",
+      "binary_sha256": "sha256:9c6e50e55399aaa659a75a3f52c5d6305a325bb3568cb920012deefcb2469d07"
+    },
+    "cwevent_command": [
+      "/opt/homebrew/Cellar/chadwick/0.10.0/bin/cwevent",
+      "-q",
+      "-n",
+      "-i",
+      "ANA202504040",
+      "-y",
+      "2025",
+      "-f",
+      "0,2,3,4,5,6,8,9,10,14,26,27,28,29,33,34,35,40,58,59,60,61,79,96",
+      "2025ANA.EVA"
+    ],
+    "cwevent_command_sha256": "sha256:0a3fc1d9021f8a77eb9ea6ef82856c1d54413186f843a28ddc53df0e9fcb7df8",
+    "cwevent_field_map_sha256": "sha256:da9d747934079d58a1b5389fc066b9beb75b1e806da1f8ba038e6b7495630fc7",
+    "cwevent_output_sha256": "sha256:0e234d6b8b7eaf1837329b85c43943e237cc7ce6925b8295c93a8cb6dbc3f424"
+  },
+  "observation_semantics": {
+    "observation_mode": "offline_reconstruction",
+    "live_pit_eligible": false,
+    "play_row_provenance": "Every MLBPlayEvent commits the validated play-row EventEnvelopeV0 ID, cwevent output row ordinal, and canonical row SHA-256.",
+    "post_event_provenance": "Every nonterminal event also commits the immediate later-row EventEnvelopeV0 ID, ordinal, and row SHA-256.",
+    "envelope_raw_lineage": "The raw EventEnvelopeV0 lineage points to the exact cwevent output SHA-256 and output row ordinal; the upstream Retrosheet archive and manifest hashes remain separately committed in the payload.",
+    "reconstruction_cutoff_basis": "cwevent_output_row_ordinal",
+    "cutoff_rule": "A nonterminal post-event state is unavailable until the immediate later cwevent row; terminal state cutoff equals the terminal play row.",
+    "final_source_row_ordinal": 88,
+    "final_reconstruction_cutoff_ordinal": 88
+  },
+  "continuity_guard": {
+    "status": "FAIL_CLOSED",
+    "state_to_event_identity_fields": [
+      "source_dataset_id",
+      "raw_object_sha256",
+      "source_manifest_sha256",
+      "source_fetched_at",
+      "cwevent_output_sha256",
+      "cwevent_executable",
+      "cwevent_version",
+      "cwevent_binary_sha256",
+      "cwevent_command_sha256",
+      "cwevent_field_map_sha256",
+      "play_envelope_id",
+      "play_row_ordinal",
+      "play_row_sha256"
+    ],
+    "post_event_evidence_fields": [
+      "post_event_envelope_id",
+      "post_event_envelope_sha256",
+      "post_event_row_ordinal",
+      "post_event_row_sha256"
+    ],
+    "tamper_regressions": 24,
+    "result": "Every tested stream, runtime, play-row, and post-row identity mutation was rejected."
+  },
+  "envelope_and_registration": {
+    "event_envelope_contract_validation": true,
+    "program_root_registry_validation": true,
+    "accepted_event_type": "raw_observation",
+    "experiment_id": null,
+    "experiment_registry_binding": false,
+    "scope_status": "NO_REGISTERED_MLB_EXPERIMENT",
+    "adapter_naked_event_id_parameter": false,
+    "first_event_envelope_id": "evt_7667800ca2096383094313a0991737d5e5ea0fa9765db080496afdf14508f260",
+    "last_event_envelope_id": "evt_6cefb9227fc52763f0d9d3785c04644b0f1e2a84b262ca06e49aaaea9f9f2668",
+    "event_envelope_stream_sha256": "sha256:b6a16f1e70057619e3d4643a105d45ce0224be5a150232cf0f16ec62e27281da",
+    "reason": "MLB has no registered experiment. The adapter therefore accepts only validated raw observations with experiment_id null and cannot emit a registered experimental result."
   },
   "state_validation": {
+    "runner": "prediction_market.sports.mlb_game_state.run_frozen_retrosheet_2025_game_replay",
     "replay_count": 2,
     "adapter_vs_next_observation_comparisons": 87,
     "field_mismatches": 0,
-    "final_state_sha256": "sha256:3d065eb91980c9fdf17c17103b2076735a6194dd4bc36ac7358bb6011c20f96c",
+    "source_row_hash_stream_sha256": "sha256:c62da81366f558220c3af186dfaaa945a2547339bd48b44b882e9db961f66bb2",
+    "transition_trace_stream_sha256": "sha256:0173b0d32b1dfcbd19a847ce54437ed54055b55a26df89f117b4180d0cbc9be6",
+    "state_step_stream_sha256": "sha256:cc1f451beb90190d455e7d8cff9fd39828671cf4d3ac0f3064bc5df978dd4113",
+    "final_state_sha256": "sha256:217b6813bb7eaa023dbea8f6483168c9a7408c07743167373356238acaa18852",
+    "replay_sha256": "sha256:7b918ff2493ca89c0c251eea2a63c449fae130f349f005590e7378af873057bf",
     "replay_hash_match": true,
     "final_score": {
       "away": 8,
@@ -29,22 +103,19 @@
     },
     "final_inning": 9,
     "final_half": "bottom",
-    "terminal": true,
-    "event_id_binding": "engineering_harness_content_hash_with_evt_shape",
-    "event_envelope_registry_validation": false,
-    "event_envelope_open_gate": "MLB engineering validation has no registered experiment binding"
+    "terminal": true
   },
   "latency": {
-    "scope": "reducer_only_excludes_cwevent_process_adapter_features_and_model",
+    "scope": "reducer_only_with_offline_provenance_validation_excludes_cwevent_process_adapter_features_and_model",
     "clock": "time.perf_counter_ns",
     "warmups": 20,
     "repetitions": 500,
     "samples": 44000,
-    "p50_ns": 4958,
-    "p95_ns": 5500,
-    "p99_ns": 5667,
-    "max_ns": 1281542,
-    "mean_ns": 5022,
+    "p50_ns": 17042,
+    "p95_ns": 17709,
+    "p99_ns": 18000,
+    "max_ns": 81750,
+    "mean_ns": 17009,
     "runtime": {
       "python": "3.13.12",
       "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
@@ -62,8 +133,9 @@
     "reason": "no canonical game-to-condition and same-time executable quote join"
   },
   "limitations": [
-    "This validates one full frozen game and the deterministic reducer, not the 2025 season.",
+    "This validates one full frozen game and the deterministic offline reducer, not the 2025 season.",
+    "Later cwevent rows are explicitly post-event observations and cannot be represented as live point-in-time inputs.",
     "The reducer latency is local engineering timing and is not a live SLA.",
-    "No MLB predictive model, alpha, or trading conclusion is reported."
+    "No registered MLB experiment, predictive model, alpha, or trading conclusion is reported."
   ]
 }

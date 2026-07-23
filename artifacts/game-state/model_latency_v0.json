@@ -1,460 +1,545 @@
 {
-  "artifact_type": "model_inference_latency",
+  "artifact_type": "sport_model_full_path_latency",
   "benchmarks": [
     {
       "accuracy_reference": {
-        "evidence_file_sha256": "sha256:1d0c033459c69778e265be3fca16ae2c87f650d5003a61ffdea4c020a4fd0b05",
-        "evidence_path": "artifacts/game-state/nfl/x11_real_data_pipeline_evidence_v0.json",
-        "evidence_sha256": "sha256:bde6d9271c960dde4bfef7a4391fd8f053e3967b64da7975d888f652d7f8dacc",
-        "metric_pointer": "/outcome_evaluation/models/logistic",
-        "reported_metrics": {
-          "brier": 0.15348040231326837,
-          "calibration_intercept": 0.04233598701755438,
-          "calibration_slope": 0.9425513489174732,
-          "log_loss": 0.4652709860466307,
-          "observations": 36734
+        "aggregate_walk_forward_model_family_binding": {
+          "data_manifest_sha256": "sha256:c3e0a6faf3ced30fb94572fd8e488026c52984d55d5c03a497400f11c96b3646",
+          "evidence_file_sha256": "sha256:1d0c033459c69778e265be3fca16ae2c87f650d5003a61ffdea4c020a4fd0b05",
+          "evidence_sha256": "sha256:bde6d9271c960dde4bfef7a4391fd8f053e3967b64da7975d888f652d7f8dacc",
+          "metric_snapshot_sha256": "sha256:1e4cfff04b6d0571e1f7eca9bf93645e3bb7ce055d9dd80aa4a9f691ced6ea8d",
+          "model_id": "MODEL-NFL-DRIVE-TRANSITION",
+          "model_version": "v1",
+          "parameter_config_sha256": "sha256:55580de63124e740e58a437c9616fcbf5b194251828cfc4e93b28683082ff06b"
         },
-        "status": "referenced_existing_evidence_not_recomputed"
-      },
-      "experiment_id": "X-11",
-      "lineage": {
-        "dataset_id": "DS-NFLVERSE",
-        "feature_names": [
-          "home_score_differential",
-          "game_seconds_remaining",
-          "possession_home",
-          "home_timeouts_remaining",
-          "away_timeouts_remaining",
-          "spread_prior"
-        ],
-        "feature_vector_sha256": "sha256:41be3e9ded2fbc8b04ea2ed953062c1a851e943347bafe8e660f3826fc1bd179",
-        "input_inventory_sha256": "sha256:c3e0a6faf3ced30fb94572fd8e488026c52984d55d5c03a497400f11c96b3646",
-        "source_kind": "frozen_real_data_last_fold_fit",
-        "timed_observation": {
-          "drive_number": 1,
-          "game_id": "2025_22_SEA_NE",
-          "play_id": "40.0"
-        },
-        "training_cutoff_exclusive": "2026-02-08T00:00:00+00:00",
-        "training_games": 2995,
-        "training_observations": 66777,
-        "training_time_included": false
-      },
-      "model_id": "MODEL-NFL-LOGISTIC",
-      "model_version": "v0",
-      "sport": "nfl",
-      "stages": {
-        "end_to_end": {
-          "max_ns": 136166,
-          "measurement": "single_observation_warm_inference",
-          "p50_ns": 84833,
-          "p95_ns": 88000,
-          "p99_ns": 94584,
-          "timed_iterations": 1000,
-          "timer": "time.perf_counter_ns",
-          "unit": "nanoseconds",
-          "warmup_iterations": 100
-        },
-        "feature_binding": {
-          "max_ns": 6500,
-          "measurement": "single_observation_warm_inference",
-          "p50_ns": 459,
-          "p95_ns": 500,
-          "p99_ns": 583,
-          "timed_iterations": 1000,
-          "timer": "time.perf_counter_ns",
-          "unit": "nanoseconds",
-          "warmup_iterations": 100
-        },
-        "model_inference": {
-          "max_ns": 518125,
-          "measurement": "single_observation_warm_inference",
-          "p50_ns": 85292,
-          "p95_ns": 130625,
-          "p99_ns": 216791,
-          "timed_iterations": 1000,
-          "timer": "time.perf_counter_ns",
-          "unit": "nanoseconds",
-          "warmup_iterations": 100
-        },
-        "output_validation": {
-          "max_ns": 8667,
-          "measurement": "single_observation_warm_inference",
-          "p50_ns": 2625,
-          "p95_ns": 2709,
-          "p99_ns": 2792,
-          "timed_iterations": 1000,
-          "timer": "time.perf_counter_ns",
-          "unit": "nanoseconds",
-          "warmup_iterations": 100
-        }
-      }
-    },
-    {
-      "accuracy_reference": {
-        "evidence_file_sha256": "sha256:1d0c033459c69778e265be3fca16ae2c87f650d5003a61ffdea4c020a4fd0b05",
-        "evidence_path": "artifacts/game-state/nfl/x11_real_data_pipeline_evidence_v0.json",
-        "evidence_sha256": "sha256:bde6d9271c960dde4bfef7a4391fd8f053e3967b64da7975d888f652d7f8dacc",
-        "metric_pointer": "/outcome_evaluation/models/gbdt",
-        "reported_metrics": {
-          "brier": 0.1601355194838822,
-          "calibration_intercept": -0.08030661653975636,
-          "calibration_slope": 1.648707244068044,
-          "log_loss": 0.4947853948419903,
-          "observations": 36734
-        },
-        "status": "referenced_existing_evidence_not_recomputed"
-      },
-      "experiment_id": "X-11",
-      "lineage": {
-        "dataset_id": "DS-NFLVERSE",
-        "feature_names": [
-          "home_score_differential",
-          "game_seconds_remaining",
-          "possession_home",
-          "home_timeouts_remaining",
-          "away_timeouts_remaining",
-          "spread_prior"
-        ],
-        "feature_vector_sha256": "sha256:41be3e9ded2fbc8b04ea2ed953062c1a851e943347bafe8e660f3826fc1bd179",
-        "input_inventory_sha256": "sha256:c3e0a6faf3ced30fb94572fd8e488026c52984d55d5c03a497400f11c96b3646",
-        "source_kind": "frozen_real_data_last_fold_fit",
-        "timed_observation": {
-          "drive_number": 1,
-          "game_id": "2025_22_SEA_NE",
-          "play_id": "40.0"
-        },
-        "training_cutoff_exclusive": "2026-02-08T00:00:00+00:00",
-        "training_games": 2995,
-        "training_observations": 66777,
-        "training_time_included": false
-      },
-      "model_id": "MODEL-NFL-GBDT",
-      "model_version": "v0",
-      "sport": "nfl",
-      "stages": {
-        "end_to_end": {
-          "max_ns": 3794875,
-          "measurement": "single_observation_warm_inference",
-          "p50_ns": 756625,
-          "p95_ns": 1990000,
-          "p99_ns": 2482708,
-          "timed_iterations": 1000,
-          "timer": "time.perf_counter_ns",
-          "unit": "nanoseconds",
-          "warmup_iterations": 100
-        },
-        "feature_binding": {
-          "max_ns": 542,
-          "measurement": "single_observation_warm_inference",
-          "p50_ns": 500,
-          "p95_ns": 541,
-          "p99_ns": 542,
-          "timed_iterations": 1000,
-          "timer": "time.perf_counter_ns",
-          "unit": "nanoseconds",
-          "warmup_iterations": 100
-        },
-        "model_inference": {
-          "max_ns": 8351084,
-          "measurement": "single_observation_warm_inference",
-          "p50_ns": 753834,
-          "p95_ns": 2089000,
-          "p99_ns": 3082000,
-          "timed_iterations": 1000,
-          "timer": "time.perf_counter_ns",
-          "unit": "nanoseconds",
-          "warmup_iterations": 100
-        },
-        "output_validation": {
-          "max_ns": 3125,
-          "measurement": "single_observation_warm_inference",
-          "p50_ns": 2833,
-          "p95_ns": 2917,
-          "p99_ns": 2958,
-          "timed_iterations": 1000,
-          "timer": "time.perf_counter_ns",
-          "unit": "nanoseconds",
-          "warmup_iterations": 100
-        }
-      }
-    },
-    {
-      "accuracy_reference": {
         "evidence_file_sha256": "sha256:1d0c033459c69778e265be3fca16ae2c87f650d5003a61ffdea4c020a4fd0b05",
         "evidence_path": "artifacts/game-state/nfl/x11_real_data_pipeline_evidence_v0.json",
         "evidence_sha256": "sha256:bde6d9271c960dde4bfef7a4391fd8f053e3967b64da7975d888f652d7f8dacc",
         "metric_pointer": "/transition_evaluation/metrics",
+        "metric_snapshot_sha256": "sha256:1e4cfff04b6d0571e1f7eca9bf93645e3bb7ce055d9dd80aa4a9f691ced6ea8d",
         "reported_metrics": {
+          "bootstrap_ci": {
+            "brier": [
+              0.7281839393971491,
+              0.7337438605152738
+            ],
+            "log_loss": [
+              1.434997135796066,
+              1.4465324382199733
+            ]
+          },
+          "bootstrap_samples_requested": 200,
+          "bootstrap_samples_valid": 200,
           "brier": 0.7309619793187239,
+          "brier_definition": "mean_sum_squared_class_error",
+          "classes": [
+            "touchdown",
+            "field_goal",
+            "punt",
+            "turnover",
+            "other"
+          ],
+          "clusters": 1693,
+          "confidence_level": 0.95,
           "log_loss": 1.440647066541783,
-          "observations": 36867
+          "observations": 36867,
+          "seed": 20260722
         },
+        "scope": "aggregate_walk_forward_model_family_evidence",
         "status": "referenced_existing_evidence_not_recomputed"
       },
       "experiment_id": "X-11",
-      "lineage": {
-        "dataset_id": "DS-NFLVERSE",
-        "feature_names": [
-          "home_score_differential",
-          "game_seconds_remaining",
-          "possession_home",
-          "home_timeouts_remaining",
-          "away_timeouts_remaining",
-          "spread_prior"
-        ],
-        "feature_vector_sha256": "sha256:41be3e9ded2fbc8b04ea2ed953062c1a851e943347bafe8e660f3826fc1bd179",
-        "input_inventory_sha256": "sha256:c3e0a6faf3ced30fb94572fd8e488026c52984d55d5c03a497400f11c96b3646",
-        "source_kind": "frozen_real_data_last_fold_fit",
-        "timed_observation": {
-          "drive_number": 1,
-          "game_id": "2025_22_SEA_NE",
-          "play_id": "40.0"
+      "full_path_events_per_second": 5808,
+      "governance": {
+        "code_sha256": {
+          "latency_harness": "sha256:62be8ec305be4c1bb2fa03741372c0b847a976e6f90a272d35dca5f91c7ece2c",
+          "model_implementation": "sha256:253050deba068a76bc293aa7f9d159021e79c75dc90ab943370edd5bee1f92c0",
+          "sport_reducer": "sha256:43670737f37218da24588e8f136f2ce5cb38ebef39333d456e59998326762ffa"
         },
-        "training_cutoff_exclusive": "2026-02-08T00:00:00+00:00",
-        "training_games": 2995,
-        "training_observations": 66777,
-        "training_time_included": false
+        "data_manifest_sha256": "sha256:c3e0a6faf3ced30fb94572fd8e488026c52984d55d5c03a497400f11c96b3646",
+        "model_parameter_sha256": "sha256:d6bb461d16e6648de6d672c00701d0bd51dc837c536a7090622e120786a0d799",
+        "model_parameter_snapshot": {
+          "classifier": {
+            "classes": [
+              "field_goal",
+              "other",
+              "punt",
+              "touchdown",
+              "turnover"
+            ],
+            "coef": [
+              [
+                -0.03269997572665057,
+                0.12477792576311415,
+                0.002047814582913936,
+                0.06084421884905882,
+                0.06644166034777645,
+                -0.0016751191437592875
+              ],
+              [
+                0.03618426824776541,
+                -0.15225524817427455,
+                0.012081278983454728,
+                -0.4458581176749251,
+                -0.4474936596947049,
+                0.004030117660267506
+              ],
+              [
+                -0.004707668310028202,
+                0.14677269517595104,
+                -0.029550585973516688,
+                0.20198443412937803,
+                0.18982494345975992,
+                -0.00314743060762982
+              ],
+              [
+                -0.006218343825507216,
+                0.06881820432939255,
+                0.046273084460070606,
+                0.15780369383743179,
+                0.18371896029090087,
+                0.012863684241282595
+              ],
+              [
+                0.007441719614432056,
+                -0.18811357709417326,
+                -0.03085159205297812,
+                0.02522577085962029,
+                0.007508095596214299,
+                -0.01207125215016241
+              ]
+            ],
+            "intercept": [
+              -0.11053643662762713,
+              -0.8000629659619,
+              0.7629820653891464,
+              0.25699831562739084,
+              -0.10938097842699425
+            ],
+            "n_iter": [
+              9
+            ]
+          },
+          "model_family": "sklearn_standard_scaler_multinomial_logistic_regression",
+          "pipeline_steps": [
+            "scale",
+            "model"
+          ],
+          "scaler": {
+            "mean": [
+              1.200937448522695,
+              1771.6983991494078,
+              0.5021489434985099,
+              2.5929886038606105,
+              2.5776989083067523,
+              0.5480291404234945
+            ],
+            "n_samples_seen": 66777.0,
+            "scale": [
+              10.627562430163758,
+              1066.7034738894797,
+              0.4999953820205145,
+              0.744617308451635,
+              0.7575597923235511,
+              0.18179637081102706
+            ],
+            "var": [
+              112.9450832070282,
+              1137856.301207884,
+              0.24999538204184027,
+              0.5544549360457574,
+              0.5738968389453019,
+              0.03304992044006046
+            ]
+          },
+          "snapshot_version": "v0"
+        },
+        "model_registry_row_sha256": "sha256:134480d58a1cb78afa92d585479a7f4fa4c863c3b6e89c74940e6a33089b3b74",
+        "parameter_config_sha256": "sha256:55580de63124e740e58a437c9616fcbf5b194251828cfc4e93b28683082ff06b",
+        "preflight_full_registry_contract_validation": true,
+        "registry_status": "poc_only",
+        "training_manifest_sha256": "sha256:6c4e5ecefde3e75959b4623ceffcd1eb339b47d49857c684d0681eddfb24c847"
       },
+      "measured_events": 1000,
       "model_id": "MODEL-NFL-DRIVE-TRANSITION",
       "model_version": "v1",
+      "representative_input_lineage": {
+        "dataset_id": "DS-NFLVERSE",
+        "event_id": "evt_ca5b45113fee75d923e239e7c2bc1881b1bb90a77d9c346d3757f1da8c53e792",
+        "event_sequence": 1,
+        "event_sha256": "sha256:c2342e87049fdac99bbe69e5780c8ef1d2573ec88916cfdf5c23f5967d922e9d",
+        "feature_sha256": "sha256:f7fac9a1df6eda113d6d4d88f3ea54b87ffbb8c6a7d56863bd65dbb80fe9ab22",
+        "game_id": "game_nflverse_2025_22_SEA_NE",
+        "next_state_sha256": "sha256:e566d755f1a2a7389054fbe1be68fdda6ca42d983baa9fdb58f74ac5ce107aa5",
+        "previous_state_sha256": "sha256:e848e515b560fbf7a91c9a6b89e5724b98fb6af3f1215e7255aec056f339fd5e",
+        "raw_record_ordinals": [
+          48578,
+          48579
+        ],
+        "source_manifest_path": "var/raw/manifests/source=nflverse/dataset=DS-NFLVERSE/version=github-release-58152862-20260212T102526Z/partition=season-2025/e4a7f9d3fb0293aca52858846ac3ec85e377bc5385373842309eeaa6fc5cef29.manifest.json",
+        "source_manifest_sha256": "sha256:e4a7f9d3fb0293aca52858846ac3ec85e377bc5385373842309eeaa6fc5cef29",
+        "source_object_sha256": "sha256:3730c4db2ab99d2dfc4017de975b7610c46c35301b9280b65c03de1b1c74265a",
+        "source_partition": "season-2025",
+        "state_sequence": 0,
+        "training_cutoff_exclusive": "2026-02-08T00:00:00+00:00",
+        "training_games": 2995,
+        "training_observations": 66777
+      },
       "sport": "nfl",
       "stages": {
-        "end_to_end": {
-          "max_ns": 1566875,
-          "measurement": "single_observation_warm_inference",
-          "p50_ns": 107792,
-          "p95_ns": 116459,
-          "p99_ns": 342750,
+        "feature_extraction": {
+          "max_ns": 625,
+          "measured_operations": 1000,
+          "measurement": "single_observation_warm_stage",
+          "operations_per_second": 2004172,
+          "p50_ns": 500,
+          "p95_ns": 542,
+          "p99_ns": 542,
           "timed_iterations": 1000,
           "timer": "time.perf_counter_ns",
+          "total_ns": 498959,
           "unit": "nanoseconds",
-          "warmup_iterations": 100
+          "warmup_iterations": 10
         },
-        "feature_binding": {
-          "max_ns": 9916,
-          "measurement": "single_observation_warm_inference",
-          "p50_ns": 459,
-          "p95_ns": 500,
-          "p99_ns": 583,
+        "full_path": {
+          "max_ns": 193833,
+          "measured_operations": 1000,
+          "measurement": "single_observation_warm_stage",
+          "operations_per_second": 5808,
+          "p50_ns": 173500,
+          "p95_ns": 178250,
+          "p99_ns": 180625,
           "timed_iterations": 1000,
           "timer": "time.perf_counter_ns",
+          "total_ns": 172165353,
           "unit": "nanoseconds",
-          "warmup_iterations": 100
+          "warmup_iterations": 10
         },
         "model_inference": {
-          "max_ns": 366500,
-          "measurement": "single_observation_warm_inference",
-          "p50_ns": 109959,
-          "p95_ns": 115709,
-          "p99_ns": 124333,
+          "max_ns": 178250,
+          "measured_operations": 1000,
+          "measurement": "single_observation_warm_stage",
+          "operations_per_second": 9364,
+          "p50_ns": 107916,
+          "p95_ns": 111166,
+          "p99_ns": 113875,
           "timed_iterations": 1000,
           "timer": "time.perf_counter_ns",
+          "total_ns": 106790041,
           "unit": "nanoseconds",
-          "warmup_iterations": 100
+          "warmup_iterations": 10
         },
         "output_validation": {
-          "max_ns": 3959,
-          "measurement": "single_observation_warm_inference",
-          "p50_ns": 3125,
-          "p95_ns": 3208,
-          "p99_ns": 3250,
+          "max_ns": 106000,
+          "measured_operations": 1000,
+          "measurement": "single_observation_warm_stage",
+          "operations_per_second": 23362,
+          "p50_ns": 43042,
+          "p95_ns": 45500,
+          "p99_ns": 47917,
           "timed_iterations": 1000,
           "timer": "time.perf_counter_ns",
+          "total_ns": 42804399,
           "unit": "nanoseconds",
-          "warmup_iterations": 100
+          "warmup_iterations": 10
+        },
+        "state_reducer": {
+          "max_ns": 3875,
+          "measured_operations": 1000,
+          "measurement": "single_observation_warm_stage",
+          "operations_per_second": 283868,
+          "p50_ns": 3542,
+          "p95_ns": 3625,
+          "p99_ns": 3667,
+          "timed_iterations": 1000,
+          "timer": "time.perf_counter_ns",
+          "total_ns": 3522754,
+          "unit": "nanoseconds",
+          "warmup_iterations": 10
         }
       }
     },
     {
       "accuracy_reference": {
-        "evidence_file_sha256": "sha256:34b80e999885f3c44c0a9366b7595ed24080623e42fc2e4e4ed2c264fceb61eb",
-        "evidence_path": "artifacts/game-state/soccer/x12_real_data_poc_v0.json",
-        "evidence_sha256": "sha256:c455191f2d619ce68ac2b2059a5e2739a7823b4940e8c21f1b2a554bbd7887b1",
-        "metric_pointer": "/outcome_evaluation/metrics",
-        "reported_metrics": {
-          "brier": 0.6333086250422754,
-          "log_loss": 1.0566358383349692,
-          "observations": 280
+        "aggregate_walk_forward_model_family_binding": {
+          "data_manifest_sha256": "sha256:f45bca3335610821e1d49783d274c80c6b532be1c43002a1406393316f1a54cf",
+          "evidence_file_sha256": "sha256:34b80e999885f3c44c0a9366b7595ed24080623e42fc2e4e4ed2c264fceb61eb",
+          "evidence_sha256": "sha256:c455191f2d619ce68ac2b2059a5e2739a7823b4940e8c21f1b2a554bbd7887b1",
+          "metric_snapshot_sha256": "sha256:dcd85ad6fde8699e6f1e2badeac517a4fb7130c7f70af93611f112196b486615",
+          "model_id": "MODEL-SOCCER-FIVE-MINUTE-TRANSITION",
+          "model_version": "v1",
+          "parameter_config_sha256": "sha256:8044caf5f5241f2d61bc0b81aad3a1f9cfb53c2c866d92f63a6ef8ec445df764"
         },
-        "status": "referenced_existing_evidence_not_recomputed"
-      },
-      "experiment_id": "X-12",
-      "lineage": {
-        "dataset_id": "DS-STATSBOMB-OPEN",
-        "feature_names": [
-          "home_team_id",
-          "away_team_id"
-        ],
-        "feature_vector_sha256": "sha256:59265cbbc5ab0f2678098fece4c5a67f8b9a3e7432806c879eed19545c3e985f",
-        "input_inventory_sha256": "sha256:f45bca3335610821e1d49783d274c80c6b532be1c43002a1406393316f1a54cf",
-        "source_kind": "frozen_real_data_last_fold_fit",
-        "timed_observation": {
-          "away_team_id": 28,
-          "home_team_id": 39,
-          "match_id": 3754159
-        },
-        "training_cutoff_exclusive": "2016-05-17T00:00:00+00:00",
-        "training_matches": 379,
-        "training_time_included": false
-      },
-      "model_id": "MODEL-SOCCER-DIXON-COLES",
-      "model_version": "v0",
-      "sport": "soccer",
-      "stages": {
-        "end_to_end": {
-          "max_ns": 28417,
-          "measurement": "single_observation_warm_inference",
-          "p50_ns": 19250,
-          "p95_ns": 19458,
-          "p99_ns": 19625,
-          "timed_iterations": 1000,
-          "timer": "time.perf_counter_ns",
-          "unit": "nanoseconds",
-          "warmup_iterations": 100
-        },
-        "feature_binding": {
-          "max_ns": 292,
-          "measurement": "single_observation_warm_inference",
-          "p50_ns": 83,
-          "p95_ns": 84,
-          "p99_ns": 84,
-          "timed_iterations": 1000,
-          "timer": "time.perf_counter_ns",
-          "unit": "nanoseconds",
-          "warmup_iterations": 100
-        },
-        "model_inference": {
-          "max_ns": 30000,
-          "measurement": "single_observation_warm_inference",
-          "p50_ns": 19250,
-          "p95_ns": 19500,
-          "p99_ns": 20083,
-          "timed_iterations": 1000,
-          "timer": "time.perf_counter_ns",
-          "unit": "nanoseconds",
-          "warmup_iterations": 100
-        },
-        "output_validation": {
-          "max_ns": 3167,
-          "measurement": "single_observation_warm_inference",
-          "p50_ns": 3041,
-          "p95_ns": 3084,
-          "p99_ns": 3125,
-          "timed_iterations": 1000,
-          "timer": "time.perf_counter_ns",
-          "unit": "nanoseconds",
-          "warmup_iterations": 100
-        }
-      }
-    },
-    {
-      "accuracy_reference": {
         "evidence_file_sha256": "sha256:34b80e999885f3c44c0a9366b7595ed24080623e42fc2e4e4ed2c264fceb61eb",
         "evidence_path": "artifacts/game-state/soccer/x12_real_data_poc_v0.json",
         "evidence_sha256": "sha256:c455191f2d619ce68ac2b2059a5e2739a7823b4940e8c21f1b2a554bbd7887b1",
         "metric_pointer": "/transition_output/metrics",
+        "metric_snapshot_sha256": "sha256:dcd85ad6fde8699e6f1e2badeac517a4fb7130c7f70af93611f112196b486615",
         "reported_metrics": {
+          "bootstrap_ci": {
+            "brier": [
+              0.22878566441973786,
+              0.2635530586503384
+            ],
+            "log_loss": [
+              0.46496885391757614,
+              0.5237555960979359
+            ]
+          },
+          "bootstrap_samples_requested": 200,
+          "bootstrap_samples_valid": 200,
           "brier": 0.24552780282114847,
+          "brier_definition": "mean_sum_squared_class_error",
+          "classes": [
+            "home_goal",
+            "away_goal",
+            "no_goal"
+          ],
+          "clusters": 280,
+          "confidence_level": 0.95,
           "log_loss": 0.49219732711024167,
-          "observations": 5040
+          "observations": 5040,
+          "seed": 20260722,
+          "target_definition": "first scoring side in [cutoff, cutoff+300s); no_goal if none"
         },
+        "scope": "aggregate_walk_forward_model_family_evidence",
         "status": "referenced_existing_evidence_not_recomputed"
       },
       "experiment_id": "X-12",
-      "lineage": {
-        "dataset_id": "DS-STATSBOMB-OPEN",
-        "feature_names": [
-          "home_team_id",
-          "away_team_id"
-        ],
-        "feature_vector_sha256": "sha256:59265cbbc5ab0f2678098fece4c5a67f8b9a3e7432806c879eed19545c3e985f",
-        "input_inventory_sha256": "sha256:f45bca3335610821e1d49783d274c80c6b532be1c43002a1406393316f1a54cf",
-        "source_kind": "frozen_real_data_last_fold_fit",
-        "timed_observation": {
-          "away_team_id": 28,
-          "home_team_id": 39,
-          "match_id": 3754159
+      "full_path_events_per_second": 10835,
+      "governance": {
+        "code_sha256": {
+          "latency_harness": "sha256:62be8ec305be4c1bb2fa03741372c0b847a976e6f90a272d35dca5f91c7ece2c",
+          "model_implementation": "sha256:bc5126c5d51d0bb1362c30a31391d456bc9f98edd213a7c6dacb3aaba057d89c",
+          "sport_reducer": "sha256:458cc0d0f77d87524b2b8c673994b87f71e88887be65e3aa954ce3366f6f339c"
         },
-        "training_cutoff_exclusive": "2016-05-17T00:00:00+00:00",
-        "training_matches": 379,
-        "training_time_included": false
+        "data_manifest_sha256": "sha256:f45bca3335610821e1d49783d274c80c6b532be1c43002a1406393316f1a54cf",
+        "model_parameter_sha256": "sha256:f34c71cfe144b096f62f763498a789d1459b133a8aced14cdb6c916587557fd5",
+        "model_parameter_snapshot": {
+          "model": {
+            "home_advantage": 0.20919671056432648,
+            "initial_objective": 1153.6880107489983,
+            "initial_projected_gradient_inf_norm": 96.97425963816369,
+            "iterations": 36,
+            "objective": 1079.373650589761,
+            "objective_improvement": 74.31436015923737,
+            "optimizer_status": "Optimization terminated successfully",
+            "parameter_displacement": 2.592414740976164,
+            "parameters": [
+              0.04309169761585396,
+              -0.47511886690203026,
+              -0.01832328435446778,
+              -0.09880374201303085,
+              -0.42707210142070545,
+              -0.6420373025748615,
+              -0.34854019318945884,
+              -0.07569529978411287,
+              -0.4428734181137017,
+              -0.5042489385272811,
+              -0.08419576677878049,
+              0.09667855746300363,
+              -0.36802866782812427,
+              0.05640940302405833,
+              -0.3094192706160308,
+              0.015529568008334162,
+              -0.2884834913017429,
+              -0.4911504733065637,
+              -0.8422874030846078,
+              0.08352498943962647,
+              0.07501677405030882,
+              0.38246831384582464,
+              0.40071662504978506,
+              0.19907552737328257,
+              0.42128063127593995,
+              0.3280543378426181,
+              0.6620616810311657,
+              0.5028417702722989,
+              0.47451773449663465,
+              0.40078042065264335,
+              0.4602057919256474,
+              0.2235697304399182,
+              0.6476871752138651,
+              0.05854072515872492,
+              0.020176012511783532,
+              0.4288411125486099,
+              0.6056249641434578,
+              0.6700884704474833,
+              0.7871705845978559,
+              0.20919671056432648,
+              -0.06252483208496853
+            ],
+            "projected_gradient_inf_norm": 4.176032579190263e-06,
+            "reference_team_id": 1,
+            "rho": -0.06252483208496853,
+            "team_ids": [
+              1,
+              22,
+              23,
+              24,
+              25,
+              26,
+              27,
+              28,
+              29,
+              30,
+              31,
+              33,
+              36,
+              37,
+              38,
+              39,
+              40,
+              41,
+              56,
+              59
+            ]
+          },
+          "model_family": "dixon_coles",
+          "snapshot_version": "v0"
+        },
+        "model_registry_row_sha256": "sha256:f6f1e2ba2d3e3a31dcdbae4ed6b75908a957d8063a90c321cfe46734c8028581",
+        "parameter_config_sha256": "sha256:8044caf5f5241f2d61bc0b81aad3a1f9cfb53c2c866d92f63a6ef8ec445df764",
+        "preflight_full_registry_contract_validation": true,
+        "registry_status": "poc_only",
+        "training_manifest_sha256": "sha256:9f3a3d36f95fb987a5c22f9a78ca5ba9c9162560b2db2491816163c57633c74f"
       },
+      "measured_events": 1000,
       "model_id": "MODEL-SOCCER-FIVE-MINUTE-TRANSITION",
       "model_version": "v1",
+      "representative_input_lineage": {
+        "dataset_id": "DS-STATSBOMB-OPEN",
+        "event_id": "evt_31a70676f13d8c81bfa7a9a1cca90233ecd29875b7a82e5cca1e05497988aad0",
+        "event_sequence": 1,
+        "event_sha256": "sha256:b208aa4351f2eef9e089b1c3f606b4606d99ce108f3f338a6487e4cb5621c112",
+        "feature_sha256": "sha256:fb2704c3ab791a2fadf6a507ca07243d1e42709da2d930f6a71fb0bc669a9fb7",
+        "game_id": "game_statsbomb_3754159",
+        "next_state_sha256": "sha256:5f55f8d37012288fbc84054960b77225b623c96a9bafcd9afa40927c1297a762",
+        "previous_state_sha256": "sha256:54a67ce8ca8556d580a8002163390899728381ff57769c8f0dabfe6ba8b9d043",
+        "raw_record_ordinals": [
+          0
+        ],
+        "source_manifest_path": "var/raw/manifests/source=statsbomb/dataset=DS-STATSBOMB-OPEN/version=b0bc9f22dd77c206ddedc1d742893b3bbe64baec/partition=events-3754159/52f830d7b23b189ec695930a27e35f851341494c6d961a4d5b2d2acb61806824.manifest.json",
+        "source_manifest_sha256": "sha256:52f830d7b23b189ec695930a27e35f851341494c6d961a4d5b2d2acb61806824",
+        "source_object_sha256": "sha256:6c7f938aaf03da6abb1772eaa902507f73b85fbb6aa72795ab34d3bf75efc46f",
+        "source_partition": "events-3754159",
+        "state_sequence": 0,
+        "training_cutoff_exclusive": "2016-05-17T00:00:00+00:00",
+        "training_matches": 379
+      },
       "sport": "soccer",
       "stages": {
-        "end_to_end": {
-          "max_ns": 12125,
-          "measurement": "single_observation_warm_inference",
-          "p50_ns": 5667,
-          "p95_ns": 5792,
-          "p99_ns": 5875,
-          "timed_iterations": 1000,
-          "timer": "time.perf_counter_ns",
-          "unit": "nanoseconds",
-          "warmup_iterations": 100
-        },
-        "feature_binding": {
+        "feature_extraction": {
           "max_ns": 125,
-          "measurement": "single_observation_warm_inference",
-          "p50_ns": 83,
+          "measured_operations": 1000,
+          "measurement": "single_observation_warm_stage",
+          "operations_per_second": 17786947,
+          "p50_ns": 42,
           "p95_ns": 84,
           "p99_ns": 84,
           "timed_iterations": 1000,
           "timer": "time.perf_counter_ns",
+          "total_ns": 56221,
           "unit": "nanoseconds",
-          "warmup_iterations": 100
+          "warmup_iterations": 10
+        },
+        "full_path": {
+          "max_ns": 109500,
+          "measured_operations": 1000,
+          "measurement": "single_observation_warm_stage",
+          "operations_per_second": 10835,
+          "p50_ns": 92125,
+          "p95_ns": 95125,
+          "p99_ns": 98292,
+          "timed_iterations": 1000,
+          "timer": "time.perf_counter_ns",
+          "total_ns": 92289211,
+          "unit": "nanoseconds",
+          "warmup_iterations": 10
         },
         "model_inference": {
-          "max_ns": 14541,
-          "measurement": "single_observation_warm_inference",
-          "p50_ns": 5625,
-          "p95_ns": 5750,
-          "p99_ns": 5833,
+          "max_ns": 12500,
+          "measured_operations": 1000,
+          "measurement": "single_observation_warm_stage",
+          "operations_per_second": 172304,
+          "p50_ns": 5792,
+          "p95_ns": 5917,
+          "p99_ns": 6042,
           "timed_iterations": 1000,
           "timer": "time.perf_counter_ns",
+          "total_ns": 5803679,
           "unit": "nanoseconds",
-          "warmup_iterations": 100
+          "warmup_iterations": 10
         },
         "output_validation": {
-          "max_ns": 3208,
-          "measurement": "single_observation_warm_inference",
-          "p50_ns": 3000,
-          "p95_ns": 3083,
-          "p99_ns": 3125,
+          "max_ns": 109916,
+          "measured_operations": 1000,
+          "measurement": "single_observation_warm_stage",
+          "operations_per_second": 19660,
+          "p50_ns": 50458,
+          "p95_ns": 53083,
+          "p99_ns": 55375,
           "timed_iterations": 1000,
           "timer": "time.perf_counter_ns",
+          "total_ns": 50862724,
           "unit": "nanoseconds",
-          "warmup_iterations": 100
+          "warmup_iterations": 10
+        },
+        "state_reducer": {
+          "max_ns": 31250,
+          "measured_operations": 1000,
+          "measurement": "single_observation_warm_stage",
+          "operations_per_second": 43083,
+          "p50_ns": 23167,
+          "p95_ns": 23542,
+          "p99_ns": 24084,
+          "timed_iterations": 1000,
+          "timer": "time.perf_counter_ns",
+          "total_ns": 23210627,
+          "unit": "nanoseconds",
+          "warmup_iterations": 10
         }
       }
     }
   ],
-  "generated_at": "2026-07-23T16:16:26.431404Z",
+  "generated_at": "2026-07-23T17:16:54.263900Z",
   "limitations": [
     "engineering benchmark only; no live SLA or production claim",
-    "accuracy is referenced from existing evidence and is not recomputed",
+    "accuracy is referenced from verified evidence and is not recomputed",
     "wall-clock results are machine- and load-specific",
-    "prediction-market transport, joins, and execution are out of scope"
+    "source ingestion, network transport, market joins, and execution are out of scope",
+    "game-end-only models are not mislabeled as ModelOutputV1 full paths"
   ],
   "live_sla_claimed": false,
   "protocol": {
+    "excluded_from_all_timed_regions": [
+      "model_training",
+      "raw_source_loading",
+      "registry_snapshot_loading",
+      "network_io"
+    ],
+    "included_in_full_path": [
+      "state_reducer",
+      "feature_extraction",
+      "registered_model_inference",
+      "model_output_materialization",
+      "strict_model_output_v1_validation_against_preloaded_registry"
+    ],
     "minimum_timed_iterations": 1000,
     "percentile_method": "nearest_rank",
+    "preflight_registry_validation": "contracts.validate_contract_v1 executed once per model before timing; every timed output is then strictly revalidated against the immutable preloaded registry row",
     "single_observation": true,
     "stages": [
-      "feature_binding",
+      "state_reducer",
+      "feature_extraction",
       "model_inference",
       "output_validation",
-      "end_to_end"
+      "full_path"
     ],
     "timed_iterations": 1000,
     "timer": "time.perf_counter_ns",
-    "training_timed": false,
-    "warmup_iterations": 100
+    "warmup_iterations": 10
   },
-  "report_sha256": "sha256:5c4a2198b62b1ab22e31c588237393abf1d8d80eebeefe6e04de5338f4ac78be",
+  "report_sha256": "sha256:93e5b29468a84c429e41f75ded3b58683a14c96a720f00e6b977cd2ae91cfcb9",
   "result_label": "PRELIMINARY_ENGINEERING_BENCHMARK",
   "runtime": {
     "clock": {
@@ -469,6 +554,8 @@
     "packages": {
       "numpy": "2.5.1",
       "pandas": "3.0.3",
+      "pyarrow": "25.0.0",
+      "pydantic": "2.13.4",
       "scikit-learn": "1.9.0",
       "scipy": "1.18.0"
     },
@@ -483,7 +570,27 @@
       "VECLIB_MAXIMUM_THREADS": "unset"
     }
   },
-  "scope": "warm single-observation inference on fitted last-fold models; training, data loading, network, and market joins are excluded",
+  "scope": "warm batch-one state/event transition through reducer, feature extraction, fitted registered transition model, output materialization, and strict ModelOutputV1 validation",
+  "unavailable_models": [
+    {
+      "model_id": "MODEL-NFL-LOGISTIC",
+      "reason": "registered game-end model has no state-transition ModelOutputV1 contract",
+      "sport": "nfl",
+      "status": "not_measured_no_model_output_v1_full_path"
+    },
+    {
+      "model_id": "MODEL-NFL-GBDT",
+      "reason": "registered game-end model has no state-transition ModelOutputV1 contract",
+      "sport": "nfl",
+      "status": "not_measured_no_model_output_v1_full_path"
+    },
+    {
+      "model_id": "MODEL-SOCCER-DIXON-COLES",
+      "reason": "registered game-end model has no state-transition ModelOutputV1 contract",
+      "sport": "soccer",
+      "status": "not_measured_no_model_output_v1_full_path"
+    }
+  ],
   "unavailable_sports": [
     {
       "latency": null,

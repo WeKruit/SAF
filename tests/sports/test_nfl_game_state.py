@@ -3,12 +3,18 @@ from __future__ import annotations
 import re
 from dataclasses import FrozenInstanceError, replace
 from importlib import import_module
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from prediction_market.sports.event_envelopes import (
+    build_static_sport_observation_bundle,
+)
+
 
 EVENT_ID = "evt_" + "a" * 64
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _module() -> Any:
@@ -29,7 +35,6 @@ def _state(**changes: object) -> Any:
         "game_seconds_remaining": 3300,
         "source_play_id": "101",
         "drive_id": "1",
-        "next_play_type": "run",
         "play_clock_seconds": 12,
         "possession_team": "HME",
         "down": 2,
@@ -62,7 +67,6 @@ def _event(state: Any, **changes: object) -> Any:
         "game_seconds_remaining": state.game_seconds_remaining - 10,
         "next_source_play_id": "122",
         "next_drive_id": state.drive_id,
-        "next_play_type": "run",
         "next_play_clock_seconds": 10,
         "possession_team": state.possession_team,
         "down": 1,
@@ -81,6 +85,7 @@ def _event(state: Any, **changes: object) -> Any:
         "timeout_team": None,
         "period_changed": False,
         "terminal": False,
+        "quality_flags": (),
     }
     values.update(changes)
     return nfl.NFLPlayEvent(**values)
@@ -137,6 +142,57 @@ def _nflverse_rows() -> tuple[dict[str, object], dict[str, object]]:
         "fixed_drive_result": "Punt",
     }
     return pre, post
+
+
+def _adapt_nflverse_observations(
+    pre: dict[str, object],
+    post: dict[str, object],
+    *,
+    state_sequence: int = 0,
+    terminal: bool | None = None,
+) -> tuple[Any, Any]:
+    nfl = _module()
+    payload = nfl.nflverse_transition_payload(
+        pre,
+        post,
+        sequence=state_sequence + 1,
+        terminal=terminal,
+    )
+    native_game_id = str(pre["game_id"])
+    source_play_id = str(int(float(pre["play_id"])))
+    next_source_play_id = str(int(float(post["play_id"])))
+    bundle = build_static_sport_observation_bundle(
+        program_root=PROJECT_ROOT,
+        experiment_id="X-11",
+        dataset_id="DS-NFLVERSE",
+        source_system="nflverse",
+        source_stream="play_by_play",
+        raw_object_hash="sha256:" + "7" * 64,
+        raw_record_ordinals=(state_sequence, state_sequence + 1),
+        partition="season-2025",
+        fetched_at="2026-07-22T12:00:00Z",
+        source_at=None,
+        competition_id="cmp_nfl",
+        game_id=f"game_nflverse_{native_game_id}",
+        participant_ids=(
+            f"participant_{pre['away_team']}",
+            f"participant_{pre['home_team']}",
+        ),
+        native_namespace="nflverse.play",
+        native_ids=(
+            f"{native_game_id}:{source_play_id}",
+            f"{native_game_id}:{next_source_play_id}",
+        ),
+        normalized_source_sequence=state_sequence + 1,
+        normalized_payload=payload,
+    )
+    state = nfl.state_from_nflverse_row(pre, sequence=state_sequence)
+    event = nfl.event_from_nflverse_envelope(
+        bundle.normalized,
+        program_root=PROJECT_ROOT,
+        raw_parents=bundle.raw,
+    )
+    return state, event
 
 
 def test_first_down_reduces_to_a_new_immutable_state() -> None:
@@ -334,10 +390,9 @@ def test_nflverse_adapter_uses_only_offline_pre_post_observations() -> None:
     nfl = _module()
     pre, post = _nflverse_rows()
 
-    state, event = nfl.adapt_nflverse_observations(
+    state, event = _adapt_nflverse_observations(
         pre,
         post,
-        event_id=EVENT_ID,
         state_sequence=8,
     )
     next_state = nfl.reduce(state, event)
@@ -370,10 +425,9 @@ def test_nflverse_adapter_uses_only_offline_pre_post_observations() -> None:
         "home_score": 1,
         "away_score": 0,
     }
-    assert nfl.adapt_nflverse_observations(
+    assert _adapt_nflverse_observations(
         mutated_pre,
         mutated_post,
-        event_id=EVENT_ID,
         state_sequence=8,
     ) == (state, event)
 
@@ -385,7 +439,59 @@ def test_nflverse_adapter_never_falls_back_to_final_score_columns() -> None:
     post.pop("total_home_score")
 
     with pytest.raises(nfl.NFLGameStateError, match="total_home_score"):
-        nfl.adapt_nflverse_observations(pre, post, event_id=EVENT_ID)
+        _adapt_nflverse_observations(pre, post)
+
+
+def test_envelope_adapter_uses_complete_payload_and_ignores_next_play_outcome() -> None:
+    nfl = _module()
+    pre, post = _nflverse_rows()
+    post["play_type"] = "future-pass"
+    post["series_result"] = "future touchdown"
+
+    payload = nfl.nflverse_transition_payload(pre, post, sequence=9)
+    mutated_payload = nfl.nflverse_transition_payload(
+        pre,
+        {
+            **post,
+            "play_type": "future-kneel",
+            "series_result": "future punt",
+        },
+        sequence=9,
+    )
+    assert payload == mutated_payload
+    assert "next_play_type" not in payload
+
+    bundle = build_static_sport_observation_bundle(
+        program_root=PROJECT_ROOT,
+        experiment_id="X-11",
+        dataset_id="DS-NFLVERSE",
+        source_system="nflverse",
+        source_stream="play_by_play",
+        raw_object_hash="sha256:" + "7" * 64,
+        raw_record_ordinals=(8, 9),
+        partition="season-2025",
+        fetched_at="2026-07-22T12:00:00Z",
+        source_at=None,
+        competition_id="cmp_nfl",
+        game_id="game_nflverse_2025_01_AWY_HME",
+        participant_ids=("participant_AWY", "participant_HME"),
+        native_namespace="nflverse.play",
+        native_ids=("2025_01_AWY_HME:101", "2025_01_AWY_HME:122"),
+        normalized_source_sequence=9,
+        normalized_payload=payload,
+    )
+    event = nfl.event_from_nflverse_envelope(
+        bundle.normalized,
+        program_root=PROJECT_ROOT,
+        raw_parents=bundle.raw,
+    )
+    next_state = nfl.reduce(
+        nfl.state_from_nflverse_row(pre, sequence=8),
+        event,
+    )
+
+    assert event.sequence == 9
+    assert not hasattr(next_state, "next_play_type")
 
 
 def test_event_hash_and_reduction_are_canonical_and_deterministic() -> None:

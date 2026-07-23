@@ -1,6 +1,12 @@
-# Prediction Market Research Program
+# SAF — Sports Alpha Finding
+
+SAF is a governed research repository for sports game-state models and
+prediction-market data. It does not claim validated trading alpha.
 
 Program status: **CONDITIONAL_GO**.
+
+Current evidence and limitations are summarized in the
+[Chinese validation report](artifacts/game-state/current_validation_report_zh_v0.md).
 
 The program-level sources of truth are only:
 
@@ -24,6 +30,7 @@ uv run python tools/validate_governance.py
 - `src/prediction_market/`: the governed monolith containing adapters, immutable storage, PMXT audit/reconstruction, research POCs, simulators, and replay harnesses.
 - `artifacts/`: versioned specifications, evidence-bound reports, the week-one backlog, program status, and blocker register.
 - `data/raw/`: append-only raw-segment convention; a manifest is the publication commit point and every segment is content-hashed.
+- `var/raw/manifests/`: publishable immutable source manifests; raw source bytes remain local and ignored.
 - `tests/`: contract, registry, fail-closed, deterministic replay, and integration verification.
 
 The current owner/version/due-gate inventory is

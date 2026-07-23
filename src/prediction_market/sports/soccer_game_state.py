@@ -8,7 +8,13 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import Any
+
+from prediction_market.contracts import EventEnvelopeV0
+from prediction_market.sports.event_envelopes import (
+    validate_static_sport_observation_bundle,
+)
 
 
 _TIMESTAMP_RE = re.compile(
@@ -212,6 +218,7 @@ class SoccerGameEvent:
     replacement_player_id: int | None = None
     score_for_team_id: int | None = None
     in_play: bool | None = None
+    quality_flags: tuple[str, ...] = ()
     sport: str = field(default="soccer", init=False)
 
     def __post_init__(self) -> None:
@@ -301,6 +308,16 @@ class SoccerGameEvent:
             )
         if self.in_play is not None and type(self.in_play) is not bool:
             raise SoccerGameStateError("in_play must be a boolean or null")
+        if (
+            type(self.quality_flags) is not tuple
+            or len(self.quality_flags) != len(set(self.quality_flags))
+            or tuple(sorted(self.quality_flags)) != self.quality_flags
+        ):
+            raise SoccerGameStateError(
+                "quality_flags must be a sorted unique tuple"
+            )
+        for quality_flag in self.quality_flags:
+            _required_text(quality_flag, "quality_flags[]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -327,6 +344,7 @@ class SoccerGameState:
     cards: tuple[SoccerCard, ...] = ()
     substitutions: tuple[SoccerSubstitution, ...] = ()
     active_players: tuple[SoccerTeamPlayers, ...] = ()
+    quality_flags: tuple[str, ...] = ()
     terminal: bool = False
     terminal_reason: str | None = None
     sport: str = field(default="soccer", init=False)
@@ -392,6 +410,16 @@ class SoccerGameState:
             raise SoccerGameStateError(
                 "substitutions must be a tuple of SoccerSubstitution"
             )
+        if (
+            type(self.quality_flags) is not tuple
+            or len(self.quality_flags) != len(set(self.quality_flags))
+            or tuple(sorted(self.quality_flags)) != self.quality_flags
+        ):
+            raise SoccerGameStateError(
+                "quality_flags must be a sorted unique tuple"
+            )
+        for quality_flag in self.quality_flags:
+            _required_text(quality_flag, "quality_flags[]")
         active_players = self.active_players
         if active_players == ():
             active_players = (
@@ -651,13 +679,13 @@ def _action_details(
     )
 
 
-def adapt_statsbomb_event(
+def statsbomb_event_payload(
     raw_event: Mapping[str, object],
     *,
     game_id: str,
-    event_id: str,
-) -> SoccerGameEvent:
-    """Adapt exactly one StatsBomb event without inspecting later events."""
+    quality_flags: tuple[str, ...] = (),
+) -> dict[str, object]:
+    """Normalize one StatsBomb event into a complete envelope payload."""
 
     event = _required_mapping(raw_event, "StatsBomb event")
     event_type = _required_mapping(event.get("type"), "type")
@@ -688,31 +716,102 @@ def adapt_statsbomb_event(
         score_for_team_id,
         in_play,
     ) = _action_details(event, action=action, team_id=team_id)
+    if (
+        type(quality_flags) is not tuple
+        or len(quality_flags) != len(set(quality_flags))
+    ):
+        raise SoccerGameStateError("quality_flags must be a unique tuple")
+    return {
+        "sport": "soccer",
+        "game_id": _required_text(game_id, "game_id"),
+        "sequence": _required_int(event.get("index"), "index", minimum=1),
+        "native_event_id": _required_text(event.get("id"), "id"),
+        "period": _required_int(
+            event.get("period"),
+            "period",
+            minimum=1,
+            maximum=5,
+        ),
+        "clock_ms": clock_ms,
+        "period_clock_ms": period_clock_ms,
+        "action": action,
+        "team_id": team_id,
+        "lineup_player_ids": list(_starting_lineup(event, action=action)),
+        "player_id": _optional_entity_id(event, "player"),
+        "possession_id": possession_id,
+        "possession_team_id": possession_team_id,
+        "play_pattern": play_pattern,
+        "ball_x_milli": ball_x,
+        "ball_y_milli": ball_y,
+        "end_ball_x_milli": end_x,
+        "end_ball_y_milli": end_y,
+        "pass_outcome": pass_outcome,
+        "shot_outcome": shot_outcome,
+        "card": card,
+        "replacement_player_id": replacement_player_id,
+        "score_for_team_id": score_for_team_id,
+        "in_play": in_play,
+        "quality_flags": list(sorted(quality_flags)),
+    }
+
+
+def adapt_statsbomb_event(
+    envelope: EventEnvelopeV0,
+    *,
+    program_root: str | Path,
+    raw_parents: tuple[EventEnvelopeV0, ...],
+) -> SoccerGameEvent:
+    """Construct a soccer event only from a fully bound normalized envelope."""
+
+    validated = validate_static_sport_observation_bundle(
+        program_root,
+        envelope,
+        raw_parents=raw_parents,
+        expected_experiment_id="X-12",
+        expected_dataset_id="DS-STATSBOMB-OPEN",
+        expected_source_system="statsbomb",
+        expected_source_stream="events",
+        expected_native_namespace="statsbomb.event",
+    )
+    if len(raw_parents) != 1:
+        raise SoccerGameStateError(
+            "a StatsBomb event requires exactly one raw row parent"
+        )
+    payload = dict(validated.payload)
+    expected_payload_fields = {
+        item.name for item in fields(SoccerGameEvent)
+    } - {"event_id"}
+    if set(payload) != expected_payload_fields:
+        raise SoccerGameStateError(
+            "normalized StatsBomb payload fields are incomplete or unexpected"
+        )
+    if payload.pop("sport") != "soccer":
+        raise SoccerGameStateError(
+            "normalized StatsBomb payload sport must be soccer"
+        )
+    canonical_game_id = validated.canonical_refs.game_id
+    if (
+        canonical_game_id is None
+        or not canonical_game_id.startswith("game_statsbomb_")
+        or payload["game_id"] != canonical_game_id
+    ):
+        raise SoccerGameStateError(
+            "normalized StatsBomb envelope game identity is invalid"
+        )
+    raw_parent = raw_parents[0]
+    if raw_parent.lineage.raw_record_ordinal != payload["sequence"] - 1:
+        raise SoccerGameStateError(
+            "normalized StatsBomb sequence does not match raw row ordinal"
+        )
+    if raw_parent.native_refs[0].native_id != payload["native_event_id"]:
+        raise SoccerGameStateError(
+            "normalized StatsBomb event does not match raw native identity"
+        )
+    payload["lineup_player_ids"] = tuple(payload["lineup_player_ids"])
+    payload["quality_flags"] = tuple(payload["quality_flags"])
     return SoccerGameEvent(
-        game_id=_required_text(game_id, "game_id"),
-        sequence=_required_int(event.get("index"), "index", minimum=1),
-        native_event_id=_required_text(event.get("id"), "id"),
-        period=_required_int(event.get("period"), "period", minimum=1, maximum=5),
-        clock_ms=clock_ms,
-        period_clock_ms=period_clock_ms,
-        action=action,
-        team_id=team_id,
-        event_id=event_id,
-        lineup_player_ids=_starting_lineup(event, action=action),
-        player_id=_optional_entity_id(event, "player"),
-        possession_id=possession_id,
-        possession_team_id=possession_team_id,
-        play_pattern=play_pattern,
-        ball_x_milli=ball_x,
-        ball_y_milli=ball_y,
-        end_ball_x_milli=end_x,
-        end_ball_y_milli=end_y,
-        pass_outcome=pass_outcome,
-        shot_outcome=shot_outcome,
-        card=card,
-        replacement_player_id=replacement_player_id,
-        score_for_team_id=score_for_team_id,
-        in_play=in_play,
+        event_id=validated.event_id,
+        **payload,
     )
 
 
@@ -786,6 +885,21 @@ def reduce_soccer_game_state(
         raise SoccerGameStateError("event period cannot regress")
     if event.period > state.period + 1:
         raise SoccerGameStateError("event period cannot skip a period")
+    same_period_clock_regression = (
+        event.period == state.period
+        and (
+            event.clock_ms < state.clock_ms
+            or event.period_clock_ms < state.period_clock_ms
+        )
+    )
+    if same_period_clock_regression and not {
+        "clock_jump",
+        "out_of_order",
+    }.issubset(event.quality_flags):
+        raise SoccerGameStateError(
+            "same-period clock regression requires clock_jump and "
+            "out_of_order quality flags"
+        )
     if event.period > state.period and state.period > 0 and event.action not in {
         "Half Start",
         "Period Start",
@@ -906,20 +1020,8 @@ def reduce_soccer_game_state(
         state,
         sequence=event.sequence,
         period=event.period,
-        # StatsBomb's authoritative order is the contiguous event index.
-        # Some valid receipt events carry a stale zero-based clock, so keep
-        # the state clock as a same-period high-water mark while retaining
-        # the source clock on the immutable event itself.
-        clock_ms=(
-            event.clock_ms
-            if event.period != state.period
-            else max(state.clock_ms, event.clock_ms)
-        ),
-        period_clock_ms=(
-            event.period_clock_ms
-            if event.period != state.period
-            else max(state.period_clock_ms, event.period_clock_ms)
-        ),
+        clock_ms=event.clock_ms,
+        period_clock_ms=event.period_clock_ms,
         home_score=home_score,
         away_score=away_score,
         possession_id=(
@@ -947,6 +1049,9 @@ def reduce_soccer_game_state(
         cards=cards,
         substitutions=substitutions,
         active_players=active_players,
+        quality_flags=tuple(
+            sorted(set(state.quality_flags).union(event.quality_flags))
+        ),
         terminal=terminal,
         terminal_reason="match_end" if terminal else None,
     )
@@ -991,4 +1096,5 @@ __all__ = [
     "initial_soccer_game_state",
     "reduce",
     "reduce_soccer_game_state",
+    "statsbomb_event_payload",
 ]

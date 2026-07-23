@@ -9,9 +9,9 @@ from pathlib import Path
 import httpx
 import pytest
 
+from prediction_market.sports import mlb_game_state as mlb
 from prediction_market.sports.source_inventories import (
     SportSourceInventoryError,
-    bevent_state_mapping,
     fetch_and_preserve_jolpica,
     fetch_and_preserve_retrosheet_2025,
     inspect_jolpica_response,
@@ -56,7 +56,7 @@ def _response(payload: bytes, request: httpx.Request) -> httpx.Response:
     )
 
 
-def test_retrosheet_inventory_and_bevent_mapping_are_explicit() -> None:
+def test_retrosheet_inventory_and_cwevent_mapping_are_explicit() -> None:
     audit = inspect_retrosheet_2025(_retrosheet_zip())
 
     assert audit.season == 2025
@@ -69,18 +69,12 @@ def test_retrosheet_inventory_and_bevent_mapping_are_explicit() -> None:
     assert audit.object_sha256.startswith("sha256:")
     assert audit.schema_fingerprint.startswith("sha256:")
 
-    mapping = bevent_state_mapping()
-    assert mapping["game_id"]["bevent_field"] == "GAME_ID"
-    assert mapping["outs_before"]["bevent_field"] == "OUTS_CT"
-    assert mapping["base_state_before"]["bevent_field"] == "START_BASES_CD"
-    assert mapping["score_before"]["requires"] == [
-        "AWAY_SCORE_CT",
-        "HOME_SCORE_CT",
-    ]
-    assert mapping["mapping_status"] == {
-        "requires_chadwick_bevent": True,
-        "executed_in_inventory": False,
-    }
+    assert mlb.CWEVENT_FIELD_MAP["game_id"] == ("GAME_ID", 0)
+    assert mlb.CWEVENT_FIELD_MAP["outs_before"] == ("OUTS_CT", 4)
+    assert mlb.CWEVENT_FIELD_MAP["runner_on_first"] == ("BASE1_RUN_ID", 26)
+    assert mlb.CWEVENT_FIELD_MAP["away_score_before"] == ("AWAY_SCORE_CT", 8)
+    assert mlb.CWEVENT_FIELD_MAP["home_score_before"] == ("HOME_SCORE_CT", 9)
+    assert mlb.CWEVENT_FIELD_MAP_SHA256.startswith("sha256:")
 
 
 @pytest.mark.parametrize(
@@ -237,7 +231,8 @@ def test_real_inventory_cards_do_not_claim_models_or_live_readiness() -> None:
     )
 
     assert mlb["model_trained"] is False
-    assert mlb["bevent_state_mapping"]["executed_in_inventory"] is False
+    assert mlb["cwevent_state_mapping"]["executed_in_inventory"] is True
+    assert mlb["cwevent_state_mapping"]["parser_version"] == "0.10.0"
     assert mlb["dataset"]["object_sha256"].startswith("sha256:")
     assert f1["model_trained"] is False
     assert f1["fastf1"]["license_status"] == "blocked"

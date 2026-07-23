@@ -2,20 +2,22 @@ from __future__ import annotations
 
 import hashlib
 import json
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
-from prediction_market.sports.event_envelopes import (
-    build_static_sport_observation_envelopes,
-)
+from prediction_market.contracts import EventEnvelopeV0
+from prediction_market.experiments import load_experiment_registry
 from prediction_market.sports.soccer_game_state import (
     SoccerGameEvent,
     SoccerGameState,
     adapt_statsbomb_event,
     initial_soccer_game_state,
     reduce_soccer_game_state,
+    statsbomb_event_payload,
 )
 
 
@@ -29,6 +31,20 @@ EVENT_OBJECT_SHA256 = (
 MATCH_OBJECT_SHA256 = (
     "e07d6d360b30e0cd17f9aeea0db1502d2a5666d298f1b44b83a2d2f21ba3d21b"
 )
+REGISTERED_CLOCK_ANOMALY = (
+    1_578,
+    "d7bf1db5-ab42-4ea6-8149-578725ad1508",
+)
+
+
+@lru_cache(maxsize=1)
+def _assert_x12_registered() -> None:
+    assert "X-12" in load_experiment_registry(PROJECT_ROOT)
+
+
+@lru_cache(maxsize=1)
+def _cached_registry() -> dict[str, dict[str, Any]]:
+    return load_experiment_registry(PROJECT_ROOT)
 
 
 def _raw_object(
@@ -56,35 +72,117 @@ def _load_frozen_json(path: Path, expected_sha256: str) -> Any:
     return json.loads(raw_bytes)
 
 
-def _external_event_id(
-    raw_event: dict[str, Any],
-    *,
-    raw_object_sha256: str,
-) -> str:
-    """Model the identity supplied by the EventEnvelope boundary."""
-
-    identity = (
-        f"statsbomb:{raw_object_sha256}:"
-        f"{raw_event['index']}:{raw_event['id']}"
-    )
-    return "evt_" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
-
-
 def _adapt(
     raw_event: dict[str, Any],
 ) -> SoccerGameEvent:
-    return adapt_statsbomb_event(
+    sequence = raw_event["index"]
+    native_event_id = raw_event["id"]
+    assert type(sequence) is int
+    assert type(native_event_id) is str
+    quality_flags = (
+        ("clock_jump", "out_of_order")
+        if (sequence, native_event_id) == REGISTERED_CLOCK_ANOMALY
+        else ()
+    )
+    payload = statsbomb_event_payload(
         raw_event,
         game_id=GAME_ID,
-        event_id=_external_event_id(
-            raw_event,
-            raw_object_sha256=EVENT_OBJECT_SHA256,
-        ),
+        quality_flags=quality_flags,
     )
+    _assert_x12_registered()
+    canonical_refs = {
+        "competition_id": "cmp_statsbomb_2",
+        "game_id": GAME_ID,
+        "participant_ids": (
+            "participant_statsbomb_33",
+            "participant_statsbomb_40",
+        ),
+        "venue_event_id": None,
+        "market_id": None,
+        "outcome_id": None,
+        "condition_id": None,
+    }
+    native_refs = (
+        {
+            "namespace": "statsbomb.event",
+            "native_id": native_event_id,
+        },
+    )
+    event_time = {
+        "receive_at": "2026-07-23T03:49:10.793545Z",
+        "receive_basis": "upstream_exporter",
+        "source_at": None,
+        "publish_at": None,
+        "exchange_at": None,
+    }
+    raw = EventEnvelopeV0.create(
+        envelope_version="v0",
+        event_type="raw_observation",
+        payload_schema_version="v0",
+        source={
+            "system": "statsbomb",
+            "stream": "events",
+            "venue": None,
+            "sequence": sequence - 1,
+            "capture_session_id": f"static:sha256:{EVENT_OBJECT_SHA256}",
+            "record_ordinal": sequence - 1,
+        },
+        time=event_time,
+        canonical_refs=canonical_refs,
+        native_refs=native_refs,
+        lineage={
+            "raw_object_hash": f"sha256:{EVENT_OBJECT_SHA256}",
+            "raw_record_ordinal": sequence - 1,
+            "parent_event_ids": (),
+        },
+        experiment_id=None,
+        rule_snapshot_ref=None,
+        quality_flags=quality_flags,
+        payload={
+            "dataset_id": "DS-STATSBOMB-OPEN",
+            "partition": f"events-{MATCH_ID}",
+            "raw_object_hash": f"sha256:{EVENT_OBJECT_SHA256}",
+            "raw_record_ordinal": sequence - 1,
+        },
+    )
+    normalized = EventEnvelopeV0.create(
+        envelope_version="v0",
+        event_type="normalized_observation",
+        payload_schema_version="v0",
+        source={
+            "system": "statsbomb",
+            "stream": "events.normalized",
+            "venue": None,
+            "sequence": sequence,
+            "capture_session_id": None,
+            "record_ordinal": None,
+        },
+        time=event_time,
+        canonical_refs=canonical_refs,
+        native_refs=native_refs,
+        lineage={
+            "raw_object_hash": None,
+            "raw_record_ordinal": None,
+            "parent_event_ids": (raw.event_id,),
+        },
+        experiment_id="X-12",
+        rule_snapshot_ref=None,
+        quality_flags=quality_flags,
+        payload=payload,
+    )
+    with patch(
+        "prediction_market.experiments.load_experiment_registry",
+        return_value=_cached_registry(),
+    ):
+        return adapt_statsbomb_event(
+            normalized,
+            program_root=PROJECT_ROOT,
+            raw_parents=(raw,),
+        )
 
 
 def _replay(
-    raw_events: list[dict[str, Any]],
+    events: list[SoccerGameEvent],
     *,
     home_team_id: int,
     away_team_id: int,
@@ -95,8 +193,7 @@ def _replay(
         away_team_id=away_team_id,
     )
     clock_regressions = 0
-    for raw_event in raw_events:
-        event = _adapt(raw_event)
+    for event in events:
         if (
             event.period == state.period
             and (
@@ -124,13 +221,16 @@ def test_frozen_statsbomb_match_replays_twice_with_identical_state() -> None:
     home_team_id = match["home_team"]["home_team_id"]
     away_team_id = match["away_team"]["away_team_id"]
 
+    events = [_adapt(raw_event) for raw_event in raw_events]
+    assert _adapt(raw_events[0]) == events[0]
+
     first, first_clock_regressions = _replay(
-        raw_events,
+        events,
         home_team_id=home_team_id,
         away_team_id=away_team_id,
     )
     second, second_clock_regressions = _replay(
-        raw_events,
+        events,
         home_team_id=home_team_id,
         away_team_id=away_team_id,
     )
@@ -154,50 +254,23 @@ def test_frozen_statsbomb_match_replays_twice_with_identical_state() -> None:
     assert first.last_action == "Half End"
     assert first.terminal is False
     assert first.terminal_reason is None
+    assert first.quality_flags == ("clock_jump", "out_of_order")
     assert first_clock_regressions == second_clock_regressions == 1
 
 
-def test_statsbomb_adapter_requires_external_event_identity() -> None:
+def test_statsbomb_adapter_requires_a_fully_bound_event_envelope() -> None:
     raw_events = _load_frozen_json(
         _raw_object(f"events-{MATCH_ID}", EVENT_OBJECT_SHA256),
         EVENT_OBJECT_SHA256,
     )
     assert isinstance(raw_events, list)
     first = raw_events[0]
-    pair = build_static_sport_observation_envelopes(
-        program_root=PROJECT_ROOT,
-        experiment_id="X-12",
-        dataset_id="DS-STATSBOMB-OPEN",
-        source_system="statsbomb",
-        source_stream="events",
-        raw_object_hash=f"sha256:{EVENT_OBJECT_SHA256}",
-        raw_record_ordinal=0,
-        partition=f"events-{MATCH_ID}",
-        fetched_at="2026-07-23T03:49:10.793545Z",
-        source_at=None,
-        competition_id="cmp_statsbomb_2",
-        game_id=GAME_ID,
-        participant_ids=(
-            "participant_statsbomb_33",
-            "participant_statsbomb_40",
-        ),
-        native_namespace="statsbomb.event",
-        native_id=first["id"],
-        normalized_payload={
-            "sport": "soccer",
-            "index": first["index"],
-            "action": first["type"]["name"],
-        },
-    )
-    event = adapt_statsbomb_event(
-        first,
-        game_id=GAME_ID,
-        event_id=pair.normalized.event_id,
-    )
-    assert event.event_id == pair.normalized.event_id
+    event = _adapt(first)
+    assert event.native_event_id == first["id"]
 
-    with pytest.raises(TypeError, match="event_id"):
+    with pytest.raises(TypeError, match="EventEnvelopeV0"):
         adapt_statsbomb_event(  # type: ignore[call-arg]
             raw_events[0],
-            game_id=GAME_ID,
+            program_root=PROJECT_ROOT,
+            raw_parents=(),
         )

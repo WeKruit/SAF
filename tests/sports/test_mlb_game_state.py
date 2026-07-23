@@ -4,6 +4,7 @@ import hashlib
 import re
 from dataclasses import FrozenInstanceError, replace
 from importlib.util import find_spec
+from pathlib import Path
 
 import pytest
 
@@ -11,7 +12,25 @@ from prediction_market.sports import mlb_game_state as mlb
 from prediction_market.sports.game_state import advance_state, canonical_state_sha256
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _SAME_PITCHER = object()
+_RAW_OBJECT_SHA256 = "sha256:" + "1" * 64
+_MANIFEST_SHA256 = "sha256:" + "2" * 64
+_BINARY_SHA256 = "sha256:" + "3" * 64
+_CWEVENT_OUTPUT_SHA256 = "sha256:" + "4" * 64
+_FETCHED_AT = "2026-07-23T04:18:40.552231Z"
+_COMMAND = (
+    "/verified/cwevent",
+    "-q",
+    "-n",
+    "-i",
+    "ANA202504040",
+    "-y",
+    "2025",
+    "-f",
+    "0,2,3,4,5,6,8,9,10,14,26,27,28,29,33,34,35,40,58,59,60,61,79,96",
+    "2025ANA.EVA",
+)
 
 
 def _initial() -> object:
@@ -880,15 +899,86 @@ def _cwevent_row(
     }
 
 
-def test_cwevent_adapter_uses_explicit_v0100_fields_and_records_version() -> None:
-    raw_game_id = "ANA202504040"
-    state = mlb.initial_state(
-        game_id=mlb.retrosheet_game_id(raw_game_id),
+@pytest.fixture
+def verified_cwevent_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> mlb.CweventRuntime:
+    runtime = mlb.CweventRuntime(
+        executable="/verified/cwevent",
+        version="0.10.0",
+        binary_sha256=_BINARY_SHA256,
+    )
+    monkeypatch.setattr(
+        mlb,
+        "require_cwevent_runtime",
+        lambda executable="cwevent": runtime,
+    )
+    return runtime
+
+
+def _row_envelope(
+    row: dict[str, object],
+    *,
+    row_ordinal: int,
+    away_team: str = "ANA",
+    home_team: str = "TEX",
+) -> object:
+    return mlb.build_cwevent_row_envelope(
+        program_root=PROJECT_ROOT,
+        row=row,
+        row_ordinal=row_ordinal,
+        raw_object_sha256=_RAW_OBJECT_SHA256,
+        source_manifest_sha256=_MANIFEST_SHA256,
+        source_fetched_at=_FETCHED_AT,
+        cwevent_output_sha256=_CWEVENT_OUTPUT_SHA256,
+        cwevent_command=_COMMAND,
+        cwevent_executable="/verified/cwevent",
+        away_team=away_team,
+        home_team=home_team,
+    )
+
+
+def _offline_state_and_event() -> tuple[mlb.MLBGameState, mlb.MLBPlayEvent]:
+    play_row = _cwevent_row(
+        game_id="ANA202504040",
+        event_index=1,
+        batter_id="A1",
+        lineup_slot=1,
+        batter_destination=1,
+    )
+    next_row = _cwevent_row(
+        game_id="ANA202504040",
+        event_index=2,
+        batter_id="A2",
+        lineup_slot=2,
+        first_runner="A1",
+    )
+    play_envelope = _row_envelope(play_row, row_ordinal=1)
+    next_envelope = _row_envelope(next_row, row_ordinal=2)
+    state = mlb.state_from_cwevent_row(
+        play_row,
         away_team="ANA",
         home_team="TEX",
-        batter_id="A1",
-        pitcher_id="HP",
+        row_envelope=play_envelope,
+        program_root=PROJECT_ROOT,
+        cwevent_executable="/verified/cwevent",
     )
+    event = mlb.event_from_cwevent_rows(
+        state,
+        play_row,
+        next_row,
+        play_envelope=play_envelope,
+        next_envelope=next_envelope,
+        program_root=PROJECT_ROOT,
+        cwevent_executable="/verified/cwevent",
+    )
+    return state, event
+
+
+def test_cwevent_adapter_uses_explicit_v0100_fields_and_records_version(
+    verified_cwevent_runtime: mlb.CweventRuntime,
+) -> None:
+    raw_game_id = "ANA202504040"
     play_row = _cwevent_row(
         game_id=raw_game_id,
         event_index=1,
@@ -903,12 +993,24 @@ def test_cwevent_adapter_uses_explicit_v0100_fields_and_records_version() -> Non
         lineup_slot=2,
         first_runner="A1",
     )
+    play_envelope = _row_envelope(play_row, row_ordinal=1)
+    next_envelope = _row_envelope(next_row, row_ordinal=2)
+    state = mlb.state_from_cwevent_row(
+        play_row,
+        away_team="ANA",
+        home_team="TEX",
+        row_envelope=play_envelope,
+        program_root=PROJECT_ROOT,
+        cwevent_executable="/verified/cwevent",
+    )
     event = mlb.event_from_cwevent_rows(
         state,
         play_row,
         next_row,
-        event_id="evt_" + "d" * 64,
-        cwevent_version="0.10.0",
+        play_envelope=play_envelope,
+        next_envelope=next_envelope,
+        program_root=PROJECT_ROOT,
+        cwevent_executable="/verified/cwevent",
     )
     reduced = mlb.reduce(state, event)
 
@@ -918,11 +1020,35 @@ def test_cwevent_adapter_uses_explicit_v0100_fields_and_records_version() -> Non
     assert event.source_parser == "chadwick.cwevent"
     assert event.source_parser_version == "0.10.0"
     assert event.source_event_index == 1
+    assert event.event_id == play_envelope.event_id
+    assert event.observation_mode == "offline_reconstruction"
+    assert event.source_provenance.play_row_ordinal == 1
+    assert event.source_provenance.post_event_row_ordinal == 2
+    assert event.source_provenance.reconstruction_cutoff_ordinal == 2
+    assert event.source_provenance.cwevent_binary_sha256 == _BINARY_SHA256
+    assert event.source_provenance.cwevent_output_sha256 == (
+        _CWEVENT_OUTPUT_SHA256
+    )
     assert reduced.bases == ("A1", None, None)
     assert reduced.batter_id == "A2"
+    assert reduced.observation_mode == "offline_reconstruction"
+    assert reduced.source_provenance is not None
+    assert reduced.source_provenance.source_row_ordinal == 2
+    trace = advance_state(mlb.MLB_GAME_STATE_REDUCER, state, event)
+    contract = trace.to_contract(
+        state_schema_id="urn:saf:game-state:mlb:v0",
+        event_schema_id="urn:saf:game-event:mlb:v0",
+        observation_mode=event.observation_mode,
+        quality_flags=(),
+    )
+    assert contract.observation_mode == "offline_reconstruction"
+    assert trace.event_sha256 == canonical_state_sha256(event)
+    assert trace.next_state_sha256 == canonical_state_sha256(reduced)
 
 
-def test_state_from_cwevent_row_preserves_observed_pre_play_count() -> None:
+def test_state_from_cwevent_row_preserves_observed_pre_play_count(
+    verified_cwevent_runtime: mlb.CweventRuntime,
+) -> None:
     row = _cwevent_row(
         game_id="ANA202504040",
         event_index=1,
@@ -931,12 +1057,20 @@ def test_state_from_cwevent_row_preserves_observed_pre_play_count() -> None:
     )
     row["BALLS_CT"] = "2"
     row["STRIKES_CT"] = "1"
+    envelope = _row_envelope(
+        row,
+        row_ordinal=1,
+        away_team="CLE",
+        home_team="ANA",
+    )
 
     state = mlb.state_from_cwevent_row(
         row,
         away_team="CLE",
         home_team="ANA",
-        cwevent_version="0.10.0",
+        row_envelope=envelope,
+        program_root=PROJECT_ROOT,
+        cwevent_executable="/verified/cwevent",
     )
 
     assert state.game_id == "game_retrosheet_ANA202504040"
@@ -944,17 +1078,20 @@ def test_state_from_cwevent_row_preserves_observed_pre_play_count() -> None:
     assert state.strikes == 1
     assert state.batter_id == "A1"
     assert state.pitcher_id == "HP"
-
-
-def test_cwevent_adapter_rejects_unverified_parser_version() -> None:
-    raw_game_id = "ANA202504040"
-    state = mlb.initial_state(
-        game_id=mlb.retrosheet_game_id(raw_game_id),
-        away_team="ANA",
-        home_team="TEX",
-        batter_id="A1",
-        pitcher_id="HP",
+    assert state.observation_mode == "offline_reconstruction"
+    assert state.source_provenance is not None
+    assert state.source_provenance.source_row_sha256 == mlb.cwevent_row_sha256(row)
+    assert (
+        state.source_provenance.reconstruction_cutoff_ordinal
+        == state.source_provenance.source_row_ordinal
+        == 1
     )
+
+
+def test_cwevent_adapter_rejects_unverified_row_envelope(
+    verified_cwevent_runtime: mlb.CweventRuntime,
+) -> None:
+    raw_game_id = "ANA202504040"
     play_row = _cwevent_row(
         game_id=raw_game_id,
         event_index=1,
@@ -969,14 +1106,205 @@ def test_cwevent_adapter_rejects_unverified_parser_version() -> None:
         lineup_slot=2,
         first_runner="A1",
     )
+    play_envelope = _row_envelope(play_row, row_ordinal=1)
+    next_envelope = _row_envelope(next_row, row_ordinal=2)
+    state = mlb.state_from_cwevent_row(
+        play_row,
+        away_team="ANA",
+        home_team="TEX",
+        row_envelope=play_envelope,
+        program_root=PROJECT_ROOT,
+        cwevent_executable="/verified/cwevent",
+    )
+    changed_play_row = dict(play_row)
+    changed_play_row["EVENT_TX"] = "tampered"
 
-    with pytest.raises(mlb.MLBGameStateError, match="version"):
+    with pytest.raises(mlb.MLBGameStateError, match="hash|envelope"):
+        mlb.event_from_cwevent_rows(
+            state,
+            changed_play_row,
+            next_row,
+            play_envelope=play_envelope,
+            next_envelope=next_envelope,
+            program_root=PROJECT_ROOT,
+            cwevent_executable="/verified/cwevent",
+        )
+
+
+def test_cwevent_adapter_has_no_naked_event_id_or_version_escape_hatch(
+    verified_cwevent_runtime: mlb.CweventRuntime,
+) -> None:
+    raw_game_id = "ANA202504040"
+    play_row = _cwevent_row(
+        game_id=raw_game_id,
+        event_index=1,
+        batter_id="A1",
+        lineup_slot=1,
+        batter_destination=1,
+    )
+    next_row = _cwevent_row(
+        game_id=raw_game_id,
+        event_index=2,
+        batter_id="A2",
+        lineup_slot=2,
+        first_runner="A1",
+    )
+    play_envelope = _row_envelope(play_row, row_ordinal=1)
+    next_envelope = _row_envelope(next_row, row_ordinal=2)
+    state = mlb.state_from_cwevent_row(
+        play_row,
+        away_team="ANA",
+        home_team="TEX",
+        row_envelope=play_envelope,
+        program_root=PROJECT_ROOT,
+        cwevent_executable="/verified/cwevent",
+    )
+
+    with pytest.raises(TypeError, match="event_id"):
         mlb.event_from_cwevent_rows(
             state,
             play_row,
             next_row,
+            play_envelope=play_envelope,
+            next_envelope=next_envelope,
+            program_root=PROJECT_ROOT,
+            cwevent_executable="/verified/cwevent",
             event_id="evt_" + "d" * 64,
-            cwevent_version="0.9.0",
+        )
+    with pytest.raises(TypeError, match="cwevent_version"):
+        mlb.event_from_cwevent_rows(
+            state,
+            play_row,
+            next_row,
+            play_envelope=play_envelope,
+            next_envelope=next_envelope,
+            program_root=PROJECT_ROOT,
+            cwevent_executable="/verified/cwevent",
+            cwevent_version="0.10.0",
+        )
+
+
+def test_cwevent_adapter_rejects_experiment_bound_derived_envelope(
+    verified_cwevent_runtime: mlb.CweventRuntime,
+) -> None:
+    play_row = _cwevent_row(
+        game_id="ANA202504040",
+        event_index=1,
+        batter_id="A1",
+        lineup_slot=1,
+    )
+    envelope = _row_envelope(play_row, row_ordinal=1)
+    derived = mlb.EventEnvelopeV0.create(
+        envelope_version="v0",
+        event_type="normalized_observation",
+        payload_schema_version="v0",
+        source={
+            "system": "retrosheet",
+            "stream": "cwevent.normalized",
+            "sequence": 1,
+        },
+        time={
+            "receive_at": _FETCHED_AT,
+            "receive_basis": "upstream_exporter",
+        },
+        canonical_refs=envelope.canonical_refs,
+        native_refs=envelope.native_refs,
+        lineage={"parent_event_ids": (envelope.event_id,)},
+        experiment_id="X-11",
+        rule_snapshot_ref=None,
+        quality_flags=(),
+        payload={"dataset_id": "DS-RETROSHEET"},
+    )
+
+    with pytest.raises(mlb.MLBGameStateError, match="raw_observation|experiment"):
+        mlb.state_from_cwevent_row(
+            play_row,
+            away_team="ANA",
+            home_team="TEX",
+            row_envelope=derived,
+            program_root=PROJECT_ROOT,
+            cwevent_executable="/verified/cwevent",
+        )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"source_dataset_id": "DS-TAMPERED"},
+        {"raw_object_sha256": "sha256:" + "5" * 64},
+        {"source_manifest_sha256": "sha256:" + "5" * 64},
+        {"source_fetched_at": "2026-07-23T04:18:41Z"},
+        {"cwevent_output_sha256": "sha256:" + "5" * 64},
+        {"cwevent_executable": "/tampered/cwevent"},
+        {"cwevent_version": "0.9.0"},
+        {"cwevent_binary_sha256": "sha256:" + "5" * 64},
+        {"cwevent_command_sha256": "sha256:" + "5" * 64},
+        {"cwevent_field_map_sha256": "sha256:" + "5" * 64},
+        {"play_envelope_id": "evt_" + "5" * 64},
+        {
+            "play_row_ordinal": 5,
+            "post_event_row_ordinal": 6,
+            "reconstruction_cutoff_ordinal": 6,
+        },
+        {"play_row_sha256": "sha256:" + "5" * 64},
+        {"post_event_envelope_id": "evt_" + "5" * 64},
+        {"post_event_row_ordinal": 3, "reconstruction_cutoff_ordinal": 3},
+        {"post_event_row_sha256": "sha256:" + "5" * 64},
+    ],
+)
+def test_offline_reducer_rejects_tampered_stream_runtime_and_row_identity(
+    verified_cwevent_runtime: mlb.CweventRuntime,
+    changes: dict[str, object],
+) -> None:
+    state, event = _offline_state_and_event()
+    assert event.source_provenance is not None
+
+    with pytest.raises(mlb.MLBGameStateError):
+        tampered_provenance = replace(event.source_provenance, **changes)
+        tampered_event = replace(event, source_provenance=tampered_provenance)
+        mlb.reduce_mlb_state(state, tampered_event)
+
+
+@pytest.mark.parametrize(
+    ("evidence_field", "changes"),
+    [
+        ("play_envelope_evidence", {"event_id": "evt_" + "6" * 64}),
+        (
+            "play_envelope_evidence",
+            {"envelope_sha256": "sha256:" + "6" * 64},
+        ),
+        ("play_envelope_evidence", {"source_row_ordinal": 9}),
+        (
+            "play_envelope_evidence",
+            {"source_row_sha256": "sha256:" + "6" * 64},
+        ),
+        ("post_event_envelope_evidence", {"event_id": "evt_" + "6" * 64}),
+        (
+            "post_event_envelope_evidence",
+            {"envelope_sha256": "sha256:" + "6" * 64},
+        ),
+        ("post_event_envelope_evidence", {"source_row_ordinal": 9}),
+        (
+            "post_event_envelope_evidence",
+            {"source_row_sha256": "sha256:" + "6" * 64},
+        ),
+    ],
+)
+def test_offline_event_rejects_tampered_play_and_post_envelope_evidence(
+    verified_cwevent_runtime: mlb.CweventRuntime,
+    evidence_field: str,
+    changes: dict[str, object],
+) -> None:
+    _, event = _offline_state_and_event()
+    evidence = getattr(event, evidence_field)
+    assert isinstance(evidence, mlb.MLBRowEnvelopeEvidence)
+
+    with pytest.raises(mlb.MLBGameStateError):
+        replace(
+            event,
+            **{
+                evidence_field: replace(evidence, **changes),
+            },
         )
 
 

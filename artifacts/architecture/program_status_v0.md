@@ -6,7 +6,7 @@
 - **Decision:** `CONDITIONAL_GO`
 - **Execution state:** `NO_REAL_MONEY`
 
-The repository foundation, Team A contracts, Team H registry, immutable raw store, Team E label specification, Team F PRELIMINARY taker/TCA path, Team G audit workflow and reports, and Team I fail-closed matrices exist. Current checked-in evidence also includes the X-01 24-hour PMXT input preflight, the exact four-day X-02 input bundle, a bounded-incomplete Kalshi public REST prefix, the Polymarket recorder implementation and its current short observation, real-data X-11/X-12 POCs, and MLB/F1 source inventories. The X-09 fixture harness passes replay Levels 1+2. This is an implementation status statement, not a promotion decision or proof that a registered experiment is complete.
+The repository foundation, Team A contracts, Team H registry, immutable raw store, Team E label specification, Team F PRELIMINARY taker/TCA path, Team G audit workflow and reports, and Team I fail-closed matrices exist. Current checked-in evidence also includes the X-01 24-hour PMXT input preflight, the exact four-day X-02 input bundle, a bounded-incomplete Kalshi public REST prefix, the Polymarket recorder implementation and its current short observation, real-data X-11/X-12 POCs, deterministic NBA/NFL/soccer/MLB state reducers, registered NFL-drive and soccer-five-minute full-path latency measurements, and a fail-closed prediction-market alignment audit. The X-09 fixture harness passes replay Levels 1+2. This is an implementation status statement, not a promotion decision or proof that a registered experiment is complete.
 
 ## Experiment state
 
@@ -15,15 +15,24 @@ The repository foundation, Team A contracts, Team H registry, immutable raw stor
 - X-03: `POC_ONLY`; the fail-closed 28-day normalized-input census aggregator and tests exist, including PIT-missing exclusion and deterministic sport-by-venue metrics. No frozen four-week PMXT/Polymarket/Kalshi input manifest or empirical census result exists, so the formal experiment remains incomplete.
 - X-04: registered; no formal event-study execution has started because X-01 and X-02 are incomplete.
 - X-05: specification complete; label generation remains blocked by unresolved locks and X-01.
-- X-06: model/validation POC exists; empirical run is blocked by O-005 and unresolved data choices.
+- X-06: model/validation POC and a 12-event deterministic synthetic state-reducer replay exist; empirical model accuracy and inference latency remain unmeasured because O-005 and the real-data choices are blocked.
 - X-07: pipeline output is PRELIMINARY only; formal and go/no-go scopes remain blocked.
 - X-08: the recorder implementation and one 15-second, five-frame real Polymarket operational observation are verified. The observation is not a formal X-08 result and the seven-day gate is not met; persistent operation still needs a durable host. Kalshi public REST evidence is `BOUNDED_INCOMPLETE_LICENSE_PENDING`: markets and trades each verify 100 pages and 100,000 unique records, but both terminal cursors are nonempty, O-003 is pending, historical L2 is not claimed, and live/historical overlap was not run.
 - X-09: deterministic fixture status is `HARNESS_PASS`; formal experiment state is `EXPERIMENT_BLOCKED` until its locks and X-01 clear.
 - X-10: workflow/reports complete; experiment state is `REGISTERED_NOT_RUN` because the 50-pair sample and review protocol are not locked.
-- X-11: `PRELIMINARY_POC`; the real-data full run and five governed model bindings exist with seed 20260722. Its method status remains `PIT_UNPROVEN`, the models remain `poc_only`, and the evidence is not eligible for a formal result.
-- X-12: `POC_ONLY`; the real StatsBomb POC and two governed model bindings exist with seed 20260722. O-004 remains research-only, event availability is offline rather than live PIT, no point-in-time market prior exists, and formal promotion remains unauthorized.
+- X-11: `PRELIMINARY_POC`; the real-data full run, five governed model bindings, one complete-game replay, and a supplementary 2025 reducer scan exist with seed 20260722. The reducer scan completes 281 of 285 games and fails closed on four source anomalies. Its model method status remains `PIT_UNPROVEN`, the models remain `poc_only`, and the evidence is not eligible for a formal result.
+- X-12: `POC_ONLY`; the real StatsBomb POC, two governed model bindings, and one 3,175-event deterministic match replay exist with seed 20260722. O-004 remains research-only, event availability is offline rather than live PIT, no point-in-time market prior exists, and formal promotion remains unauthorized.
 
-The MLB and F1 deliverables are source inventories only. They do not claim a trained model, calibration result, or trading conclusion.
+MLB now has a source inventory and one complete-game deterministic reducer validation, but no registered probabilistic experiment or model. F1 remains a source inventory only. Neither sport has a calibration result or trading conclusion.
+
+## Game-state and prediction-market alignment
+
+- NBA: the source-observed reducer replays a registered 12-event synthetic X-06 fixture deterministically. Reducer-only p50/p95/p99 is 3,416/3,500/3,542 ns; real-game count and model-accuracy count are zero.
+- NFL: one frozen 182-row real game completes 181 zero-mismatch transitions twice, and the 2025 scan completes 281/285 games while retaining four explicit fail-closed source anomalies. Reducer-only p50/p95/p99 is 3,792/3,958/4,042 ns. The registered next-drive transition full path is 0.173500/0.178250/0.180625 ms and about 5,808 events/s; final-outcome logistic/GBDT are not yet measured through that same path. This is not a live SLA.
+- Soccer: one frozen 3,175-event real match replays twice to the same hash while preserving one explicitly flagged source-clock anomaly. Reducer-only p50/p95/p99 is 36,416/47,500/52,208 ns. The registered five-minute-transition full path is 0.092125/0.095125/0.098292 ms and about 10,835 events/s; Dixon-Coles is not yet measured through that same path. This is not a live SLA.
+- MLB: one frozen 88-event real game has 87 zero-mismatch next-observation comparisons and repeatable replay hash. Reducer-only p50/p95/p99, including full offline provenance continuity checks, is 17,042/17,709/18,000 ns. No probabilistic model exists.
+- F1: no state reducer, replay, or probabilistic model exists.
+- Prediction-market matched-as-of status is `NOT_ALIGNED`: canonical game-condition-outcome assertions, MarketMetadataSnapshotV0 instances, VenueRuleSnapshot instances, joinable ModelOutputV1 instances, and matched rows are all zero. Therefore no sport has a validated prediction-market symmetry, disagreement, lead-lag, mispricing, or alpha result.
 
 ## Binding NO-GO
 

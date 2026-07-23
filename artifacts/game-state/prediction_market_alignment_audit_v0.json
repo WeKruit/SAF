@@ -1,12 +1,12 @@
 {
   "artifact_type": "prediction_market_alignment_audit",
   "version": "v0",
-  "owner": "C+E+H",
+  "owner": "A+C+H",
   "audited_at": "2026-07-23T16:20:54Z",
   "status": "not_aligned",
   "formal_result": false,
   "bounded_matched_as_of_executed": false,
-  "decision": "No current evidence bundle contains an exact canonical sport outcome, a point-in-time model probability, and a same-time executable two-sided quote with depth, pause state, and venue-rule snapshot.",
+  "decision": "No current evidence bundle contains an exact governed game-state-to-market outcome binding, a registry-backed point-in-time model output, a same-time executable two-sided quote with local receive time and depth, a point-in-time venue-rule snapshot, and a registered quote-age policy.",
   "global_gap_counts": {
     "canonical_game_condition_outcome_assertion_instances": 0,
     "market_metadata_snapshot_v0_instances": 0,
@@ -130,51 +130,40 @@
       ]
     }
   },
-  "executable_checker_contract": {
+  "current_prerequisite_auditor": {
     "implementation": "src/prediction_market/sports/market_alignment.py",
-    "required_identity_fields": [
-      "canonical game_id",
-      "canonical condition_id",
-      "canonical outcome_id",
-      "metadata_snapshot_ref"
+    "required_document_types": [
+      "MarketMetadataSnapshotV0 document",
+      "registry-backed model_output EventEnvelopeV0 with validated ModelOutputV1 payload",
+      "normalized executable-quote EventEnvelopeV0 with local_recorder receive time",
+      "VenueRuleSnapshotV0 document"
     ],
-    "required_model_fields": [
-      "model cutoff_at",
-      "exact Decimal outcome probability",
-      "model_output_ref"
+    "required_open_governance_inputs": [
+      "content-addressed canonical game-state-label to market-outcome binding",
+      "registered maximum quote-age policy"
     ],
-    "required_quote_fields": [
-      "local received_at no later than model cutoff",
-      "best bid and best ask",
-      "positive bid depth and ask depth",
-      "pause state"
+    "document_validation": [
+      "metadata self-hash is revalidated",
+      "model output experiment and model registry foreign keys are revalidated",
+      "quote envelope content hashes and canonical references are revalidated",
+      "venue-rule fields are revalidated from the full document"
     ],
-    "required_rule_fields": [
-      "venue rule snapshot hash",
-      "rule snapshot observed no later than model cutoff"
-    ],
-    "registered_join_lock": "max_quote_age_ms",
     "accepted_statuses": [
-      "alignment_ready",
-      "not_aligned",
-      "predictive_disagreement"
+      "not_aligned"
     ],
-    "midpoint_only_is_accepted": false,
+    "caller_selected_max_quote_age_is_accepted": false,
+    "hash_shaped_reference_without_document_is_accepted": false,
+    "probability_or_spread_comparison_supported": false,
     "profitability_or_execution_conclusion_supported": false
   },
   "fail_closed_tests": {
-    "future_quote": "covered",
-    "midpoint_only": "covered",
-    "missing_bid": "covered",
-    "missing_ask": "covered",
-    "stale_join": "covered",
-    "wrong_game": "covered",
-    "wrong_condition": "covered",
-    "wrong_outcome": "covered",
-    "pause": "covered",
-    "missing_or_future_rule_snapshot": "covered",
-    "missing_depth": "covered",
-    "binary_float": "covered"
+    "hash_shaped_refs_cannot_replace_documents": "covered",
+    "mutable_inventory": "covered",
+    "runtime_contract_revalidation": "covered",
+    "non_local_receive_quote": "covered",
+    "caller_selected_quote_age": "covered",
+    "unverified_probability_or_spread_output": "covered",
+    "positive_ready_or_disagreement_without_registered_policy": "not_implemented_fail_closed"
   },
   "no_go_attestation": {
     "real_money_action": false,
