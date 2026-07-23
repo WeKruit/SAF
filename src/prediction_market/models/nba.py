@@ -101,13 +101,18 @@ def fit_predict_nba_baselines(
         raise BaselineInputError(
             "target and market prior columns must be distinct roles"
         )
-    reserved = {
-        "game_id",
-        "prediction_at",
-        "game_start_at",
-        target_column,
-        market_prior_column,
-    }
+    structural = {"game_id", "prediction_at", "game_start_at"}
+    if target_column in structural or target_column.endswith("__available_at"):
+        raise BaselineInputError(
+            "target column cannot use a structural or availability role"
+        )
+    if market_prior_column in structural or market_prior_column.endswith(
+        "__available_at"
+    ):
+        raise BaselineInputError(
+            "market prior column cannot use a structural or availability role"
+        )
+    reserved = structural | {target_column, market_prior_column}
     leaking = tuple(
         feature
         for feature in features

@@ -163,6 +163,65 @@ def test_nba_rejects_target_and_market_prior_role_collision() -> None:
 
 
 @pytest.mark.parametrize(
+    "invalid_target",
+    ["game_id", "prediction_at", "game_start_at", "score_diff__available_at"],
+)
+def test_nba_rejects_structural_or_availability_target_roles(
+    invalid_target: str,
+) -> None:
+    train, test = _nba_frames()
+
+    with pytest.raises(BaselineInputError, match="target column.*role"):
+        fit_predict_nba_baselines(
+            train,
+            test,
+            feature_columns=("score_diff", "seconds_remaining"),
+            target_column=invalid_target,
+            market_prior_column="market_prior",
+            seed=7,
+        )
+
+
+@pytest.mark.parametrize(
+    "invalid_prior",
+    ["game_id", "prediction_at", "game_start_at", "score_diff__available_at"],
+)
+def test_nba_rejects_structural_or_availability_market_prior_roles(
+    invalid_prior: str,
+) -> None:
+    train, test = _nba_frames()
+
+    with pytest.raises(BaselineInputError, match="market prior column.*role"):
+        fit_predict_nba_baselines(
+            train,
+            test,
+            feature_columns=("score_diff", "seconds_remaining"),
+            target_column="target",
+            market_prior_column=invalid_prior,
+            seed=7,
+        )
+
+
+def test_nba_rejects_numeric_game_identity_disguised_as_market_prior() -> None:
+    train, test = _nba_frames()
+    for frame in (train, test):
+        frame["game_id"] = frame.index.to_numpy(dtype=float) / 100
+        frame["game_id__available_at"] = frame["game_start_at"] - pd.Timedelta(
+            seconds=1
+        )
+
+    with pytest.raises(BaselineInputError, match="market prior column.*role"):
+        fit_predict_nba_baselines(
+            train,
+            test,
+            feature_columns=("score_diff", "seconds_remaining"),
+            target_column="target",
+            market_prior_column="game_id",
+            seed=7,
+        )
+
+
+@pytest.mark.parametrize(
     "leaking_feature",
     [
         "target",

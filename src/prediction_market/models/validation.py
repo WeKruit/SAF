@@ -78,6 +78,10 @@ def _arrays(
     if not np.all(np.isfinite(p)) or np.any((p < 0) | (p > 1)):
         raise ValidationInputError("probabilities must be finite in [0, 1]")
     for value in cluster:
+        if isinstance(value, str) and not value.strip():
+            raise ValidationInputError(
+                "groups must be present and finite for every row"
+            )
         missing = pd.isna(value)
         if isinstance(missing, (bool, np.bool_)) and missing:
             raise ValidationInputError(

@@ -105,7 +105,7 @@ def test_metrics_reject_unclustered_or_invalid_predictions() -> None:
 
 
 @pytest.mark.parametrize(
-    "invalid_group", [None, np.nan, pd.NA, pd.NaT, np.inf, -np.inf]
+    "invalid_group", [None, "", " ", "\t", np.nan, pd.NA, pd.NaT, np.inf, -np.inf]
 )
 def test_metrics_reject_missing_or_nonfinite_game_clusters(
     invalid_group: object,
@@ -216,13 +216,16 @@ def test_model_vs_prior_requires_enough_valid_paired_resamples() -> None:
         )
 
 
-def test_model_vs_prior_rejects_a_missing_game_cluster() -> None:
+@pytest.mark.parametrize("invalid_group", [np.nan, "", " \t"])
+def test_model_vs_prior_rejects_a_missing_game_cluster(
+    invalid_group: object,
+) -> None:
     with pytest.raises(ValidationInputError, match="groups must be present"):
         evaluate_model_vs_prior(
             [0, 0, 1, 0, 1, 0, 1],
             [0.1, 0.2, 0.8, 0.3, 0.7, 0.4, 0.6],
             [0.2, 0.3, 0.7, 0.4, 0.6, 0.45, 0.55],
-            groups=[np.nan, "a", "a", "b", "b", "c", "c"],
+            groups=[invalid_group, "a", "a", "b", "b", "c", "c"],
             bootstrap_samples=100,
             confidence_level=0.90,
             minimum_valid_samples=20,
