@@ -21,11 +21,11 @@
   "report_version": "v0",
   "segments": [
     {
-      "capture_session_id": "capture-19c04ae3f0b747688beb87f2ab7503ef",
-      "manifest_path": "manifests/source=polymarket/stream=market/date=2026-07-22/hour=23/0f39c4edf0263bc52df8b1a00e6cd745f81d6a818e907dda8b15cc223e371742.manifest.json",
-      "manifest_sha256": "sha256:ca80e7b550a69961a619dee97217bb03d9db7681d08f991f2cb360b8bfca82b5",
-      "object_path": "raw/source=polymarket/stream=market/date=2026-07-22/hour=23/0f39c4edf0263bc52df8b1a00e6cd745f81d6a818e907dda8b15cc223e371742.jsonl.zst",
-      "object_sha256": "sha256:0f39c4edf0263bc52df8b1a00e6cd745f81d6a818e907dda8b15cc223e371742",
+      "capture_session_id": "capture-ca1002899bc74c6f91baaae95c7666d0",
+      "manifest_path": "manifests/source=polymarket/stream=market/date=2026-07-23/hour=00/f314dd555f2d04e939674c8e46ea78d3b331d1737daf9691c911b24072b63b21.manifest.json",
+      "manifest_sha256": "sha256:659527104a5ccde751c46164fc2384bea41165eb86c0d9a83dbc16d279675d73",
+      "object_path": "raw/source=polymarket/stream=market/date=2026-07-23/hour=00/f314dd555f2d04e939674c8e46ea78d3b331d1737daf9691c911b24072b63b21.jsonl.zst",
+      "object_sha256": "sha256:f314dd555f2d04e939674c8e46ea78d3b331d1737daf9691c911b24072b63b21",
       "record_count": 5
     }
   ],
