@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import random
+import re
 from collections import Counter, defaultdict
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, replace
@@ -29,6 +30,9 @@ from prediction_market.pmxt.full_day import (
 
 class TimestampAuditError(ValueError):
     """The X-02 timestamp selection or locked inputs are invalid."""
+
+
+_SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +61,57 @@ class TimestampAuditReport:
     report_sha256: str
 
 
+@dataclass(frozen=True, slots=True)
+class TimestampSampleAuditReport:
+    version: str
+    days: tuple[str, ...]
+    input_bundle_sha256: str
+    input_manifest_sha256s: tuple[str, ...]
+    day_count: int
+    object_count: int
+    row_count: int
+    delta_count: int
+    minimum_delta_ms: float
+    maximum_delta_ms: float
+    quantiles_ms: dict[str, float]
+    absolute_p99_ms: float
+    quantile_method: str
+    negative_delta_count: int
+    negative_delta_rate: float
+    ordered_comparison_count: int
+    out_of_order_count: int
+    out_of_order_rate: float
+    disorder_definition: str
+    hourly_medians_ms: dict[str, float]
+    hourly_median_drift_ms: float
+    millisecond_research_eligible: bool
+    downgrade_triggers: tuple[str, ...]
+    timestamp_semantics: str
+    report_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class _TimestampMetrics:
+    row_count: int
+    delta_count: int
+    minimum_delta_ms: float
+    maximum_delta_ms: float
+    quantiles_ms: dict[str, float]
+    absolute_p99_ms: float
+    quantile_method: str
+    negative_delta_count: int
+    negative_delta_rate: float
+    ordered_comparison_count: int
+    out_of_order_count: int
+    out_of_order_rate: float
+    disorder_definition: str
+    hourly_medians_ms: dict[str, float]
+    hourly_median_drift_ms: float
+    millisecond_research_eligible: bool
+    downgrade_triggers: tuple[str, ...]
+    timestamp_semantics: str
+
+
 def _canonical_bytes(value: object) -> bytes:
     return json.dumps(
         value,
@@ -67,7 +122,9 @@ def _canonical_bytes(value: object) -> bytes:
     ).encode("utf-8")
 
 
-def _report_hash(report: TimestampAuditReport) -> str:
+def _report_hash(
+    report: TimestampAuditReport | TimestampSampleAuditReport,
+) -> str:
     material = asdict(report)
     material.pop("report_sha256", None)
     return "sha256:" + hashlib.sha256(_canonical_bytes(material)).hexdigest()
@@ -411,24 +468,16 @@ def _canonical_disorder_counts(
     return row_count, comparison_count, disorder_count
 
 
-def audit_full_day_timestamps(
-    raw_root: str | Path, manifest: FullDayManifest
-) -> TimestampAuditReport:
-    """Audit one frozen day, retaining receive time as the replay clock."""
-
-    try:
-        validate_full_day_manifest(manifest)
-        locked_paths = _verified_paths(raw_root, manifest)
-    except FullDayInputError as exc:
-        raise TimestampAuditError(f"invalid frozen full-day input: {exc}") from exc
-    paths = [str(path.resolve()) for path in locked_paths]
+def _compute_timestamp_metrics(paths: list[str]) -> _TimestampMetrics:
+    if not paths:
+        raise TimestampAuditError("PMXT timestamp audit requires source paths")
     row_count, ordered_count, out_of_order_count = _canonical_disorder_counts(
         paths
     )
     histogram, hourly_histograms = _delta_histograms(paths)
     delta_count = sum(histogram.values())
     if row_count <= 0:
-        raise TimestampAuditError("PMXT timestamp audit day contains no rows")
+        raise TimestampAuditError("PMXT timestamp audit sample contains no rows")
     if delta_count != row_count:
         raise TimestampAuditError(
             "PMXT timestamp audit contains NULL required fields"
@@ -459,10 +508,7 @@ def audit_full_day_timestamps(
         downgrade_triggers.append("absolute_p99_ms_gt_5000")
     first_hour = min(hourly)
     last_hour = max(hourly)
-    provisional = TimestampAuditReport(
-        version="pmxt-timestamp-audit-v1",
-        day=manifest.day,
-        input_manifest_sha256=manifest.manifest_sha256,
+    return _TimestampMetrics(
         row_count=int(row_count),
         delta_count=int(delta_count),
         minimum_delta_ms=float(min(histogram)),
@@ -485,6 +531,26 @@ def audit_full_day_timestamps(
         millisecond_research_eligible=not downgrade_triggers,
         downgrade_triggers=tuple(downgrade_triggers),
         timestamp_semantics="receive_at_primary;source_at_secondary_audit_only",
+    )
+
+
+def audit_full_day_timestamps(
+    raw_root: str | Path, manifest: FullDayManifest
+) -> TimestampAuditReport:
+    """Audit one frozen day, retaining receive time as the replay clock."""
+
+    try:
+        validate_full_day_manifest(manifest)
+        locked_paths = _verified_paths(raw_root, manifest)
+    except FullDayInputError as exc:
+        raise TimestampAuditError(f"invalid frozen full-day input: {exc}") from exc
+    paths = [str(path.resolve()) for path in locked_paths]
+    metrics = _compute_timestamp_metrics(paths)
+    provisional = TimestampAuditReport(
+        version="pmxt-timestamp-audit-v1",
+        day=manifest.day,
+        input_manifest_sha256=manifest.manifest_sha256,
+        **asdict(metrics),
         report_sha256="",
     )
     report = replace(provisional, report_sha256=_report_hash(provisional))
@@ -497,9 +563,89 @@ def audit_full_day_timestamps(
     return report
 
 
+def audit_timestamp_sample(
+    raw_root: str | Path,
+    manifests: Iterable[FullDayManifest],
+    *,
+    input_bundle_sha256: str,
+) -> TimestampSampleAuditReport:
+    """Audit the exact four-day X-02 sample as one preregistered unit."""
+
+    frozen = tuple(manifests)
+    if len(frozen) != 4:
+        raise TimestampAuditError(
+            "X-02 timestamp sample must contain exactly four UTC days"
+        )
+    if (
+        type(input_bundle_sha256) is not str
+        or _SHA256_PATTERN.fullmatch(input_bundle_sha256) is None
+    ):
+        raise TimestampAuditError(
+            "input_bundle_sha256 must be a lowercase sha256: digest"
+        )
+
+    verified_by_day: list[tuple[Path, ...]] = []
+    try:
+        for manifest in frozen:
+            validate_full_day_manifest(manifest)
+            verified_by_day.append(_verified_paths(raw_root, manifest))
+    except (FullDayInputError, TypeError) as exc:
+        raise TimestampAuditError(
+            f"invalid frozen timestamp sample input: {exc}"
+        ) from exc
+
+    days = tuple(manifest.day for manifest in frozen)
+    if list(days) != sorted(days) or len(set(days)) != len(days):
+        raise TimestampAuditError(
+            "X-02 timestamp sample days must be unique and strictly increasing"
+        )
+    paths = tuple(path for day_paths in verified_by_day for path in day_paths)
+    if len(paths) != 96:
+        raise TimestampAuditError(
+            "X-02 timestamp sample must bind exactly 96 hourly objects"
+        )
+    if len(set(paths)) != len(paths):
+        raise TimestampAuditError(
+            "X-02 timestamp sample contains duplicate hourly object paths"
+        )
+
+    metrics = _compute_timestamp_metrics(
+        [str(path.resolve()) for path in paths]
+    )
+    provisional = TimestampSampleAuditReport(
+        version="pmxt-timestamp-sample-audit-v1",
+        days=days,
+        input_bundle_sha256=input_bundle_sha256,
+        input_manifest_sha256s=tuple(
+            manifest.manifest_sha256 for manifest in frozen
+        ),
+        day_count=len(frozen),
+        object_count=len(paths),
+        **asdict(metrics),
+        report_sha256="",
+    )
+    report = replace(provisional, report_sha256=_report_hash(provisional))
+
+    try:
+        post_verified = tuple(
+            _verified_paths(raw_root, manifest) for manifest in frozen
+        )
+    except FullDayInputError as exc:
+        raise TimestampAuditError(
+            f"frozen timestamp sample changed during audit: {exc}"
+        ) from exc
+    if post_verified != tuple(verified_by_day):
+        raise TimestampAuditError(
+            "frozen input paths changed during timestamp sample audit"
+        )
+    return report
+
+
 __all__ = [
     "TimestampAuditError",
     "TimestampAuditReport",
+    "TimestampSampleAuditReport",
     "audit_full_day_timestamps",
+    "audit_timestamp_sample",
     "select_timestamp_audit_days",
 ]

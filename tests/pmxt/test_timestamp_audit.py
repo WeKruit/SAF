@@ -21,6 +21,7 @@ from prediction_market.pmxt.timestamp_audit import (
     _canonical_disorder_counts,
     _exact_frequency_quantile,
     audit_full_day_timestamps,
+    audit_timestamp_sample,
     select_timestamp_audit_days,
 )
 
@@ -57,11 +58,14 @@ def _write_hour(
     path: Path,
     hour: int,
     *,
+    day: date = X01_DAY,
     timestamp_rows: list[tuple[datetime, datetime]] | None = None,
 ) -> None:
-    received = datetime(2026, 5, 28, hour, 0, 10, tzinfo=timezone.utc)
+    received = datetime(
+        day.year, day.month, day.day, hour, 0, 10, tzinfo=timezone.utc
+    )
     if hour == 5:
-        source = datetime(2026, 5, 28, 0, 0, tzinfo=timezone.utc)
+        source = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
     elif hour == 10:
         source = received + timedelta(milliseconds=50)
     else:
@@ -106,20 +110,24 @@ def _write_hour(
 def _manifest(
     tmp_path: Path,
     *,
+    day: date = X01_DAY,
     timestamp_rows_by_hour: dict[int, list[tuple[datetime, datetime]]] | None = None,
 ):
     entries: list[ArchiveEntry] = []
     objects: list[HourlyObjectRef] = []
     for hour in range(24):
-        filename = f"polymarket_orderbook_2026-05-28T{hour:02d}.parquet"
+        filename = f"polymarket_orderbook_{day.isoformat()}T{hour:02d}.parquet"
         path = tmp_path / filename
         _write_hour(
             path,
             hour,
+            day=day,
             timestamp_rows=(timestamp_rows_by_hour or {}).get(hour),
         )
         payload = path.read_bytes()
-        observed = datetime(2026, 5, 28, hour, tzinfo=timezone.utc)
+        observed = datetime(
+            day.year, day.month, day.day, hour, tzinfo=timezone.utc
+        )
         url = f"https://r2v2.pmxt.dev/{filename}"
         entries.append(ArchiveEntry(filename, url, observed, len(payload)))
         objects.append(
@@ -132,8 +140,8 @@ def _manifest(
             )
         )
     return build_full_day_manifest(
-        day=X01_DAY,
-        entries=select_complete_utc_day(entries, day=X01_DAY),
+        day=day,
+        entries=select_complete_utc_day(entries, day=day),
         objects=objects,
         inventory_sha256=_digest(b"inventory"),
         canonicalization_version="pmxt-reconstructor-v1",
@@ -208,6 +216,69 @@ def test_full_day_timestamp_audit_reports_locked_metrics(tmp_path: Path) -> None
     assert report.timestamp_semantics == (
         "receive_at_primary;source_at_secondary_audit_only"
     )
+
+
+def test_four_day_timestamp_sample_aggregates_the_preregistered_unit(
+    tmp_path: Path,
+) -> None:
+    days = (
+        date(2026, 4, 22),
+        date(2026, 5, 28),
+        date(2026, 6, 5),
+        date(2026, 6, 25),
+    )
+    manifests = tuple(_manifest(tmp_path, day=day) for day in days)
+    bundle_sha256 = _digest(b"x02-four-day-input-bundle")
+
+    report = audit_timestamp_sample(
+        tmp_path,
+        manifests,
+        input_bundle_sha256=bundle_sha256,
+    )
+
+    assert report.version == "pmxt-timestamp-sample-audit-v1"
+    assert report.days == tuple(day.isoformat() for day in days)
+    assert report.input_bundle_sha256 == bundle_sha256
+    assert report.input_manifest_sha256s == tuple(
+        manifest.manifest_sha256 for manifest in manifests
+    )
+    assert report.day_count == 4
+    assert report.object_count == 96
+    assert report.row_count == 96
+    assert report.delta_count == 96
+    assert report.quantiles_ms["p50"] == pytest.approx(100.0)
+    assert report.negative_delta_count == 4
+    assert report.negative_delta_rate == pytest.approx(4 / 96)
+    assert report.ordered_comparison_count == 95
+    assert report.out_of_order_count == 4
+    assert report.hourly_median_drift_ms == pytest.approx(0.0)
+    assert report.millisecond_research_eligible is False
+    assert report.report_sha256.startswith("sha256:")
+
+
+def test_timestamp_sample_rejects_noncanonical_four_day_membership(
+    tmp_path: Path,
+) -> None:
+    days = (
+        date(2026, 4, 22),
+        date(2026, 5, 28),
+        date(2026, 6, 5),
+        date(2026, 6, 25),
+    )
+    manifests = tuple(_manifest(tmp_path, day=day) for day in days)
+
+    with pytest.raises(TimestampAuditError, match="exactly four"):
+        audit_timestamp_sample(
+            tmp_path,
+            manifests[:3],
+            input_bundle_sha256=_digest(b"bundle"),
+        )
+    with pytest.raises(TimestampAuditError, match="strictly increasing"):
+        audit_timestamp_sample(
+            tmp_path,
+            tuple(reversed(manifests)),
+            input_bundle_sha256=_digest(b"bundle"),
+        )
 
 
 def test_timestamp_audit_fails_closed_when_native_file_order_is_broken(
