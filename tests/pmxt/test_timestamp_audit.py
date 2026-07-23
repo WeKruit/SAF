@@ -254,8 +254,9 @@ def test_timestamp_audit_applies_canonical_source_tie_break_without_sorting_rows
     assert report.out_of_order_count == 2
 
 
+@pytest.mark.parametrize("batch_size", [1, 2])
 def test_streaming_disorder_carries_tied_receive_run_across_batches(
-    tmp_path: Path,
+    tmp_path: Path, batch_size: int
 ) -> None:
     path = tmp_path / "cross-batch.parquet"
     receive_1 = datetime(2026, 5, 28, 0, 0, 10, tzinfo=timezone.utc)
@@ -272,11 +273,41 @@ def test_streaming_disorder_carries_tied_receive_run_across_batches(
     )
 
     rows, comparisons, regressions = _canonical_disorder_counts(
+        [str(path)], batch_size=batch_size
+    )
+
+    assert rows == 4
+    assert comparisons == 3
+    assert regressions == 1
+
+
+def test_streaming_disorder_defers_boundary_until_tied_target_run_is_complete(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "cross-batch-target-min.parquet"
+    receive_0 = datetime(2026, 5, 28, 0, 0, 0, tzinfo=timezone.utc)
+    receive_1 = datetime(2026, 5, 28, 0, 0, 10, tzinfo=timezone.utc)
+    receive_2 = datetime(2026, 5, 28, 0, 0, 20, tzinfo=timezone.utc)
+    _write_hour(
+        path,
+        0,
+        timestamp_rows=[
+            (receive_0, receive_0 + timedelta(milliseconds=100)),
+            (receive_1, receive_0 + timedelta(milliseconds=200)),
+            (receive_1, receive_0 + timedelta(milliseconds=50)),
+            (receive_2, receive_0 + timedelta(milliseconds=300)),
+        ],
+    )
+
+    rows, comparisons, regressions = _canonical_disorder_counts(
         [str(path)], batch_size=2
     )
 
     assert rows == 4
     assert comparisons == 3
+    # Canonical source ordering makes the target receive-time run [50, 200].
+    # Its minimum is only observed in the next batch, so the 100 -> 50
+    # regression must be evaluated after the whole tied run is complete.
     assert regressions == 1
 
 

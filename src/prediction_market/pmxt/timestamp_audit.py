@@ -213,9 +213,14 @@ def _canonical_disorder_counts(
 
     if type(batch_size) is not int or batch_size <= 0:
         raise TimestampAuditError("batch_size must be a positive integer")
-    latest: dict[tuple[bytes, str], tuple[int, int]] = {}
+    # Each key retains the last *completed* receive-run maximum plus the
+    # still-open receive run.  The latter cannot be compared with its
+    # predecessor until its full minimum is known: one receive-time tie may
+    # span Arrow batches (or adjacent hourly objects).
+    latest: dict[
+        tuple[bytes, str], tuple[int | None, int, int, int]
+    ] = {}
     row_count = 0
-    comparison_count = 0
     disorder_count = 0
     columns = ["timestamp_received", "timestamp", "market", "asset_id"]
 
@@ -264,7 +269,6 @@ def _canonical_disorder_counts(
                         raise TimestampAuditError(
                             "native PMXT order regresses timestamp_received"
                         )
-                    comparison_count += int(same_key.sum())
                     group_starts = np.concatenate(
                         (
                             np.array([0], dtype=np.int64),
@@ -301,8 +305,6 @@ def _canonical_disorder_counts(
                 market_keys = pc.take(market, take_indices).to_pylist()
                 asset_keys = pc.take(asset, take_indices).to_pylist()
 
-                effective_run_max = run_max_source.copy()
-                keys: list[tuple[bytes, str]] = []
                 for group_index, (market_key, asset_key) in enumerate(
                     zip(market_keys, asset_keys, strict=True)
                 ):
@@ -318,41 +320,77 @@ def _canonical_disorder_counts(
                             "native PMXT order regresses market/asset key"
                         )
                     prior_native_key = key
-                    keys.append(key)
 
                     first_run = int(group_run_positions[group_index])
-                    prior = latest.get(key)
-                    if prior is None:
-                        continue
-                    comparison_count += 1
-                    prior_receive, prior_max_source = prior
-                    first_receive = int(run_receive[first_run])
-                    if first_receive < prior_receive:
-                        raise TimestampAuditError(
-                            "native PMXT order regresses timestamp_received"
-                        )
-                    if first_receive == prior_receive:
-                        effective_run_max[first_run] = max(
-                            int(effective_run_max[first_run]), prior_max_source
-                        )
-                    elif int(run_min_source[first_run]) < prior_max_source:
-                        disorder_count += 1
-
-                internal = np.ones(len(run_starts), dtype=bool)
-                internal[group_run_positions] = False
-                if len(run_starts) > 1:
-                    previous_run_max = np.empty_like(effective_run_max)
-                    previous_run_max[0] = effective_run_max[0]
-                    previous_run_max[1:] = effective_run_max[:-1]
-                    disorder_count += int(
-                        np.sum(internal & (run_min_source < previous_run_max))
-                    )
-
-                for group_index, key in enumerate(keys):
                     last_run = int(last_run_positions[group_index])
+                    run_count = last_run - first_run + 1
+                    first_receive = int(run_receive[first_run])
+                    first_min = int(run_min_source[first_run])
+                    first_max = int(run_max_source[first_run])
+                    completed_max: int | None = None
+                    prior = latest.get(key)
+                    if prior is not None:
+                        (
+                            completed_max,
+                            prior_receive,
+                            prior_min,
+                            prior_max,
+                        ) = prior
+                        if first_receive < prior_receive:
+                            raise TimestampAuditError(
+                                "native PMXT order regresses timestamp_received"
+                            )
+                        if first_receive == prior_receive:
+                            first_min = min(first_min, prior_min)
+                            first_max = max(first_max, prior_max)
+                        else:
+                            if (
+                                completed_max is not None
+                                and prior_min < completed_max
+                            ):
+                                disorder_count += 1
+                            completed_max = prior_max
+
+                    # Every run except the last is complete because the next
+                    # receive timestamp has already been observed.  Keep the
+                    # last run open so a lower tied source timestamp in the
+                    # next batch cannot be missed.
+                    if run_count > 1:
+                        if (
+                            completed_max is not None
+                            and first_min < completed_max
+                        ):
+                            disorder_count += 1
+                        if run_count > 2:
+                            previous_max = run_max_source[
+                                first_run : last_run - 1
+                            ].copy()
+                            previous_max[0] = first_max
+                            target_min = run_min_source[
+                                first_run + 1 : last_run
+                            ]
+                            disorder_count += int(
+                                np.sum(target_min < previous_max)
+                            )
+                        completed_max = (
+                            first_max
+                            if run_count == 2
+                            else int(run_max_source[last_run - 1])
+                        )
+
                     latest[key] = (
+                        completed_max,
                         int(run_receive[last_run]),
-                        int(effective_run_max[last_run]),
+                        (
+                            first_min
+                            if run_count == 1
+                            else int(run_min_source[last_run])
+                        ),
+                        (
+                            first_max
+                            if run_count == 1
+                            else int(run_max_source[last_run])
+                        ),
                     )
     except TimestampAuditError:
         raise
@@ -361,8 +399,12 @@ def _canonical_disorder_counts(
             f"PMXT timestamp disorder scan failed: {exc}"
         ) from exc
 
-    expected_comparisons = row_count - len(latest)
-    if comparison_count != expected_comparisons:
+    for completed_max, _, current_min, _ in latest.values():
+        if completed_max is not None and current_min < completed_max:
+            disorder_count += 1
+
+    comparison_count = row_count - len(latest)
+    if comparison_count < 0:
         raise TimestampAuditError(
             "canonical disorder comparison count violates stream invariant"
         )
