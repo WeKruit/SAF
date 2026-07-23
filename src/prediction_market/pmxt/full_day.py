@@ -348,11 +348,25 @@ def _verified_paths(
 def _native_markets(paths: Sequence[Path]) -> tuple[str, ...]:
     connection = duckdb.connect(database=":memory:")
     try:
+        total_rows, null_market_rows = connection.execute(
+            """
+            SELECT
+                count(*) AS total_rows,
+                count(*) FILTER (WHERE market IS NULL) AS null_market_rows
+            FROM read_parquet(?, union_by_name = true)
+            """,
+            [[str(path.resolve()) for path in paths]],
+        ).fetchone()
+        if total_rows == 0:
+            raise FullDayInputError("PMXT full day contains no source rows")
+        if null_market_rows:
+            raise FullDayInputError(
+                f"PMXT full day contains {null_market_rows} NULL market rows"
+            )
         rows = connection.execute(
             """
             SELECT DISTINCT market
             FROM read_parquet(?, union_by_name = true)
-            WHERE market IS NOT NULL
             ORDER BY market
             """,
             [[str(path.resolve()) for path in paths]],

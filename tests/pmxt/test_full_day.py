@@ -47,13 +47,13 @@ def _schema() -> pa.Schema:
     )
 
 
-def _write_hour(path: Path, hour: int, *, market: str = MARKET) -> None:
+def _write_hour(path: Path, hour: int, *, market: str | None = MARKET) -> None:
     observed = datetime(2026, 5, 28, hour, 0, 0, 100_000, tzinfo=timezone.utc)
     snapshot = hour == 0
     values: dict[str, list[object]] = {
         "timestamp_received": [observed],
         "timestamp": [observed - timedelta(milliseconds=20)],
-        "market": [market.encode("ascii")],
+        "market": [market.encode("ascii") if market is not None else None],
         "event_type": ["book" if snapshot else "price_change"],
         "asset_id": [ASSET],
         "bids": ['[["0.45", "100"]]' if snapshot else None],
@@ -71,7 +71,7 @@ def _write_hour(path: Path, hour: int, *, market: str = MARKET) -> None:
 
 
 def _day_inputs(
-    tmp_path: Path, *, market: str = MARKET
+    tmp_path: Path, *, market: str | None = MARKET
 ) -> tuple[list[ArchiveEntry], list[HourlyObjectRef]]:
     entries: list[ArchiveEntry] = []
     objects: list[HourlyObjectRef] = []
@@ -247,3 +247,19 @@ def test_manifest_rejects_noncanonical_path_aliases(
             inventory_sha256=_digest(b"inventory"),
             canonicalization_version="pmxt-reconstructor-v1",
         )
+
+
+def test_full_day_rejects_null_native_market_rows_instead_of_dropping_them(
+    tmp_path: Path,
+) -> None:
+    entries, objects = _day_inputs(tmp_path, market=None)
+    manifest = build_full_day_manifest(
+        day=DAY,
+        entries=select_complete_utc_day(entries, day=DAY),
+        objects=objects,
+        inventory_sha256=_digest(b"inventory"),
+        canonicalization_version="pmxt-reconstructor-v1",
+    )
+
+    with pytest.raises(FullDayInputError, match="NULL market"):
+        run_full_day_reconstruction(tmp_path, manifest)
