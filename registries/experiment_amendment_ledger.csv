@@ -3,6 +3,7 @@ X-01,0,sha256:da901afeac387a054c4e8f64cb928bb96df45919af5b5b696639b44ccbd860d3,,
 X-02,0,sha256:1b6393ef8cca4bf482cc3a167844358c07fda9a97c45cbedbe4ceda3e2033ed1,,,,
 X-02,1,sha256:e0c42e97c8ec12dd99b883d4d81f2252e617cb125a49ad8b1a1f39d5518bf1f7,sha256:1b6393ef8cca4bf482cc3a167844358c07fda9a97c45cbedbe4ceda3e2033ed1,2026-07-23T05:15:58Z,H,"Preregister the X-02 sample, timestamp statistics, downgrade gate, and Charter-approved audit split before formal data inspection."
 X-02,2,sha256:40a561b867f25b564bc8da8d97bb1beede71e2224e863e2a2c323d0731a95633,sha256:e0c42e97c8ec12dd99b883d4d81f2252e617cb125a49ad8b1a1f39d5518bf1f7,2026-07-23T05:16:12Z,H,Bind the verified four-day X-02 timestamp input bundle without preregistering runner code or evaluated data.
+X-02,3,sha256:2aa6365a16d4b9d9f7c6e56a375288e04e043bc9b7cb45aace59b8338b77e70a,sha256:40a561b867f25b564bc8da8d97bb1beede71e2224e863e2a2c323d0731a95633,2026-07-23T06:22:17Z,H,Preregister the frozen X-02 runner and four-day data bundle before timestamp measurement.
 X-03,0,sha256:7634916448695c08bf66826c217cce0b8d1f67f32bc85c163c5de433bcd07962,,,,
 X-04,0,sha256:5e2265e8d9d992a27024a4af5914fd94bdb172efb97b2a9d819b9b4f7aafedb9,,,,
 X-05,0,sha256:174e6422e4531aaff8a28daa9a7ff254b177f6685e895cf8fb286d21081f463b,,,,

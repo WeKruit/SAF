@@ -118,4 +118,17 @@ experiment_card:
           bundle_file_sha256: sha256:46c3f23007929ad31b131f3618009810501b6ef06d0ac2645eb3dcfac217bd8d
           bundle_sha256: sha256:9477f8d9a224b47b6dda47dd691761d4ca8b5d88be6ad07416217a2bb44c89a4
       amendment_sha256: sha256:40a561b867f25b564bc8da8d97bb1beede71e2224e863e2a2c323d0731a95633
+    - sequence: 3
+      amended_at: '2026-07-23T06:22:17Z'
+      prior_sha256: sha256:40a561b867f25b564bc8da8d97bb1beede71e2224e863e2a2c323d0731a95633
+      approved_by: H
+      reason: Preregister the frozen X-02 runner and four-day data bundle before timestamp measurement.
+      changes:
+        preregistered_inputs:
+          - scope: formal_result
+            code_sha256: sha256:2fca15f8c1cef4066887d08c13c4036266be9fa35bbe25c09b1c07089f4b0a86
+            data_sha256: sha256:9477f8d9a224b47b6dda47dd691761d4ca8b5d88be6ad07416217a2bb44c89a4
+            dataset_ids: [DS-PMXT-V2]
+            model_ids: []
+      amendment_sha256: sha256:2aa6365a16d4b9d9f7c6e56a375288e04e043bc9b7cb45aace59b8338b77e70a
   registration_record_sha256: sha256:1b6393ef8cca4bf482cc3a167844358c07fda9a97c45cbedbe4ceda3e2033ed1

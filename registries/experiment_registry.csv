@@ -1,6 +1,6 @@
 experiment_id,card_path,owner_team,status,execution_authorized,registered_at,due_gate,card_sha256
 X-01,registries/experiments/X-01.yaml,C,registered,true,2026-07-22,,sha256:d57b5226a039042221e73a495401c67dca39683a07202cf90e55102c3040707a
-X-02,registries/experiments/X-02.yaml,C+H,registered,true,2026-07-22,,sha256:a7de47483000c44ab4fc31cd78f78f05b5a09eb119614c7ec66ee3ddd21973bf
+X-02,registries/experiments/X-02.yaml,C+H,registered,true,2026-07-22,,sha256:2b1a34e801fbf09e8f7836c17c1cf4241007dcada9793c87b6c3803023c02c99
 X-03,registries/experiments/X-03.yaml,C+E,registered,true,2026-07-22,,sha256:ad1d23279c23c53d5ca5cd546b27581b4a55572047e61bc4ae396770bb983210
 X-04,registries/experiments/X-04.yaml,E,registered,false,2026-07-22,,sha256:f9bcdfb4004c68baf40da4c1d16a7931da723b6bc66012e6ffea8adc77e680bb
 X-05,registries/experiments/X-05.yaml,E+H,registered,false,2026-07-22,,sha256:34c8e62723ce63731fa3b2e2254c751f5ea81d1feabf2a365b2d5ee34e1face4

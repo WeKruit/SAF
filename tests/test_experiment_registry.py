@@ -130,6 +130,16 @@ EXPECTED_X02_INPUT_MANIFEST_BINDING = {
         "9477f8d9a224b47b6dda47dd691761d4ca8b5d88be6ad07416217a2bb44c89a4"
     ),
 }
+EXPECTED_X02_FORMAL_INPUT = {
+    "scope": "formal_result",
+    "code_sha256": (
+        "sha256:"
+        "2fca15f8c1cef4066887d08c13c4036266be9fa35bbe25c09b1c07089f4b0a86"
+    ),
+    "data_sha256": EXPECTED_X02_INPUT_MANIFEST_BINDING["bundle_sha256"],
+    "dataset_ids": ["DS-PMXT-V2"],
+    "model_ids": [],
+}
 EXPECTED_X02_DAY_MANIFESTS = [
     {
         "artifact_file_sha256": (
@@ -417,6 +427,7 @@ def _valid_result_ref(
     result_label: str = "FORMAL",
     evaluation_started_at: str = "2026-07-23T00:00:03Z",
     registration_head_sha256: str = "sha256:" + "4" * 64,
+    code_sha256: str = "sha256:" + "1" * 64,
     data_sha256: str = "sha256:" + "2" * 64,
     dataset_ids: list[str] | None = None,
     model_ids: list[str] | None = None,
@@ -425,7 +436,7 @@ def _valid_result_ref(
         "scope": scope,
         "result_label": result_label,
         "evaluation_started_at": evaluation_started_at,
-        "code_sha256": "sha256:" + "1" * 64,
+        "code_sha256": code_sha256,
         "data_sha256": data_sha256,
         "result_sha256": "sha256:" + "3" * 64,
         "registration_head_sha256": registration_head_sha256,
@@ -950,7 +961,7 @@ def test_x02_seed_preregistration_is_exact_and_does_not_resolve_input_manifest(
     assert card["registration_record_sha256"] == (
         compute_registration_record_sha256(card)
     )
-    assert len(card["amendments"]) == 2
+    assert len(card["amendments"]) == 3
     amendment = card["amendments"][0]
     assert amendment["sequence"] == 1
     assert amendment["prior_sha256"] == card["registration_record_sha256"]
@@ -986,16 +997,16 @@ def test_x02_seed_preregistration_is_exact_and_does_not_resolve_input_manifest(
             for row in csv.DictReader(handle)
             if row["experiment_id"] == "X-02"
         ]
-    assert [row["sequence"] for row in ledger] == ["0", "1", "2"]
+    assert [row["sequence"] for row in ledger] == ["0", "1", "2", "3"]
     assert ledger[0]["record_sha256"] == card["registration_record_sha256"]
     assert ledger[1]["record_sha256"] == amendment["amendment_sha256"]
 
 
-def test_x02_input_manifest_bundle_binding_is_exact_and_keeps_inputs_unregistered(
+def test_x02_input_manifest_and_formal_inputs_are_exact(
     program_root: Path,
 ) -> None:
     card = _read_card(program_root, "X-02")
-    seed, binding_amendment = card["amendments"]
+    seed, binding_amendment, input_amendment = card["amendments"]
 
     amendment_times = [
         datetime.fromisoformat(
@@ -1026,6 +1037,17 @@ def test_x02_input_manifest_bundle_binding_is_exact_and_keeps_inputs_unregistere
             ],
         }
     ]
+    assert input_amendment["sequence"] == 3
+    assert input_amendment["prior_sha256"] == binding_amendment[
+        "amendment_sha256"
+    ]
+    assert input_amendment["approved_by"] == "H"
+    assert input_amendment["amendment_sha256"] == (
+        compute_amendment_sha256(input_amendment)
+    )
+    assert input_amendment["changes"] == {
+        "preregistered_inputs": [EXPECTED_X02_FORMAL_INPUT]
+    }
 
     effective = load_experiment_registry(program_root)["X-02"]
     assert effective["timestamp_audit_preregistration"] == (
@@ -1043,7 +1065,16 @@ def test_x02_input_manifest_bundle_binding_is_exact_and_keeps_inputs_unregistere
         "diff_and_stability_definitions": "resolved",
         "h_split_approval": "resolved",
     }
-    assert effective["preregistered_inputs"] == {}
+    assert effective["preregistered_inputs"] == {
+        "formal_result": {
+            **{
+                key: value
+                for key, value in EXPECTED_X02_FORMAL_INPUT.items()
+                if key != "scope"
+            },
+            "registered_at": input_amendment["amended_at"],
+        }
+    }
     assert effective["results_ref"] == []
     assert effective["status"] == "registered"
 
@@ -1638,7 +1669,7 @@ def test_x02_timestamp_input_manifest_binding_is_append_once(
         load_experiment_registry(root)
 
 
-def test_x02_formal_result_remains_blocked_until_code_and_data_preregistration(
+def test_x02_formal_result_remains_blocked_by_x01_after_input_preregistration(
     tmp_path: Path,
 ) -> None:
     root = _copy_program_fixture(tmp_path)
@@ -1647,19 +1678,21 @@ def test_x02_formal_result_remains_blocked_until_code_and_data_preregistration(
         lock for lock in effective["registration_locks"]
         if lock["id"] == "timestamp_input_manifest"
     )["status"] == "resolved"
-    assert effective["preregistered_inputs"] == {}
+    registered = effective["preregistered_inputs"]["formal_result"]
     result = _valid_result_ref(
         scope="formal_result",
         evaluation_started_at="2026-07-24T00:00:00Z",
         registration_head_sha256=effective[
             "registration_head_sha256"
         ],
+        code_sha256=registered["code_sha256"],
+        data_sha256=registered["data_sha256"],
         dataset_ids=["DS-PMXT-V2"],
     )
 
     with pytest.raises(
-        InvalidResultReferenceError,
-        match="no preregistered inputs",
+        UnresolvedDependencyError,
+        match="dependenc",
     ):
         validate_result_ref(root, "X-02", result)
 
