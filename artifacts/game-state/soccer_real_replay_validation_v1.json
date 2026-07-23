@@ -1,6 +1,7 @@
 {
+  "artifact_id": "EV-SOCCER-GAME-STATE-REAL-REPLAY-v1",
   "artifact_type": "soccer_real_replay_validation",
-  "artifact_version": "v0",
+  "artifact_version": "v1",
   "validation_class": "ENGINEERING_VALIDATION",
   "formal_experiment_result": false,
   "experiment_context": "X-12",
@@ -8,20 +9,20 @@
     "predictive_accuracy_measured": false,
     "model_inference_latency_measured": false,
     "prediction_market_alignment_measured": false,
-    "permitted_claim": "A frozen real StatsBomb match can be adapted and reduced deterministically under the game-state contract.",
+    "permitted_claim": "The frozen 380-match StatsBomb Premier League 2015/16 partition can be adapted and reduced deterministically under reducer v2, with final scores matching frozen match metadata.",
     "forbidden_claims": [
       "This is a formal X-12 model result.",
       "Reducer latency is model inference latency.",
       "The replay demonstrates prediction-market alpha."
     ]
   },
-  "generated_at": "2026-07-23T16:58:58Z",
+  "generated_at": "2026-07-23T18:19:15Z",
   "implementation": {
     "adapter": "prediction_market.sports.soccer_game_state.adapt_statsbomb_event",
     "reducer": "prediction_market.sports.soccer_game_state.reduce_soccer_game_state",
     "reducer_id": "soccer.statsbomb.event-reducer",
-    "reducer_version": "v1",
-    "implementation_sha256": "sha256:458cc0d0f77d87524b2b8c673994b87f71e88887be65e3aa954ce3366f6f339c",
+    "reducer_version": "v2",
+    "implementation_sha256": "sha256:1fa9d6da845db439ddde76df7dd1b039f319b73d59ddc0a7b80a186e51ecd82b",
     "event_envelope_module_sha256": "sha256:07f0ea533433e8601713f33f1060c46bc19f449b6dd4c483774951257e67247d",
     "integration_test": "tests/sports/test_soccer_real_replay.py",
     "integration_test_sha256": "sha256:0c07e1b9cf1cb0f3c4321514ec8838e9b56fa9db9c805a0b215c5731a9081186"
@@ -72,7 +73,7 @@
     "both_replays_completed": true,
     "both_final_states_equal": true,
     "both_final_hashes_equal": true,
-    "final_state_sha256": "sha256:59ce8ce4e1cda704ea0c5723ec69b21198085aaf6e6f869fea5bc657aae4a787",
+    "final_state_sha256": "sha256:bba18eb2302d38fad03dfffb016591a36c985cd1d9aa6e090cd27d4f2a52fcc2",
     "final_state": {
       "sequence": 3175,
       "period": 2,
@@ -84,8 +85,11 @@
       "source_away_score": 1,
       "card_count": 8,
       "substitution_count": 6,
+      "player_off_count": 0,
       "home_active_player_count": 11,
       "away_active_player_count": 10,
+      "ball_x_milli": 104700,
+      "ball_y_milli": 3900,
       "in_play": false,
       "last_action": "Half End",
       "quality_flags": [
@@ -102,10 +106,46 @@
       "cards_applied": true,
       "second_yellow_removes_active_player": true,
       "substitutions_applied": true,
+      "player_off_and_on_applied": true,
+      "carry_and_goalkeeper_end_locations_supported": true,
+      "own_goals_counted_once": true,
       "terminal_fields_consistent": true,
       "clock_anomaly_evidence_persisted_in_state": true
     },
     "terminal_semantics": "This StatsBomb file ends with Half End and has no explicit Match End event. The reducer therefore leaves terminal=false rather than infer terminal status from future knowledge."
+  },
+  "season_partition_census": {
+    "role": "Reducer-only census over verified native events; full registry-backed EventEnvelope adapter integration remains the single-match replay above.",
+    "runner": "prediction_market.sports.soccer_season_census",
+    "runner_version": "v0",
+    "runner_sha256": "sha256:067fab2fa4db89da99259c4310bec67b0b678e97b1867220607833e078c1ef06",
+    "runner_test_sha256": "sha256:c440d9bdf653ef65598f81636fe8244787e91d382c114ae18bd59b59f7ab1fda",
+    "command": ".venv/bin/python -m prediction_market.sports.soccer_season_census --program-root . --scan-runs 2",
+    "wall_seconds": 347.85,
+    "scan_runs": 2,
+    "deterministic": true,
+    "canonical_state_sha256": "sha256:36a21f934f7f69009a63062c322dcf3a126958e242c1b07d0e617124d1b627cb",
+    "per_run": {
+      "games_total": 380,
+      "completed_games": 380,
+      "fail_closed_games": 0,
+      "source_events": 1313773,
+      "events_reduced": 1313773,
+      "score_mismatches": 0,
+      "clock_regressions": 139,
+      "quality_flag_counts": {
+        "clock_jump": 139,
+        "out_of_order": 139,
+        "source_coordinate_out_of_bounds": 3
+      },
+      "failures": []
+    },
+    "coverage_notes": [
+      "All 145 Player Off and 144 Player On native events are now reducible; the unmatched permanent Player Off remains explicit state.",
+      "Carry and Goal Keeper end_location values are preserved when supplied.",
+      "The census score oracle is frozen match metadata, not an independent event-by-event state oracle.",
+      "The 139 same-period reducer clock regressions are not interchangeable with broader native timestamp audit counts."
+    ]
   },
   "source_clock_anomalies": {
     "count": 1,
@@ -142,12 +182,12 @@
     "timer": "time.perf_counter_ns",
     "quantile_method": "nearest-rank",
     "latency_ns": {
-      "min": 25083,
-      "p50": 36416,
-      "p95": 47500,
-      "p99": 52208,
-      "max": 19385625,
-      "mean": 34561.525
+      "min": 23208,
+      "p50": 36292,
+      "p95": 47250,
+      "p99": 49500,
+      "max": 1186708,
+      "mean": 34024.95214173228
     },
     "runtime": {
       "python": "3.13.12",
@@ -156,6 +196,13 @@
       "machine": "arm64",
       "processor": "arm"
     },
-    "interpretation": "Observed local engineering timing only; it is not an SLA and cannot be reported as probabilistic model latency."
-  }
+    "interpretation": "Observed local reducer-v2 engineering timing only; it is not an SLA and cannot be reported as probabilistic model latency."
+  },
+  "limitations": [
+    "The full-season census uses verified native objects and deterministic event IDs but does not instantiate and validate 1,313,773 complete EventEnvelope objects.",
+    "Score agreement is checked against frozen final match metadata; there is no independent event-by-event oracle for every state field.",
+    "Tactical formations and player positions are not yet represented in reducer v2.",
+    "The existing five-minute probability head repeats pregame Dixon-Coles intensities and is not conditioned on reducer-v2 state.",
+    "No prediction-market identity, quote, depth, pause state, or matched-as-of row is present."
+  ]
 }

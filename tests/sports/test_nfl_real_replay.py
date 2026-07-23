@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import asdict
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -43,15 +42,22 @@ NFLVERSE_REPLAY_COLUMNS = (
     "goal_to_go",
     "play_clock",
     "posteam",
+    "posteam_type",
     "down",
     "ydstogo",
     "yardline_100",
+    "posteam_score",
+    "defteam_score",
+    "posteam_score_post",
+    "defteam_score_post",
     "total_home_score",
     "total_away_score",
     "home_timeouts_remaining",
     "away_timeouts_remaining",
     "play_type",
+    "play_type_nfl",
     "desc",
+    "sp",
     "first_down",
     "interception",
     "fumble_lost",
@@ -195,6 +201,130 @@ def _event_for_rows(
         )
 
 
+def _mapped_scores(
+    row: dict[str, Any],
+    *,
+    after_play: bool,
+) -> tuple[int, int]:
+    suffix = "_post" if after_play else ""
+    posteam_score = row[f"posteam_score{suffix}"]
+    defteam_score = row[f"defteam_score{suffix}"]
+    if row["posteam"] == row["home_team"]:
+        return int(posteam_score), int(defteam_score)
+    if row["posteam"] == row["away_team"]:
+        return int(defteam_score), int(posteam_score)
+    return int(row["total_home_score"]), int(row["total_away_score"])
+
+
+def _optional_int(value: Any) -> int | None:
+    return None if value is None else int(value)
+
+
+def _stable_optional_scalar(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def test_real_touchdown_and_extra_point_are_scored_on_their_own_rows() -> None:
+    rows = _real_game_rows()
+    touchdown_index = next(
+        index
+        for index, row in enumerate(rows[:-2])
+        if row["sp"] == 1
+        and row["posteam_score_post"] - row["posteam_score"] == 6
+        and rows[index + 1]["play_type_nfl"] == "XP_KICK"
+    )
+    touchdown_row = rows[touchdown_index]
+    point_after_row = rows[touchdown_index + 1]
+    following_row = rows[touchdown_index + 2]
+
+    state = nfl.state_from_nflverse_row(touchdown_row, sequence=0)
+    assert (state.home_score, state.away_score) == _mapped_scores(
+        touchdown_row,
+        after_play=False,
+    )
+
+    touchdown = _event_for_rows(
+        touchdown_row,
+        point_after_row,
+        sequence=1,
+    )
+    after_touchdown = nfl.reduce(state, touchdown)
+    assert touchdown.source_play_id == str(int(touchdown_row["play_id"]))
+    assert (after_touchdown.home_score, after_touchdown.away_score) == (
+        _mapped_scores(touchdown_row, after_play=True)
+    )
+
+    point_after = _event_for_rows(
+        point_after_row,
+        following_row,
+        sequence=2,
+    )
+    after_point = nfl.reduce(after_touchdown, point_after)
+    assert point_after.source_play_id == str(int(point_after_row["play_id"]))
+    assert (after_point.home_score, after_point.away_score) == _mapped_scores(
+        point_after_row,
+        after_play=True,
+    )
+
+
+def test_real_timeout_is_not_shifted_to_prior_play_and_carries_context() -> None:
+    rows = _real_game_rows()
+    timeout_index = next(
+        index
+        for index, row in enumerate(rows[1:-1], start=1)
+        if row["timeout"] == 1
+    )
+    prior_row = rows[timeout_index - 1]
+    timeout_row = rows[timeout_index]
+    following_row = rows[timeout_index + 1]
+
+    state = nfl.state_from_nflverse_row(prior_row, sequence=0)
+    prior_play = _event_for_rows(prior_row, timeout_row, sequence=1)
+    assert prior_play.timeout is False
+    assert prior_play.carry_forward_context is True
+    before_timeout = nfl.reduce(state, prior_play)
+    assert (
+        before_timeout.possession_team,
+        before_timeout.down,
+        before_timeout.distance,
+        before_timeout.yardline_100,
+    ) == (
+        state.possession_team,
+        state.down,
+        state.distance,
+        state.yardline_100,
+    )
+
+    timeout = _event_for_rows(timeout_row, following_row, sequence=2)
+    assert timeout.source_play_id == str(int(timeout_row["play_id"]))
+    assert timeout.timeout is True
+    assert timeout.timeout_team == timeout_row["timeout_team"]
+    assert timeout.carry_forward_context is True
+
+    after_timeout = nfl.reduce(before_timeout, timeout)
+    assert after_timeout.home_timeouts_remaining == int(
+        timeout_row["home_timeouts_remaining"]
+    )
+    assert after_timeout.away_timeouts_remaining == int(
+        timeout_row["away_timeouts_remaining"]
+    )
+    assert (
+        after_timeout.possession_team,
+        after_timeout.down,
+        after_timeout.distance,
+        after_timeout.yardline_100,
+    ) == (
+        before_timeout.possession_team,
+        before_timeout.down,
+        before_timeout.distance,
+        before_timeout.yardline_100,
+    )
+
+
 def _replay_once() -> tuple[str, int]:
     rows = _real_game_rows()
     state = nfl.state_from_nflverse_row(rows[0], sequence=0)
@@ -203,19 +333,106 @@ def _replay_once() -> tuple[str, int]:
         zip(rows, rows[1:]),
         start=1,
     ):
+        prior_state = state
         event = _event_for_rows(
             pre_row,
             post_row,
             sequence=sequence,
         )
         state = nfl.reduce(state, event)
-        expected = nfl.state_from_nflverse_row(
-            post_row,
-            sequence=sequence,
-            terminal=event.terminal,
-            last_event_id=event.event_id,
+        assert event.source_play_id == str(int(pre_row["play_id"]))
+        assert state.source_play_id == str(int(post_row["play_id"]))
+        assert state.sequence == sequence
+        assert state.last_event_id == event.event_id
+        assert (state.home_score, state.away_score) == _mapped_scores(
+            pre_row,
+            after_play=True,
         )
-        assert asdict(state) == asdict(expected)
+
+        pre_timeout = pre_row["timeout"] == 1
+        post_timeout = post_row["timeout"] == 1
+        assert event.timeout is pre_timeout
+        if pre_timeout:
+            assert event.timeout_team == pre_row["timeout_team"]
+        expected_timeouts = (
+            (
+                prior_state.home_timeouts_remaining,
+                prior_state.away_timeouts_remaining,
+            )
+            if post_timeout and not pre_timeout
+            else (
+                int(
+                    pre_row["home_timeouts_remaining"]
+                    if pre_timeout
+                    else post_row["home_timeouts_remaining"]
+                ),
+                int(
+                    pre_row["away_timeouts_remaining"]
+                    if pre_timeout
+                    else post_row["away_timeouts_remaining"]
+                ),
+            )
+        )
+        assert (
+            state.home_timeouts_remaining,
+            state.away_timeouts_remaining,
+        ) == expected_timeouts
+
+        expected_carry = (
+            pre_row["posteam"] is None or post_row["posteam"] is None
+        )
+        assert event.carry_forward_context is expected_carry
+        if expected_carry:
+            assert (
+                state.drive_id,
+                state.play_clock_seconds,
+                state.possession_team,
+                state.down,
+                state.distance,
+                state.yardline_100,
+                state.goal_to_go,
+            ) == (
+                prior_state.drive_id,
+                prior_state.play_clock_seconds,
+                prior_state.possession_team,
+                prior_state.down,
+                prior_state.distance,
+                prior_state.yardline_100,
+                prior_state.goal_to_go,
+            )
+        else:
+            assert (
+                state.drive_id,
+                state.play_clock_seconds,
+                state.possession_team,
+                state.down,
+                state.distance,
+                state.yardline_100,
+                state.goal_to_go,
+            ) == (
+                _stable_optional_scalar(post_row["fixed_drive"]),
+                _optional_int(post_row["play_clock"]),
+                post_row["posteam"],
+                _optional_int(post_row["down"]),
+                (
+                    _optional_int(post_row["ydstogo"])
+                    if post_row["down"] is not None
+                    else None
+                ),
+                _optional_int(post_row["yardline_100"]),
+                bool(post_row["goal_to_go"]),
+            )
+
+        clock_row = pre_row if pre_timeout else post_row
+        assert (
+            state.period,
+            state.period_seconds_remaining,
+            state.game_seconds_remaining,
+        ) == (
+            int(clock_row["qtr"]),
+            int(clock_row["quarter_seconds_remaining"]),
+            int(clock_row["game_seconds_remaining"]),
+        )
 
     return canonical_state_sha256(state), len(rows) - 1
 

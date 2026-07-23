@@ -331,6 +331,7 @@ class NFLPlayEvent:
     score: bool
     timeout: bool
     timeout_team: str | None
+    carry_forward_context: bool
     period_changed: bool
     terminal: bool
     quality_flags: tuple[str, ...]
@@ -386,6 +387,7 @@ class NFLPlayEvent:
             "possession_changed",
             "score",
             "timeout",
+            "carry_forward_context",
             "period_changed",
             "terminal",
         ):
@@ -395,6 +397,12 @@ class NFLPlayEvent:
         elif self.timeout_team is not None:
             raise NFLGameStateError(
                 "event.timeout_team must be None when timeout is false"
+            )
+        if self.carry_forward_context and (
+            self.first_down or self.turnover or self.possession_changed
+        ):
+            raise NFLGameStateError(
+                "a context-carry event cannot claim a contextual transition"
             )
         _validate_terminal(
             terminal=self.terminal,
@@ -556,6 +564,23 @@ def reduce(state: NFLGameState, event: NFLPlayEvent) -> NFLGameState:
     _validate_possession_transition(state, event)
     _validate_timeout_transition(state, event)
 
+    if event.carry_forward_context:
+        next_drive_id = state.drive_id
+        next_play_clock_seconds = state.play_clock_seconds
+        possession_team = state.possession_team
+        down = state.down
+        distance = state.distance
+        yardline_100 = state.yardline_100
+        goal_to_go = state.goal_to_go
+    else:
+        next_drive_id = event.next_drive_id
+        next_play_clock_seconds = event.next_play_clock_seconds
+        possession_team = event.possession_team
+        down = event.down
+        distance = event.distance
+        yardline_100 = event.yardline_100
+        goal_to_go = event.goal_to_go
+
     return NFLGameState(
         sport=state.sport,
         game_id=state.game_id,
@@ -567,13 +592,13 @@ def reduce(state: NFLGameState, event: NFLPlayEvent) -> NFLGameState:
         period_seconds_remaining=event.period_seconds_remaining,
         game_seconds_remaining=event.game_seconds_remaining,
         source_play_id=event.next_source_play_id,
-        drive_id=event.next_drive_id,
-        play_clock_seconds=event.next_play_clock_seconds,
-        possession_team=event.possession_team,
-        down=event.down,
-        distance=event.distance,
-        yardline_100=event.yardline_100,
-        goal_to_go=event.goal_to_go,
+        drive_id=next_drive_id,
+        play_clock_seconds=next_play_clock_seconds,
+        possession_team=possession_team,
+        down=down,
+        distance=distance,
+        yardline_100=yardline_100,
+        goal_to_go=goal_to_go,
         home_score=event.home_score,
         away_score=event.away_score,
         home_timeouts_remaining=event.home_timeouts_remaining,
@@ -589,7 +614,7 @@ class NFLGameStateReducer:
 
     sport = NFL_SPORT
     reducer_id = "REDUCER-NFL-PLAY-STATE"
-    reducer_version = "v1"
+    reducer_version = "v2"
 
     def reduce(
         self,
@@ -791,6 +816,56 @@ def _canonical_nflverse_game_id(value: str | None) -> str:
     return candidate
 
 
+def _home_away_scores(
+    row: Mapping[str, object],
+    *,
+    after_play: bool,
+) -> tuple[int, int]:
+    home_team = _row_text(row, "home_team")
+    away_team = _row_text(row, "away_team")
+    posteam = _row_text(row, "posteam", required=False)
+    posteam_field = "posteam_score_post" if after_play else "posteam_score"
+    defteam_field = "defteam_score_post" if after_play else "defteam_score"
+
+    if posteam is None:
+        if (
+            _row_value(row, posteam_field, required=False) is not None
+            or _row_value(row, defteam_field, required=False) is not None
+        ):
+            raise NFLGameStateError(
+                "nflverse no-possession row cannot carry team-relative scores"
+            )
+        home_score = _row_int(row, "total_home_score")
+        away_score = _row_int(row, "total_away_score")
+        assert home_score is not None
+        assert away_score is not None
+        return home_score, away_score
+
+    if posteam not in {home_team, away_team}:
+        raise NFLGameStateError(
+            "nflverse posteam must identify the home or away team"
+        )
+    posteam_score = _row_int(row, posteam_field)
+    defteam_score = _row_int(row, defteam_field)
+    assert posteam_score is not None
+    assert defteam_score is not None
+    if posteam == home_team:
+        scores = (posteam_score, defteam_score)
+    else:
+        scores = (defteam_score, posteam_score)
+
+    if after_play:
+        total_scores = (
+            _row_int(row, "total_home_score"),
+            _row_int(row, "total_away_score"),
+        )
+        if scores != total_scores:
+            raise NFLGameStateError(
+                "nflverse team-relative post-play scores disagree with totals"
+            )
+    return scores
+
+
 def _snapshot_from_row(
     row: Mapping[str, object],
 ) -> dict[str, object]:
@@ -798,6 +873,7 @@ def _snapshot_from_row(
     distance = (
         _row_int(row, "ydstogo", required=True) if down is not None else None
     )
+    home_score, away_score = _home_away_scores(row, after_play=False)
     return {
         "game_id": _canonical_nflverse_game_id(
             _row_text(row, "game_id")
@@ -815,10 +891,10 @@ def _snapshot_from_row(
         "distance": distance,
         "yardline_100": _row_int(row, "yardline_100", required=False),
         "goal_to_go": _row_indicator(row, "goal_to_go", default=False),
-        # nflverse explicitly defines these as scores at the start of the play.
-        # `home_score` and `away_score` are final-game values and never fallback.
-        "home_score": _row_int(row, "total_home_score"),
-        "away_score": _row_int(row, "total_away_score"),
+        # Team-relative scores are the canonical start-of-play observation.
+        # `total_*` is end-of-play on scoring rows and cannot define this state.
+        "home_score": home_score,
+        "away_score": away_score,
         "home_timeouts_remaining": _row_int(
             row, "home_timeouts_remaining"
         ),
@@ -886,42 +962,40 @@ def nflverse_transition_payload(
                 f"nflverse pre/post observations differ on {field}"
             )
 
+    pre_has_context = pre_snapshot["possession_team"] is not None
+    post_has_context = post_snapshot["possession_team"] is not None
+    carry_forward_context = not pre_has_context or not post_has_context
+    context_snapshot = (
+        pre_snapshot if carry_forward_context else post_snapshot
+    )
+    source_is_timeout = _row_indicator(pre, "timeout", default=False)
+    clock_snapshot = pre_snapshot if source_is_timeout else post_snapshot
     pre_possession = pre_snapshot["possession_team"]
-    post_possession = post_snapshot["possession_team"]
+    post_possession = context_snapshot["possession_team"]
     possession_changed = (
         pre_possession is not None
         and post_possession is not None
         and pre_possession != post_possession
     )
+    home_score, away_score = _home_away_scores(pre, after_play=True)
     score = (
-        pre_snapshot["home_score"] != post_snapshot["home_score"]
-        or pre_snapshot["away_score"] != post_snapshot["away_score"]
+        pre_snapshot["home_score"] != home_score
+        or pre_snapshot["away_score"] != away_score
     )
-    period_changed = pre_snapshot["period"] != post_snapshot["period"]
-    home_timeout_decreased = (
-        post_snapshot["home_timeouts_remaining"]
-        < pre_snapshot["home_timeouts_remaining"]
+    period_changed = pre_snapshot["period"] != clock_snapshot["period"]
+    timeout_observed = source_is_timeout
+    timeout_team = (
+        _row_text(pre, "timeout_team") if timeout_observed else None
     )
-    away_timeout_decreased = (
-        post_snapshot["away_timeouts_remaining"]
-        < pre_snapshot["away_timeouts_remaining"]
+    post_is_timeout = _row_indicator(post, "timeout", default=False)
+    timeout_snapshot = (
+        pre_snapshot if timeout_observed or post_is_timeout else post_snapshot
     )
-    # nflverse rows are pre-play snapshots.  A flag on ``pre`` describes the
-    # play represented by that row, while the reducer commits only state
-    # changes verified in the following snapshot.  Timeout counters therefore
-    # define the transition; copying the pre-row flag shifts timeouts by one
-    # row and emits an unreducible event.
-    timeout_observed = home_timeout_decreased or away_timeout_decreased
-    timeout_team: str | None = None
-    if home_timeout_decreased and not away_timeout_decreased:
-        timeout_team = str(pre_snapshot["home_team"])
-    elif away_timeout_decreased and not home_timeout_decreased:
-        timeout_team = str(pre_snapshot["away_team"])
 
     observed_first_down = _row_indicator(pre, "first_down", default=False)
     first_down = observed_first_down and not possession_changed and (
-        post_snapshot["down"] == 1
-        or (score and post_snapshot["down"] is None)
+        context_snapshot["down"] == 1
+        or (score and context_snapshot["down"] is None)
     )
     turnover = _turnover_observed(pre) and possession_changed
 
@@ -940,48 +1014,50 @@ def nflverse_transition_payload(
         "observation_mode": NFLVERSE_OBSERVATION_MODE,
         "play_type": _row_text(pre, "play_type", required=False),
         "description": _row_text(pre, "desc", required=False),
-        "period": int(post_snapshot["period"]),
+        "period": int(clock_snapshot["period"]),
         "period_seconds_remaining": int(
-            post_snapshot["period_seconds_remaining"]
+            clock_snapshot["period_seconds_remaining"]
         ),
-        "game_seconds_remaining": int(post_snapshot["game_seconds_remaining"]),
+        "game_seconds_remaining": int(clock_snapshot["game_seconds_remaining"]),
         "next_source_play_id": str(post_snapshot["source_play_id"]),
         "next_drive_id": (
             None
-            if post_snapshot["drive_id"] is None
-            else str(post_snapshot["drive_id"])
+            if context_snapshot["drive_id"] is None
+            else str(context_snapshot["drive_id"])
         ),
         "next_play_clock_seconds": (
             None
-            if post_snapshot["play_clock_seconds"] is None
-            else int(post_snapshot["play_clock_seconds"])
+            if context_snapshot["play_clock_seconds"] is None
+            else int(context_snapshot["play_clock_seconds"])
         ),
         "possession_team": (
             None
-            if post_snapshot["possession_team"] is None
-            else str(post_snapshot["possession_team"])
+            if context_snapshot["possession_team"] is None
+            else str(context_snapshot["possession_team"])
         ),
         "down": (
-            None if post_snapshot["down"] is None else int(post_snapshot["down"])
+            None
+            if context_snapshot["down"] is None
+            else int(context_snapshot["down"])
         ),
         "distance": (
             None
-            if post_snapshot["distance"] is None
-            else int(post_snapshot["distance"])
+            if context_snapshot["distance"] is None
+            else int(context_snapshot["distance"])
         ),
         "yardline_100": (
             None
-            if post_snapshot["yardline_100"] is None
-            else int(post_snapshot["yardline_100"])
+            if context_snapshot["yardline_100"] is None
+            else int(context_snapshot["yardline_100"])
         ),
-        "goal_to_go": bool(post_snapshot["goal_to_go"]),
-        "home_score": int(post_snapshot["home_score"]),
-        "away_score": int(post_snapshot["away_score"]),
+        "goal_to_go": bool(context_snapshot["goal_to_go"]),
+        "home_score": home_score,
+        "away_score": away_score,
         "home_timeouts_remaining": int(
-            post_snapshot["home_timeouts_remaining"]
+            timeout_snapshot["home_timeouts_remaining"]
         ),
         "away_timeouts_remaining": int(
-            post_snapshot["away_timeouts_remaining"]
+            timeout_snapshot["away_timeouts_remaining"]
         ),
         "first_down": first_down,
         "turnover": turnover,
@@ -989,6 +1065,7 @@ def nflverse_transition_payload(
         "score": score,
         "timeout": timeout_observed,
         "timeout_team": timeout_team,
+        "carry_forward_context": carry_forward_context,
         "period_changed": period_changed,
         "terminal": target_terminal,
         "quality_flags": list(sorted(quality_flags)),

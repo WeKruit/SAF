@@ -83,6 +83,7 @@ def _event(state: Any, **changes: object) -> Any:
         "score": False,
         "timeout": False,
         "timeout_team": None,
+        "carry_forward_context": False,
         "period_changed": False,
         "terminal": False,
         "quality_flags": (),
@@ -112,7 +113,13 @@ def _nflverse_rows() -> tuple[dict[str, object], dict[str, object]]:
         "home_timeouts_remaining": 3.0,
         "away_timeouts_remaining": 3.0,
         "play_type": "run",
+        "play_type_nfl": "RUSH",
         "desc": "HME runner gains ten yards.",
+        "sp": 0.0,
+        "posteam_score": 0.0,
+        "defteam_score": 0.0,
+        "posteam_score_post": 0.0,
+        "defteam_score_post": 0.0,
         "first_down": 1.0,
         "interception": 0.0,
         "fumble_lost": 0.0,
@@ -435,11 +442,199 @@ def test_nflverse_adapter_uses_only_offline_pre_post_observations() -> None:
 def test_nflverse_adapter_never_falls_back_to_final_score_columns() -> None:
     nfl = _module()
     pre, post = _nflverse_rows()
-    pre.pop("total_home_score")
-    post.pop("total_home_score")
+    pre.pop("posteam_score_post")
 
-    with pytest.raises(nfl.NFLGameStateError, match="total_home_score"):
+    with pytest.raises(nfl.NFLGameStateError, match="posteam_score_post"):
         _adapt_nflverse_observations(pre, post)
+
+
+def test_nflverse_td_and_extra_point_scores_belong_to_their_source_rows() -> None:
+    nfl = _module()
+    td, extra_point = _nflverse_rows()
+    td.update(
+        {
+            "play_id": 1101.0,
+            "qtr": 2.0,
+            "quarter_seconds_remaining": 866.0,
+            "game_seconds_remaining": 2666.0,
+            "posteam": "HME",
+            "down": 2.0,
+            "ydstogo": 3.0,
+            "yardline_100": 18.0,
+            "play_type": "run",
+            "play_type_nfl": "RUSH",
+            "desc": "HME runner scores a touchdown.",
+            "sp": 1.0,
+            "posteam_score": 3.0,
+            "defteam_score": 3.0,
+            "posteam_score_post": 9.0,
+            "defteam_score_post": 3.0,
+            "total_home_score": 9.0,
+            "total_away_score": 3.0,
+            "first_down": 1.0,
+        }
+    )
+    extra_point.update(
+        {
+            "play_id": 1124.0,
+            "qtr": 2.0,
+            "quarter_seconds_remaining": 860.0,
+            "game_seconds_remaining": 2660.0,
+            "posteam": "HME",
+            "down": None,
+            "ydstogo": 0.0,
+            "yardline_100": 15.0,
+            "play_type": "extra_point",
+            "play_type_nfl": "XP_KICK",
+            "desc": "HME extra point is good.",
+            "sp": 1.0,
+            "posteam_score": 9.0,
+            "defteam_score": 3.0,
+            "posteam_score_post": 10.0,
+            "defteam_score_post": 3.0,
+            "total_home_score": 10.0,
+            "total_away_score": 3.0,
+            "first_down": 0.0,
+        }
+    )
+    kickoff = {
+        **extra_point,
+        "play_id": 1139.0,
+        "posteam": "AWY",
+        "yardline_100": 35.0,
+        "play_type": "kickoff",
+        "play_type_nfl": "KICK_OFF",
+        "desc": "HME kicks to AWY.",
+        "sp": 0.0,
+        "posteam_score": 3.0,
+        "defteam_score": 10.0,
+        "posteam_score_post": 3.0,
+        "defteam_score_post": 10.0,
+        "first_down": 0.0,
+    }
+
+    state, touchdown = _adapt_nflverse_observations(td, extra_point)
+    assert (state.home_score, state.away_score) == (3, 3)
+    assert touchdown.source_play_id == "1101"
+    assert touchdown.description == "HME runner scores a touchdown."
+    assert (touchdown.home_score, touchdown.away_score) == (9, 3)
+    assert touchdown.score is True
+
+    after_touchdown = nfl.reduce(state, touchdown)
+    _, point_after = _adapt_nflverse_observations(
+        extra_point,
+        kickoff,
+        state_sequence=1,
+    )
+    assert point_after.source_play_id == "1124"
+    assert point_after.description == "HME extra point is good."
+    assert (point_after.home_score, point_after.away_score) == (10, 3)
+    assert point_after.score is True
+
+    after_point = nfl.reduce(after_touchdown, point_after)
+    assert (after_touchdown.home_score, after_touchdown.away_score) == (9, 3)
+    assert (after_point.home_score, after_point.away_score) == (10, 3)
+
+
+def test_nflverse_timeout_is_same_row_and_context_carries_across_admin_row() -> None:
+    nfl = _module()
+    ordinary, timeout = _nflverse_rows()
+    ordinary.update(
+        {
+            "play_id": 3881.0,
+            "qtr": 4.0,
+            "quarter_seconds_remaining": 288.0,
+            "game_seconds_remaining": 288.0,
+            "posteam": "AWY",
+            "down": 3.0,
+            "ydstogo": 17.0,
+            "yardline_100": 35.0,
+            "play_type": "run",
+            "play_type_nfl": "RUSH",
+            "desc": "AWY runner gains seven yards.",
+            "posteam_score": 20.0,
+            "defteam_score": 10.0,
+            "posteam_score_post": 20.0,
+            "defteam_score_post": 10.0,
+            "total_home_score": 10.0,
+            "total_away_score": 20.0,
+            "first_down": 0.0,
+        }
+    )
+    timeout.update(
+        {
+            "play_id": 3915.0,
+            "qtr": 4.0,
+            "quarter_seconds_remaining": 280.0,
+            "game_seconds_remaining": 280.0,
+            "posteam": None,
+            "down": None,
+            "ydstogo": 0.0,
+            "yardline_100": None,
+            "play_type": "no_play",
+            "play_type_nfl": "TIMEOUT",
+            "desc": "Timeout #1 by HME at 04:40.",
+            "posteam_score": None,
+            "defteam_score": None,
+            "posteam_score_post": None,
+            "defteam_score_post": None,
+            "total_home_score": 10.0,
+            "total_away_score": 20.0,
+            "home_timeouts_remaining": 2.0,
+            "away_timeouts_remaining": 3.0,
+            "timeout": 1.0,
+            "timeout_team": "HME",
+            "first_down": 0.0,
+        }
+    )
+    next_play = {
+        **ordinary,
+        "play_id": 3903.0,
+        "quarter_seconds_remaining": 280.0,
+        "game_seconds_remaining": 280.0,
+        "down": 4.0,
+        "ydstogo": 10.0,
+        "yardline_100": 28.0,
+        "play_type": "field_goal",
+        "play_type_nfl": "FIELD_GOAL",
+        "desc": "AWY field goal attempt.",
+        "home_timeouts_remaining": 2.0,
+        "away_timeouts_remaining": 3.0,
+    }
+
+    state, ordinary_event = _adapt_nflverse_observations(ordinary, timeout)
+    assert ordinary_event.source_play_id == "3881"
+    assert ordinary_event.timeout is False
+    assert ordinary_event.timeout_team is None
+    assert ordinary_event.carry_forward_context is True
+
+    before_timeout = nfl.reduce(state, ordinary_event)
+    assert before_timeout.home_timeouts_remaining == 3
+    assert (
+        before_timeout.possession_team,
+        before_timeout.down,
+        before_timeout.distance,
+        before_timeout.yardline_100,
+    ) == ("AWY", 3, 17, 35)
+
+    _, timeout_event = _adapt_nflverse_observations(
+        timeout,
+        next_play,
+        state_sequence=1,
+    )
+    assert timeout_event.source_play_id == "3915"
+    assert timeout_event.timeout is True
+    assert timeout_event.timeout_team == "HME"
+    assert timeout_event.carry_forward_context is True
+
+    after_timeout = nfl.reduce(before_timeout, timeout_event)
+    assert after_timeout.home_timeouts_remaining == 2
+    assert (
+        after_timeout.possession_team,
+        after_timeout.down,
+        after_timeout.distance,
+        after_timeout.yardline_100,
+    ) == ("AWY", 3, 17, 35)
 
 
 def test_envelope_adapter_uses_complete_payload_and_ignores_next_play_outcome() -> None:
@@ -524,6 +719,6 @@ def test_reducer_object_conforms_to_the_common_game_state_protocol() -> None:
     assert isinstance(reducer, GameStateReducer)
     assert reducer.sport == "nfl"
     assert reducer.reducer_id == "REDUCER-NFL-PLAY-STATE"
-    assert reducer.reducer_version == "v1"
+    assert reducer.reducer_version == "v2"
     trace = advance_state(reducer, state, event)
     assert trace.next_state == nfl.reduce(state, event)

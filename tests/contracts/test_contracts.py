@@ -1290,7 +1290,20 @@ def test_controlled_python_enums_are_exact() -> None:
         f"X-{number:02d}" for number in range(1, 13)
     )
     assert "gap_detected" in contracts.QUALITY_FLAGS
+    assert "source_coordinate_out_of_bounds" in contracts.QUALITY_FLAGS
     assert "unknown" not in contracts.QUALITY_FLAGS
+
+
+def test_source_coordinate_out_of_bounds_quality_flag_validates() -> None:
+    contracts = _contracts()
+
+    assert (
+        contracts.validate_contract_v0(
+            "quality-flags/v0.yaml",
+            "source_coordinate_out_of_bounds",
+        )
+        == "source_coordinate_out_of_bounds"
+    )
 
 
 SCHEMA_PATHS = (

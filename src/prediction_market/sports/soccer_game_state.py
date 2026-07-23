@@ -23,6 +23,8 @@ _TIMESTAMP_RE = re.compile(
 )
 _MAX_TOP_LEVEL_FIELDS = 64
 _MAX_TEXT_LENGTH = 256
+_MAX_SOURCE_COORDINATE_MILLI = 1_000_000
+_SOURCE_COORDINATE_OUT_OF_BOUNDS_FLAG = "source_coordinate_out_of_bounds"
 _CARD_NAMES = frozenset({"Yellow Card", "Second Yellow", "Red Card"})
 _BALL_ACTIONS = frozenset(
     {
@@ -46,6 +48,8 @@ _STOPPAGE_ACTIONS = frozenset(
         "Half End",
         "Half Start",
         "Match End",
+        "Own Goal Against",
+        "Own Goal For",
         "Period End",
         "Period Start",
         "Starting XI",
@@ -191,6 +195,29 @@ class SoccerSubstitution:
 
 
 @dataclass(frozen=True, slots=True)
+class SoccerPlayerOff:
+    """One observed temporary or permanent player absence."""
+
+    sequence: int
+    team_id: int
+    player_id: int
+    roster_index: int
+    permanent: bool
+
+    def __post_init__(self) -> None:
+        _required_int(self.sequence, "player_off.sequence", minimum=1)
+        _required_int(self.team_id, "player_off.team_id", minimum=1)
+        _required_int(self.player_id, "player_off.player_id", minimum=1)
+        _required_int(
+            self.roster_index,
+            "player_off.roster_index",
+            maximum=10,
+        )
+        if type(self.permanent) is not bool:
+            raise SoccerGameStateError("player_off.permanent must be boolean")
+
+
+@dataclass(frozen=True, slots=True)
 class SoccerGameEvent:
     """One normalized event containing only information known at that event."""
 
@@ -216,6 +243,7 @@ class SoccerGameEvent:
     shot_outcome: str | None = None
     card: str | None = None
     replacement_player_id: int | None = None
+    player_off_permanent: bool | None = None
     score_for_team_id: int | None = None
     in_play: bool | None = None
     quality_flags: tuple[str, ...] = ()
@@ -271,6 +299,20 @@ class SoccerGameEvent:
             value = getattr(self, field_name)
             if value is not None:
                 _required_text(value, field_name)
+        if (
+            type(self.quality_flags) is not tuple
+            or len(self.quality_flags) != len(set(self.quality_flags))
+            or tuple(sorted(self.quality_flags)) != self.quality_flags
+        ):
+            raise SoccerGameStateError(
+                "quality_flags must be a sorted unique tuple"
+            )
+        for quality_flag in self.quality_flags:
+            _required_text(quality_flag, "quality_flags[]")
+        allow_source_out_of_bounds = (
+            _SOURCE_COORDINATE_OUT_OF_BOUNDS_FLAG in self.quality_flags
+        )
+        has_source_out_of_bounds = False
         for x_name, y_name, x_maximum, y_maximum in (
             ("ball_x_milli", "ball_y_milli", 120_000, 80_000),
             (
@@ -287,8 +329,33 @@ class SoccerGameEvent:
                     f"{x_name} and {y_name} must be supplied together"
                 )
             if x_value is not None and y_value is not None:
-                _required_int(x_value, x_name, maximum=x_maximum)
-                _required_int(y_value, y_name, maximum=y_maximum)
+                if allow_source_out_of_bounds:
+                    _required_int(
+                        x_value,
+                        x_name,
+                        minimum=-_MAX_SOURCE_COORDINATE_MILLI,
+                        maximum=_MAX_SOURCE_COORDINATE_MILLI,
+                    )
+                    _required_int(
+                        y_value,
+                        y_name,
+                        minimum=-_MAX_SOURCE_COORDINATE_MILLI,
+                        maximum=_MAX_SOURCE_COORDINATE_MILLI,
+                    )
+                else:
+                    _required_int(x_value, x_name, maximum=x_maximum)
+                    _required_int(y_value, y_name, maximum=y_maximum)
+                has_source_out_of_bounds = has_source_out_of_bounds or (
+                    x_value < 0
+                    or x_value > x_maximum
+                    or y_value < 0
+                    or y_value > y_maximum
+                )
+        if allow_source_out_of_bounds and not has_source_out_of_bounds:
+            raise SoccerGameStateError(
+                "source_coordinate_out_of_bounds requires an out-of-bounds "
+                "event coordinate"
+            )
         if self.card is not None and self.card not in _CARD_NAMES:
             raise SoccerGameStateError("card is not a supported StatsBomb card")
         if self.card is not None and self.player_id is None:
@@ -302,22 +369,29 @@ class SoccerGameEvent:
                 raise SoccerGameStateError(
                     "substitution replacement must differ from outgoing player"
                 )
-        if self.score_for_team_id is not None and self.shot_outcome != "Goal":
+        if self.action == "Player Off":
+            if (
+                self.player_id is None
+                or type(self.player_off_permanent) is not bool
+            ):
+                raise SoccerGameStateError(
+                    "Player Off requires player_id and player_off_permanent"
+                )
+        elif self.player_off_permanent is not None:
             raise SoccerGameStateError(
-                "score_for_team_id requires a goal shot outcome"
+                "only Player Off can contain player_off_permanent"
+            )
+        if self.action == "Player On" and self.player_id is None:
+            raise SoccerGameStateError("Player On requires player_id")
+        if self.score_for_team_id is not None and not (
+            (self.action == "Shot" and self.shot_outcome == "Goal")
+            or self.action == "Own Goal For"
+        ):
+            raise SoccerGameStateError(
+                "score_for_team_id requires a goal shot or Own Goal For"
             )
         if self.in_play is not None and type(self.in_play) is not bool:
             raise SoccerGameStateError("in_play must be a boolean or null")
-        if (
-            type(self.quality_flags) is not tuple
-            or len(self.quality_flags) != len(set(self.quality_flags))
-            or tuple(sorted(self.quality_flags)) != self.quality_flags
-        ):
-            raise SoccerGameStateError(
-                "quality_flags must be a sorted unique tuple"
-            )
-        for quality_flag in self.quality_flags:
-            _required_text(quality_flag, "quality_flags[]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -343,6 +417,7 @@ class SoccerGameState:
     last_event_id: str | None = None
     cards: tuple[SoccerCard, ...] = ()
     substitutions: tuple[SoccerSubstitution, ...] = ()
+    players_off: tuple[SoccerPlayerOff, ...] = ()
     active_players: tuple[SoccerTeamPlayers, ...] = ()
     quality_flags: tuple[str, ...] = ()
     terminal: bool = False
@@ -378,17 +453,35 @@ class SoccerGameState:
                 )
         if self.play_pattern is not None:
             _required_text(self.play_pattern, "play_pattern")
+        allow_source_out_of_bounds = (
+            type(self.quality_flags) is tuple
+            and _SOURCE_COORDINATE_OUT_OF_BOUNDS_FLAG in self.quality_flags
+        )
         if (self.ball_x_milli is None) != (self.ball_y_milli is None):
             raise SoccerGameStateError(
                 "ball_x_milli and ball_y_milli must be supplied together"
             )
         if self.ball_x_milli is not None and self.ball_y_milli is not None:
-            _required_int(
-                self.ball_x_milli, "ball_x_milli", maximum=120_000
-            )
-            _required_int(
-                self.ball_y_milli, "ball_y_milli", maximum=80_000
-            )
+            if allow_source_out_of_bounds:
+                _required_int(
+                    self.ball_x_milli,
+                    "ball_x_milli",
+                    minimum=-_MAX_SOURCE_COORDINATE_MILLI,
+                    maximum=_MAX_SOURCE_COORDINATE_MILLI,
+                )
+                _required_int(
+                    self.ball_y_milli,
+                    "ball_y_milli",
+                    minimum=-_MAX_SOURCE_COORDINATE_MILLI,
+                    maximum=_MAX_SOURCE_COORDINATE_MILLI,
+                )
+            else:
+                _required_int(
+                    self.ball_x_milli, "ball_x_milli", maximum=120_000
+                )
+                _required_int(
+                    self.ball_y_milli, "ball_y_milli", maximum=80_000
+                )
         if type(self.in_play) is not bool:
             raise SoccerGameStateError("in_play must be a boolean")
         if self.last_action is not None:
@@ -409,6 +502,13 @@ class SoccerGameState:
         ):
             raise SoccerGameStateError(
                 "substitutions must be a tuple of SoccerSubstitution"
+            )
+        if type(self.players_off) is not tuple or any(
+            not isinstance(player_off, SoccerPlayerOff)
+            for player_off in self.players_off
+        ):
+            raise SoccerGameStateError(
+                "players_off must be a tuple of SoccerPlayerOff"
             )
         if (
             type(self.quality_flags) is not tuple
@@ -445,6 +545,23 @@ class SoccerGameState:
             raise SoccerGameStateError(
                 "a player cannot be active for both teams"
             )
+        off_keys = tuple(
+            (player_off.team_id, player_off.player_id)
+            for player_off in self.players_off
+        )
+        if len(off_keys) != len(set(off_keys)):
+            raise SoccerGameStateError(
+                "a player can have at most one active Player Off record"
+            )
+        for player_off in self.players_off:
+            if player_off.team_id not in self.team_ids:
+                raise SoccerGameStateError(
+                    "player_off team is not a game team"
+                )
+            if player_off.player_id in all_active_ids:
+                raise SoccerGameStateError(
+                    "a Player Off player cannot remain active"
+                )
         if self.terminal != (self.terminal_reason is not None):
             raise SoccerGameStateError(
                 "terminal and terminal_reason must agree"
@@ -548,6 +665,7 @@ def _coordinate_milli(
     field_name: str,
     *,
     maximum: int,
+    allow_source_out_of_bounds: bool,
 ) -> int:
     if type(value) not in {int, float}:
         raise SoccerGameStateError(f"{field_name} must be a JSON number")
@@ -563,12 +681,21 @@ def _coordinate_milli(
             f"{field_name} must have at most three decimal places"
         )
     result = int(scaled)
+    if allow_source_out_of_bounds:
+        return _required_int(
+            result,
+            field_name,
+            minimum=-_MAX_SOURCE_COORDINATE_MILLI,
+            maximum=_MAX_SOURCE_COORDINATE_MILLI,
+        )
     return _required_int(result, field_name, maximum=maximum)
 
 
 def _optional_location(
     value: object,
     field_name: str,
+    *,
+    allow_source_out_of_bounds: bool,
 ) -> tuple[int | None, int | None]:
     if value is None:
         return None, None
@@ -577,8 +704,18 @@ def _optional_location(
             f"{field_name} must contain two or three coordinates"
         )
     return (
-        _coordinate_milli(value[0], f"{field_name}[0]", maximum=120_000),
-        _coordinate_milli(value[1], f"{field_name}[1]", maximum=80_000),
+        _coordinate_milli(
+            value[0],
+            f"{field_name}[0]",
+            maximum=120_000,
+            allow_source_out_of_bounds=allow_source_out_of_bounds,
+        ),
+        _coordinate_milli(
+            value[1],
+            f"{field_name}[1]",
+            maximum=80_000,
+            allow_source_out_of_bounds=allow_source_out_of_bounds,
+        ),
     )
 
 
@@ -587,6 +724,7 @@ def _action_details(
     *,
     action: str,
     team_id: int,
+    allow_source_out_of_bounds: bool,
 ) -> tuple[
     int | None,
     int | None,
@@ -605,16 +743,29 @@ def _action_details(
     replacement_player_id: int | None = None
     score_for_team_id: int | None = None
 
-    if action == "Pass":
-        pass_value = _required_mapping(raw_event.get("pass"), "pass")
-        end_x, end_y = _optional_location(
-            pass_value.get("end_location"), "pass.end_location"
+    if action in {"Carry", "Goal Keeper", "Pass"}:
+        detail_name = {
+            "Carry": "carry",
+            "Goal Keeper": "goalkeeper",
+            "Pass": "pass",
+        }[action]
+        action_detail = _required_mapping(
+            raw_event.get(detail_name),
+            detail_name,
         )
-        pass_outcome = _optional_entity_name(pass_value, "outcome")
+        end_x, end_y = _optional_location(
+            action_detail.get("end_location"),
+            f"{detail_name}.end_location",
+            allow_source_out_of_bounds=allow_source_out_of_bounds,
+        )
+        if action == "Pass":
+            pass_outcome = _optional_entity_name(action_detail, "outcome")
     elif action == "Shot":
         shot = _required_mapping(raw_event.get("shot"), "shot")
         end_x, end_y = _optional_location(
-            shot.get("end_location"), "shot.end_location"
+            shot.get("end_location"),
+            "shot.end_location",
+            allow_source_out_of_bounds=allow_source_out_of_bounds,
         )
         shot_outcome = _optional_entity_name(shot, "outcome")
         if shot_outcome is None:
@@ -633,6 +784,8 @@ def _action_details(
             "substitution.replacement.id",
             minimum=1,
         )
+    elif action == "Own Goal For":
+        score_for_team_id = team_id
 
     card_object_name = {
         "Bad Behaviour": "bad_behaviour",
@@ -688,6 +841,14 @@ def statsbomb_event_payload(
     """Normalize one StatsBomb event into a complete envelope payload."""
 
     event = _required_mapping(raw_event, "StatsBomb event")
+    if (
+        type(quality_flags) is not tuple
+        or len(quality_flags) != len(set(quality_flags))
+    ):
+        raise SoccerGameStateError("quality_flags must be a unique tuple")
+    allow_source_out_of_bounds = (
+        _SOURCE_COORDINATE_OUT_OF_BOUNDS_FLAG in quality_flags
+    )
     event_type = _required_mapping(event.get("type"), "type")
     team = _required_mapping(event.get("team"), "team")
     action = _required_text(event_type.get("name"), "type.name")
@@ -705,7 +866,27 @@ def statsbomb_event_payload(
             "possession_team requires a possession identifier"
         )
     play_pattern = _optional_entity_name(event, "play_pattern")
-    ball_x, ball_y = _optional_location(event.get("location"), "location")
+    player_off_permanent: bool | None = None
+    if action == "Player Off":
+        player_off = event.get("player_off")
+        if player_off is None:
+            player_off_permanent = False
+        else:
+            player_off_detail = _required_mapping(
+                player_off,
+                "player_off",
+            )
+            permanent = player_off_detail.get("permanent", False)
+            if type(permanent) is not bool:
+                raise SoccerGameStateError(
+                    "player_off.permanent must be boolean"
+                )
+            player_off_permanent = permanent
+    ball_x, ball_y = _optional_location(
+        event.get("location"),
+        "location",
+        allow_source_out_of_bounds=allow_source_out_of_bounds,
+    )
     (
         end_x,
         end_y,
@@ -715,12 +896,30 @@ def statsbomb_event_payload(
         replacement_player_id,
         score_for_team_id,
         in_play,
-    ) = _action_details(event, action=action, team_id=team_id)
-    if (
-        type(quality_flags) is not tuple
-        or len(quality_flags) != len(set(quality_flags))
-    ):
-        raise SoccerGameStateError("quality_flags must be a unique tuple")
+    ) = _action_details(
+        event,
+        action=action,
+        team_id=team_id,
+        allow_source_out_of_bounds=allow_source_out_of_bounds,
+    )
+    has_source_out_of_bounds = any(
+        coordinate is not None
+        and (
+            coordinate < 0
+            or coordinate > maximum
+        )
+        for coordinate, maximum in (
+            (ball_x, 120_000),
+            (ball_y, 80_000),
+            (end_x, 120_000),
+            (end_y, 80_000),
+        )
+    )
+    if allow_source_out_of_bounds and not has_source_out_of_bounds:
+        raise SoccerGameStateError(
+            "source_coordinate_out_of_bounds requires an out-of-bounds "
+            "event coordinate"
+        )
     return {
         "sport": "soccer",
         "game_id": _required_text(game_id, "game_id"),
@@ -749,6 +948,7 @@ def statsbomb_event_payload(
         "shot_outcome": shot_outcome,
         "card": card,
         "replacement_player_id": replacement_player_id,
+        "player_off_permanent": player_off_permanent,
         "score_for_team_id": score_for_team_id,
         "in_play": in_play,
         "quality_flags": list(sorted(quality_flags)),
@@ -932,6 +1132,92 @@ def reduce_soccer_game_state(
             player_ids=event.lineup_player_ids,
         )
 
+    players_off = state.players_off
+    if event.action == "Player Off":
+        assert event.player_id is not None
+        assert event.player_off_permanent is not None
+        current_ids = next(
+            team.player_ids
+            for team in active_players
+            if team.team_id == event.team_id
+        )
+        if event.player_id not in current_ids:
+            raise SoccerGameStateError("Player Off player is not active")
+        current_index = current_ids.index(event.player_id)
+        roster_index = current_index
+        for existing_index in sorted(
+            player_off.roster_index
+            for player_off in players_off
+            if player_off.team_id == event.team_id
+        ):
+            if existing_index <= roster_index:
+                roster_index += 1
+        players_off = players_off + (
+            SoccerPlayerOff(
+                sequence=event.sequence,
+                team_id=event.team_id,
+                player_id=event.player_id,
+                roster_index=roster_index,
+                permanent=event.player_off_permanent,
+            ),
+        )
+        active_players = _replace_team_players(
+            active_players,
+            team_id=event.team_id,
+            player_ids=tuple(
+                player_id
+                for player_id in current_ids
+                if player_id != event.player_id
+            ),
+        )
+    elif event.action == "Player On":
+        assert event.player_id is not None
+        matches = tuple(
+            player_off
+            for player_off in players_off
+            if player_off.team_id == event.team_id
+            and player_off.player_id == event.player_id
+        )
+        if len(matches) != 1:
+            raise SoccerGameStateError(
+                "Player On requires one matching Player Off record"
+            )
+        absence = matches[0]
+        if absence.permanent:
+            raise SoccerGameStateError(
+                "a permanent Player Off cannot return with Player On"
+            )
+        current_ids = next(
+            team.player_ids
+            for team in active_players
+            if team.team_id == event.team_id
+        )
+        insertion_index = absence.roster_index - sum(
+            player_off.team_id == event.team_id
+            and player_off.roster_index < absence.roster_index
+            for player_off in players_off
+            if player_off != absence
+        )
+        if insertion_index < 0 or insertion_index > len(current_ids):
+            raise SoccerGameStateError(
+                "Player On roster position is inconsistent"
+            )
+        restored_ids = (
+            current_ids[:insertion_index]
+            + (event.player_id,)
+            + current_ids[insertion_index:]
+        )
+        active_players = _replace_team_players(
+            active_players,
+            team_id=event.team_id,
+            player_ids=restored_ids,
+        )
+        players_off = tuple(
+            player_off
+            for player_off in players_off
+            if player_off != absence
+        )
+
     cards = state.cards
     if event.card is not None:
         assert event.player_id is not None
@@ -1048,6 +1334,7 @@ def reduce_soccer_game_state(
         last_event_id=event.event_id,
         cards=cards,
         substitutions=substitutions,
+        players_off=players_off,
         active_players=active_players,
         quality_flags=tuple(
             sorted(set(state.quality_flags).union(event.quality_flags))
@@ -1070,7 +1357,7 @@ class SoccerGameStateReducer:
         default="soccer.statsbomb.event-reducer",
         init=False,
     )
-    reducer_version: str = field(default="v1", init=False)
+    reducer_version: str = field(default="v2", init=False)
 
     def reduce(
         self,
@@ -1090,6 +1377,7 @@ __all__ = [
     "SoccerGameState",
     "SoccerGameStateError",
     "SoccerGameStateReducer",
+    "SoccerPlayerOff",
     "SoccerSubstitution",
     "SoccerTeamPlayers",
     "adapt_statsbomb_event",

@@ -6,7 +6,7 @@ prediction-market data. It does not claim validated trading alpha.
 Program status: **CONDITIONAL_GO**.
 
 Current evidence and limitations are summarized in the
-[Chinese validation report](artifacts/game-state/current_validation_report_zh_v0.md).
+[Chinese validation report](artifacts/game-state/current_validation_report_zh_v1.md).
 
 The program-level sources of truth are only:
 

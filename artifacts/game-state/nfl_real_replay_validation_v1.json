@@ -1,8 +1,8 @@
 {
-  "artifact_id": "EV-NFL-GAME-STATE-REAL-REPLAY-v0",
+  "artifact_id": "EV-NFL-GAME-STATE-REAL-REPLAY-v1",
   "artifact_type": "ENGINEERING_VALIDATION",
-  "version": "v0",
-  "generated_at": "2026-07-23T16:58:58Z",
+  "version": "v1",
+  "generated_at": "2026-07-23T18:24:10Z",
   "owner": "Team D2",
   "scope": {
     "experiment_id": null,
@@ -10,7 +10,7 @@
     "formal_experiment_result": false,
     "model_evaluation": false,
     "prediction_market_alpha_evidence": false,
-    "statement": "This artifact validates deterministic NFL state reconstruction only. It is not an X-11 model result, a model-accuracy result, model-inference latency, or alpha evidence."
+    "statement": "This artifact validates reducer-v2 P0 source-row score and timeout semantics plus deterministic replay of one frozen game. It is not comprehensive season state correctness, an X-11 model result, model accuracy, or alpha evidence."
   },
   "source": {
     "dataset_id": "DS-NFLVERSE",
@@ -21,7 +21,7 @@
     "raw_object_path": "var/raw/raw/source=nflverse/dataset=DS-NFLVERSE/version=github-release-58152862-20260212T102526Z/partition=season-2025/3730c4db2ab99d2dfc4017de975b7610c46c35301b9280b65c03de1b1c74265a.parquet",
     "raw_object_sha256": "sha256:3730c4db2ab99d2dfc4017de975b7610c46c35301b9280b65c03de1b1c74265a",
     "raw_hash_recomputed_equal": true,
-    "manifest_path": "var/raw/manifests/source=nflverse/dataset=DS-NFLVERSE/version=github-release-58152862-20260212T102526Z/partition=season-2025/e06985cfae03b5967d8970be8a9f7a82699d72b549595c044d1056b553c1d99d.manifest.json"
+    "manifest_path": "var/raw/manifests/source=nflverse/dataset=DS-NFLVERSE/version=github-release-58152862-20260212T102526Z/partition=season-2025/e4a7f9d3fb0293aca52858846ac3ec85e377bc5385373842309eeaa6fc5cef29.manifest.json"
   },
   "game": {
     "native_game_id": "2025_01_ARI_NO",
@@ -39,12 +39,24 @@
   "validation": {
     "replay_runs": 2,
     "accepted_transitions_per_run": 181,
-    "field_level_post_state_comparisons_per_run": 181,
-    "field_level_mismatches_per_run": 0,
-    "comparison_basis": "Every reducer output dataclass field was compared with the same next nflverse row normalized by state_from_nflverse_row, including sequence and externally supplied last_event_id.",
-    "run_1_final_state_sha256": "sha256:23375f685cd230e1d0a257518686e331fbff4358cfed31c68ee3c9c2023f57f5",
-    "run_2_final_state_sha256": "sha256:23375f685cd230e1d0a257518686e331fbff4358cfed31c68ee3c9c2023f57f5",
+    "independent_source_row_assertions_per_run": 181,
+    "comparison_basis": "Reducer output is asserted directly against native pre-row identity, team-relative pre/post score fields, timeout flags/counters, explicit context-carry rules, and source clocks; the oracle no longer calls state_from_nflverse_row(post_row).",
+    "run_1_final_state_sha256": "sha256:97663f5819b74e664005fa01b84ca632bf9c50b3faa7505133e1b094147a893b",
+    "run_2_final_state_sha256": "sha256:97663f5819b74e664005fa01b84ca632bf9c50b3faa7505133e1b094147a893b",
     "canonical_hashes_equal": true,
+    "event_counts_per_run": {
+      "score": 10,
+      "timeout": 3,
+      "carry_forward_context": 9
+    },
+    "p0_semantic_checks": {
+      "start_score_source": "same-row posteam_score and defteam_score mapped to home and away",
+      "end_score_source": "same-row posteam_score_post and defteam_score_post mapped to home and away",
+      "touchdown_and_extra_point_attached_to_own_source_rows": true,
+      "timeout_flag_team_and_counter_attached_to_timeout_row": true,
+      "contextless_admin_rows_preserve_last_known_context": true,
+      "following_snap_context_is_not_backfilled": true
+    },
     "event_id_boundary": {
       "adapter_generates_event_id": false,
       "bare_event_id_argument_accepted": false,
@@ -81,41 +93,27 @@
       "next_row_play_type_mutation_invariance_tested": true,
       "next_play_type_removed_from_state_and_event": true,
       "final_score_fallback_forbidden": true,
-      "transition_flag_rule": "first_down, turnover, and timeout are committed only when the adjacent pre/post snapshots verify the corresponding state change."
+      "transition_flag_rule": "score and timeout are sourced from the same native row; contextual first-down or turnover claims are suppressed when either adjacent row lacks football context."
     }
   },
   "season_partition_census": {
-    "role": "Supplementary engineering scan; the committed deterministic integration assertion remains the complete game above.",
-    "scan_runs": 2,
-    "games_total": 285,
-    "full_replay_games": 281,
-    "fail_closed_games": 4,
-    "post_state_comparisons_per_run_before_fail_closed_boundaries": 48298,
-    "run_final_hash_maps_equal": true,
-    "run_failure_maps_equal": true,
-    "failures": [
-      {
-        "native_game_id": "2025_01_CAR_JAX",
-        "failed_transition": 48,
-        "error": "nflverse row requires time"
-      },
-      {
-        "native_game_id": "2025_01_DAL_PHI",
-        "failed_transition": 108,
-        "error": "nflverse row requires time"
-      },
-      {
-        "native_game_id": "2025_03_NYJ_TB",
-        "failed_transition": 184,
-        "error": "event clock moved backwards within a period"
-      },
-      {
-        "native_game_id": "2025_20_BUF_DEN",
-        "failed_transition": 200,
-        "error": "event.away_timeouts_remaining must be at least 0 and at most 3"
-      }
+    "status": "SUPERSEDED_NOT_RERUN_ON_V2",
+    "current_v2_games_total": 0,
+    "current_v2_full_replay_games": 0,
+    "reason": "The previous 281-of-285 scan used reducer v1 score/timeout semantics and the same adapter as its post-state oracle. Those counts and hashes are not current evidence after the v2 migration.",
+    "required_before_reinstatement": [
+      "order_sequence monotonic ordering",
+      "explicit suspension and resume state",
+      "flagged source clock correction semantics",
+      "season_type and frozen postseason overtime timeout rules",
+      "independent native-field assertions rather than adapter self-comparison"
     ],
-    "interpretation": "The four source anomalies remain explicit fail-closed boundaries; this validation did not impute missing clocks, accept a backwards clock, or accept a negative timeout count."
+    "known_unresolved_games": [
+      "2025_01_CAR_JAX",
+      "2025_01_DAL_PHI",
+      "2025_03_NYJ_TB",
+      "2025_20_BUF_DEN"
+    ]
   },
   "reducer_latency": {
     "scope": "NFLGameStateReducer.reduce only",
@@ -123,12 +121,12 @@
     "warmup_calls": 181,
     "measurement_repetitions": 250,
     "samples": 45250,
-    "min_ns": 3333,
-    "p50_ns": 3792,
-    "p95_ns": 3958,
-    "p99_ns": 4042,
-    "max_ns": 30625,
-    "mean_ns": 3811,
+    "min_ns": 3125,
+    "p50_ns": 3709,
+    "p95_ns": 3875,
+    "p99_ns": 3917,
+    "max_ns": 10292,
+    "mean_ns": 3707,
     "percentile_method": "round((n - 1) * p) on sorted samples",
     "excludes": [
       "Parquet I/O",
@@ -147,24 +145,26 @@
   },
   "implementation": {
     "reducer_id": "REDUCER-NFL-PLAY-STATE",
-    "reducer_version": "v1",
+    "reducer_version": "v2",
     "module_path": "src/prediction_market/sports/nfl_game_state.py",
-    "module_sha256": "sha256:43670737f37218da24588e8f136f2ce5cb38ebef39333d456e59998326762ffa",
+    "module_sha256": "sha256:5c47a0ee497c38a8916247b1b25479f8749b3f077766cbd1eb3f940460bf3388",
     "event_envelope_module_sha256": "sha256:07f0ea533433e8601713f33f1060c46bc19f449b6dd4c483774951257e67247d",
     "test_path": "tests/sports/test_nfl_real_replay.py",
-    "test_sha256": "sha256:15ea89e016e34e7b984a75570fd65babd3ac67bbdceba4ac24d69df2981e6e4b",
+    "test_sha256": "sha256:98483f92f081a51e8514ca71d0fbf84b7bab9c560b37e8b204e4f68845ca53b1",
     "base_revision_before_uncommitted_validation_changes": "5843045d8f36974b51705553872ae64e085cf957"
   },
   "test_result": {
-    "command": ".venv/bin/pytest -q tests/sports/test_sport_event_envelopes.py tests/sports/test_nfl_game_state.py tests/sports/test_nfl_real_replay.py tests/sports/test_soccer_game_state.py tests/sports/test_soccer_real_replay.py",
-    "passed": 39,
+    "command": ".venv/bin/pytest -q tests/sports/test_nfl_game_state.py tests/sports/test_nfl_real_replay.py",
+    "passed": 24,
     "failed": 0,
-    "duration_seconds": 16.56
+    "duration_seconds": 2.72
   },
   "limitations": [
-    "One complete real game is the committed deterministic integration assertion; the supplementary whole-partition scan still has four explicit fail-closed games.",
+    "One complete real game is the current reducer-v2 integration assertion; no current v2 season-wide census exists.",
+    "When a normal play is followed by a contextless administrative row, the adjacent-row contract cannot causally recover the resulting down and spot; v2 preserves the last known context instead of future backfill.",
+    "Order sequence, suspension/resume, flagged clock corrections, and postseason overtime timeout rules remain P1 blockers.",
     "The source is an offline nflverse export, not a live point-in-time feed.",
-    "Reducer state parity does not measure win-probability or transition-model accuracy.",
+    "The X-11 fitted-model metrics use a separate pipeline and are not invalidated by this reducer correction, but reducer-v2 is not yet authorized as a new model feature source.",
     "No prediction-market condition, quote, spread, depth, or as-of join was used."
   ]
 }

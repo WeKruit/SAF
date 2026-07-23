@@ -438,6 +438,219 @@ def test_reducer_updates_possession_ball_last_action_and_goal_score() -> None:
     assert after_goal.last_action == "Shot"
 
 
+@pytest.mark.parametrize(
+    ("action", "detail_field"),
+    [
+        ("Carry", "carry"),
+        ("Goal Keeper", "goalkeeper"),
+    ],
+)
+def test_reducer_uses_source_action_end_location(
+    action: str,
+    detail_field: str,
+) -> None:
+    _, _, state = _starting_states()
+    raw_event = _event(
+        index=3,
+        native_id=f"statsbomb-{detail_field}-end",
+        action=action,
+        team_id=HOME_TEAM_ID,
+        minute=10,
+        second=0,
+        timestamp="00:10:00.000",
+        location=[25.0, 30.0],
+        **{detail_field: {"end_location": [42.125, 51.5]}},
+    )
+
+    event = adapt_statsbomb_event(raw_event, game_id=GAME_ID)
+    reduced = reduce_soccer_game_state(state, event)
+
+    assert event.end_ball_x_milli == 42_125
+    assert event.end_ball_y_milli == 51_500
+    assert (reduced.ball_x_milli, reduced.ball_y_milli) == (42_125, 51_500)
+
+
+def test_statsbomb_own_goal_pair_scores_once_for_beneficiary_team() -> None:
+    """StatsBomb emits both Own Goal For and Own Goal Against for one goal."""
+
+    _, _, state = _starting_states()
+    own_goal_for = adapt_statsbomb_event(
+        _event(
+            index=3,
+            native_id="statsbomb-own-goal-for",
+            action="Own Goal For",
+            team_id=HOME_TEAM_ID,
+            minute=10,
+            second=5,
+            timestamp="00:10:05.000",
+            possession=3,
+            possession_team={"id": HOME_TEAM_ID, "name": "Home"},
+        ),
+        game_id=GAME_ID,
+    )
+    own_goal_against = adapt_statsbomb_event(
+        _event(
+            index=4,
+            native_id="statsbomb-own-goal-against",
+            action="Own Goal Against",
+            team_id=AWAY_TEAM_ID,
+            player_id=2004,
+            minute=10,
+            second=5,
+            timestamp="00:10:05.000",
+            possession=3,
+            possession_team={"id": HOME_TEAM_ID, "name": "Home"},
+        ),
+        game_id=GAME_ID,
+    )
+
+    after_for = reduce_soccer_game_state(state, own_goal_for)
+    after_pair = reduce_soccer_game_state(after_for, own_goal_against)
+
+    assert own_goal_for.score_for_team_id == HOME_TEAM_ID
+    assert own_goal_against.score_for_team_id is None
+    assert own_goal_for.in_play is False
+    assert own_goal_against.in_play is False
+    assert (after_pair.home_score, after_pair.away_score) == (1, 0)
+
+
+def test_player_off_and_on_update_observed_active_players() -> None:
+    _, _, state = _starting_states()
+    player_off = adapt_statsbomb_event(
+        _event(
+            index=3,
+            native_id="statsbomb-player-off",
+            action="Player Off",
+            team_id=HOME_TEAM_ID,
+            player_id=1004,
+            minute=10,
+            second=0,
+            timestamp="00:10:00.000",
+        ),
+        game_id=GAME_ID,
+    )
+    player_on = adapt_statsbomb_event(
+        _event(
+            index=4,
+            native_id="statsbomb-player-on",
+            action="Player On",
+            team_id=HOME_TEAM_ID,
+            player_id=1004,
+            minute=10,
+            second=30,
+            timestamp="00:10:30.000",
+        ),
+        game_id=GAME_ID,
+    )
+
+    after_off = reduce_soccer_game_state(state, player_off)
+    after_on = reduce_soccer_game_state(after_off, player_on)
+
+    assert 1004 not in after_off.active_players[0].player_ids
+    assert len(after_off.players_off) == 1
+    assert after_off.players_off[0].player_id == 1004
+    assert after_off.players_off[0].permanent is False
+    assert after_on.active_players[0].player_ids == (
+        state.active_players[0].player_ids
+    )
+    assert after_on.players_off == ()
+
+
+def test_multiple_player_off_events_restore_stable_lineup_order() -> None:
+    _, _, state = _starting_states()
+    events = (
+        _event(
+            index=3,
+            native_id="statsbomb-player-off-1004",
+            action="Player Off",
+            team_id=HOME_TEAM_ID,
+            player_id=1004,
+            minute=10,
+            second=0,
+            timestamp="00:10:00.000",
+        ),
+        _event(
+            index=4,
+            native_id="statsbomb-player-off-1002",
+            action="Player Off",
+            team_id=HOME_TEAM_ID,
+            player_id=1002,
+            minute=10,
+            second=5,
+            timestamp="00:10:05.000",
+        ),
+        _event(
+            index=5,
+            native_id="statsbomb-player-on-1004",
+            action="Player On",
+            team_id=HOME_TEAM_ID,
+            player_id=1004,
+            minute=10,
+            second=30,
+            timestamp="00:10:30.000",
+        ),
+        _event(
+            index=6,
+            native_id="statsbomb-player-on-1002",
+            action="Player On",
+            team_id=HOME_TEAM_ID,
+            player_id=1002,
+            minute=10,
+            second=35,
+            timestamp="00:10:35.000",
+        ),
+    )
+
+    reduced = state
+    for raw_event in events:
+        reduced = reduce_soccer_game_state(
+            reduced,
+            adapt_statsbomb_event(raw_event, game_id=GAME_ID),
+        )
+
+    assert reduced.active_players[0].player_ids == (
+        state.active_players[0].player_ids
+    )
+    assert reduced.players_off == ()
+
+
+def test_permanent_player_off_cannot_return() -> None:
+    _, _, state = _starting_states()
+    permanent_off = adapt_statsbomb_event(
+        _event(
+            index=3,
+            native_id="statsbomb-permanent-player-off",
+            action="Player Off",
+            team_id=HOME_TEAM_ID,
+            player_id=1004,
+            minute=10,
+            second=0,
+            timestamp="00:10:00.000",
+            player_off={"permanent": True},
+        ),
+        game_id=GAME_ID,
+    )
+    player_on = adapt_statsbomb_event(
+        _event(
+            index=4,
+            native_id="statsbomb-permanent-player-on",
+            action="Player On",
+            team_id=HOME_TEAM_ID,
+            player_id=1004,
+            minute=10,
+            second=30,
+            timestamp="00:10:30.000",
+        ),
+        game_id=GAME_ID,
+    )
+
+    after_off = reduce_soccer_game_state(state, permanent_off)
+
+    assert after_off.players_off[0].permanent is True
+    with pytest.raises(SoccerGameStateError, match="permanent"):
+        reduce_soccer_game_state(after_off, player_on)
+
+
 def test_reducer_records_cards_removes_red_and_applies_substitution() -> None:
     _, _, state = _starting_states()
     yellow_event = adapt_statsbomb_event(
@@ -783,6 +996,76 @@ def test_adapter_is_bounded_and_rejects_invalid_statsbomb_atoms() -> None:
         adapt_statsbomb_event(inconsistent_clock, game_id=GAME_ID)
 
 
+def test_flagged_source_coordinate_anomaly_is_preserved_by_reducer() -> None:
+    _, _, state = _starting_states()
+    raw_pass = _event(
+        index=3,
+        native_id="statsbomb-native-3",
+        action="Pass",
+        team_id=HOME_TEAM_ID,
+        minute=1,
+        second=0,
+        timestamp="00:01:00.000",
+        location=[119.5, 40],
+        **{"pass": {"end_location": [120.7, 0.7]}},
+    )
+
+    event = adapt_statsbomb_event(
+        raw_pass,
+        game_id=GAME_ID,
+        quality_flags=("source_coordinate_out_of_bounds",),
+    )
+    reduced = reduce_soccer_game_state(state, event)
+
+    assert event.end_ball_x_milli == 120_700
+    assert event.end_ball_y_milli == 700
+    assert reduced.ball_x_milli == 120_700
+    assert reduced.ball_y_milli == 700
+    assert reduced.quality_flags == ("source_coordinate_out_of_bounds",)
+
+
+def test_source_coordinate_anomaly_flag_must_describe_this_event() -> None:
+    normal_pass = _event(
+        index=3,
+        native_id="statsbomb-native-3",
+        action="Pass",
+        team_id=HOME_TEAM_ID,
+        minute=1,
+        second=0,
+        timestamp="00:01:00.000",
+        location=[119.5, 40],
+        **{"pass": {"end_location": [120, 40]}},
+    )
+
+    with pytest.raises(SoccerGameStateError, match="requires an out-of-bounds"):
+        adapt_statsbomb_event(
+            normal_pass,
+            game_id=GAME_ID,
+            quality_flags=("source_coordinate_out_of_bounds",),
+        )
+
+
+def test_flagged_source_coordinate_is_still_safely_bounded() -> None:
+    unsafe_pass = _event(
+        index=3,
+        native_id="statsbomb-native-3",
+        action="Pass",
+        team_id=HOME_TEAM_ID,
+        minute=1,
+        second=0,
+        timestamp="00:01:00.000",
+        location=[119.5, 40],
+        **{"pass": {"end_location": [1_000_000.001, 40]}},
+    )
+
+    with pytest.raises(SoccerGameStateError, match=r"<= 1000000"):
+        adapt_statsbomb_event(
+            unsafe_pass,
+            game_id=GAME_ID,
+            quality_flags=("source_coordinate_out_of_bounds",),
+        )
+
+
 def test_replay_and_canonical_hashes_are_deterministic() -> None:
     raw_pass = _event(
         index=3,
@@ -837,6 +1120,7 @@ def test_reducer_object_integrates_with_common_hash_chain() -> None:
     )
 
     assert isinstance(SOCCER_GAME_STATE_REDUCER, SoccerGameStateReducer)
+    assert SOCCER_GAME_STATE_REDUCER.reducer_version == "v2"
     trace = advance_state(SOCCER_GAME_STATE_REDUCER, initial, event)
 
     assert trace.sport == "soccer"

@@ -70,10 +70,11 @@ ART-D1-001,artifacts/game-state/nba/baseline_v0.md,D1+H,v0,X06_calibration_gate,
 ART-D1-003,artifacts/game-state/nba_state_engine_validation_v0.json,D1+H,v0,X06_contract_harness,PRELIMINARY_RESEARCH_ONLY
 ART-D2-001,artifacts/game-state/nfl/evidence_pipeline_poc_v0.md,D2,v0,2026-08-05_W2_review,complete
 ART-D2-002,artifacts/game-state/nfl/x11_real_data_pipeline_evidence_v0.json,D2+H,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
-ART-D2-003,artifacts/game-state/nfl_real_replay_validation_v0.json,D2+C,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
+ART-D2-003,artifacts/game-state/nfl_real_replay_validation_v1.json,D2+C,v1,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
 ART-D3-001,artifacts/game-state/soccer/evidence_pipeline_poc_v0.md,D3,v0,2026-08-05_W2_review,complete
 ART-D3-002,artifacts/game-state/soccer/x12_real_data_poc_v0.json,D3+H+I,v0,2026-08-05_W2_review,POC_ONLY
-ART-D3-003,artifacts/game-state/soccer_real_replay_validation_v0.json,D3+C,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
+ART-D3-003,artifacts/game-state/soccer_real_replay_validation_v1.json,D3+C,v1,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
+ART-D3-004,src/prediction_market/sports/soccer_season_census.py,D3+C+H,v0,2026-08-05_W2_review,complete
 ART-D4-001,artifacts/game-state/mlb/source_inventory_v0.json,D4+I,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
 ART-D4-002,artifacts/game-state/mlb_real_replay_validation_v0.json,D4+C,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
 ART-D5-001,artifacts/game-state/f1/source_inventory_v0.json,D5+I,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
@@ -99,6 +100,7 @@ ART-P-001,artifacts/architecture/week1_backlog_v0.csv,A+H,v0,first_round_artifac
 ART-P-002,artifacts/architecture/risk_blocker_register_v0.csv,A+I,v0,first_round_artifact_gate,complete
 ART-P-003,artifacts/architecture/program_status_v0.md,A,v0,first_round_artifact_gate,complete
 ART-P-004,artifacts/architecture/x09_vertical_slice_v0.md,B+A+H,v0,X09_deterministic_vertical_slice,harness_pass
-ART-P-005,artifacts/game-state/current_validation_report_zh_v0.md,A+H,v0,2026-08-05_W2_review,complete
+ART-P-005,artifacts/game-state/current_validation_report_zh_v1.md,A+H,v1,2026-08-05_W2_review,complete
 ART-D1-002,artifacts/game-state/nba/x06_contract_fixture_v0.json,D1+H,v0,X06_contract_harness,registered
 ART-H-009,artifacts/game-state/model_latency_v0.json,H+D2+D3,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
+ART-H-010,artifacts/game-state/research_calibration_review_v1.md,H+D1+D2+D3+D4+D5,v1,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY

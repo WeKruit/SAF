@@ -65,6 +65,7 @@ QUALITY_FLAGS = frozenset(
         "preliminary_rules",
         "reconstruction_divergence",
         "source_clock_unverified",
+        "source_coordinate_out_of_bounds",
         "stale_as_of_join",
         "tick_size_change",
     }
@@ -428,6 +429,7 @@ QualityFlagV0 = Literal[
     "preliminary_rules",
     "reconstruction_divergence",
     "source_clock_unverified",
+    "source_coordinate_out_of_bounds",
     "stale_as_of_join",
     "tick_size_change",
 ]

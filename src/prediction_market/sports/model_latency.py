@@ -828,9 +828,9 @@ def _nfl_benchmark(
     if train.empty or test.empty:
         raise LatencyBenchmarkError("X-11 last fold is incomplete")
     model = x11._transition_model(train)
-    observation = test.sort_values(
+    ordered_test = test.sort_values(
         ["game_id", "drive_number", "play_id"], kind="mergesort"
-    ).iloc[0]
+    )
 
     source_partition = next(
         item for item in loaded.inventory.partitions if item.year == 2025
@@ -861,33 +861,52 @@ def _nfl_benchmark(
         "ydstogo",
         "yardline_100",
         "goal_to_go",
+        "posteam_score",
+        "defteam_score",
+        "posteam_score_post",
+        "defteam_score_post",
         "total_home_score",
         "total_away_score",
         "home_timeouts_remaining",
         "away_timeouts_remaining",
         "desc",
+        "timeout",
+        "timeout_team",
         "interception",
         "fumble_lost",
         "first_down",
     )
     raw = pq.read_table(source_path, columns=list(required_columns)).to_pandas()
     raw["_raw_record_ordinal"] = np.arange(len(raw), dtype=int)
-    game_rows = raw.loc[raw["game_id"] == str(observation["game_id"])]
-    matching = game_rows.index[
-        pd.to_numeric(game_rows["play_id"], errors="coerce")
-        == float(observation["play_id"])
-    ]
-    if len(matching) != 1:
+    observation: pd.Series | None = None
+    pre_index: int | None = None
+    post_index: int | None = None
+    for _, candidate in ordered_test.iterrows():
+        game_rows = raw.loc[raw["game_id"] == str(candidate["game_id"])]
+        matching = game_rows.index[
+            pd.to_numeric(game_rows["play_id"], errors="coerce")
+            == float(candidate["play_id"])
+        ]
+        if len(matching) != 1:
+            continue
+        candidate_post_index = int(matching[0])
+        prior_rows = game_rows.index[game_rows.index < candidate_post_index]
+        if prior_rows.empty:
+            continue
+        candidate_pre_index = int(prior_rows[-1])
+        if (
+            pd.isna(raw.at[candidate_pre_index, "posteam"])
+            or pd.isna(raw.at[candidate_post_index, "posteam"])
+        ):
+            continue
+        observation = candidate
+        pre_index = candidate_pre_index
+        post_index = candidate_post_index
+        break
+    if observation is None or pre_index is None or post_index is None:
         raise LatencyBenchmarkError(
-            "NFL representative model row does not bind to one raw play"
+            "NFL latency fold has no causally contextual adjacent state row"
         )
-    post_index = int(matching[0])
-    prior_rows = game_rows.index[game_rows.index < post_index]
-    if prior_rows.empty:
-        raise LatencyBenchmarkError(
-            "NFL representative model row has no previous raw observation"
-        )
-    pre_index = int(prior_rows[-1])
     pre_row = raw.loc[pre_index].to_dict()
     post_row = raw.loc[post_index].to_dict()
     payload = nfl_game_state.nflverse_transition_payload(
@@ -1538,6 +1557,8 @@ def build_current_model_latency_report(
         "limitations": [
             "engineering benchmark only; no live SLA or production claim",
             "accuracy is referenced from verified evidence and is not recomputed",
+            "the soccer five-minute POC uses only pregame team intensities and is not state-conditioned",
+            "the NFL reducer-v2 benchmark validates P0 score/timeout semantics, not season-complete rules",
             "wall-clock results are machine- and load-specific",
             "source ingestion, network transport, market joins, and execution are out of scope",
             "game-end-only models are not mislabeled as ModelOutputV1 full paths",
