@@ -14,11 +14,13 @@ import re
 import stat
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass, replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 import duckdb
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from prediction_market.pmxt.archive import (
     ArchiveEntry,
@@ -100,6 +102,29 @@ class FullDayReconstructionReport:
     queue_fill_reconstructed: bool = False
 
 
+@dataclass(frozen=True)
+class FullDayPreflightReport:
+    """Verified scale and coverage facts without claiming reconstruction."""
+
+    version: str
+    day: str
+    input_manifest_sha256: str
+    object_count: int
+    compressed_bytes: int
+    row_count: int
+    market_count: int
+    asset_count: int
+    event_type_counts: dict[str, int]
+    timestamp_received_min: str
+    timestamp_received_max: str
+    schema_fingerprint: str
+    reconstruction_executed: bool
+    x01_formal_gate_passed: bool
+    open_gates: tuple[str, ...]
+    queue_fill_reconstructed: bool
+    report_sha256: str
+
+
 def _canonical_bytes(value: object) -> bytes:
     return json.dumps(
         value,
@@ -112,6 +137,28 @@ def _canonical_bytes(value: object) -> bytes:
 
 def _sha256_bytes(value: bytes) -> str:
     return "sha256:" + hashlib.sha256(value).hexdigest()
+
+
+def _schema_fingerprint(schema: pa.Schema) -> str:
+    material = [
+        {
+            "name": field.name,
+            "type": str(field.type),
+            "nullable": field.nullable,
+        }
+        for field in schema
+    ]
+    return _sha256_bytes(_canonical_bytes(material))
+
+
+def _utc_text(value: datetime, *, field: str) -> str:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise FullDayInputError(f"{field} must be timezone-aware")
+    return (
+        value.astimezone(timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
 
 
 def _require_sha256(value: str, *, field: str) -> None:
@@ -396,6 +443,190 @@ def _native_markets(paths: Sequence[Path]) -> tuple[str, ...]:
         # select zero rows for an uppercase source identifier.
         markets.append(market)
     return tuple(sorted(markets))
+
+
+def preflight_full_day_inputs(
+    raw_root: str | Path, manifest: FullDayManifest
+) -> FullDayPreflightReport:
+    """Verify all 24 objects and measure their real full-day scale.
+
+    This deliberately does not call the semantic reconstructor.  It creates an
+    evidence boundary between a complete, immutable input day and the much
+    stronger all-contract reconstruction/comparison claims required by X-01.
+    """
+
+    validate_full_day_manifest(manifest)
+    paths = _verified_paths(raw_root, manifest)
+    if len(paths) != len(manifest.objects):
+        raise FullDayInputError("verified object count differs from manifest")
+
+    schema_fingerprints: set[str] = set()
+    compressed_bytes = 0
+    metadata_rows = 0
+    for locked, path in zip(manifest.objects, paths, strict=True):
+        expected_hour = datetime.strptime(
+            locked.hour, "%Y-%m-%dT%H:00:00Z"
+        ).replace(tzinfo=timezone.utc)
+        expected_end = expected_hour + timedelta(hours=1)
+        try:
+            parquet = pq.ParquetFile(path)
+        except (OSError, pa.ArrowException) as exc:
+            raise FullDayInputError(
+                f"locked object is not readable Parquet: {locked.object_path}"
+            ) from exc
+        schema = parquet.schema_arrow
+        timestamp_index = schema.get_field_index("timestamp_received")
+        if timestamp_index < 0:
+            raise FullDayInputError(
+                f"locked object lacks timestamp_received: {locked.object_path}"
+            )
+        minima: list[datetime] = []
+        maxima: list[datetime] = []
+        for row_group in range(parquet.metadata.num_row_groups):
+            statistics = parquet.metadata.row_group(row_group).column(
+                timestamp_index
+            ).statistics
+            if statistics is None or not statistics.has_min_max:
+                raise FullDayInputError(
+                    "timestamp_received row-group statistics are required for "
+                    f"receive-time partition verification: {locked.object_path}"
+                )
+            if not isinstance(statistics.min, datetime) or not isinstance(
+                statistics.max, datetime
+            ):
+                raise FullDayInputError(
+                    "timestamp_received statistics must be timestamps"
+                )
+            minima.append(statistics.min)
+            maxima.append(statistics.max)
+        if not minima or parquet.metadata.num_rows <= 0:
+            raise FullDayInputError(
+                f"locked object contains no rows: {locked.object_path}"
+            )
+        observed_min = min(minima).astimezone(timezone.utc)
+        observed_max = max(maxima).astimezone(timezone.utc)
+        if not (
+            expected_hour <= observed_min < expected_end
+            and expected_hour <= observed_max < expected_end
+        ):
+            raise FullDayInputError(
+                "locked object violates its receive-time partition: "
+                f"{locked.object_path}"
+            )
+        schema_fingerprints.add(_schema_fingerprint(schema))
+        compressed_bytes += path.stat().st_size
+        metadata_rows += parquet.metadata.num_rows
+    if len(schema_fingerprints) != 1:
+        raise FullDayInputError("PMXT full day contains schema drift")
+
+    connection = duckdb.connect(database=":memory:")
+    try:
+        resolved = [str(path.resolve()) for path in paths]
+        summary = connection.execute(
+            """
+            SELECT
+                count(*) AS row_count,
+                count(*) FILTER (
+                    WHERE timestamp_received IS NULL
+                       OR timestamp IS NULL
+                       OR market IS NULL
+                       OR asset_id IS NULL
+                       OR event_type IS NULL
+                ) AS invalid_required_rows,
+                count(DISTINCT market) AS market_count,
+                count(DISTINCT asset_id) AS asset_count,
+                epoch_ms(min(timestamp_received)) AS timestamp_received_min_ms,
+                epoch_ms(max(timestamp_received)) AS timestamp_received_max_ms
+            FROM read_parquet(?, union_by_name = true)
+            """,
+            [resolved],
+        ).fetchone()
+        event_type_rows = connection.execute(
+            """
+            SELECT event_type, count(*) AS event_count
+            FROM read_parquet(?, union_by_name = true)
+            GROUP BY event_type
+            ORDER BY event_type
+            """,
+            [resolved],
+        ).fetchall()
+    except duckdb.Error as exc:
+        raise FullDayInputError(f"PMXT full-day preflight failed: {exc}") from exc
+    finally:
+        connection.close()
+    if summary is None:
+        raise FullDayInputError("PMXT full-day preflight produced no summary")
+    (
+        row_count,
+        invalid_required_rows,
+        market_count,
+        asset_count,
+        received_min,
+        received_max,
+    ) = summary
+    if row_count != metadata_rows:
+        raise FullDayInputError(
+            "Parquet metadata row count differs from the full-day scan"
+        )
+    if invalid_required_rows:
+        raise FullDayInputError(
+            f"PMXT full day contains {invalid_required_rows} NULL required rows"
+        )
+    if not market_count or not asset_count:
+        raise FullDayInputError("PMXT full day contains no markets or assets")
+    if isinstance(received_min, bool) or not isinstance(received_min, int):
+        raise FullDayInputError("PMXT full day has invalid receive timestamps")
+    if isinstance(received_max, bool) or not isinstance(received_max, int):
+        raise FullDayInputError("PMXT full day has invalid receive timestamps")
+    received_min_at = datetime.fromtimestamp(
+        received_min / 1_000, tz=timezone.utc
+    )
+    received_max_at = datetime.fromtimestamp(
+        received_max / 1_000, tz=timezone.utc
+    )
+    event_type_counts: dict[str, int] = {}
+    for event_type, event_count in event_type_rows:
+        if not isinstance(event_type, str) or not event_type:
+            raise FullDayInputError("PMXT full day has an invalid event type")
+        event_type_counts[event_type] = int(event_count)
+    if sum(event_type_counts.values()) != row_count:
+        raise FullDayInputError("PMXT event-type counts do not cover all rows")
+
+    provisional = FullDayPreflightReport(
+        version="pmxt-full-day-preflight-v1",
+        day=manifest.day,
+        input_manifest_sha256=manifest.manifest_sha256,
+        object_count=len(paths),
+        compressed_bytes=compressed_bytes,
+        row_count=int(row_count),
+        market_count=int(market_count),
+        asset_count=int(asset_count),
+        event_type_counts=dict(sorted(event_type_counts.items())),
+        timestamp_received_min=_utc_text(
+            received_min_at, field="timestamp_received_min"
+        ),
+        timestamp_received_max=_utc_text(
+            received_max_at, field="timestamp_received_max"
+        ),
+        schema_fingerprint=next(iter(schema_fingerprints)),
+        reconstruction_executed=False,
+        x01_formal_gate_passed=False,
+        open_gates=(
+            "all_contract_full_day_semantic_reconstruction",
+            "independent_price_and_size_comparison",
+        ),
+        queue_fill_reconstructed=False,
+        report_sha256="",
+    )
+    material = asdict(provisional)
+    material.pop("report_sha256")
+    report = replace(
+        provisional,
+        report_sha256=_sha256_bytes(_canonical_bytes(material)),
+    )
+    if _verified_paths(raw_root, manifest) != paths:
+        raise FullDayInputError("locked object paths changed during preflight")
+    return report
 
 
 def run_full_day_reconstruction(

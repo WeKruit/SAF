@@ -15,6 +15,7 @@ from prediction_market.pmxt.full_day import (
     FullDayInputError,
     HourlyObjectRef,
     build_full_day_manifest,
+    preflight_full_day_inputs,
     run_full_day_reconstruction,
     select_complete_utc_day,
     validate_full_day_manifest,
@@ -171,6 +172,52 @@ def test_cross_hour_book_is_reconstructed_once_for_every_market(
     assert report.independent_comparison_performed is False
     assert report.x01_formal_gate_passed is False
     assert report.open_gate == "independent_price_and_size_comparison"
+
+
+def test_full_day_preflight_verifies_partition_schema_and_counts(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest(tmp_path)
+
+    first = preflight_full_day_inputs(tmp_path, manifest)
+    second = preflight_full_day_inputs(tmp_path, manifest)
+
+    assert first == second
+    assert first.object_count == 24
+    assert first.row_count == 24
+    assert first.market_count == 1
+    assert first.asset_count == 1
+    assert first.event_type_counts == {"book": 1, "price_change": 23}
+    assert first.timestamp_received_min == "2026-05-28T00:00:00.100Z"
+    assert first.timestamp_received_max == "2026-05-28T23:00:00.100Z"
+    assert first.schema_fingerprint.startswith("sha256:")
+    assert first.report_sha256.startswith("sha256:")
+    assert first.reconstruction_executed is False
+    assert first.x01_formal_gate_passed is False
+    assert first.open_gates == (
+        "all_contract_full_day_semantic_reconstruction",
+        "independent_price_and_size_comparison",
+    )
+
+
+def test_full_day_preflight_rejects_object_outside_locked_receive_hour(
+    tmp_path: Path,
+) -> None:
+    entries, objects = _day_inputs(tmp_path)
+    wrong_hour_path = tmp_path / objects[1].object_path
+    _write_hour(wrong_hour_path, 0)
+    payload = wrong_hour_path.read_bytes()
+    objects[1] = replace(objects[1], object_sha256=_digest(payload))
+    manifest = build_full_day_manifest(
+        day=DAY,
+        entries=select_complete_utc_day(entries, day=DAY),
+        objects=objects,
+        inventory_sha256=_digest(b"inventory"),
+        canonicalization_version="pmxt-reconstructor-v1",
+    )
+
+    with pytest.raises(FullDayInputError, match="receive-time partition"):
+        preflight_full_day_inputs(tmp_path, manifest)
 
 
 def test_full_day_result_is_independent_of_manifest_input_order(

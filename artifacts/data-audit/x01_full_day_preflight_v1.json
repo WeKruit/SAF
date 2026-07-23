@@ -1,0 +1,27 @@
+{
+  "asset_count": 102219,
+  "compressed_bytes": 11479773675,
+  "day": "2026-05-28",
+  "event_type_counts": {
+    "book": 6579579,
+    "last_trade_price": 2258403,
+    "price_change": 1962487579,
+    "tick_size_change": 11402
+  },
+  "input_manifest_sha256": "sha256:e7dfc9e7992f1eb085edc0c67f37100db10c6541533220833dcace2a1e244df3",
+  "market_count": 51115,
+  "object_count": 24,
+  "open_gates": [
+    "all_contract_full_day_semantic_reconstruction",
+    "independent_price_and_size_comparison"
+  ],
+  "queue_fill_reconstructed": false,
+  "reconstruction_executed": false,
+  "report_sha256": "sha256:4a4d9f39540115bcd69c6ede017c2d57d72cc471405804b051f74533db3394ad",
+  "row_count": 1971336963,
+  "schema_fingerprint": "sha256:0de107a67b4f35d93d60e478e92f55bfe07b29dbfe2ecde85e7d73fb85eeb22b",
+  "timestamp_received_max": "2026-05-28T23:59:59.961Z",
+  "timestamp_received_min": "2026-05-28T00:00:00.122Z",
+  "version": "pmxt-full-day-preflight-v1",
+  "x01_formal_gate_passed": false
+}
