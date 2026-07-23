@@ -17,11 +17,15 @@ from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime
 from enum import Enum
 from types import MappingProxyType
-from typing import Any, Generic, Protocol, TypeVar, runtime_checkable
+from typing import Any, Generic, Literal, Protocol, TypeVar, runtime_checkable
 
 from pydantic import BaseModel
 
-from prediction_market.contracts import canonical_sha256
+from prediction_market.contracts import (
+    GameStateStepV0,
+    canonical_sha256,
+    game_state_step_sha256,
+)
 
 
 _EVENT_ID_RE = re.compile(r"evt_[0-9a-f]{64}\Z")
@@ -193,6 +197,41 @@ class StateTransitionTrace(Generic[StateT]):
     next_state_sha256: str
     trace_sha256: str
     next_state: StateT
+
+    def to_contract(
+        self,
+        *,
+        state_schema_id: str,
+        event_schema_id: str,
+        observation_mode: Literal[
+            "live_pit",
+            "offline_reconstruction",
+            "synthetic_fixture",
+        ],
+        quality_flags: tuple[str, ...],
+    ) -> GameStateStepV0:
+        """Bind the trace to explicit sport schemas and observation semantics."""
+
+        material: dict[str, Any] = {
+            "step_version": "v0",
+            "sport": self.sport,
+            "game_id": self.game_id,
+            "sequence": self.sequence,
+            "terminal": self.next_state.terminal,
+            "reducer_id": self.reducer_id,
+            "reducer_version": self.reducer_version,
+            "state_schema_id": state_schema_id,
+            "event_schema_id": event_schema_id,
+            "event_id": self.event_id,
+            "previous_state_sha256": self.previous_state_sha256,
+            "event_sha256": self.event_sha256,
+            "next_state_sha256": self.next_state_sha256,
+            "observation_mode": observation_mode,
+            "quality_flags": list(quality_flags),
+            "step_sha256": "sha256:" + "0" * 64,
+        }
+        material["step_sha256"] = game_state_step_sha256(material)
+        return GameStateStepV0.model_validate(material)
 
 
 def advance_state(

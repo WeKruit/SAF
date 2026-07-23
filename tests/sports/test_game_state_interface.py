@@ -11,6 +11,7 @@ from prediction_market.sports.game_state import (
     benchmark_state_pipeline,
     canonical_state_sha256,
 )
+from prediction_market.contracts import GameStateStepV0
 
 
 EVENT_ID = "evt_" + "a" * 64
@@ -18,7 +19,7 @@ EVENT_ID = "evt_" + "a" * 64
 
 @dataclass(frozen=True, slots=True)
 class _State:
-    sport: Literal["test"]
+    sport: Literal["nfl"]
     game_id: str
     sequence: int
     terminal: bool
@@ -27,7 +28,7 @@ class _State:
 
 @dataclass(frozen=True, slots=True)
 class _Event:
-    sport: Literal["test"]
+    sport: Literal["nfl"]
     game_id: str
     sequence: int
     event_id: str
@@ -36,13 +37,13 @@ class _Event:
 
 
 class _Reducer:
-    sport = "test"
+    sport = "nfl"
     reducer_id = "REDUCER-TEST"
     reducer_version = "v1"
 
     def reduce(self, state: _State, event: _Event) -> _State:
         return _State(
-            sport="test",
+            sport="nfl",
             game_id=state.game_id,
             sequence=event.sequence,
             terminal=event.terminal,
@@ -52,7 +53,7 @@ class _Reducer:
 
 def _state() -> _State:
     return _State(
-        sport="test",
+        sport="nfl",
         game_id="game_test_001",
         sequence=0,
         terminal=False,
@@ -62,7 +63,7 @@ def _state() -> _State:
 
 def _event(**changes: object) -> _Event:
     values: dict[str, object] = {
-        "sport": "test",
+        "sport": "nfl",
         "game_id": "game_test_001",
         "sequence": 1,
         "event_id": EVENT_ID,
@@ -85,6 +86,17 @@ def test_advance_is_deterministic_and_hashes_the_complete_step() -> None:
     assert first.next_state_sha256 == canonical_state_sha256(first.next_state)
     assert first.trace_sha256.startswith("sha256:")
 
+    contract = first.to_contract(
+        state_schema_id="urn:saf:game-state:nfl:v1",
+        event_schema_id="urn:saf:game-event:nfl:v1",
+        observation_mode="synthetic_fixture",
+        quality_flags=(),
+    )
+    assert isinstance(contract, GameStateStepV0)
+    assert contract.previous_state_sha256 == first.previous_state_sha256
+    assert contract.next_state_sha256 == first.next_state_sha256
+    assert contract.step_sha256.startswith("sha256:")
+
 
 @pytest.mark.parametrize(
     ("state", "event", "message"),
@@ -94,7 +106,7 @@ def test_advance_is_deterministic_and_hashes_the_complete_step() -> None:
         (_state(), _event(sequence=0), "sequence"),
         (_state(), _event(sequence=2), "sequence"),
         (
-            _State("test", "game_test_001", 0, True, 0),
+            _State("nfl", "game_test_001", 0, True, 0),
             _event(),
             "terminal",
         ),
@@ -113,7 +125,7 @@ def test_advance_fails_closed_on_identity_and_order(
 class _WrongReducer(_Reducer):
     def reduce(self, state: _State, event: _Event) -> _State:
         return _State(
-            sport="test",
+            sport="nfl",
             game_id="game_test_wrong",
             sequence=event.sequence,
             terminal=False,

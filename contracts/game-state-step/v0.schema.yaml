@@ -1,0 +1,79 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: urn:saf:game-state-step:v0
+title: Game-State Step v0
+description: Content-addressed evidence for one deterministic sport-specific state transition.
+x-normative-semantic-validator:
+  callable: prediction_market.contracts.validate_contract_v0
+  schema_name: game-state-step/v0.schema.yaml
+  required: true
+type: object
+additionalProperties: false
+required:
+  - step_version
+  - sport
+  - game_id
+  - sequence
+  - terminal
+  - reducer_id
+  - reducer_version
+  - state_schema_id
+  - event_schema_id
+  - event_id
+  - previous_state_sha256
+  - event_sha256
+  - next_state_sha256
+  - observation_mode
+  - quality_flags
+  - step_sha256
+properties:
+  step_version: {const: v0}
+  sport:
+    enum: [nba, nfl, soccer, mlb, f1]
+  game_id:
+    type: string
+    pattern: ^game_[A-Za-z0-9][A-Za-z0-9._:-]*$
+  sequence:
+    type: integer
+    minimum: 0
+  terminal: {type: boolean}
+  reducer_id: {type: string, minLength: 1}
+  reducer_version: {type: string, minLength: 1}
+  state_schema_id:
+    type: string
+    pattern: ^urn:saf:game-state:(nba|nfl|soccer|mlb|f1):v[0-9]+$
+  event_schema_id:
+    type: string
+    pattern: ^urn:saf:game-event:(nba|nfl|soccer|mlb|f1):v[0-9]+$
+  event_id:
+    type: string
+    pattern: ^evt_[0-9a-f]{64}$
+  previous_state_sha256: {$ref: '#/$defs/sha256'}
+  event_sha256: {$ref: '#/$defs/sha256'}
+  next_state_sha256: {$ref: '#/$defs/sha256'}
+  observation_mode:
+    enum: [live_pit, offline_reconstruction, synthetic_fixture]
+  quality_flags:
+    type: array
+    uniqueItems: true
+    items:
+      enum:
+        - clock_jump
+        - crossed_book
+        - duplicate_event
+        - gap_detected
+        - missing_initial_snapshot
+        - missing_side
+        - negative_time_delta
+        - non_positive_size
+        - out_of_order
+        - pause_observed
+        - preliminary_rules
+        - reconstruction_divergence
+        - source_clock_unverified
+        - stale_as_of_join
+        - tick_size_change
+  step_sha256: {$ref: '#/$defs/sha256'}
+$defs:
+  sha256:
+    type: string
+    pattern: ^sha256:[0-9a-f]{64}$

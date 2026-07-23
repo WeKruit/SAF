@@ -431,6 +431,12 @@ QualityFlagV0 = Literal[
     "stale_as_of_join",
     "tick_size_change",
 ]
+SportV0 = Literal["nba", "nfl", "soccer", "mlb", "f1"]
+GameStateObservationModeV0 = Literal[
+    "live_pit",
+    "offline_reconstruction",
+    "synthetic_fixture",
+]
 MarketRelationV0 = Literal[
     "identity",
     "subset",
@@ -1193,6 +1199,75 @@ class ModelOutputV1(_ContractModel):
         return self
 
 
+class GameStateStepV0(_ContractModel):
+    """Content-addressed evidence for one sport-specific state transition."""
+
+    step_version: Literal["v0"]
+    sport: SportV0
+    game_id: GameIdV0
+    sequence: Annotated[int, Field(strict=True, ge=0)]
+    terminal: bool
+    reducer_id: NonBlankStr
+    reducer_version: NonBlankStr
+    state_schema_id: Annotated[
+        str,
+        StringConstraints(
+            strict=True,
+            pattern=r"^urn:saf:game-state:(?:nba|nfl|soccer|mlb|f1):v[0-9]+$",
+        ),
+    ]
+    event_schema_id: Annotated[
+        str,
+        StringConstraints(
+            strict=True,
+            pattern=r"^urn:saf:game-event:(?:nba|nfl|soccer|mlb|f1):v[0-9]+$",
+        ),
+    ]
+    event_id: EventIdV0
+    previous_state_sha256: Sha256V0
+    event_sha256: Sha256V0
+    next_state_sha256: Sha256V0
+    observation_mode: GameStateObservationModeV0
+    quality_flags: tuple[QualityFlagV0, ...]
+    step_sha256: Sha256V0
+
+    @field_validator("quality_flags", mode="before")
+    @classmethod
+    def _quality_flags_input_is_tuple(cls, value: Any) -> Any:
+        return _as_tuple(value)
+
+    @field_validator("quality_flags")
+    @classmethod
+    def _quality_flags_are_unique(
+        cls, value: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        if len(value) != len(set(value)):
+            raise ValueError("quality_flags must be unique")
+        return tuple(sorted(value))
+
+    @model_validator(mode="after")
+    def _step_hash_is_content_addressed(self) -> "GameStateStepV0":
+        expected = game_state_step_sha256(self)
+        if self.step_sha256 != expected:
+            raise ValueError(f"step_sha256 mismatch: expected {expected}")
+        return self
+
+
+def game_state_step_sha256(
+    value: Mapping[str, Any] | GameStateStepV0,
+) -> str:
+    """Hash a game-state step without its self-referential digest."""
+
+    if isinstance(value, GameStateStepV0):
+        material = value.model_dump(mode="python")
+    elif isinstance(value, Mapping):
+        material = dict(value)
+    else:
+        raise TypeError("game-state step must be a mapping or GameStateStepV0")
+    material.pop("step_sha256", None)
+    return canonical_sha256(material)
+
+
 class VenueRuleSnapshotV0(_ContractModel):
     """One append-only, per-condition observation of venue execution rules."""
 
@@ -1481,6 +1556,7 @@ class RelationAssertionV0(_EvidenceAssertionV0):
 
 
 _MODEL_BY_SCHEMA_NAME: dict[str, type[BaseModel]] = {
+    "game-state-step/v0.schema.yaml": GameStateStepV0,
     "id-registry/v0/entity.schema.yaml": EntityAssertionV0,
     "id-registry/v0/native-assertion.schema.yaml": NativeAssertionV0,
     "id-registry/v0/relation-assertion.schema.yaml": RelationAssertionV0,
@@ -1695,6 +1771,8 @@ __all__ = [
     "FeeFormulaV0",
     "FixedPointV0",
     "FrozenDict",
+    "GameStateObservationModeV0",
+    "GameStateStepV0",
     "LineageV0",
     "LEVEL2_STREAM_DOMAIN_TAG",
     "MARKET_RELATIONS",
@@ -1713,6 +1791,7 @@ __all__ = [
     "SourceV0",
     "StaticDatasetLineageV0",
     "StaticDatasetManifestV0",
+    "SportV0",
     "TimeV0",
     "TcaMarkoutV0",
     "TcaRecordV0",
@@ -1723,6 +1802,7 @@ __all__ = [
     "canonical_sha256",
     "compute_event_id",
     "compute_payload_sha256",
+    "game_state_step_sha256",
     "event_id_for",
     "level2_stream_frame",
     "level2_stream_sha256",
