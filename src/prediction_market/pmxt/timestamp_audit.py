@@ -68,6 +68,8 @@ class TimestampAuditReport:
 class TimestampSampleAuditReport:
     version: str
     days: tuple[str, ...]
+    code_sha256: str
+    data_sha256: str
     input_bundle_path: str
     input_bundle_file_sha256: str
     input_bundle_sha256: str
@@ -130,6 +132,8 @@ class _GovernedX02Input:
     bundle_path: str
     bundle_file_sha256: str
     bundle_sha256: str
+    code_sha256: str
+    data_sha256: str
 
 
 def _canonical_bytes(value: object) -> bytes:
@@ -185,6 +189,37 @@ def _require_integer(value: object, *, field: str) -> int:
     return value
 
 
+def x02_runner_code_sha256(program_root: str | Path) -> str:
+    """Hash the fixed X-02 execution source set and dependency lock."""
+
+    import prediction_market.compliance as compliance_module
+    import prediction_market.contracts as contracts_module
+    import prediction_market.experiments as experiments_module
+    import prediction_market.pmxt.full_day as full_day_module
+    import prediction_market.program_audit as program_audit_module
+
+    try:
+        dependency_lock = _resolve_locked_path(Path(program_root), "uv.lock")
+    except FullDayInputError as exc:
+        raise TimestampAuditError(
+            f"X-02 dependency lock is unavailable: {exc}"
+        ) from exc
+    source_paths = {
+        "src/prediction_market/compliance.py": Path(compliance_module.__file__),
+        "src/prediction_market/contracts.py": Path(contracts_module.__file__),
+        "src/prediction_market/experiments.py": Path(experiments_module.__file__),
+        "src/prediction_market/pmxt/full_day.py": Path(full_day_module.__file__),
+        "src/prediction_market/pmxt/timestamp_audit.py": Path(__file__),
+        "src/prediction_market/program_audit.py": Path(program_audit_module.__file__),
+        "uv.lock": dependency_lock,
+    }
+    manifest = {
+        relative: _sha256_path(path)
+        for relative, path in sorted(source_paths.items())
+    }
+    return "sha256:" + hashlib.sha256(_canonical_bytes(manifest)).hexdigest()
+
+
 def _load_governed_x02_input(program_root: str | Path) -> _GovernedX02Input:
     from prediction_market.experiments import (
         ExperimentRegistryError,
@@ -208,21 +243,19 @@ def _load_governed_x02_input(program_root: str | Path) -> _GovernedX02Input:
         {"bundle_path", "bundle_file_sha256", "bundle_sha256"},
         context="X-02 governed input binding",
     )
-    governed = _GovernedX02Input(
-        bundle_path=_require_string(
-            binding["bundle_path"], field="X-02 governed bundle_path"
-        ),
-        bundle_file_sha256=_require_string(
-            binding["bundle_file_sha256"],
-            field="X-02 governed bundle_file_sha256",
-        ),
-        bundle_sha256=_require_string(
-            binding["bundle_sha256"], field="X-02 governed bundle_sha256"
-        ),
+    bundle_path = _require_string(
+        binding["bundle_path"], field="X-02 governed bundle_path"
+    )
+    bundle_file_sha256 = _require_string(
+        binding["bundle_file_sha256"],
+        field="X-02 governed bundle_file_sha256",
+    )
+    bundle_sha256 = _require_string(
+        binding["bundle_sha256"], field="X-02 governed bundle_sha256"
     )
     if any(
         _SHA256_PATTERN.fullmatch(value) is None
-        for value in (governed.bundle_file_sha256, governed.bundle_sha256)
+        for value in (bundle_file_sha256, bundle_sha256)
     ):
         raise TimestampAuditError("X-02 governed bundle hashes are invalid")
 
@@ -251,11 +284,11 @@ def _load_governed_x02_input(program_root: str | Path) -> _GovernedX02Input:
     data_sha256 = _require_string(
         formal["data_sha256"], field="X-02 preregistered data_sha256"
     )
-    if code_sha256 != _sha256_path(Path(__file__)):
+    if code_sha256 != x02_runner_code_sha256(program_root):
         raise TimestampAuditError(
             "X-02 runner source does not match the preregistered code SHA-256"
         )
-    if data_sha256 != governed.bundle_sha256:
+    if data_sha256 != bundle_sha256:
         raise TimestampAuditError(
             "X-02 governed bundle does not match preregistered data SHA-256"
         )
@@ -263,7 +296,13 @@ def _load_governed_x02_input(program_root: str | Path) -> _GovernedX02Input:
         raise TimestampAuditError(
             "X-02 formal preregistered dataset/model binding is invalid"
         )
-    return governed
+    return _GovernedX02Input(
+        bundle_path=bundle_path,
+        bundle_file_sha256=bundle_file_sha256,
+        bundle_sha256=bundle_sha256,
+        code_sha256=code_sha256,
+        data_sha256=data_sha256,
+    )
 
 
 def _parse_full_day_manifest(
@@ -984,6 +1023,8 @@ def audit_timestamp_sample(
     provisional = TimestampSampleAuditReport(
         version="pmxt-timestamp-sample-audit-v1",
         days=days,
+        code_sha256=governed.code_sha256,
+        data_sha256=governed.data_sha256,
         input_bundle_path=bundle.relative_path,
         input_bundle_file_sha256=bundle.file_sha256,
         input_bundle_sha256=bundle.bundle_sha256,
@@ -1029,4 +1070,5 @@ __all__ = [
     "audit_full_day_timestamps",
     "audit_timestamp_sample",
     "select_timestamp_audit_days",
+    "x02_runner_code_sha256",
 ]

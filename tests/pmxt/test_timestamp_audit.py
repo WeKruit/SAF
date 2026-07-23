@@ -28,6 +28,7 @@ from prediction_market.pmxt.timestamp_audit import (
     audit_full_day_timestamps,
     audit_timestamp_sample,
     select_timestamp_audit_days,
+    x02_runner_code_sha256,
 )
 
 
@@ -238,7 +239,11 @@ def governed_x02(monkeypatch: pytest.MonkeyPatch) -> None:
                 "preregistered_inputs": {
                     "formal_result": {
                         "code_sha256": _digest(
-                            Path(timestamp_audit_module.__file__).read_bytes()
+                            _canonical(
+                                {
+                                    "fixture": "must_be_replaced_by_runtime_bundle_hash"
+                                }
+                            )
                         ),
                         "data_sha256": bundle_sha256,
                         "dataset_ids": ["DS-PMXT-V2"],
@@ -250,6 +255,13 @@ def governed_x02(monkeypatch: pytest.MonkeyPatch) -> None:
         }
 
     monkeypatch.setattr(experiments_module, "load_experiment_registry", load_registry)
+    monkeypatch.setattr(
+        timestamp_audit_module,
+        "x02_runner_code_sha256",
+        lambda program_root: _digest(
+            _canonical({"fixture": "must_be_replaced_by_runtime_bundle_hash"})
+        ),
+    )
 
 
 def test_x02_day_selection_is_seeded_and_complete() -> None:
@@ -348,6 +360,10 @@ def test_four_day_timestamp_sample_aggregates_the_preregistered_unit(
     assert report.input_bundle_path == bundle_path
     assert report.input_bundle_file_sha256 == bundle_file_sha256
     assert report.input_bundle_sha256 == bundle_sha256
+    assert report.code_sha256 == _digest(
+        _canonical({"fixture": "must_be_replaced_by_runtime_bundle_hash"})
+    )
+    assert report.data_sha256 == bundle_sha256
     assert report.input_manifest_sha256s == tuple(
         manifest.manifest_sha256 for manifest in manifests
     )
@@ -463,6 +479,17 @@ def test_timestamp_sample_rejects_missing_governance_before_metrics(
             input_bundle_path=bundle_path,
         )
     assert metric_calls == 0
+
+
+def test_x02_runner_code_hash_binds_dependency_lock(tmp_path: Path) -> None:
+    (tmp_path / "uv.lock").write_bytes(b"dependency-lock-v1")
+    first = x02_runner_code_sha256(tmp_path)
+    (tmp_path / "uv.lock").write_bytes(b"dependency-lock-v2")
+    second = x02_runner_code_sha256(tmp_path)
+
+    assert first.startswith("sha256:")
+    assert second.startswith("sha256:")
+    assert first != second
 
 
 def test_timestamp_audit_fails_closed_when_native_file_order_is_broken(
