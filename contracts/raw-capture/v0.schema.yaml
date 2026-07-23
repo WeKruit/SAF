@@ -72,6 +72,7 @@ $defs:
       - compression
       - record_encoding
       - sealed_at
+      - manifest_sha256
     properties:
       manifest_version:
         const: v0
@@ -123,3 +124,6 @@ $defs:
         const: canonical-json-lines-v0
       sealed_at:
         $ref: '#/$defs/utc_timestamp'
+      manifest_sha256:
+        $ref: '#/$defs/sha256'
+        description: SHA-256 of canonical manifest JSON after removing manifest_sha256.

@@ -43,6 +43,23 @@ def _write_canonical_manifest(path: Path, document: dict[str, object]) -> None:
     )
 
 
+def _manifest_sha256(document: dict[str, object]) -> str:
+    hash_input = dict(document)
+    hash_input.pop("manifest_sha256", None)
+    encoded = json.dumps(
+        hash_input,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _refresh_manifest_sha256(document: dict[str, object]) -> None:
+    document["manifest_sha256"] = _manifest_sha256(document)
+
+
 def _make_segment(
     root: Path,
     *,
@@ -156,11 +173,14 @@ def test_manifest_is_strict_sidecar_for_the_exact_object(tmp_path: Path) -> None
         "compression",
         "record_encoding",
         "sealed_at",
+        "manifest_sha256",
     }
     assert document["object_path"] == manifest.object_path.relative_to(tmp_path).as_posix()
     assert document["object_sha256"] == manifest.object_sha256
     assert document["compression"] == "zstd"
     assert document["record_encoding"] == "canonical-json-lines-v0"
+    assert document["manifest_sha256"] == _manifest_sha256(document)
+    assert manifest.manifest_sha256 == document["manifest_sha256"]
 
 
 def test_empty_segment_is_valid_and_has_explicit_empty_bounds(tmp_path: Path) -> None:
@@ -216,6 +236,44 @@ def test_duplicate_finalization_never_overwrites_existing_raw(
     assert len(list((tmp_path / "manifests").rglob("*.manifest.json"))) == 1
 
 
+def test_manifest_directory_fsync_failure_rolls_back_commit_point(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from prediction_market import raw_store
+
+    writer = RawSegmentWriter(
+        tmp_path,
+        source="polymarket",
+        stream="market",
+        capture_session_id="fsync-failure",
+    )
+    writer.append(b"exact", receive_at=UTC_TIME)
+    original_fsync_directory = raw_store._fsync_directory
+    failure_injected = False
+
+    def fail_manifest_commit_once(directory, *args, **kwargs) -> None:
+        nonlocal failure_injected
+        context = kwargs.get("context")
+        is_manifest_path = isinstance(directory, (str, Path)) and (
+            "manifests" in Path(directory).parts
+        )
+        if not failure_injected and (
+            context == "manifest_commit" or is_manifest_path
+        ):
+            failure_injected = True
+            raise OSError("injected manifest-directory fsync failure")
+        original_fsync_directory(directory, *args, **kwargs)
+
+    monkeypatch.setattr(raw_store, "_fsync_directory", fail_manifest_commit_once)
+
+    with pytest.raises(OSError, match="injected manifest-directory fsync failure"):
+        writer.seal()
+
+    assert failure_injected is True
+    assert list((tmp_path / "manifests").rglob("*.manifest.json")) == []
+    assert list((tmp_path / "raw").rglob("*.jsonl.zst")) == []
+
+
 def test_raw_object_tampering_fails_verification(tmp_path: Path) -> None:
     _, _, manifest = _make_segment(tmp_path)
     manifest.object_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
@@ -236,12 +294,26 @@ def test_manifest_tampering_fails_verification_even_with_valid_json(
     manifest.path.chmod(stat.S_IRUSR | stat.S_IWUSR)
     document = json.loads(manifest.path.read_text(encoding="utf-8"))
     document["record_count"] = 999
+    _refresh_manifest_sha256(document)
     _write_canonical_manifest(manifest.path, document)
 
     verification = verify_segment(manifest.path)
 
     assert verification.valid is False
     assert any("record_count" in error for error in verification.errors)
+
+
+def test_manifest_canonical_hash_detects_any_field_tampering(tmp_path: Path) -> None:
+    _, _, manifest = _make_segment(tmp_path)
+    manifest.path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    document = json.loads(manifest.path.read_text(encoding="utf-8"))
+    document["sealed_at"] = "2030-01-01T00:00:00Z"
+    _write_canonical_manifest(manifest.path, document)
+
+    verification = verify_segment(manifest.path)
+
+    assert verification.valid is False
+    assert any("manifest SHA-256" in error for error in verification.errors)
 
 
 def test_manifest_byte_changes_cannot_hide_in_json_whitespace(tmp_path: Path) -> None:
@@ -294,6 +366,78 @@ def test_symlinked_raw_prefix_cannot_escape_store_root(tmp_path: Path) -> None:
     assert list(outside.iterdir()) == []
 
 
+def test_store_root_rejects_symlinked_ancestor_and_parent_traversal(
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(RawStorePathError, match="symlink"):
+        RawSegmentWriter(alias / "store", source="polymarket", stream="market")
+    with pytest.raises(RawStorePathError, match="parent traversal"):
+        RawSegmentWriter(
+            tmp_path / "intended" / ".." / "escaped",
+            source="polymarket",
+            stream="market",
+        )
+
+    assert list(outside.iterdir()) == []
+
+
+def test_writer_uses_nofollow_dirfds_for_traversal_and_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from prediction_market import raw_store
+
+    original_open = raw_store.os.open
+    original_link = raw_store.os.link
+    directory_opens: list[tuple[int, int | None]] = []
+    link_dirfds: list[tuple[int | None, int | None, bool]] = []
+
+    def observe_open(path, flags, mode=0o777, *, dir_fd=None):
+        descriptor = original_open(path, flags, mode, dir_fd=dir_fd)
+        if flags & os.O_DIRECTORY:
+            directory_opens.append((flags, dir_fd))
+        return descriptor
+
+    def observe_link(
+        source,
+        destination,
+        *,
+        src_dir_fd=None,
+        dst_dir_fd=None,
+        follow_symlinks=True,
+    ) -> None:
+        link_dirfds.append((src_dir_fd, dst_dir_fd, follow_symlinks))
+        original_link(
+            source,
+            destination,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+            follow_symlinks=follow_symlinks,
+        )
+
+    monkeypatch.setattr(raw_store.os, "open", observe_open)
+    monkeypatch.setattr(raw_store.os, "link", observe_link)
+
+    _, _, manifest = _make_segment(tmp_path)
+
+    assert verify_segment(manifest.path).valid
+    assert directory_opens
+    assert all(flags & os.O_NOFOLLOW for flags, _ in directory_opens)
+    assert all(flags & os.O_DIRECTORY for flags, _ in directory_opens)
+    assert any(directory_fd is not None for _, directory_fd in directory_opens)
+    assert len(link_dirfds) == 2
+    assert all(
+        isinstance(source_fd, int)
+        and isinstance(destination_fd, int)
+        and follow_symlinks is False
+        for source_fd, destination_fd, follow_symlinks in link_dirfds
+    )
+
+
 def test_verifier_rejects_store_prefixes_replaced_by_symlinks(tmp_path: Path) -> None:
     root = tmp_path / "store"
     _, _, manifest = _make_segment(root)
@@ -315,12 +459,95 @@ def test_manifest_object_path_escape_fails_closed(tmp_path: Path) -> None:
     manifest.path.chmod(stat.S_IRUSR | stat.S_IWUSR)
     document = json.loads(manifest.path.read_text(encoding="utf-8"))
     document["object_path"] = "../../outside-secret"
+    _refresh_manifest_sha256(document)
     _write_canonical_manifest(manifest.path, document)
 
     verification = verify_segment(manifest.path)
 
     assert verification.valid is False
     assert any("object_path" in error for error in verification.errors)
+
+
+def test_verifier_opens_object_once_with_nofollow_and_fstats_same_fd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from prediction_market import raw_store
+
+    _, _, manifest = _make_segment(tmp_path)
+    original_open = raw_store.os.open
+    original_fstat = raw_store.os.fstat
+    object_descriptors: set[int] = set()
+    object_open_flags: list[int] = []
+    object_fstats = 0
+
+    def observe_open(path, flags, mode=0o777, *, dir_fd=None):
+        descriptor = original_open(path, flags, mode, dir_fd=dir_fd)
+        if os.fspath(path) == manifest.object_path.name:
+            object_descriptors.add(descriptor)
+            object_open_flags.append(flags)
+        return descriptor
+
+    def observe_fstat(descriptor: int):
+        nonlocal object_fstats
+        if descriptor in object_descriptors:
+            object_fstats += 1
+        return original_fstat(descriptor)
+
+    monkeypatch.setattr(raw_store.os, "open", observe_open)
+    monkeypatch.setattr(raw_store.os, "fstat", observe_fstat)
+
+    verification = verify_segment(manifest.path)
+
+    assert verification.valid is True
+    assert len(object_open_flags) == 1
+    assert object_open_flags[0] & os.O_NOFOLLOW
+    assert object_fstats >= 2
+
+
+def test_verifier_rejects_path_inode_replacement_between_hash_and_parse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from prediction_market import raw_store
+
+    _, _, original = _make_segment(
+        tmp_path,
+        capture_session_id="same-session",
+        payload=b"original",
+    )
+    _, _, replacement = _make_segment(
+        tmp_path,
+        capture_session_id="same-session",
+        payload=b"replacement",
+    )
+    real_sha256 = hashlib.sha256
+    replaced = False
+
+    class ReplacingDigest:
+        def __init__(self, data: bytes = b"") -> None:
+            self._digest = real_sha256(data)
+            self._object_candidate = data == b""
+
+        def update(self, data: bytes) -> None:
+            self._digest.update(data)
+
+        def hexdigest(self) -> str:
+            nonlocal replaced
+            value = self._digest.hexdigest()
+            if self._object_candidate and not replaced:
+                os.replace(replacement.object_path, original.object_path)
+                replaced = True
+            return value
+
+        def __getattr__(self, name: str):
+            return getattr(self._digest, name)
+
+    monkeypatch.setattr(raw_store.hashlib, "sha256", ReplacingDigest)
+
+    verification = verify_segment(original.path)
+
+    assert replaced is True
+    assert verification.valid is False
+    assert any("changed during verification" in error for error in verification.errors)
 
 
 def test_record_ordinals_are_contiguous_and_payload_duplicates_are_preserved(
@@ -361,6 +588,7 @@ def test_raw_capture_contract_and_data_boundaries_are_published() -> None:
     assert schema["contract_version"] == "v0"
     assert schema["$defs"]["raw_record"]["additionalProperties"] is False
     assert schema["$defs"]["segment_manifest"]["additionalProperties"] is False
+    assert "manifest_sha256" in schema["$defs"]["segment_manifest"]["required"]
     assert schema["x-storage-discipline"] == {
         "append_only": True,
         "content_addressed": True,
@@ -380,3 +608,10 @@ def test_raw_capture_contract_and_data_boundaries_are_published() -> None:
     assert "append-only" in raw_readme
     assert "commit point" in manifest_readme
     assert "reconstruct" in normalized_readme
+    boundary_text = "\n".join((raw_readme, manifest_readme, normalized_readme))
+    assert "not a WORM control" in boundary_text
+    assert "Object Lock" in boundary_text
+    assert "retention" in boundary_text
+    assert "deny-delete" in boundary_text
+    assert "independent anchor" in boundary_text
+    assert "OPEN" in boundary_text

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import base64
 import binascii
+import errno
 import hashlib
 import io
 import json
 import os
 import re
-import tempfile
+import stat
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -58,6 +59,7 @@ _MANIFEST_KEYS = frozenset(
         "compression",
         "record_encoding",
         "sealed_at",
+        "manifest_sha256",
     }
 )
 
@@ -100,6 +102,7 @@ class SegmentManifest:
     compression: str
     record_encoding: str
     sealed_at: str
+    manifest_sha256: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +134,23 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return "sha256:" + digest.hexdigest()
+
+
+def _sha256_fd(descriptor: int) -> str:
+    digest = hashlib.sha256()
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    while True:
+        chunk = os.read(descriptor, 1024 * 1024)
+        if chunk == b"":
+            break
+        digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def _manifest_sha256(document: dict[str, Any]) -> str:
+    hash_input = dict(document)
+    hash_input.pop("manifest_sha256", None)
+    return _sha256_bytes(_canonical_json_bytes(hash_input))
 
 
 def _parse_utc_timestamp(value: Any, field: str) -> datetime:
@@ -169,70 +189,146 @@ def _relative_parts(relative: Path) -> tuple[str, ...]:
     return relative.parts
 
 
-def _ensure_safe_directory(root: Path, relative: Path) -> Path:
-    parts = _relative_parts(relative)
-    current = root
-    for part in parts:
-        current = current / part
-        if current.is_symlink():
-            raise RawStorePathError(f"storage path traverses symlink: {current}")
+def _directory_open_flags() -> int:
+    return (
+        os.O_RDONLY
+        | os.O_DIRECTORY
+        | os.O_NOFOLLOW
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+
+
+def _file_read_flags() -> int:
+    return os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+
+
+def _lexical_absolute_path(value: str | Path, field: str) -> Path:
+    candidate = Path(value)
+    if any(part == ".." for part in candidate.parts):
+        raise RawStorePathError(f"{field} contains parent traversal")
+    return Path(os.path.abspath(candidate))
+
+
+def _fsync_directory(
+    directory: int | Path, *, context: str | None = None
+) -> None:
+    del context
+    if type(directory) is int:
+        os.fsync(directory)
+        return
+    descriptor = _open_directory_absolute(
+        _lexical_absolute_path(directory, "storage directory"),
+        create=False,
+    )
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _open_directory_child(parent_fd: int, name: str, *, create: bool) -> int:
+    try:
+        return os.open(name, _directory_open_flags(), dir_fd=parent_fd)
+    except FileNotFoundError:
+        if not create:
+            raise RawStorePathError(f"storage directory is missing: {name}") from None
+        created = False
         try:
-            current.mkdir()
+            os.mkdir(name, mode=0o755, dir_fd=parent_fd)
+            created = True
         except FileExistsError:
             pass
         except OSError as exc:
-            raise RawStorePathError(f"cannot create storage directory: {current}") from exc
-        if current.is_symlink() or not current.is_dir():
-            raise RawStorePathError(f"storage directory is unsafe: {current}")
+            raise RawStorePathError(
+                f"cannot create storage directory: {name}"
+            ) from exc
+        if created:
+            _fsync_directory(parent_fd, context="directory_create")
         try:
-            current.resolve(strict=True).relative_to(root)
-        except (OSError, ValueError) as exc:
-            raise RawStorePathError("storage directory escapes store root") from exc
-    return current
-
-
-def _resolve_store_root(root: str | Path) -> Path:
-    candidate = Path(root)
-    if candidate.exists() and candidate.is_symlink():
-        raise RawStorePathError("store root must not be a symlink")
-    try:
-        candidate.mkdir(parents=True, exist_ok=True)
-        resolved = candidate.resolve(strict=True)
+            return os.open(name, _directory_open_flags(), dir_fd=parent_fd)
+        except OSError as exc:
+            raise RawStorePathError(
+                f"storage directory became unsafe: {name}"
+            ) from exc
     except OSError as exc:
-        raise RawStorePathError("cannot create or resolve store root") from exc
-    if not resolved.is_dir():
-        raise RawStorePathError("store root must be a directory")
-    return resolved
+        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise RawStorePathError(
+                f"storage path traverses a symlink or non-directory: {name}"
+            ) from exc
+        raise RawStorePathError(f"cannot open storage directory: {name}") from exc
 
 
-def _resolve_safe_file(root: Path, relative_text: str, field: str) -> Path:
+def _open_directory_absolute(path: Path, *, create: bool) -> int:
+    if not path.is_absolute():
+        raise RawStorePathError("storage directory must be absolute")
+    try:
+        descriptor = os.open(path.anchor, _directory_open_flags())
+    except OSError as exc:
+        raise RawStorePathError("cannot open filesystem root safely") from exc
+    try:
+        for part in path.parts[1:]:
+            child = _open_directory_child(descriptor, part, create=create)
+            os.close(descriptor)
+            descriptor = child
+        if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise RawStorePathError("store root must be a directory")
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _open_relative_directory(
+    root_fd: int, relative: Path, *, create: bool
+) -> int:
+    parts = _relative_parts(relative)
+    descriptor = os.dup(root_fd)
+    try:
+        for part in parts:
+            child = _open_directory_child(descriptor, part, create=create)
+            os.close(descriptor)
+            descriptor = child
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _safe_relative_path(relative_text: str, field: str) -> PurePosixPath:
     if type(relative_text) is not str or "\\" in relative_text:
         raise RawStorePathError(f"{field} is not a safe relative path")
     pure = PurePosixPath(relative_text)
     if pure.is_absolute() or any(part in {"", ".", ".."} for part in pure.parts):
         raise RawStorePathError(f"{field} is not a safe relative path")
-    path = root.joinpath(*pure.parts)
-    current = root
-    for part in pure.parts:
-        current = current / part
-        if current.is_symlink():
-            raise RawStorePathError(f"{field} traverses a symlink")
-    try:
-        resolved = path.resolve(strict=True)
-        resolved.relative_to(root)
-    except (OSError, ValueError) as exc:
-        raise RawStorePathError(f"{field} escapes store root or is missing") from exc
-    if not resolved.is_file():
-        raise RawStorePathError(f"{field} is not a regular file")
-    return resolved
+    return pure
 
 
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
+def _open_relative_file(
+    root_fd: int, relative_text: str, field: str
+) -> tuple[int, int, str]:
+    pure = _safe_relative_path(relative_text, field)
+    parent_relative = Path(*pure.parts[:-1])
+    parent_fd = _open_relative_directory(
+        root_fd, parent_relative, create=False
+    )
+    name = pure.parts[-1]
     try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+        descriptor = os.open(name, _file_read_flags(), dir_fd=parent_fd)
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise RawStorePathError(f"{field} is not a regular file")
+        return descriptor, parent_fd, name
+    except OSError as exc:
+        os.close(parent_fd)
+        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise RawStorePathError(f"{field} traverses a symlink") from exc
+        raise RawStorePathError(f"{field} is missing or unsafe") from exc
+
+
+def _resolve_store_root(root: str | Path) -> tuple[Path, int]:
+    lexical = _lexical_absolute_path(root, "store root")
+    descriptor = _open_directory_absolute(lexical, create=True)
+    return lexical, descriptor
 
 
 def _json_object_no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -260,12 +356,44 @@ def _load_json_object(raw: bytes, context: str) -> dict[str, Any]:
     return value
 
 
-def _safe_unlink_own_link(final_path: Path, staging_path: Path) -> None:
+def _stat_identity(metadata: os.stat_result) -> tuple[int, int]:
+    return metadata.st_dev, metadata.st_ino
+
+
+def _stat_signature(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_nlink,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _unlink_if_same_inode(
+    directory_fd: int,
+    name: str,
+    expected: os.stat_result,
+) -> bool:
     try:
-        if final_path.exists() and os.path.samefile(final_path, staging_path):
-            final_path.unlink()
-    except OSError:
-        return
+        current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        if _stat_identity(current) != _stat_identity(expected):
+            return False
+        os.unlink(name, dir_fd=directory_fd)
+        return True
+    except FileNotFoundError:
+        return False
+
+
+def _write_all(descriptor: int, value: bytes) -> None:
+    offset = 0
+    while offset < len(value):
+        written = os.write(descriptor, value[offset:])
+        if written <= 0:
+            raise OSError("short write while sealing raw manifest")
+        offset += written
 
 
 class RawSegmentWriter:
@@ -279,7 +407,6 @@ class RawSegmentWriter:
         stream: str,
         capture_session_id: str | None = None,
     ) -> None:
-        self._root = _resolve_store_root(root)
         self.source = _validate_component(source, "source", _PATH_COMPONENT_RE)
         self.stream = _validate_component(stream, "stream", _PATH_COMPONENT_RE)
         generated_session = "capture-" + uuid.uuid4().hex
@@ -288,22 +415,64 @@ class RawSegmentWriter:
             "capture_session_id",
             _CAPTURE_SESSION_RE,
         )
-
-        _ensure_safe_directory(self._root, Path("raw"))
-        _ensure_safe_directory(self._root, Path("manifests"))
-        staging_root = _ensure_safe_directory(self._root, Path(".staging"))
+        self._root, self._root_fd = _resolve_store_root(root)
+        self._staging_fd = -1
+        self._staging_name = ""
         try:
-            self._staging_path = Path(
-                tempfile.mkdtemp(prefix="raw-segment-", dir=staging_root)
-            ).resolve(strict=True)
-            self._staging_path.relative_to(staging_root)
-        except (OSError, ValueError) as exc:
-            raise RawStorePathError("cannot create safe staging directory") from exc
+            for relative in (Path("raw"), Path("manifests"), Path(".staging")):
+                directory_fd = _open_relative_directory(
+                    self._root_fd, relative, create=True
+                )
+                os.close(directory_fd)
+            staging_root_fd = _open_relative_directory(
+                self._root_fd, Path(".staging"), create=False
+            )
+            try:
+                for _ in range(10):
+                    candidate = "raw-segment-" + uuid.uuid4().hex
+                    try:
+                        os.mkdir(
+                            candidate,
+                            mode=0o700,
+                            dir_fd=staging_root_fd,
+                        )
+                    except FileExistsError:
+                        continue
+                    self._staging_name = candidate
+                    _fsync_directory(
+                        staging_root_fd, context="staging_directory_create"
+                    )
+                    self._staging_fd = _open_directory_child(
+                        staging_root_fd, candidate, create=False
+                    )
+                    break
+                else:
+                    raise RawStoreError("cannot allocate unique staging directory")
+            finally:
+                os.close(staging_root_fd)
+        except Exception:
+            os.close(self._root_fd)
+            self._root_fd = -1
+            raise
 
+        self._staging_path = self._root / ".staging" / self._staging_name
         self._staging_object = self._staging_path / "segment.jsonl.zst"
         try:
-            self._object_handle = self._staging_object.open("xb")
+            object_descriptor = os.open(
+                "segment.jsonl.zst",
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | os.O_NOFOLLOW
+                | getattr(os, "O_CLOEXEC", 0),
+                0o600,
+                dir_fd=self._staging_fd,
+            )
+            self._object_handle = os.fdopen(
+                object_descriptor, "wb", closefd=True
+            )
         except OSError as exc:
+            self._cleanup_staging()
             raise RawStoreError("cannot create staging object") from exc
         self._compressor = zstandard.ZstdCompressor(
             level=3,
@@ -375,32 +544,68 @@ class RawSegmentWriter:
             raise RawStoreError("cannot durably finalize staging object") from exc
 
     def _cleanup_staging(self) -> None:
-        for path in (self._staging_path / "segment.manifest.json", self._staging_object):
+        if self._staging_fd < 0:
+            return
+        staging_metadata = os.fstat(self._staging_fd)
+        for name in ("segment.manifest.json", "segment.jsonl.zst"):
             try:
-                if path.exists() or path.is_symlink():
-                    path.unlink()
+                os.unlink(name, dir_fd=self._staging_fd)
+            except FileNotFoundError:
+                pass
             except OSError:
                 pass
+        os.close(self._staging_fd)
+        self._staging_fd = -1
         try:
-            self._staging_path.rmdir()
+            staging_root_fd = _open_relative_directory(
+                self._root_fd, Path(".staging"), create=False
+            )
+            try:
+                current = os.stat(
+                    self._staging_name,
+                    dir_fd=staging_root_fd,
+                    follow_symlinks=False,
+                )
+                if _stat_identity(current) == _stat_identity(staging_metadata):
+                    os.rmdir(self._staging_name, dir_fd=staging_root_fd)
+                    _fsync_directory(
+                        staging_root_fd, context="staging_directory_cleanup"
+                    )
+            finally:
+                os.close(staging_root_fd)
         except OSError:
             pass
+        finally:
+            if self._root_fd >= 0:
+                os.close(self._root_fd)
+                self._root_fd = -1
 
     def seal(self) -> SegmentManifest:
         """Durably publish an immutable object, then its manifest commit point."""
 
         self._require_open()
         self._state = "sealing"
-        raw_published = False
-        manifest_published = False
-        final_object: Path | None = None
-        final_manifest: Path | None = None
-        staging_manifest = self._staging_path / "segment.manifest.json"
+        raw_linked = False
+        manifest_linked = False
+        raw_directory_fd = -1
+        manifest_directory_fd = -1
+        staging_object_fd = -1
+        staging_manifest_fd = -1
+        final_object_name = ""
+        final_manifest_name = ""
+        staging_object_metadata: os.stat_result | None = None
+        staging_manifest_metadata: os.stat_result | None = None
         try:
             self._close_staging_object()
-            object_sha256 = _sha256_file(self._staging_object)
+            staging_object_fd = os.open(
+                "segment.jsonl.zst",
+                _file_read_flags(),
+                dir_fd=self._staging_fd,
+            )
+            object_sha256 = _sha256_fd(staging_object_fd)
             digest = object_sha256.removeprefix("sha256:")
-            object_size = self._staging_object.stat().st_size
+            staging_object_metadata = os.fstat(staging_object_fd)
+            object_size = staging_object_metadata.st_size
 
             partition_instant = _parse_utc_timestamp(
                 self._first_receive_at or self._opened_at,
@@ -414,19 +619,18 @@ class RawSegmentWriter:
                 f"date={partition_date}",
                 f"hour={partition_hour}",
             )
-            raw_directory = _ensure_safe_directory(
-                self._root, Path("raw") / partition_relative
+            raw_relative = Path("raw") / partition_relative
+            manifest_relative = Path("manifests") / partition_relative
+            raw_directory_fd = _open_relative_directory(
+                self._root_fd, raw_relative, create=True
             )
-            manifest_directory = _ensure_safe_directory(
-                self._root, Path("manifests") / partition_relative
+            manifest_directory_fd = _open_relative_directory(
+                self._root_fd, manifest_relative, create=True
             )
-            final_object = raw_directory / f"{digest}.jsonl.zst"
-            final_manifest = manifest_directory / f"{digest}.manifest.json"
-
-            if os.path.lexists(final_object) or os.path.lexists(final_manifest):
-                raise ImmutableSegmentError(
-                    "sealed segment final path already exists; overwrite is forbidden"
-                )
+            final_object_name = f"{digest}.jsonl.zst"
+            final_manifest_name = f"{digest}.manifest.json"
+            final_object = self._root / raw_relative / final_object_name
+            final_manifest = self._root / manifest_relative / final_manifest_name
 
             document = {
                 "manifest_version": "v0",
@@ -449,39 +653,99 @@ class RawSegmentWriter:
                 "record_encoding": "canonical-json-lines-v0",
                 "sealed_at": _utc_now_text(),
             }
-            with staging_manifest.open("xb") as handle:
-                handle.write(_canonical_json_bytes(document) + b"\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-
-            self._staging_object.chmod(stat_mode_read_only())
-            staging_manifest.chmod(stat_mode_read_only())
-
-            try:
-                os.link(self._staging_object, final_object, follow_symlinks=False)
-                raw_published = True
-                _fsync_directory(raw_directory)
-                os.link(staging_manifest, final_manifest, follow_symlinks=False)
-                manifest_published = True
-                _fsync_directory(manifest_directory)
-            except FileExistsError as exc:
-                raise ImmutableSegmentError(
-                    "sealed segment final path already exists; overwrite is forbidden"
-                ) from exc
-
-            self._state = "sealed"
-            return _manifest_from_document(
+            document["manifest_sha256"] = _manifest_sha256(document)
+            staging_manifest_fd = os.open(
+                "segment.manifest.json",
+                os.O_RDWR
+                | os.O_CREAT
+                | os.O_EXCL
+                | os.O_NOFOLLOW
+                | getattr(os, "O_CLOEXEC", 0),
+                0o600,
+                dir_fd=self._staging_fd,
+            )
+            _write_all(
+                staging_manifest_fd,
+                _canonical_json_bytes(document) + b"\n",
+            )
+            os.fsync(staging_manifest_fd)
+            os.fchmod(staging_object_fd, stat_mode_read_only())
+            os.fchmod(staging_manifest_fd, stat_mode_read_only())
+            os.fsync(staging_object_fd)
+            os.fsync(staging_manifest_fd)
+            staging_manifest_metadata = os.fstat(staging_manifest_fd)
+            result = _manifest_from_document(
                 self._root,
                 final_manifest,
                 final_object,
                 document,
             )
-        except Exception:
-            if raw_published and not manifest_published and final_object is not None:
-                _safe_unlink_own_link(final_object, self._staging_object)
+
+            os.link(
+                "segment.jsonl.zst",
+                final_object_name,
+                src_dir_fd=self._staging_fd,
+                dst_dir_fd=raw_directory_fd,
+                follow_symlinks=False,
+            )
+            raw_linked = True
+            _fsync_directory(raw_directory_fd, context="raw_commit")
+            os.link(
+                "segment.manifest.json",
+                final_manifest_name,
+                src_dir_fd=self._staging_fd,
+                dst_dir_fd=manifest_directory_fd,
+                follow_symlinks=False,
+            )
+            manifest_linked = True
+            _fsync_directory(
+                manifest_directory_fd, context="manifest_commit"
+            )
+
+            self._state = "sealed"
+            return result
+        except Exception as error:
+            if (
+                manifest_linked
+                and manifest_directory_fd >= 0
+                and staging_manifest_metadata is not None
+                and _unlink_if_same_inode(
+                    manifest_directory_fd,
+                    final_manifest_name,
+                    staging_manifest_metadata,
+                )
+            ):
+                _fsync_directory(
+                    manifest_directory_fd, context="manifest_rollback"
+                )
+                manifest_linked = False
+            if (
+                raw_linked
+                and raw_directory_fd >= 0
+                and staging_object_metadata is not None
+                and _unlink_if_same_inode(
+                    raw_directory_fd,
+                    final_object_name,
+                    staging_object_metadata,
+                )
+            ):
+                _fsync_directory(raw_directory_fd, context="raw_rollback")
+                raw_linked = False
             self._state = "failed"
+            if isinstance(error, FileExistsError):
+                raise ImmutableSegmentError(
+                    "sealed segment final path already exists; overwrite is forbidden"
+                ) from error
             raise
         finally:
+            for descriptor in (
+                staging_manifest_fd,
+                staging_object_fd,
+                manifest_directory_fd,
+                raw_directory_fd,
+            ):
+                if descriptor >= 0:
+                    os.close(descriptor)
             self._cleanup_staging()
 
 
@@ -533,6 +797,7 @@ def _manifest_from_document(
         compression=document["compression"],
         record_encoding=document["record_encoding"],
         sealed_at=document["sealed_at"],
+        manifest_sha256=document["manifest_sha256"],
     )
 
 
@@ -552,11 +817,16 @@ def _validate_manifest_document(
         "compression",
         "record_encoding",
         "sealed_at",
+        "manifest_sha256",
     )
     for field in string_fields:
         _require_exact_type(document[field], str, field)
     _require_exact_type(document["record_count"], int, "record_count")
     _require_exact_type(document["object_size_bytes"], int, "object_size_bytes")
+    if _SHA256_RE.fullmatch(document["manifest_sha256"]) is None:
+        raise RawStoreError("manifest_sha256 is invalid")
+    if document["manifest_sha256"] != _manifest_sha256(document):
+        raise RawStoreError("manifest SHA-256 mismatch")
 
     if document["manifest_version"] != "v0":
         raise RawStoreError("manifest_version must be v0")
@@ -631,28 +901,25 @@ def _validate_manifest_document(
     if actual_manifest_relative != expected_manifest_relative:
         raise RawStorePathError("manifest path does not match its content address")
 
-    object_path = _resolve_safe_file(root, document["object_path"], "object_path")
+    object_path = root.joinpath(
+        *_safe_relative_path(document["object_path"], "object_path").parts
+    )
     manifest = _manifest_from_document(root, manifest_path, object_path, document)
     return manifest, []
 
 
 def _derive_root_and_validate_manifest_path(
     manifest_path: str | Path, root: str | Path | None
-) -> tuple[Path, Path]:
-    lexical_manifest = Path(os.path.abspath(Path(manifest_path)))
+) -> tuple[Path, int, Path, int, int, str]:
+    lexical_manifest = _lexical_absolute_path(manifest_path, "manifest path")
     parents = lexical_manifest.parents
     if len(parents) < 6 or parents[4].name != "manifests":
         raise RawStorePathError("manifest path does not follow partition convention")
     lexical_root = parents[5]
     if root is not None:
-        supplied_root = Path(os.path.abspath(Path(root)))
-        if supplied_root.is_symlink():
-            raise RawStorePathError("store root must not be a symlink")
-        try:
-            if supplied_root.resolve(strict=True) != lexical_root.resolve(strict=True):
-                raise RawStorePathError("manifest path escapes supplied store root")
-        except OSError as exc:
-            raise RawStorePathError("supplied store root is missing") from exc
+        supplied_root = _lexical_absolute_path(root, "store root")
+        if supplied_root != lexical_root:
+            raise RawStorePathError("manifest path escapes supplied store root")
 
     try:
         relative = lexical_manifest.relative_to(lexical_root)
@@ -660,22 +927,54 @@ def _derive_root_and_validate_manifest_path(
         raise RawStorePathError("manifest path escapes store root") from exc
     if len(relative.parts) != 6 or relative.parts[0] != "manifests":
         raise RawStorePathError("manifest path does not follow partition convention")
-    current = lexical_root
-    for part in relative.parts:
-        current = current / part
-        if current.is_symlink():
-            raise RawStorePathError("manifest path traverses a symlink")
-    try:
-        resolved_root = lexical_root.resolve(strict=True)
-        resolved_manifest = lexical_manifest.resolve(strict=True)
-        resolved_manifest.relative_to(resolved_root)
-    except (OSError, ValueError) as exc:
-        raise RawStorePathError("manifest path escapes store root or is missing") from exc
-    if not resolved_manifest.is_file():
-        raise RawStorePathError("manifest path is not a regular file")
     if _MANIFEST_NAME_RE.fullmatch(lexical_manifest.name) is None:
         raise RawStorePathError("manifest filename is not content addressed")
-    return resolved_root, resolved_manifest
+    root_fd = _open_directory_absolute(lexical_root, create=False)
+    try:
+        manifest_fd, parent_fd, name = _open_relative_file(
+            root_fd,
+            relative.as_posix(),
+            "manifest path",
+        )
+    except Exception:
+        os.close(root_fd)
+        raise
+    return (
+        lexical_root,
+        root_fd,
+        lexical_manifest,
+        manifest_fd,
+        parent_fd,
+        name,
+    )
+
+
+def _read_fd_bytes(descriptor: int) -> bytes:
+    chunks: list[bytes] = []
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    while True:
+        chunk = os.read(descriptor, 1024 * 1024)
+        if chunk == b"":
+            return b"".join(chunks)
+        chunks.append(chunk)
+
+
+def _fd_and_path_unchanged(
+    descriptor: int,
+    before: os.stat_result,
+    parent_fd: int,
+    name: str,
+) -> bool:
+    after = os.fstat(descriptor)
+    try:
+        current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except OSError:
+        return False
+    return (
+        _stat_signature(before) == _stat_signature(after)
+        and _stat_identity(before) == _stat_identity(current)
+        and stat.S_ISREG(current.st_mode)
+    )
 
 
 def _validate_record(
@@ -733,11 +1032,29 @@ def verify_segment(
 
     errors: list[str] = []
     manifest: SegmentManifest | None = None
+    root_fd = -1
+    manifest_fd = -1
+    manifest_parent_fd = -1
+    object_fd = -1
+    object_parent_fd = -1
     try:
-        resolved_root, resolved_manifest = _derive_root_and_validate_manifest_path(
-            manifest_path, root
-        )
-        manifest_bytes = resolved_manifest.read_bytes()
+        (
+            resolved_root,
+            root_fd,
+            resolved_manifest,
+            manifest_fd,
+            manifest_parent_fd,
+            manifest_name,
+        ) = _derive_root_and_validate_manifest_path(manifest_path, root)
+        manifest_before = os.fstat(manifest_fd)
+        manifest_bytes = _read_fd_bytes(manifest_fd)
+        if not _fd_and_path_unchanged(
+            manifest_fd,
+            manifest_before,
+            manifest_parent_fd,
+            manifest_name,
+        ):
+            raise RawStoreError("manifest changed during verification")
         document = _load_json_object(manifest_bytes, "segment manifest")
         if manifest_bytes != _canonical_json_bytes(document) + b"\n":
             raise RawStoreError("segment manifest is not canonical JSON")
@@ -745,13 +1062,20 @@ def verify_segment(
             resolved_root, resolved_manifest, document
         )
 
-        actual_size = manifest.object_path.stat().st_size
+        object_relative = manifest.object_path.relative_to(resolved_root).as_posix()
+        object_fd, object_parent_fd, object_name = _open_relative_file(
+            root_fd,
+            object_relative,
+            "object_path",
+        )
+        object_before = os.fstat(object_fd)
+        actual_size = object_before.st_size
         if actual_size != manifest.object_size_bytes:
             errors.append(
                 "object_size_bytes mismatch: "
                 f"manifest={manifest.object_size_bytes}, actual={actual_size}"
             )
-        actual_sha256 = _sha256_file(manifest.object_path)
+        actual_sha256 = _sha256_fd(object_fd)
         if actual_sha256 != manifest.object_sha256:
             errors.append(
                 "object SHA-256 mismatch: "
@@ -761,7 +1085,8 @@ def verify_segment(
         receive_times: list[str] = []
         record_count = 0
         try:
-            with manifest.object_path.open("rb") as compressed:
+            os.lseek(object_fd, 0, os.SEEK_SET)
+            with os.fdopen(os.dup(object_fd), "rb", closefd=True) as compressed:
                 with zstandard.ZstdDecompressor().stream_reader(compressed) as reader:
                     buffered = io.BufferedReader(reader)
                     while True:
@@ -790,6 +1115,14 @@ def verify_segment(
         except RawStoreError as exc:
             errors.append(str(exc))
 
+        if not _fd_and_path_unchanged(
+            object_fd,
+            object_before,
+            object_parent_fd,
+            object_name,
+        ):
+            errors.append("object changed during verification")
+
         if record_count != manifest.record_count:
             errors.append(
                 "record_count mismatch: "
@@ -803,6 +1136,16 @@ def verify_segment(
             errors.append("last_receive_at mismatch")
     except (OSError, RawStoreError, ValueError) as exc:
         errors.append(str(exc))
+    finally:
+        for descriptor in (
+            object_fd,
+            object_parent_fd,
+            manifest_fd,
+            manifest_parent_fd,
+            root_fd,
+        ):
+            if descriptor >= 0:
+                os.close(descriptor)
     return SegmentVerification(valid=not errors, errors=tuple(errors), manifest=manifest)
 
 
