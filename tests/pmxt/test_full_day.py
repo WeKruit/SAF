@@ -228,3 +228,22 @@ def test_native_market_case_is_preserved_for_exact_parquet_filtering(
     assert report.market_count == 1
     assert report.input_event_count == 24
     assert report.market_results[0].native_market_id == uppercase_market
+
+
+@pytest.mark.parametrize("alias_prefix", ["./", "nested//"])
+def test_manifest_rejects_noncanonical_path_aliases(
+    tmp_path: Path, alias_prefix: str
+) -> None:
+    entries, objects = _day_inputs(tmp_path)
+    objects[1] = replace(
+        objects[1], object_path=alias_prefix + objects[1].object_path
+    )
+
+    with pytest.raises(FullDayInputError, match="object_path.*canonical"):
+        build_full_day_manifest(
+            day=DAY,
+            entries=select_complete_utc_day(entries, day=DAY),
+            objects=objects,
+            inventory_sha256=_digest(b"inventory"),
+            canonicalization_version="pmxt-reconstructor-v1",
+        )

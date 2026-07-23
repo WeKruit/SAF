@@ -170,8 +170,15 @@ def _validate_relative_object_path(value: str) -> None:
     if not isinstance(value, str) or not value:
         raise FullDayInputError("object_path must be a non-empty relative path")
     path = PurePosixPath(value)
-    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
-        raise FullDayInputError("object_path must not be absolute or contain traversal")
+    if (
+        "\\" in value
+        or path.is_absolute()
+        or path.as_posix() != value
+        or any(part in {"", ".", ".."} for part in path.parts)
+    ):
+        raise FullDayInputError(
+            "object_path must be a canonical relative POSIX path without traversal"
+        )
 
 
 def _validate_locked_object(value: LockedHourlyObject, *, day: str) -> datetime:
