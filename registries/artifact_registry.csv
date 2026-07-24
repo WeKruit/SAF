@@ -80,6 +80,7 @@ ART-D3-004,src/prediction_market/sports/soccer_season_census.py,D3+C+H,v0,2026-0
 ART-D3-005,artifacts/game-state/soccer_real_replay_validation_v2.json,D3+C+H,v2,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
 ART-D4-001,artifacts/game-state/mlb/source_inventory_v0.json,D4+I,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
 ART-D4-002,artifacts/game-state/mlb_real_replay_validation_v0.json,D4+C,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
+ART-D4-003,artifacts/game-state/mlb/season_state_census_v0.json,D4+C+H,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
 ART-D5-001,artifacts/game-state/f1/source_inventory_v0.json,D5+I,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
 ART-E-001,artifacts/reaction-labels/x05_barrier_label_spec_v0.md,E+H,v0,X05_label_approval,complete
 ART-F-001,contracts/tca/v0.schema.yaml,F,v0,2026-08-05_W2_review,complete
