@@ -10,8 +10,18 @@ from prediction_market.sports.nfl_game_replay import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-SOURCE_PROGRAM_ROOT = PROJECT_ROOT.parent.parent
 NATIVE_GAME_ID = "2025_14_DAL_DET"
+
+
+def _source_program_root() -> Path:
+    for candidate in (PROJECT_ROOT, PROJECT_ROOT.parent.parent):
+        raw_object_root = candidate / "var" / "raw" / "raw"
+        if raw_object_root.is_dir() and not raw_object_root.is_symlink():
+            return candidate
+    raise AssertionError("a test run requires one real immutable raw root")
+
+
+SOURCE_PROGRAM_ROOT = _source_program_root()
 
 
 def test_dal_det_replay_is_ordered_deterministic_and_offline_only() -> None:
