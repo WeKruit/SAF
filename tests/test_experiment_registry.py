@@ -126,6 +126,31 @@ X11_V1_PROTOCOL_FILE_SHA256 = (
     "sha256:"
     "7957bb56a23ff4908fb70f3219cd2c6a6196e84fddab65ea54d693fb13c914bc"
 )
+X11_V2_RESULT_CANDIDATE = {
+    "scope": "team_h_nfl_fastrmodels_reproduction_v2",
+    "result_label": "PRELIMINARY",
+    "evaluation_started_at": "2026-07-24T01:06:45Z",
+    "code_sha256": (
+        "sha256:"
+        "3c1b92679df15dd6a8bce1d4c4bddbcf5c81944f59b3fe85ded7e0e315161e75"
+    ),
+    "data_sha256": (
+        "sha256:"
+        "6342fceb33fba8b7f2f3b601f85e11a8e201898419013d0e1a46f9f66623fbc4"
+    ),
+    "result_sha256": (
+        "sha256:"
+        "a5d0c7e984229909eda06f602d83ac86eca202c1b1cdd88ae159d522bab1bfe0"
+    ),
+    "registration_head_sha256": (
+        "sha256:"
+        "0dcd4a1a62c7790967023b2383a2cb93eaf35b25e3e4d64baabe8decb8f45960"
+    ),
+    "dataset_ids": ["DS-NFL-FASTRMODELS", "DS-NFLVERSE"],
+    "model_ids": [
+        "MODEL-NFL-FASTRMODELS-NO-SPREAD-CLOCK-V1"
+    ],
+}
 EXPECTED_X02_PREREGISTRATION = {
     "sampling_and_seed": {
         "selection_seed": 20260722,
@@ -2572,7 +2597,7 @@ def test_x11_reproduction_is_no_spread_only_and_does_not_inherit_prior_locks(
     effective = load_experiment_registry(program_root)["X-11"]
     scope_name = str(X11_CURRENT_REPRODUCTION_CONTRACT["scope"])
     scope = effective["authorization_scopes"][scope_name]
-    supersession = effective["amendments"][-1]["changes"][
+    supersession = effective["amendments"][1]["changes"][
         "supersede_reproduction"
     ]
     registration = supersession["registration"]
@@ -2615,7 +2640,7 @@ def test_checked_in_x11_v2_supersession_preserves_v1_history(
 ) -> None:
     card = _read_card(program_root, "X-11")
     assert card["results_ref"] == []
-    assert len(card["amendments"]) == 2
+    assert len(card["amendments"]) == 3
 
     v1 = card["amendments"][0]
     assert v1["amendment_sha256"] == X11_V1_AMENDMENT_SHA256
@@ -2721,7 +2746,7 @@ def test_checked_in_x11_v1_scope_is_rejected_after_supersession(
             experiments_module,
             "_utc_now",
             return_value=datetime(
-                2026, 7, 24, 1, 0, 0, tzinfo=timezone.utc
+                2026, 7, 24, 2, 0, 0, tzinfo=timezone.utc
             ),
         ),
         pytest.raises(
@@ -2736,31 +2761,22 @@ def test_checked_in_x11_v2_result_gate_opens_only_after_supersession(
     program_root: Path,
 ) -> None:
     effective = load_experiment_registry(program_root)["X-11"]
-    amendment = effective["amendments"][1]
-    registration = amendment["changes"]["supersede_reproduction"][
-        "registration"
-    ]
-    amended_at = datetime.strptime(
-        amendment["amended_at"], "%Y-%m-%dT%H:%M:%SZ"
+    supersession = effective["amendments"][1]
+    result_amendment = effective["amendments"][2]
+    result = result_amendment["changes"]["results_ref"]
+    superseded_at = datetime.strptime(
+        supersession["amended_at"], "%Y-%m-%dT%H:%M:%SZ"
     ).replace(tzinfo=timezone.utc)
-    result = _valid_result_ref(
-        scope=registration["scope"],
-        result_label="PRELIMINARY",
-        evaluation_started_at=(
-            amended_at + timedelta(seconds=1)
-        ).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        registration_head_sha256=amendment["amendment_sha256"],
-        code_sha256=registration["code_sha256"],
-        data_sha256=registration["data_sha256"],
-        dataset_ids=registration["dataset_ids"],
-        model_ids=[
-            binding["model_id"]
-            for binding in registration["model_bindings"]
-        ],
-    )
+    evaluated_at = datetime.strptime(
+        result["evaluation_started_at"], "%Y-%m-%dT%H:%M:%SZ"
+    ).replace(tzinfo=timezone.utc)
+    assert evaluated_at > superseded_at
     too_early = dict(
         result,
-        evaluation_started_at=amendment["amended_at"],
+        evaluation_started_at=supersession["amended_at"],
+        registration_head_sha256=effective[
+            "registration_head_sha256"
+        ],
     )
 
     with pytest.raises(
@@ -2771,7 +2787,21 @@ def test_checked_in_x11_v2_result_gate_opens_only_after_supersession(
         ),
     ):
         validate_result_ref(program_root, "X-11", too_early)
-    assert validate_result_ref(program_root, "X-11", result) == result
+    result_amended_at = datetime.strptime(
+        result_amendment["amended_at"], "%Y-%m-%dT%H:%M:%SZ"
+    ).replace(tzinfo=timezone.utc)
+    followup = dict(
+        result,
+        evaluation_started_at=(
+            result_amended_at + timedelta(seconds=1)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        registration_head_sha256=effective[
+            "registration_head_sha256"
+        ],
+    )
+    assert validate_result_ref(
+        program_root, "X-11", followup
+    ) == followup
 
 
 def test_checked_in_x11_v1_protocol_disambiguates_halftime_by_quarter(
@@ -2826,6 +2856,141 @@ def test_checked_in_x11_v1_protocol_disambiguates_halftime_by_quarter(
     assert registration["protocol_sha256"] == protocol_sha256
     assert model.pit_feature_contract == protocol_sha256
     assert model.parameter_config_sha256 == protocol_sha256
+
+
+def test_checked_in_x11_v2_result_is_exact_preliminary_evidence(
+    program_root: Path,
+) -> None:
+    card = _read_card(program_root, "X-11")
+    assert card["results_ref"] == []
+    assert len(card["amendments"]) == 3
+    result_amendment = card["amendments"][2]
+    assert result_amendment["sequence"] == 3
+    assert result_amendment["prior_sha256"] == (
+        X11_V2_RESULT_CANDIDATE["registration_head_sha256"]
+    )
+    assert set(result_amendment["changes"]) == {"results_ref"}
+    assert result_amendment["changes"]["results_ref"] == (
+        X11_V2_RESULT_CANDIDATE
+    )
+    amended_at = datetime.strptime(
+        result_amendment["amended_at"], "%Y-%m-%dT%H:%M:%SZ"
+    ).replace(tzinfo=timezone.utc)
+    evaluated_at = datetime.strptime(
+        X11_V2_RESULT_CANDIDATE["evaluation_started_at"],
+        "%Y-%m-%dT%H:%M:%SZ",
+    ).replace(tzinfo=timezone.utc)
+    assert amended_at > evaluated_at
+    reason = result_amendment["reason"]
+    assert "official no-spread V2" in reason
+    assert "PRELIMINARY" in reason
+    assert "PIT_UNPROVEN" in reason
+
+    effective = load_experiment_registry(program_root)["X-11"]
+    assert effective["results_ref"] == [X11_V2_RESULT_CANDIDATE]
+    assert effective["status"] == "registered"
+    assert effective["promotion_decision"] == ""
+
+
+@pytest.mark.parametrize(
+    ("field_name", "replacement", "match"),
+    [
+        (
+            "registration_head_sha256",
+            "sha256:" + "f" * 64,
+            "registration head",
+        ),
+        (
+            "code_sha256",
+            "sha256:" + "f" * 64,
+            "preregistered hashes",
+        ),
+        (
+            "data_sha256",
+            "sha256:" + "f" * 64,
+            "preregistered hashes",
+        ),
+        (
+            "result_sha256",
+            "not-a-sha256",
+            "result_sha256",
+        ),
+    ],
+)
+def test_x11_v2_result_rejects_head_or_hash_mismatch(
+    tmp_path: Path,
+    field_name: str,
+    replacement: str,
+    match: str,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    _, v2, registration_amendment = _append_x11_v1_then_v2(root)
+    result = _valid_result_ref(
+        scope=v2["scope"],
+        result_label="PRELIMINARY",
+        evaluation_started_at="2026-07-24T01:06:45Z",
+        registration_head_sha256=registration_amendment[
+            "amendment_sha256"
+        ],
+        code_sha256=v2["code_sha256"],
+        data_sha256=v2["data_sha256"],
+        dataset_ids=v2["dataset_ids"],
+        model_ids=[
+            binding["model_id"]
+            for binding in v2["model_bindings"]
+        ],
+    )
+    result[field_name] = replacement
+
+    with pytest.raises(
+        (
+            InvalidResultReferenceError
+            if field_name == "result_sha256"
+            else ExperimentRegistryError
+        ),
+        match=match,
+    ):
+        validate_result_ref(root, "X-11", result)
+
+
+def test_x11_v2_stored_result_tamper_breaks_amendment_chain(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    _, v2, registration_amendment = _append_x11_v1_then_v2(root)
+    result = _valid_result_ref(
+        scope=v2["scope"],
+        result_label="PRELIMINARY",
+        evaluation_started_at="2026-07-24T01:06:45Z",
+        registration_head_sha256=registration_amendment[
+            "amendment_sha256"
+        ],
+        code_sha256=v2["code_sha256"],
+        data_sha256=v2["data_sha256"],
+        dataset_ids=v2["dataset_ids"],
+        model_ids=[
+            binding["model_id"]
+            for binding in v2["model_bindings"]
+        ],
+    )
+    _append_amendment(
+        root,
+        "X-11",
+        amended_at="2026-07-24T01:06:46Z",
+        changes={"results_ref": result},
+    )
+    card = _read_card(root, "X-11")
+    card["amendments"][-1]["changes"]["results_ref"][
+        "result_sha256"
+    ] = "sha256:" + "f" * 64
+    _write_card(root, "X-11", card)
+    _update_registry_card_hash(root, "X-11")
+
+    with pytest.raises(
+        ExperimentRegistryError,
+        match="amendment content hash mismatch",
+    ):
+        load_experiment_registry(root)
 
 
 def test_team_h_can_atomically_supersede_x11_v1_with_exact_v2(

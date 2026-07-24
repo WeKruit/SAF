@@ -137,4 +137,21 @@ experiment_card:
             protocol_sha256: sha256:3d75a366ed6e9627d50b4831ace348c63890160e2ead8241fddb0ce0fb917bdd
             reproduction_spec_sha256: sha256:82d81413d3fe851003b64dd014d45a83fcb881ce04487134596fe342dfa4e1d1
       amendment_sha256: sha256:0dcd4a1a62c7790967023b2383a2cb93eaf35b25e3e4d64baabe8decb8f45960
+    - sequence: 3
+      amended_at: '2026-07-24T01:25:04Z'
+      prior_sha256: sha256:0dcd4a1a62c7790967023b2383a2cb93eaf35b25e3e4d64baabe8decb8f45960
+      approved_by: H
+      reason: 'Append the official no-spread V2 PRELIMINARY, PIT_UNPROVEN reproduction result after evaluation; no formal promotion or completion decision.'
+      changes:
+        results_ref:
+          scope: team_h_nfl_fastrmodels_reproduction_v2
+          result_label: PRELIMINARY
+          evaluation_started_at: '2026-07-24T01:06:45Z'
+          code_sha256: sha256:3c1b92679df15dd6a8bce1d4c4bddbcf5c81944f59b3fe85ded7e0e315161e75
+          data_sha256: sha256:6342fceb33fba8b7f2f3b601f85e11a8e201898419013d0e1a46f9f66623fbc4
+          result_sha256: sha256:a5d0c7e984229909eda06f602d83ac86eca202c1b1cdd88ae159d522bab1bfe0
+          registration_head_sha256: sha256:0dcd4a1a62c7790967023b2383a2cb93eaf35b25e3e4d64baabe8decb8f45960
+          dataset_ids: [DS-NFL-FASTRMODELS, DS-NFLVERSE]
+          model_ids: [MODEL-NFL-FASTRMODELS-NO-SPREAD-CLOCK-V1]
+      amendment_sha256: sha256:ee5a0ae12f8de8e9a3fe093193a4d730d8281c4a82ff631ae245cf71680879cc
   registration_record_sha256: sha256:1706e20201346560f38b4bf1ab3f040c8318f871d809eeff03666827b1b5ec4e
