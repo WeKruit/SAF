@@ -66,6 +66,7 @@ ART-B-004,artifacts/venue-connectivity/polymarket-public-smoke-v0/raw/source=pol
 ART-B-005,artifacts/venue-connectivity/polymarket-public-smoke-v0/manifests/source=polymarket/stream=market/date=2026-07-23/hour=00/f314dd555f2d04e939674c8e46ea78d3b331d1737daf9691c911b24072b63b21.manifest.json,B+C,v0,X08_prospective_recorder_continuity,complete
 ART-B-006,artifacts/venue-connectivity/polymarket_recorder_supervisor_v1.md,B+C,v1,X08_prospective_recorder_continuity,complete
 ART-B-007,artifacts/venue-connectivity/polymarket_recorder_smoke_20260722_v1.json,B+C,v1,X08_prospective_recorder_continuity,PRELIMINARY_RESEARCH_ONLY
+ART-B-008,artifacts/venue-connectivity/public_api_transport_probe_20260724_v0.json,B+C+H,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
 ART-D1-001,artifacts/game-state/nba/baseline_v0.md,D1+H,v0,X06_calibration_gate,complete
 ART-D1-003,artifacts/game-state/nba_state_engine_validation_v0.json,D1+H,v0,X06_contract_harness,PRELIMINARY_RESEARCH_ONLY
 ART-D2-001,artifacts/game-state/nfl/evidence_pipeline_poc_v0.md,D2,v0,2026-08-05_W2_review,complete
