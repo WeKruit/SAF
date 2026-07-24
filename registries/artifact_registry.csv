@@ -110,3 +110,5 @@ ART-D1-002,artifacts/game-state/nba/x06_contract_fixture_v0.json,D1+H,v0,X06_con
 ART-H-009,artifacts/game-state/model_latency_v0.json,H+D2+D3,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
 ART-H-010,artifacts/game-state/research_calibration_review_v1.md,H+D1+D2+D3+D4+D5,v1,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
 ART-H-011,artifacts/game-state/mature_model_reproduction_audit_v1.md,H+D2+D3,v1,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
+ART-H-012,artifacts/game-state/mature_model_reproduction_audit_v2.md,H+D2+D3,v2,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
+ART-P-006,artifacts/game-state/current_validation_report_zh_v2.md,A+H,v2,2026-08-05_W2_review,complete

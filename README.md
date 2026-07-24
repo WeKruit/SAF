@@ -6,7 +6,7 @@ prediction-market data. It does not claim validated trading alpha.
 Program status: **CONDITIONAL_GO**.
 
 Current evidence and limitations are summarized in the
-[Chinese validation report](artifacts/game-state/current_validation_report_zh_v1.md).
+[Chinese validation report](artifacts/game-state/current_validation_report_zh_v2.md).
 
 The program-level sources of truth are only:
 
@@ -34,9 +34,10 @@ uv run python tools/validate_governance.py
 - `tests/`: contract, registry, fail-closed, deterministic replay, and integration verification.
 
 The current owner/version/due-gate inventory is
-[`registries/artifact_registry.csv`](registries/artifact_registry.csv). Current execution status and external inputs are in
+[`registries/artifact_registry.csv`](registries/artifact_registry.csv).
+The original week-one execution baseline and external-input register are in
 [`artifacts/architecture/program_status_v0.md`](artifacts/architecture/program_status_v0.md) and
-[`artifacts/architecture/risk_blocker_register_v0.csv`](artifacts/architecture/risk_blocker_register_v0.csv).
+[`artifacts/architecture/risk_blocker_register_v0.csv`](artifacts/architecture/risk_blocker_register_v0.csv); current empirical status is in the v2 validation report linked above.
 
 ## Local verification
 
