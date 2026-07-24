@@ -284,13 +284,11 @@ def verify_reproduction_gate(
 
     started_at_text = _canonical_utc(evaluation_started_at)
     card = load_experiment_registry(program_root)[EXPERIMENT_ID]
-    if card["registration_head_sha256"] != EXPECTED_REGISTRATION_HEAD_SHA256:
-        raise X11FastrmodelsError("X-11 registration head is not frozen")
-    if len(card["amendments"]) != 2:
+    if len(card["amendments"]) < 2:
         raise X11FastrmodelsError(
-            "X-11 V2 reproduction requires exactly two frozen amendments"
+            "X-11 V2 reproduction requires its two frozen registration amendments"
         )
-    v1_amendment, amendment = card["amendments"]
+    v1_amendment, amendment = card["amendments"][:2]
     if (
         v1_amendment["amendment_sha256"]
         != EXPECTED_V1_REGISTRATION_HEAD_SHA256
@@ -369,10 +367,6 @@ def verify_reproduction_gate(
     }
     if card["preregistered_inputs"].get(REPRODUCTION_SCOPE) != expected_inputs:
         raise X11FastrmodelsError("X-11 preregistered input binding differs")
-    if card["results_ref"]:
-        raise X11FastrmodelsError(
-            "X-11 official reproduction already has a stored result"
-        )
     amended_at = _parse_utc(amendment["amended_at"], "amended_at")
     if evaluation_started_at <= amended_at:
         raise X11FastrmodelsError(

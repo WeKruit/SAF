@@ -32,6 +32,7 @@ def test_all_first_round_artifacts_have_owner_version_due_gate_and_real_path() -
         "in_progress",
         "harness_pass",
         "PRELIMINARY_RESEARCH_ONLY",
+        "RETROSPECTIVE_RESEARCH_ONLY",
         "POC_ONLY",
     }
 

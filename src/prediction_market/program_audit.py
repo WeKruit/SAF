@@ -90,6 +90,7 @@ _ALLOWED_STATUS = frozenset(
         "in_progress",
         "harness_pass",
         "PRELIMINARY_RESEARCH_ONLY",
+        "RETROSPECTIVE_RESEARCH_ONLY",
         "POC_ONLY",
     }
 )
