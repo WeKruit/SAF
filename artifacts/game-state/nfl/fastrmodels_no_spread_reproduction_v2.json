@@ -1,0 +1,940 @@
+{
+  "artifact_id": "NFL-FASTRMODELS-NO-SPREAD-REPRODUCTION-V2",
+  "artifact_sha256": "sha256:cde2b1022c84547f6f33caeb2d26d4aeae7fd481237c54257275a18e8178c170",
+  "artifact_version": "v2",
+  "determinism": {
+    "complete_runs": 2,
+    "latency_excluded_from_metrics_bytes": true,
+    "metrics_byte_length": 15672,
+    "metrics_bytes_identical": true,
+    "metrics_sha256": "sha256:a5d0c7e984229909eda06f602d83ac86eca202c1b1cdd88ae159d522bab1bfe0"
+  },
+  "evaluation_started_at": "2026-07-24T01:06:45Z",
+  "evidence_boundaries": {
+    "alpha_evidence": "none",
+    "calibrator": "none_fitted",
+    "market_data_used": false,
+    "prediction_market_alignment": "none",
+    "prediction_market_symmetry": "not_evaluated",
+    "training": "official_model_not_retrained"
+  },
+  "experiment_id": "X-11",
+  "latency": {
+    "excluded_stages": [
+      "io",
+      "market_join",
+      "network",
+      "registry_loading"
+    ],
+    "fixture": {
+      "game_id": "game_nflverse_2025_01_ARI_NO",
+      "raw_object_sha256": "sha256:3730c4db2ab99d2dfc4017de975b7610c46c35301b9280b65c03de1b1c74265a",
+      "sequence": 2,
+      "source_order_sequence": 40
+    },
+    "included_stages": [
+      "normalized_event_construction",
+      "state_event_transition",
+      "official_feature_projection",
+      "preloaded_official_booster",
+      "probability_output_validation"
+    ],
+    "latency_sha256": "sha256:207198d7c1e5ca261791674850fecf4ae62e06775919fd96a12b7c1765240ac1",
+    "maximum_ns": 10546042,
+    "mean_ns": 628108.34,
+    "measurement_scope": "full_path",
+    "minimum_ns": 183000,
+    "p50_ns": 468896,
+    "p95_ns": 1611483,
+    "p99_ns": 4412516,
+    "samples": 1000,
+    "transitions_per_second_from_mean": 1592.082028396566,
+    "unit": "nanoseconds",
+    "validated_probability": 0.5660911798477173,
+    "warmup_calls": 50
+  },
+  "metrics": {
+    "calibrator": "none_fitted",
+    "census": {
+      "seasons": {
+        "2021": {
+          "eligible_non_tie_games": 284,
+          "eligible_rows": 41342,
+          "games": 285,
+          "raw_rows": 49922
+        },
+        "2022": {
+          "eligible_non_tie_games": 282,
+          "eligible_rows": 40937,
+          "games": 284,
+          "raw_rows": 49434
+        },
+        "2023": {
+          "eligible_non_tie_games": 285,
+          "eligible_rows": 41698,
+          "games": 285,
+          "raw_rows": 49665
+        },
+        "2024": {
+          "eligible_non_tie_games": 285,
+          "eligible_rows": 41269,
+          "games": 285,
+          "raw_rows": 49492
+        },
+        "2025": {
+          "eligible_non_tie_games": 284,
+          "eligible_rows": 40361,
+          "games": 285,
+          "raw_rows": 48771
+        }
+      },
+      "total": {
+        "eligible_non_tie_games": 1420,
+        "eligible_rows": 205607,
+        "games": 1424,
+        "raw_rows": 247284
+      }
+    },
+    "evaluation": {
+      "aggregate": {
+        "game_macro": {
+          "bootstrap_ci": {
+            "brier": [
+              0.1583121939900199,
+              0.17179176587590594
+            ],
+            "log_loss": [
+              0.4708145414742444,
+              0.5063001571369761
+            ]
+          },
+          "bootstrap_samples_requested": 200,
+          "bootstrap_samples_valid": 200,
+          "brier": 0.16550869435681267,
+          "clusters": 1420,
+          "confidence_level": 0.95,
+          "log_loss": 0.48908050909729683
+        },
+        "reliability": [
+          {
+            "count": 18634,
+            "lower": 0.0,
+            "mean_probability": 0.034581527206329774,
+            "observed_home_win_rate": 0.04228829022217452,
+            "upper": 0.1
+          },
+          {
+            "count": 12211,
+            "lower": 0.1,
+            "mean_probability": 0.15086505323863228,
+            "observed_home_win_rate": 0.14224879207272131,
+            "upper": 0.2
+          },
+          {
+            "count": 13678,
+            "lower": 0.2,
+            "mean_probability": 0.2513789685824615,
+            "observed_home_win_rate": 0.2618072817663401,
+            "upper": 0.3
+          },
+          {
+            "count": 16960,
+            "lower": 0.3,
+            "mean_probability": 0.353811026324149,
+            "observed_home_win_rate": 0.34970518867924527,
+            "upper": 0.4
+          },
+          {
+            "count": 20532,
+            "lower": 0.4,
+            "mean_probability": 0.4509087976524757,
+            "observed_home_win_rate": 0.4333235924410676,
+            "upper": 0.5
+          },
+          {
+            "count": 29418,
+            "lower": 0.5,
+            "mean_probability": 0.5522286753380466,
+            "observed_home_win_rate": 0.5381739071316881,
+            "upper": 0.6
+          },
+          {
+            "count": 25094,
+            "lower": 0.6,
+            "mean_probability": 0.6499124744196969,
+            "observed_home_win_rate": 0.6133737148322308,
+            "upper": 0.7
+          },
+          {
+            "count": 21293,
+            "lower": 0.7,
+            "mean_probability": 0.7482301306357565,
+            "observed_home_win_rate": 0.7213638284882355,
+            "upper": 0.8
+          },
+          {
+            "count": 18497,
+            "lower": 0.8,
+            "mean_probability": 0.8498376319409964,
+            "observed_home_win_rate": 0.8652213872519868,
+            "upper": 0.9
+          },
+          {
+            "count": 29290,
+            "lower": 0.9,
+            "mean_probability": 0.9661437702208584,
+            "observed_home_win_rate": 0.9715944008193923,
+            "upper": 1.0
+          }
+        ],
+        "row_micro": {
+          "bootstrap_ci": {
+            "brier": [
+              0.15895365711008524,
+              0.17231821510203402
+            ],
+            "calibration_intercept": [
+              -0.1538096142333979,
+              0.07853486288879798
+            ],
+            "calibration_slope": [
+              0.9123315338560851,
+              1.084643143892938
+            ],
+            "log_loss": [
+              0.472089417505973,
+              0.5074931712586502
+            ]
+          },
+          "bootstrap_samples_requested": 200,
+          "bootstrap_samples_valid": 200,
+          "brier": 0.16628494129309768,
+          "calibration_intercept": -0.047990070224865344,
+          "calibration_slope": 0.9876121419583983,
+          "clusters": 1420,
+          "confidence_level": 0.95,
+          "log_loss": 0.49142648387256166,
+          "minimum_valid_samples": 100,
+          "observations": 205607
+        }
+      },
+      "bootstrap_cluster_unit": "game_id",
+      "bootstrap_seed": 20260723,
+      "per_season": {
+        "2021": {
+          "game_macro": {
+            "bootstrap_ci": {
+              "brier": [
+                0.140494615333702,
+                0.16999788372063526
+              ],
+              "log_loss": [
+                0.4218358529815969,
+                0.4936942715834073
+              ]
+            },
+            "bootstrap_samples_requested": 200,
+            "bootstrap_samples_valid": 200,
+            "brier": 0.15672033896908513,
+            "clusters": 284,
+            "confidence_level": 0.95,
+            "log_loss": 0.4616870233727524
+          },
+          "reliability": [
+            {
+              "count": 4199,
+              "lower": 0.0,
+              "mean_probability": 0.03337955976604177,
+              "observed_home_win_rate": 0.01238390092879257,
+              "upper": 0.1
+            },
+            {
+              "count": 2542,
+              "lower": 0.1,
+              "mean_probability": 0.15011494281100157,
+              "observed_home_win_rate": 0.1007081038552321,
+              "upper": 0.2
+            },
+            {
+              "count": 2926,
+              "lower": 0.2,
+              "mean_probability": 0.2514084511304749,
+              "observed_home_win_rate": 0.2617908407382092,
+              "upper": 0.3
+            },
+            {
+              "count": 3450,
+              "lower": 0.3,
+              "mean_probability": 0.3531087779480478,
+              "observed_home_win_rate": 0.2942028985507246,
+              "upper": 0.4
+            },
+            {
+              "count": 3816,
+              "lower": 0.4,
+              "mean_probability": 0.4511119701374377,
+              "observed_home_win_rate": 0.38155136268343814,
+              "upper": 0.5
+            },
+            {
+              "count": 5433,
+              "lower": 0.5,
+              "mean_probability": 0.5519488443497595,
+              "observed_home_win_rate": 0.5043254187373458,
+              "upper": 0.6
+            },
+            {
+              "count": 4637,
+              "lower": 0.6,
+              "mean_probability": 0.6488958857736635,
+              "observed_home_win_rate": 0.5382790597368988,
+              "upper": 0.7
+            },
+            {
+              "count": 4008,
+              "lower": 0.7,
+              "mean_probability": 0.7491379476444212,
+              "observed_home_win_rate": 0.6991017964071856,
+              "upper": 0.8
+            },
+            {
+              "count": 3881,
+              "lower": 0.8,
+              "mean_probability": 0.8507135183221899,
+              "observed_home_win_rate": 0.867559907240402,
+              "upper": 0.9
+            },
+            {
+              "count": 6450,
+              "lower": 0.9,
+              "mean_probability": 0.9671000370939783,
+              "observed_home_win_rate": 0.9837209302325581,
+              "upper": 1.0
+            }
+          ],
+          "row_micro": {
+            "bootstrap_ci": {
+              "brier": [
+                0.14016520784796987,
+                0.16967579719426165
+              ],
+              "calibration_intercept": [
+                -0.5507808506578223,
+                0.03518939322956326
+              ],
+              "calibration_slope": [
+                0.9627028107424469,
+                1.3361267284365592
+              ],
+              "log_loss": [
+                0.421261353506456,
+                0.493803107580376
+              ]
+            },
+            "bootstrap_samples_requested": 200,
+            "bootstrap_samples_valid": 200,
+            "brier": 0.15615792457106023,
+            "calibration_intercept": -0.24741402744563404,
+            "calibration_slope": 1.1115665982018994,
+            "clusters": 284,
+            "confidence_level": 0.95,
+            "log_loss": 0.4602850854654701,
+            "minimum_valid_samples": 100,
+            "observations": 41342
+          }
+        },
+        "2022": {
+          "game_macro": {
+            "bootstrap_ci": {
+              "brier": [
+                0.16883142002769044,
+                0.2039137962286423
+              ],
+              "log_loss": [
+                0.5023410362828707,
+                0.5953020097668971
+              ]
+            },
+            "bootstrap_samples_requested": 200,
+            "bootstrap_samples_valid": 200,
+            "brier": 0.18758533129988508,
+            "clusters": 282,
+            "confidence_level": 0.95,
+            "log_loss": 0.5520805601522263
+          },
+          "reliability": [
+            {
+              "count": 3237,
+              "lower": 0.0,
+              "mean_probability": 0.034125530382784715,
+              "observed_home_win_rate": 0.09916589434661724,
+              "upper": 0.1
+            },
+            {
+              "count": 2290,
+              "lower": 0.1,
+              "mean_probability": 0.15127033699938303,
+              "observed_home_win_rate": 0.188646288209607,
+              "upper": 0.2
+            },
+            {
+              "count": 2666,
+              "lower": 0.2,
+              "mean_probability": 0.25099396888398623,
+              "observed_home_win_rate": 0.2813203300825206,
+              "upper": 0.3
+            },
+            {
+              "count": 3193,
+              "lower": 0.3,
+              "mean_probability": 0.3537358153194908,
+              "observed_home_win_rate": 0.4093329157532101,
+              "upper": 0.4
+            },
+            {
+              "count": 4154,
+              "lower": 0.4,
+              "mean_probability": 0.45216484411611085,
+              "observed_home_win_rate": 0.5110736639383726,
+              "upper": 0.5
+            },
+            {
+              "count": 6474,
+              "lower": 0.5,
+              "mean_probability": 0.5522008045867964,
+              "observed_home_win_rate": 0.5925239419215322,
+              "upper": 0.6
+            },
+            {
+              "count": 5332,
+              "lower": 0.6,
+              "mean_probability": 0.649938081423993,
+              "observed_home_win_rate": 0.6262190547636909,
+              "upper": 0.7
+            },
+            {
+              "count": 4376,
+              "lower": 0.7,
+              "mean_probability": 0.747019399771334,
+              "observed_home_win_rate": 0.6569926873857403,
+              "upper": 0.8
+            },
+            {
+              "count": 3599,
+              "lower": 0.8,
+              "mean_probability": 0.8499492800262246,
+              "observed_home_win_rate": 0.8055015282022784,
+              "upper": 0.9
+            },
+            {
+              "count": 5616,
+              "lower": 0.9,
+              "mean_probability": 0.9636155698312354,
+              "observed_home_win_rate": 0.9405270655270656,
+              "upper": 1.0
+            }
+          ],
+          "row_micro": {
+            "bootstrap_ci": {
+              "brier": [
+                0.1699888199753512,
+                0.206231844943392
+              ],
+              "calibration_intercept": [
+                -0.14267016014804468,
+                0.342484061489402
+              ],
+              "calibration_slope": [
+                0.5907471721108706,
+                0.9496129909685245
+              ],
+              "log_loss": [
+                0.5041447348123933,
+                0.6020849493355233
+              ]
+            },
+            "bootstrap_samples_requested": 200,
+            "bootstrap_samples_valid": 200,
+            "brier": 0.1887806301815843,
+            "calibration_intercept": 0.08522694723728141,
+            "calibration_slope": 0.7291690671357458,
+            "clusters": 282,
+            "confidence_level": 0.95,
+            "log_loss": 0.5562342313533986,
+            "minimum_valid_samples": 100,
+            "observations": 40937
+          }
+        },
+        "2023": {
+          "game_macro": {
+            "bootstrap_ci": {
+              "brier": [
+                0.14185365720040102,
+                0.17496769982470825
+              ],
+              "log_loss": [
+                0.4323481414119859,
+                0.5158545278913896
+              ]
+            },
+            "bootstrap_samples_requested": 200,
+            "bootstrap_samples_valid": 200,
+            "brier": 0.1576648662789643,
+            "clusters": 285,
+            "confidence_level": 0.95,
+            "log_loss": 0.47081199294205833
+          },
+          "reliability": [
+            {
+              "count": 3526,
+              "lower": 0.0,
+              "mean_probability": 0.03611178602232345,
+              "observed_home_win_rate": 0.03233125354509359,
+              "upper": 0.1
+            },
+            {
+              "count": 2322,
+              "lower": 0.1,
+              "mean_probability": 0.15172638921556444,
+              "observed_home_win_rate": 0.11972437553832903,
+              "upper": 0.2
+            },
+            {
+              "count": 2785,
+              "lower": 0.2,
+              "mean_probability": 0.2508937687056283,
+              "observed_home_win_rate": 0.25493716337522443,
+              "upper": 0.3
+            },
+            {
+              "count": 3513,
+              "lower": 0.3,
+              "mean_probability": 0.3538184831141068,
+              "observed_home_win_rate": 0.340734415029889,
+              "upper": 0.4
+            },
+            {
+              "count": 4288,
+              "lower": 0.4,
+              "mean_probability": 0.45069966233794145,
+              "observed_home_win_rate": 0.4372667910447761,
+              "upper": 0.5
+            },
+            {
+              "count": 5783,
+              "lower": 0.5,
+              "mean_probability": 0.5516740849443564,
+              "observed_home_win_rate": 0.5363997924952447,
+              "upper": 0.6
+            },
+            {
+              "count": 4833,
+              "lower": 0.6,
+              "mean_probability": 0.6507068015318984,
+              "observed_home_win_rate": 0.6685288640595903,
+              "upper": 0.7
+            },
+            {
+              "count": 4524,
+              "lower": 0.7,
+              "mean_probability": 0.7487319542850993,
+              "observed_home_win_rate": 0.782051282051282,
+              "upper": 0.8
+            },
+            {
+              "count": 3896,
+              "lower": 0.8,
+              "mean_probability": 0.8496614865140197,
+              "observed_home_win_rate": 0.8755133470225873,
+              "upper": 0.9
+            },
+            {
+              "count": 6228,
+              "lower": 0.9,
+              "mean_probability": 0.9658841862382902,
+              "observed_home_win_rate": 0.9666024405908799,
+              "upper": 1.0
+            }
+          ],
+          "row_micro": {
+            "bootstrap_ci": {
+              "brier": [
+                0.14316924879270124,
+                0.17561071146354837
+              ],
+              "calibration_intercept": [
+                -0.24924456977413698,
+                0.2712431690527118
+              ],
+              "calibration_slope": [
+                0.8964152117829063,
+                1.3242315028289435
+              ],
+              "log_loss": [
+                0.4349160252193352,
+                0.5169033743812717
+              ]
+            },
+            "bootstrap_samples_requested": 200,
+            "bootstrap_samples_valid": 200,
+            "brier": 0.1585473715972639,
+            "calibration_intercept": -0.0036918626230402754,
+            "calibration_slope": 1.0849656338021723,
+            "clusters": 285,
+            "confidence_level": 0.95,
+            "log_loss": 0.47317159999197067,
+            "minimum_valid_samples": 100,
+            "observations": 41698
+          }
+        },
+        "2024": {
+          "game_macro": {
+            "bootstrap_ci": {
+              "brier": [
+                0.14226567420053615,
+                0.16938818398367012
+              ],
+              "log_loss": [
+                0.42817172166328105,
+                0.49172447132731606
+              ]
+            },
+            "bootstrap_samples_requested": 200,
+            "bootstrap_samples_valid": 200,
+            "brier": 0.1565183768771834,
+            "clusters": 285,
+            "confidence_level": 0.95,
+            "log_loss": 0.46199482641876416
+          },
+          "reliability": [
+            {
+              "count": 3954,
+              "lower": 0.0,
+              "mean_probability": 0.034031924028557446,
+              "observed_home_win_rate": 0.0065756196256954984,
+              "upper": 0.1
+            },
+            {
+              "count": 2431,
+              "lower": 0.1,
+              "mean_probability": 0.15068878403836836,
+              "observed_home_win_rate": 0.12093788564376799,
+              "upper": 0.2
+            },
+            {
+              "count": 2568,
+              "lower": 0.2,
+              "mean_probability": 0.25271624779311297,
+              "observed_home_win_rate": 0.26635514018691586,
+              "upper": 0.3
+            },
+            {
+              "count": 3441,
+              "lower": 0.3,
+              "mean_probability": 0.3540341914202439,
+              "observed_home_win_rate": 0.34495786108689336,
+              "upper": 0.4
+            },
+            {
+              "count": 4107,
+              "lower": 0.4,
+              "mean_probability": 0.4505221312691006,
+              "observed_home_win_rate": 0.4304845385926467,
+              "upper": 0.5
+            },
+            {
+              "count": 5856,
+              "lower": 0.5,
+              "mean_probability": 0.5528380666895072,
+              "observed_home_win_rate": 0.5461065573770492,
+              "upper": 0.6
+            },
+            {
+              "count": 5223,
+              "lower": 0.6,
+              "mean_probability": 0.6506237741142494,
+              "observed_home_win_rate": 0.6186099942561746,
+              "upper": 0.7
+            },
+            {
+              "count": 4267,
+              "lower": 0.7,
+              "mean_probability": 0.7479630135731365,
+              "observed_home_win_rate": 0.7384579329739864,
+              "upper": 0.8
+            },
+            {
+              "count": 3755,
+              "lower": 0.8,
+              "mean_probability": 0.8494346871118889,
+              "observed_home_win_rate": 0.8916111850865512,
+              "upper": 0.9
+            },
+            {
+              "count": 5667,
+              "lower": 0.9,
+              "mean_probability": 0.9662107326908077,
+              "observed_home_win_rate": 0.9925886712546321,
+              "upper": 1.0
+            }
+          ],
+          "row_micro": {
+            "bootstrap_ci": {
+              "brier": [
+                0.14306380212890416,
+                0.16968662329226375
+              ],
+              "calibration_intercept": [
+                -0.275816237800292,
+                0.19854627061247565
+              ],
+              "calibration_slope": [
+                1.006708509174456,
+                1.353792196269193
+              ],
+              "log_loss": [
+                0.42933193001280606,
+                0.4936786562138578
+              ]
+            },
+            "bootstrap_samples_requested": 200,
+            "bootstrap_samples_valid": 200,
+            "brier": 0.1569034475166553,
+            "calibration_intercept": -0.05940079635539684,
+            "calibration_slope": 1.1679020075144204,
+            "clusters": 285,
+            "confidence_level": 0.95,
+            "log_loss": 0.46307638990007305,
+            "minimum_valid_samples": 100,
+            "observations": 41269
+          }
+        },
+        "2025": {
+          "game_macro": {
+            "bootstrap_ci": {
+              "brier": [
+                0.15351690433892892,
+                0.1847518152465691
+              ],
+              "log_loss": [
+                0.4583692113780563,
+                0.5407364411351878
+              ]
+            },
+            "bootstrap_samples_requested": 200,
+            "bootstrap_samples_valid": 200,
+            "brier": 0.16926930279360602,
+            "clusters": 284,
+            "confidence_level": 0.95,
+            "log_loss": 0.49943150281527304
+          },
+          "reliability": [
+            {
+              "count": 3718,
+              "lower": 0.0,
+              "mean_probability": 0.035469252160418734,
+              "observed_home_win_rate": 0.07396449704142012,
+              "upper": 0.1
+            },
+            {
+              "count": 2626,
+              "lower": 0.1,
+              "mean_probability": 0.15063929892877814,
+              "observed_home_win_rate": 0.18164508758568165,
+              "upper": 0.2
+            },
+            {
+              "count": 2733,
+              "lower": 0.2,
+              "mean_probability": 0.25096085365552234,
+              "observed_home_win_rate": 0.2455177460665935,
+              "upper": 0.3
+            },
+            {
+              "count": 3363,
+              "lower": 0.3,
+              "mean_probability": 0.35436672029876654,
+              "observed_home_win_rate": 0.36425810288432947,
+              "upper": 0.4
+            },
+            {
+              "count": 4167,
+              "lower": 0.4,
+              "mean_probability": 0.4500669180874862,
+              "observed_home_win_rate": 0.4019678425725942,
+              "upper": 0.5
+            },
+            {
+              "count": 5872,
+              "lower": 0.5,
+              "mean_probability": 0.5524567675545852,
+              "observed_home_win_rate": 0.5034059945504087,
+              "upper": 0.6
+            },
+            {
+              "count": 5069,
+              "lower": 0.6,
+              "mean_probability": 0.6493252350760061,
+              "observed_home_win_rate": 0.6105740777273624,
+              "upper": 0.7
+            },
+            {
+              "count": 4118,
+              "lower": 0.7,
+              "mean_probability": 0.7483586313663437,
+              "observed_home_win_rate": 0.7270519669742593,
+              "upper": 0.8
+            },
+            {
+              "count": 3366,
+              "lower": 0.8,
+              "mean_probability": 0.8493617507504588,
+              "observed_home_win_rate": 0.8850267379679144,
+              "upper": 0.9
+            },
+            {
+              "count": 5329,
+              "lower": 0.9,
+              "mean_probability": 0.9678828703865052,
+              "observed_home_win_rate": 0.9731656971289172,
+              "upper": 1.0
+            }
+          ],
+          "row_micro": {
+            "bootstrap_ci": {
+              "brier": [
+                0.15515713524014152,
+                0.18872308009964447
+              ],
+              "calibration_intercept": [
+                -0.27687444937203287,
+                0.21493093710632322
+              ],
+              "calibration_slope": [
+                0.7555740526596754,
+                1.1587337351165907
+              ],
+              "log_loss": [
+                0.46174666756614485,
+                0.5482671066488225
+              ]
+            },
+            "bootstrap_samples_requested": 200,
+            "bootstrap_samples_valid": 200,
+            "brier": 0.17142780586858813,
+            "calibration_intercept": -0.046547384679639946,
+            "calibration_slope": 0.9353190116274308,
+            "clusters": 284,
+            "confidence_level": 0.95,
+            "log_loss": 0.5054396428757195,
+            "minimum_valid_samples": 100,
+            "observations": 40361
+          }
+        }
+      },
+      "source_home_wp_absolute_delta": {
+        "maximum": 1.1920928955078125e-07,
+        "mean_absolute_delta": 1.2328149033261145e-10,
+        "minimum": 0.0,
+        "missing_source_rows": 0,
+        "observations": 206202,
+        "quantiles": {
+          "p50": 0.0,
+          "p95": 0.0,
+          "p99": 0.0
+        },
+        "role": "diagnostic_only_not_accuracy_oracle"
+      },
+      "ties": {
+        "excluded_from_binary_metrics": true,
+        "game_ids": [
+          "2021_10_DET_PIT",
+          "2022_01_IND_HOU",
+          "2022_13_WAS_NYG",
+          "2025_04_GB_DAL"
+        ],
+        "games": 4,
+        "rows": 595
+      }
+    },
+    "evaluation_input_sha256": "sha256:560c2b77b06ccddd8fae3146e7a2ab90585b5cd9d7e346dcbc0256da7a140ad0",
+    "input_manifest_bindings": [
+      {
+        "manifest_sha256": "sha256:39df8bc01602fd451ffda141c6322f824564c2c30f3f0f884f9cace8c0f1a721",
+        "object_sha256": "sha256:333ad34378e5339d5172717cc83378e908daf02c8699416ab3e17c2ec10f78d8",
+        "partition": "season-2021",
+        "schema_fingerprint": "sha256:879e24069b394aeb76267515b2bd8201b75927293e5e0a5c99f0b017648d7c1f",
+        "season": 2021
+      },
+      {
+        "manifest_sha256": "sha256:d4ab4bd0dbf09d2fc199c0f9b8bb0c151182c3130fa17cae0599d08d74bd496d",
+        "object_sha256": "sha256:931121d8897779d7944e2a293e92ed8799c8e5cceef84096ac42339003fedc09",
+        "partition": "season-2022",
+        "schema_fingerprint": "sha256:879e24069b394aeb76267515b2bd8201b75927293e5e0a5c99f0b017648d7c1f",
+        "season": 2022
+      },
+      {
+        "manifest_sha256": "sha256:8026d3826c65bb8884e3da8783b22343826eee77275ffd2fc6b9d027a25fb878",
+        "object_sha256": "sha256:bd3484731408def6b0ec93225bba2bd7b2c65769ca707a2b9444d891abdc6776",
+        "partition": "season-2023",
+        "schema_fingerprint": "sha256:879e24069b394aeb76267515b2bd8201b75927293e5e0a5c99f0b017648d7c1f",
+        "season": 2023
+      },
+      {
+        "manifest_sha256": "sha256:548c81acaaa14b2d00e5141725a983afec8a3c6c0c6fb3238be1791deb586ff2",
+        "object_sha256": "sha256:6d432dd4308329bfddaef633309ea119f9ca46d52cbb3c09f47172a2e8efcd01",
+        "partition": "season-2024",
+        "schema_fingerprint": "sha256:879e24069b394aeb76267515b2bd8201b75927293e5e0a5c99f0b017648d7c1f",
+        "season": 2024
+      },
+      {
+        "manifest_sha256": "sha256:e4a7f9d3fb0293aca52858846ac3ec85e377bc5385373842309eeaa6fc5cef29",
+        "object_sha256": "sha256:3730c4db2ab99d2dfc4017de975b7610c46c35301b9280b65c03de1b1c74265a",
+        "partition": "season-2025",
+        "schema_fingerprint": "sha256:879e24069b394aeb76267515b2bd8201b75927293e5e0a5c99f0b017648d7c1f",
+        "season": 2025
+      }
+    ],
+    "model_id": "MODEL-NFL-FASTRMODELS-NO-SPREAD-CLOCK-V1",
+    "model_training": "official_model_not_retrained",
+    "model_variant": "official_no_spread",
+    "predictions_sha256": "sha256:5bad48e4dab14eb363e3b2f9b8dcfd1b85c31ddd94021c61f4bb7d9b28498b52",
+    "protocol_sha256": "sha256:3d75a366ed6e9627d50b4831ace348c63890160e2ead8241fddb0ce0fb917bdd"
+  },
+  "observation_mode": "offline_reconstruction_not_live_PIT",
+  "pit_status": "PIT_UNPROVEN",
+  "registration": {
+    "amended_at": "2026-07-24T00:41:31Z",
+    "code_sha256": "sha256:3c1b92679df15dd6a8bce1d4c4bddbcf5c81944f59b3fe85ded7e0e315161e75",
+    "data_sha256": "sha256:6342fceb33fba8b7f2f3b601f85e11a8e201898419013d0e1a46f9f66623fbc4",
+    "dataset_ids": [
+      "DS-NFL-FASTRMODELS",
+      "DS-NFLVERSE"
+    ],
+    "evaluation_started_at": "2026-07-24T01:06:45Z",
+    "model_ids": [
+      "MODEL-NFL-FASTRMODELS-NO-SPREAD-CLOCK-V1"
+    ],
+    "registration_head_sha256": "sha256:0dcd4a1a62c7790967023b2383a2cb93eaf35b25e3e4d64baabe8decb8f45960",
+    "scope": "team_h_nfl_fastrmodels_reproduction_v2"
+  },
+  "reproduction_id": "REPRO-X11-NFL-FASTRMODELS-V2",
+  "result_ref_candidate": {
+    "code_sha256": "sha256:3c1b92679df15dd6a8bce1d4c4bddbcf5c81944f59b3fe85ded7e0e315161e75",
+    "data_sha256": "sha256:6342fceb33fba8b7f2f3b601f85e11a8e201898419013d0e1a46f9f66623fbc4",
+    "dataset_ids": [
+      "DS-NFL-FASTRMODELS",
+      "DS-NFLVERSE"
+    ],
+    "evaluation_started_at": "2026-07-24T01:06:45Z",
+    "model_ids": [
+      "MODEL-NFL-FASTRMODELS-NO-SPREAD-CLOCK-V1"
+    ],
+    "registration_head_sha256": "sha256:0dcd4a1a62c7790967023b2383a2cb93eaf35b25e3e4d64baabe8decb8f45960",
+    "result_label": "PRELIMINARY",
+    "result_sha256": "sha256:a5d0c7e984229909eda06f602d83ac86eca202c1b1cdd88ae159d522bab1bfe0",
+    "scope": "team_h_nfl_fastrmodels_reproduction_v2"
+  },
+  "runner_sha256": "sha256:ddd107a17eb0cc8dc15238f399a6e32a223851eb9fcfd1478adf012eecd00898",
+  "status": "PRELIMINARY"
+}
