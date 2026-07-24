@@ -7,6 +7,7 @@ or engine defaults.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import re
@@ -483,6 +484,244 @@ class EventTimeV0(_ContractModel):
     exchange_at: UtcTimestampV0 | None = None
 
 
+TemporalRoleV0 = Literal[
+    "game_occurrence",
+    "game_publish",
+    "game_receive",
+    "game_ready",
+    "market_exchange",
+    "market_publish",
+    "market_receive",
+    "market_ready",
+]
+TemporalSemanticsV0 = Literal[
+    "verified",
+    "inferred",
+    "ambiguous",
+    "unavailable",
+]
+ClockQualityV0 = Literal[
+    "HISTORICAL_SOURCE_ONLY",
+    "LOCAL_MONOTONIC_ONLY",
+    "UTC_BOUNDED_SOFTWARE_RX",
+    "UTC_BOUNDED_HARDWARE_RX",
+]
+ReceiveBoundaryV0 = Literal[
+    "application_callback",
+    "kernel_software_receive",
+    "nic_hardware_receive",
+]
+AuditScopeV0 = Literal["RAW", "GAME", "JOIN", "EVENT_RESULT"]
+AuditVerdictStatusV0 = Literal["PASS", "FLAG", "REVIEW_REQUIRED", "BLOCK"]
+AuditReasonCodeV0 = Literal[
+    "TAMPER_SUSPECTED",
+    "PROVENANCE_INCOMPLETE",
+    "PARSER_BUG",
+    "SOURCE_CONFLICT",
+    "EVIDENCE_INSUFFICIENT",
+    "STATE_INVARIANT_FAILED",
+    "IDENTITY_AMBIGUOUS",
+    "OUTCOME_ORIENTATION_FAILED",
+    "RULES_MISMATCH",
+    "TIME_INELIGIBLE",
+    "STREAM_GAP",
+    "WINDOW_CONTAMINATED",
+    "OBSERVATION_INELIGIBLE",
+    "TRADE_NOISE",
+    "WINDOW_SENSITIVE",
+    "SURPRISING_DIRECTION",
+    "UNEXPECTED_BUT_VALID",
+]
+
+
+class TemporalEvidenceV0(_ContractModel):
+    """One UTC interval with explicit semantics and clock-quality evidence."""
+
+    temporal_version: Literal["v0"]
+    role: TemporalRoleV0
+    clock_domain: NonBlankStr
+    utc_lower_ns: int
+    utc_upper_ns: int
+    precision_ns: int = Field(ge=0)
+    semantics_status: TemporalSemanticsV0
+    application_point: NonBlankStr
+    clock_quality: ClockQualityV0
+    clock_error_ns: int | None = Field(default=None, ge=0)
+    source_sequence: int | NonBlankStr | None = None
+    source_clock_owner: NonBlankStr | None = None
+
+    @field_validator("source_sequence")
+    @classmethod
+    def _source_sequence_is_nonnegative(
+        cls, value: int | str | None
+    ) -> int | str | None:
+        if isinstance(value, int) and value < 0:
+            raise ValueError("source_sequence must be non-negative")
+        return value
+
+    @model_validator(mode="after")
+    def _interval_and_clock_are_valid(self) -> "TemporalEvidenceV0":
+        if self.utc_upper_ns <= self.utc_lower_ns:
+            raise ValueError("UTC interval must be nonempty half-open")
+        if (
+            self.clock_quality.startswith("UTC_BOUNDED")
+            and self.clock_error_ns is None
+        ):
+            raise ValueError("UTC_BOUNDED evidence requires clock_error_ns")
+        return self
+
+
+class CaptureTimingV0(_ContractModel):
+    """Append-only local timing sidecar for one immutable raw record."""
+
+    timing_version: Literal["v0"]
+    capture_session_id: NonBlankStr
+    record_ordinal: int = Field(ge=0)
+    payload_sha256: Sha256V0
+    receive_boundary: ReceiveBoundaryV0
+    local_receive_utc_ns: int
+    local_receive_monotonic_ns: int = Field(ge=0)
+    pairing_uncertainty_ns: int = Field(ge=0)
+    host_id: NonBlankStr
+    boot_id: NonBlankStr
+    monotonic_clock_id: NonBlankStr
+    clock_epoch_id: NonBlankStr
+    connection_epoch: int = Field(ge=0)
+    clock_sync_sample_id: NonBlankStr
+    raw_append_done_monotonic_ns: int = Field(ge=0)
+    parse_done_monotonic_ns: int = Field(ge=0)
+    normalize_done_monotonic_ns: int | None = Field(default=None, ge=0)
+    state_or_book_ready_monotonic_ns: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _boundaries_do_not_go_backward(self) -> "CaptureTimingV0":
+        ordered = (
+            self.local_receive_monotonic_ns,
+            self.raw_append_done_monotonic_ns,
+            self.parse_done_monotonic_ns,
+        )
+        if any(later < earlier for earlier, later in zip(ordered, ordered[1:])):
+            raise ValueError("capture timing boundaries cannot go backward")
+        if (
+            self.normalize_done_monotonic_ns is not None
+            and self.normalize_done_monotonic_ns < self.parse_done_monotonic_ns
+        ):
+            raise ValueError("normalize boundary cannot precede parse boundary")
+        ready_floor = (
+            self.normalize_done_monotonic_ns
+            if self.normalize_done_monotonic_ns is not None
+            else self.parse_done_monotonic_ns
+        )
+        if (
+            self.state_or_book_ready_monotonic_ns is not None
+            and self.state_or_book_ready_monotonic_ns < ready_floor
+        ):
+            raise ValueError("ready boundary cannot precede prior boundary")
+        return self
+
+
+class AcquisitionEvidenceV0(_ContractModel):
+    """Immutable provenance claim for one raw or static source object."""
+
+    acquisition_version: Literal["v0"]
+    source_id: NonBlankStr
+    publisher: NonBlankStr
+    canonical_url: NonBlankStr
+    request_fingerprint: Sha256V0
+    fetched_at: UtcTimestampV0
+    response_status: int = Field(ge=100, le=599)
+    byte_length: int = Field(ge=0)
+    object_sha256: Sha256V0
+    capture_tool_version: NonBlankStr
+    capture_session_id: NonBlankStr
+    etag: NonBlankStr | None = None
+    last_modified: UtcTimestampV0 | None = None
+
+
+class DailyCaptureRootV0(_ContractModel):
+    """Signed daily root plus an externally supplied timestamp token."""
+
+    root_version: Literal["v0"]
+    capture_date: Annotated[
+        str, StringConstraints(strict=True, pattern=r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+    ]
+    manifest_hashes: tuple[Sha256V0, ...]
+    root_sha256: Sha256V0
+    signing_key_id: NonBlankStr
+    signature_b64: NonBlankStr
+    anchor_status: Literal["pending", "anchored"]
+    external_timestamp_at: UtcTimestampV0 | None = None
+    external_timestamp_token_b64: NonBlankStr | None = None
+    external_timestamp_token_sha256: Sha256V0 | None = None
+
+    @field_validator("manifest_hashes", mode="before")
+    @classmethod
+    def _manifest_hashes_are_tuple(cls, value: Any) -> Any:
+        return _as_tuple(value)
+
+    @model_validator(mode="after")
+    def _root_and_anchor_are_valid(self) -> "DailyCaptureRootV0":
+        if not self.manifest_hashes or tuple(sorted(self.manifest_hashes)) != self.manifest_hashes:
+            raise ValueError("manifest_hashes must be strictly sorted and nonempty")
+        if len(set(self.manifest_hashes)) != len(self.manifest_hashes):
+            raise ValueError("manifest_hashes must be strictly sorted and unique")
+        expected_root = canonical_sha256(
+            {
+                "domain": "saf.daily-capture-root.v0",
+                "capture_date": self.capture_date,
+                "manifest_hashes": list(self.manifest_hashes),
+            }
+        )
+        if self.root_sha256 != expected_root:
+            raise ValueError("root_sha256 does not match capture-root material")
+        anchor_fields = (
+            self.external_timestamp_at,
+            self.external_timestamp_token_b64,
+            self.external_timestamp_token_sha256,
+        )
+        if self.anchor_status == "pending":
+            if any(value is not None for value in anchor_fields):
+                raise ValueError("pending root cannot contain external timestamp fields")
+            return self
+        if any(value is None for value in anchor_fields):
+            raise ValueError("anchored root requires all external timestamp fields")
+        assert self.external_timestamp_token_b64 is not None
+        assert self.external_timestamp_token_sha256 is not None
+        try:
+            token = base64.b64decode(
+                self.external_timestamp_token_b64, validate=True
+            )
+        except (ValueError, UnicodeEncodeError) as error:
+            raise ValueError("external timestamp token must be base64") from error
+        actual = f"sha256:{hashlib.sha256(token).hexdigest()}"
+        if actual != self.external_timestamp_token_sha256:
+            raise ValueError("external timestamp token SHA-256 mismatch")
+        return self
+
+
+class AuditVerdictV0(_ContractModel):
+    """A compact, append-only audit decision for one governed scope."""
+
+    audit_version: Literal["v0"]
+    scope: AuditScopeV0
+    verdict: AuditVerdictStatusV0
+    reason_codes: tuple[AuditReasonCodeV0, ...]
+    evidence_refs: tuple[Sha256V0, ...]
+
+    @field_validator("reason_codes", "evidence_refs", mode="before")
+    @classmethod
+    def _tuple_input(cls, value: Any) -> Any:
+        return _as_tuple(value)
+
+    @model_validator(mode="after")
+    def _audit_has_evidence(self) -> "AuditVerdictV0":
+        if not self.reason_codes:
+            raise ValueError("audit verdict requires at least one reason_code")
+        if not self.evidence_refs:
+            raise ValueError("audit verdict requires at least one evidence_ref")
+        return self
+
+
 class CanonicalReferencesV0(_ContractModel):
     competition_id: CompetitionIdV0 | None
     game_id: GameIdV0 | None
@@ -571,6 +810,16 @@ def _canonical_root(value: Any) -> tuple[str, ...]:
         return ("market_metadata_snapshot",)
     if model_name == "VenueRuleSnapshotV0":
         return ("venue_rule_snapshot",)
+    if model_name == "TemporalEvidenceV0":
+        return ("temporal_evidence",)
+    if model_name == "CaptureTimingV0":
+        return ("capture_timing",)
+    if model_name == "AcquisitionEvidenceV0":
+        return ("acquisition_evidence",)
+    if model_name == "DailyCaptureRootV0":
+        return ("daily_capture_root",)
+    if model_name == "AuditVerdictV0":
+        return ("audit_verdict",)
     if isinstance(value, Mapping):
         if value.get("envelope_version") == "v0" and "event_type" in value:
             return ("event_envelope",)
@@ -1760,8 +2009,12 @@ LineageV0 = EventLineageV0
 __all__ = [
     "CanonicalReferencesV0",
     "CanonicalRefsV0",
+    "AcquisitionEvidenceV0",
+    "AuditVerdictV0",
+    "CaptureTimingV0",
     "ConditionIdV0",
     "ContractValidationError",
+    "DailyCaptureRootV0",
     "DERIVED_EVENT_TYPES",
     "EVENT_TYPES",
     "EntityAssertionV0",
@@ -1794,6 +2047,7 @@ __all__ = [
     "StaticDatasetLineageV0",
     "StaticDatasetManifestV0",
     "SportV0",
+    "TemporalEvidenceV0",
     "TimeV0",
     "TcaMarkoutV0",
     "TcaRecordV0",

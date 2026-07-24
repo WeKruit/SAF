@@ -25,11 +25,11 @@
 - Modify: `src/prediction_market/contracts.py`
 - Test: `tests/contracts/test_temporal_evidence_contract.py`
 
-- [ ] Write tests rejecting an empty half-open interval, a UTC-bounded record without `clock_error_ns`, and a signed daily root whose token hash differs from its stored token.
-- [ ] Run: `uv run pytest tests/contracts/test_temporal_evidence_contract.py -q`. Expected: FAIL because the v0 models are absent.
-- [ ] Add `TemporalEvidenceV0`, `CaptureTimingV0`, `AcquisitionEvidenceV0`, `DailyCaptureRootV0`, and `AuditVerdictV0`. Each model must reject unknown status literals, non-positive interval width, and a missing numeric error bound for `UTC_BOUNDED_*`.
-- [ ] Run: `uv run pytest tests/contracts/test_temporal_evidence_contract.py tests/contracts/test_contracts.py -q`. Expected: PASS.
-- [ ] Commit: `git commit -m "feat: add temporal evidence contracts"`.
+- [x] Write tests rejecting an empty half-open interval, a UTC-bounded record without `clock_error_ns`, and a signed daily root whose token hash differs from its stored token.
+- [x] Run: `uv run pytest tests/contracts/test_temporal_evidence_contract.py -q`. Expected: FAIL because the v0 models are absent.
+- [x] Add `TemporalEvidenceV0`, `CaptureTimingV0`, `AcquisitionEvidenceV0`, `DailyCaptureRootV0`, and `AuditVerdictV0`. Each model must reject unknown status literals, non-positive interval width, and a missing numeric error bound for `UTC_BOUNDED_*`.
+- [x] Run: `uv run pytest tests/contracts/test_temporal_evidence_contract.py tests/contracts/test_contracts.py -q`. Expected: PASS.
+- [x] Commit: `git commit -m "feat: add temporal evidence contracts"`.
 
 ### Task 2: Add dual-order temporal gates
 
