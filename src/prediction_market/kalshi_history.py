@@ -17,7 +17,7 @@ from prediction_market.static_store import StaticObjectRecord, preserve_static_o
 
 
 KALSHI_API_ROOT = "https://external-api.kalshi.com/trade-api/v2"
-KALSHI_HISTORICAL_VERSION = "official-rest-20260722"
+KALSHI_HISTORICAL_VERSION = "official-rest-20260723"
 HistoricalResource = Literal["markets", "trades"]
 _MARKET_TICKER_RE = re.compile(r"^[A-Z0-9][A-Z0-9._-]{0,127}$")
 
@@ -30,6 +30,7 @@ class KalshiHistoricalError(ValueError):
 class KalshiCutoffSnapshot:
     record: StaticObjectRecord
     market_settled_ts: str
+    market_positions_last_updated_ts: str
     trades_created_ts: str
     orders_updated_ts: str
 
@@ -309,11 +310,20 @@ def capture_kalshi_cutoff(
         coverage="dynamic live/historical cutoff",
         parsed=parsed,
     )
-    expected = {"market_settled_ts", "trades_created_ts", "orders_updated_ts"}
+    expected = {
+        "market_settled_ts",
+        "market_positions_last_updated_ts",
+        "trades_created_ts",
+        "orders_updated_ts",
+    }
     if set(parsed) != expected:
         raise KalshiHistoricalError("Kalshi cutoff fields do not match the contract")
     market_cutoff = _validate_utc_text(
         parsed["market_settled_ts"], "market_settled_ts"
+    )
+    positions_cutoff = _validate_utc_text(
+        parsed["market_positions_last_updated_ts"],
+        "market_positions_last_updated_ts",
     )
     trade_cutoff = _validate_utc_text(
         parsed["trades_created_ts"], "trades_created_ts"
@@ -324,6 +334,7 @@ def capture_kalshi_cutoff(
     return KalshiCutoffSnapshot(
         record=record,
         market_settled_ts=market_cutoff,
+        market_positions_last_updated_ts=positions_cutoff,
         trades_created_ts=trade_cutoff,
         orders_updated_ts=order_cutoff,
     )
@@ -335,6 +346,60 @@ def _resource_contract(resource: str) -> tuple[HistoricalResource, str]:
     if resource == "trades":
         return "trades", "trade_id"
     raise KalshiHistoricalError("resource must be markets or trades")
+
+
+def _validated_query(
+    resource: HistoricalResource,
+    query: Mapping[str, object] | None,
+) -> dict[str, object]:
+    if query is None:
+        return {}
+    if not isinstance(query, Mapping):
+        raise KalshiHistoricalError("query must be a mapping")
+    allowed = {
+        "trades": {"ticker", "min_ts", "max_ts", "is_block_trade"},
+        "markets": {"tickers", "event_ticker", "series_ticker", "mve_filter"},
+    }[resource]
+    normalized = dict(query)
+    if set(normalized) - allowed:
+        raise KalshiHistoricalError("query contains unsupported fields")
+    if resource == "trades":
+        ticker = normalized.get("ticker")
+        if ticker is not None and (
+            type(ticker) is not str or _MARKET_TICKER_RE.fullmatch(ticker) is None
+        ):
+            raise KalshiHistoricalError("query ticker must be a canonical market ID")
+        for field in ("min_ts", "max_ts"):
+            value = normalized.get(field)
+            if value is not None and (type(value) is not int or value < 0):
+                raise KalshiHistoricalError(f"query {field} must be non-negative integer")
+        if (
+            normalized.get("min_ts") is not None
+            and normalized.get("max_ts") is not None
+            and int(normalized["min_ts"]) > int(normalized["max_ts"])
+        ):
+            raise KalshiHistoricalError("query min_ts must not exceed max_ts")
+        block_trade = normalized.get("is_block_trade")
+        if block_trade is not None and type(block_trade) is not bool:
+            raise KalshiHistoricalError("query is_block_trade must be boolean")
+        return normalized
+
+    tickers = normalized.get("tickers")
+    if tickers is not None:
+        if type(tickers) is not str or not tickers:
+            raise KalshiHistoricalError("query tickers must be comma-separated IDs")
+        ticker_values = tickers.split(",")
+        if any(_MARKET_TICKER_RE.fullmatch(value) is None for value in ticker_values):
+            raise KalshiHistoricalError("query tickers must be canonical market IDs")
+    for field in ("event_ticker", "series_ticker"):
+        value = normalized.get(field)
+        if value is not None and (
+            type(value) is not str or _MARKET_TICKER_RE.fullmatch(value) is None
+        ):
+            raise KalshiHistoricalError(f"query {field} must be a canonical ID")
+    if normalized.get("mve_filter") not in {None, "exclude"}:
+        raise KalshiHistoricalError("query mve_filter must be exclude")
+    return normalized
 
 
 def capture_kalshi_historical_candlesticks(
@@ -468,6 +533,7 @@ def capture_kalshi_historical_candlesticks(
 def backfill_kalshi_historical(
     resource: str,
     *,
+    query: Mapping[str, object] | None = None,
     store_root: str | Path,
     program_root: str | Path,
     fetched_at: datetime,
@@ -479,6 +545,7 @@ def backfill_kalshi_historical(
     """Capture cutoff and bounded cursor pages without claiming historical L2."""
 
     resource_name, stable_id_field = _resource_contract(resource)
+    validated_query = _validated_query(resource_name, query)
     if type(page_limit) is not int or not 1 <= page_limit <= 1000:
         raise KalshiHistoricalError("page_limit must be between 1 and 1000")
     if type(max_pages) is not int or max_pages <= 0:
@@ -493,6 +560,11 @@ def backfill_kalshi_historical(
             client=active,
         )
         url = f"{KALSHI_API_ROOT}/historical/{resource_name}"
+        query_sha256 = (
+            "sha256:" + hashlib.sha256(_canonical_bytes(validated_query)).hexdigest()
+            if validated_query
+            else None
+        )
         request_cursor: str | None = None
         seen_cursors: set[str] = set()
         pages: list[KalshiHistoricalPage] = []
@@ -501,7 +573,7 @@ def backfill_kalshi_historical(
         raw_items = 0
         terminal_cursor = ""
         for _ in range(max_pages):
-            params: dict[str, object] = {"limit": page_limit}
+            params: dict[str, object] = {"limit": page_limit, **validated_query}
             if request_cursor is not None:
                 params["cursor"] = request_cursor
             payload, headers = _download_json(
@@ -537,7 +609,8 @@ def backfill_kalshi_historical(
                 fetched_at=fetched_at_text,
                 coverage=(
                     f"historical {resource_name};cutoff_manifest="
-                    f"{cutoff.record.manifest.manifest_sha256}"
+                    f"{cutoff.record.manifest.manifest_sha256};"
+                    f"query_sha256={query_sha256 or 'none'}"
                 ),
                 parsed=parsed,
             )

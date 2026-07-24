@@ -25,6 +25,7 @@ def _responses() -> dict[tuple[str, str], dict[str, object]]:
     return {
         ("/trade-api/v2/historical/cutoff", ""): {
             "market_settled_ts": "2026-04-01T00:00:00Z",
+            "market_positions_last_updated_ts": "2026-04-01T00:00:00Z",
             "trades_created_ts": "2026-04-02T00:00:00Z",
             "orders_updated_ts": "2026-04-03T00:00:00Z",
         },
@@ -103,6 +104,7 @@ def test_cutoff_is_preserved_before_historical_routing(tmp_path: Path) -> None:
         )
 
     assert cutoff.market_settled_ts == "2026-04-01T00:00:00Z"
+    assert cutoff.market_positions_last_updated_ts == "2026-04-01T00:00:00Z"
     assert cutoff.record.partition == "historical-cutoff"
     assert cutoff.record.manifest.dataset_id == "DS-KALSHI-HISTORICAL"
     assert cutoff.record.manifest.license_ref == "O-003"
@@ -164,6 +166,48 @@ def test_market_pages_preserve_request_cursor_and_dedupe_stable_ids(
         "request_cursor:next-page"
     )
     assert len(list((tmp_path / "raw").rglob("*.json"))) == 3
+
+
+def test_trade_backfill_binds_ticker_and_time_query_on_every_page(
+    tmp_path: Path,
+) -> None:
+    ticker = "KXNFLGAME-25DEC04DALDET-DET"
+    responses = _responses()
+    responses[("/trade-api/v2/historical/trades", "")] = {
+        "trades": [
+            {"trade_id": "one", "ticker": ticker},
+        ],
+        "cursor": "next",
+    }
+    responses[("/trade-api/v2/historical/trades", "next")] = {
+        "trades": [
+            {"trade_id": "two", "ticker": ticker},
+        ],
+        "cursor": "",
+    }
+
+    with _client(responses) as client:
+        result = backfill_kalshi_historical(
+            "trades",
+            query={"ticker": ticker, "min_ts": 100, "max_ts": 200},
+            store_root=tmp_path,
+            program_root=PROJECT_ROOT,
+            fetched_at=FETCHED_AT,
+            client=client,
+            page_limit=2,
+            max_pages=2,
+        )
+
+    assert [page.record.manifest.source_request["params"] for page in result.pages] == [
+        {"limit": 2, "ticker": ticker, "min_ts": 100, "max_ts": 200},
+        {
+            "limit": 2,
+            "ticker": ticker,
+            "min_ts": 100,
+            "max_ts": 200,
+            "cursor": "next",
+        },
+    ]
 
 
 def test_semantically_changed_page_is_still_preserved_raw_first(
