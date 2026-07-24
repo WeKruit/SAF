@@ -77,6 +77,8 @@ ART-D2-006,artifacts/game-state/nfl/fastrmodels_no_spread_reproduction_v2.json,D
 ART-D2-007,src/prediction_market/sports/nfl_dal_det_audit.py,D2+C+H,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
 ART-D2-008,artifacts/audit/nfl/nfl_2025_14_dal_det_evidence_audit_v0.json,D2+C+H,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
 ART-D2-009,artifacts/audit/nfl/nfl_2025_14_dal_det_completion_dossier_v0.md,D2+C+H,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
+ART-D2-010,src/prediction_market/sports/nfl_dal_det_timeline.py,D2+C+H,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
+ART-D2-011,artifacts/audit/nfl/nfl_2025_14_dal_det_source_timeline_v0.json,D2+C+H,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
 ART-D3-001,artifacts/game-state/soccer/evidence_pipeline_poc_v0.md,D3,v0,2026-08-05_W2_review,complete
 ART-D3-002,artifacts/game-state/soccer/x12_real_data_poc_v0.json,D3+H+I,v0,2026-08-05_W2_review,POC_ONLY
 ART-D3-003,artifacts/game-state/soccer_real_replay_validation_v1.json,D3+C,v1,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY

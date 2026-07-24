@@ -16,15 +16,15 @@
 | Kalshi | 已绑定 Detroit 与 Dallas 两个 winner ticker；73,844 笔历史成交、两个连续 1 分钟 candle 序列逐对象校验。 | `PASS`：身份、成交及 interval-end candle 库存；不是历史 L2。 |
 | 原件完整性 | nflverse 1 + Polymarket 2 + Kalshi 78，共 81 个 manifest/object 对已验证。 | `PASS`：篡改、缺对象、重复 Kalshi trade ID、非连续 candle 都会 fail closed。 |
 | Game Book | 官方 PDF 明示仅供媒体报道，其他用途需 NFL 书面许可；项目没有该许可，也未注册为可用数据集。 | `BLOCK`：不存入 raw、不喂给 LLM、不作为正式验证来源。 |
-| 时间合并 | NFL source event time、Polymarket trade time、Kalshi trade/candle time 都存在；没有任何一个历史记录具有本地 receive time、跨源 error bound 或已证明 PIT 语义。 | `BLOCK`：不能测 latency、因果反应、overreaction、可执行 bid/ask 或 alpha。 |
+| 时间合并 | NFL source event time、Polymarket trade time、Kalshi trade/candle time 已合并为 24,355 行的确定性 source-time timeline；可供人工审阅和可视化。 | `PASS`：纯时间轴合并。`BLOCK`：不能把相邻时间解释为 latency、因果反应、overreaction、可执行 bid/ask 或 alpha。 |
 
-机器可读的逐对象审计见 [evidence audit v0](nfl_2025_14_dal_det_evidence_audit_v0.json)。输入 state trace 为 [NFL replay](../../game-state/nfl/nfl_2025_14_dal_det_state_replay_v0.json)，venue mapping 为 [market mapping](../../market-observation/nfl/nfl_2025_14_dal_det_market_mapping_v0.json)。
+机器可读的逐对象审计见 [evidence audit v0](nfl_2025_14_dal_det_evidence_audit_v0.json)，合并时间轴见 [source timeline v0](nfl_2025_14_dal_det_source_timeline_v0.json)。输入 state trace 为 [NFL replay](../../game-state/nfl/nfl_2025_14_dal_det_state_replay_v0.json)，venue mapping 为 [market mapping](../../market-observation/nfl/nfl_2025_14_dal_det_market_mapping_v0.json)。
 
 ## 明确禁止的推论
 
 - 不把交易成交价称为当时可成交的 bid 或 ask。
 - 不把 1 分钟 Kalshi candle 的 end timestamp 当成事件发生时的 quote。
-- 不从 source timestamps 推断本地接收 latency 或“谁先反应”。
+- 不从 source timestamps 推断本地接收 latency 或“谁先反应”；时间轴内的 0/1/2/5/10/30/60 秒仅是可调的假设情景，不是 p50/p95/p99 测量值。
 - 不输出模型准确率、市场对称性、概率路径、barrier-hit、执行收益或 alpha。
 
 ## 这场切片的停止条件
