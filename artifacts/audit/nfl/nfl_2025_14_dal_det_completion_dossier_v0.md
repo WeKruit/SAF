@@ -24,7 +24,7 @@
 
 - 不把交易成交价称为当时可成交的 bid 或 ask。
 - 不把 1 分钟 Kalshi candle 的 end timestamp 当成事件发生时的 quote。
-- 不从 source timestamps 推断本地接收 latency 或“谁先反应”；时间轴内的 0/1/2/5/10/30/60 秒仅是可调的假设情景，不是 p50/p95/p99 测量值。
+- 不从 source timestamps 推断本地接收 latency 或“谁先反应”；时间轴内的 0/50/100/250/500/1000/2000 毫秒仅是可调的假设情景，不是 p50/p95/p99 测量值。
 - 不输出模型准确率、市场对称性、概率路径、barrier-hit、执行收益或 alpha。
 
 ## 这场切片的停止条件

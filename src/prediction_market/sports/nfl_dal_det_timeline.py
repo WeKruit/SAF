@@ -33,7 +33,7 @@ from prediction_market.sports.nfl_game_replay import replay_frozen_nfl_game
 
 
 _LANE_ORDER = {"game_state": 0, "polymarket_trade": 1, "kalshi_trade": 2, "kalshi_candle": 3}
-_DEFAULT_LATENCY_SCENARIOS_SECONDS = (0, 1, 2, 5, 10, 30, 60)
+_DEFAULT_LATENCY_SCENARIOS_MILLISECONDS = (0, 50, 100, 250, 500, 1_000, 2_000)
 
 
 class DALDETTimelineError(ValueError):
@@ -251,7 +251,9 @@ def _latency_scenarios(values: Sequence[object]) -> list[int]:
     normalized: list[int] = []
     for value in values:
         if type(value) is not int or value < 0:
-            raise DALDETTimelineError("latency scenarios must be non-negative seconds")
+            raise DALDETTimelineError(
+                "latency scenarios must be non-negative milliseconds"
+            )
         normalized.append(value)
     if len(normalized) != len(set(normalized)):
         raise DALDETTimelineError("latency scenarios must be unique")
@@ -262,13 +264,13 @@ def build_dal_det_source_timeline(
     *,
     program_root: str | Path,
     mapping: Mapping[str, object],
-    latency_scenarios_seconds: Sequence[object] = _DEFAULT_LATENCY_SCENARIOS_SECONDS,
+    latency_scenarios_milliseconds: Sequence[object] = _DEFAULT_LATENCY_SCENARIOS_MILLISECONDS,
 ) -> dict[str, Any]:
     """Materialize the native-time review timeline for exactly one NFL game."""
 
     root = Path(program_root).resolve()
     store_root = root / "var" / "raw"
-    scenarios = _latency_scenarios(latency_scenarios_seconds)
+    scenarios = _latency_scenarios(latency_scenarios_milliseconds)
     if mapping.get("canonical_game_id") != CANONICAL_GAME_ID:
         raise DALDETTimelineError("market mapping does not belong to DAL–DET")
     capture = _require_mapping(mapping.get("raw_capture"), "raw_capture")
@@ -335,7 +337,7 @@ def build_dal_det_source_timeline(
             "polymarket_trades": poly_evidence["manifest_sha256"],
             "kalshi": kalshi_evidence,
         },
-        "latency_scenario_seconds": scenarios,
+        "latency_scenario_milliseconds": scenarios,
         "latency_scenario_semantics": "hypothetical additive delay to game source time; not measured p50/p95/p99",
         "rows_sha256": canonical_sha256(ordered),
         "row_count": len(ordered),

@@ -48,10 +48,10 @@ def test_dal_det_source_timeline_contains_all_lanes_and_scenarios(tmp_path: Path
     report = build_dal_det_source_timeline(
         program_root=_source_program_root(),
         mapping=mapping,
-        latency_scenarios_seconds=(0, 2, 10),
+        latency_scenarios_milliseconds=(0, 100, 500),
     )
     assert report["time_basis"] == "native_source_time_only"
-    assert report["latency_scenario_seconds"] == [0, 2, 10]
+    assert report["latency_scenario_milliseconds"] == [0, 100, 500]
     assert report["lane_counts"]["game_state"] == 187
     assert report["lane_counts"]["polymarket_trade"] > 0
     assert report["lane_counts"]["kalshi_trade"] > 0
@@ -71,7 +71,7 @@ def test_timeline_rejects_pretended_quantiles() -> None:
         build_dal_det_source_timeline(
             program_root=_source_program_root(),
             mapping=mapping,
-            latency_scenarios_seconds=(-1,),
+            latency_scenarios_milliseconds=(-1,),
         )
 
 
