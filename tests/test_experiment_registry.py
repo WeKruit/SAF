@@ -98,6 +98,34 @@ REPRODUCTION_CONTRACTS = {
         ],
     },
 }
+X11_CURRENT_REPRODUCTION_CONTRACT = {
+    "reproduction_id": "REPRO-X11-NFL-FASTRMODELS-V2",
+    "scope": "team_h_nfl_fastrmodels_reproduction_v2",
+    "base_scope": "preregistered_pipeline",
+    "dataset_ids": ["DS-NFL-FASTRMODELS", "DS-NFLVERSE"],
+    "model_ids": [
+        "MODEL-NFL-FASTRMODELS-NO-SPREAD-CLOCK-V1",
+    ],
+    "code_paths": [
+        "src/prediction_market/models/nfl.py",
+        "src/prediction_market/models/nfl_fastrmodels.py",
+    ],
+    "protocol_path": (
+        "registries/protocols/"
+        "x11_fastrmodels_no_spread_v1.json"
+    ),
+    "inherit_base_locks": False,
+}
+X11_V1_REPRODUCTION_ID = "REPRO-X11-NFL-FASTRMODELS-V1"
+X11_V1_SCOPE = "team_h_nfl_fastrmodels_reproduction_v1"
+X11_V1_AMENDMENT_SHA256 = (
+    "sha256:"
+    "ad594d2aa06ff7ecc99ba4389d53c2973f1aba8bc922bba45a7c0cedc3ed6177"
+)
+X11_V1_PROTOCOL_FILE_SHA256 = (
+    "sha256:"
+    "7957bb56a23ff4908fb70f3219cd2c6a6196e84fddab65ea54d693fb13c914bc"
+)
 EXPECTED_X02_PREREGISTRATION = {
     "sampling_and_seed": {
         "selection_seed": 20260722,
@@ -563,6 +591,158 @@ def _valid_reproduction_registration(
         registration
     )
     return registration
+
+
+def _x11_v1_protocol_document(root: Path) -> dict[str, Any]:
+    protocol = json.loads(
+        (
+            root
+            / "registries/protocols/"
+            "x11_fastrmodels_no_spread_v0.json"
+        ).read_bytes()
+    )
+    protocol["identity"] = {
+        "experiment_id": "X-11",
+        "model_id": "MODEL-NFL-FASTRMODELS-NO-SPREAD-CLOCK-V1",
+        "protocol_version": "v1",
+        "reproduction_id": "REPRO-X11-NFL-FASTRMODELS-V2",
+        "result_class": "poc",
+        "scope": "team_h_nfl_fastrmodels_reproduction_v2",
+    }
+    protocol["feature_contract"]["half_seconds_remaining_semantics"] = {
+        "qtr_lte_2": (
+            "half_seconds_remaining=game_seconds_remaining-1800"
+        ),
+        "qtr_gte_3": (
+            "half_seconds_remaining=game_seconds_remaining"
+        ),
+    }
+    return protocol
+
+
+def _seed_x11_v2_reproduction_assets(root: Path) -> None:
+    protocol_path = (
+        root
+        / "registries/protocols/"
+        "x11_fastrmodels_no_spread_v1.json"
+    )
+    if not protocol_path.exists():
+        _write_pretty_json(
+            protocol_path,
+            _x11_v1_protocol_document(root),
+        )
+    protocol_sha256 = (
+        "sha256:" + hashlib.sha256(protocol_path.read_bytes()).hexdigest()
+    )
+
+    model_path = root / "registries/model_registry.csv"
+    with model_path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = reader.fieldnames
+        rows = list(reader)
+    assert fieldnames is not None
+    new_model_id = str(
+        X11_CURRENT_REPRODUCTION_CONTRACT["model_ids"][0]
+    )
+    if any(row["model_id"] == new_model_id for row in rows):
+        return
+    old = next(
+        row
+        for row in rows
+        if row["model_id"] == "MODEL-NFL-FASTRMODELS-NO-SPREAD"
+    )
+    new = dict(old)
+    new.update(
+        {
+            "model_id": new_model_id,
+            "model_version": "v1",
+            "pit_feature_contract": protocol_sha256,
+            "parameter_config_sha256": protocol_sha256,
+        }
+    )
+    rows.append(new)
+    with model_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _valid_x11_v2_reproduction_registration(
+    root: Path,
+) -> dict[str, Any]:
+    _seed_x11_v2_reproduction_assets(root)
+    contract = X11_CURRENT_REPRODUCTION_CONTRACT
+    models = {row.model_id: row for row in load_model_registry(root)}
+    datasets = {
+        row.dataset_id: row for row in load_dataset_registry(root)
+    }
+    code_paths = list(contract["code_paths"])
+    protocol_path = str(contract["protocol_path"])
+    protocol_bytes = (root / protocol_path).read_bytes()
+    registration: dict[str, Any] = {
+        "reproduction_id": str(contract["reproduction_id"]),
+        "scope": str(contract["scope"]),
+        "result_class": "poc",
+        "dataset_ids": list(contract["dataset_ids"]),
+        "model_bindings": [
+            {
+                "model_id": model_id,
+                "model_version": models[model_id].model_version,
+                "model_record_sha256": _model_record_sha256(
+                    root, model_id
+                ),
+            }
+            for model_id in contract["model_ids"]
+        ],
+        "code_paths": code_paths,
+        "code_sha256": _reproduction_code_sha256(root, code_paths),
+        "data_sha256": _canonical_sha256(
+            [
+                {
+                    "dataset_id": dataset_id,
+                    "manifest_sha256": datasets[
+                        dataset_id
+                    ].manifest_sha256,
+                }
+                for dataset_id in contract["dataset_ids"]
+            ]
+        ),
+        "protocol_path": protocol_path,
+        "protocol_sha256": (
+            "sha256:" + hashlib.sha256(protocol_bytes).hexdigest()
+        ),
+    }
+    registration["reproduction_spec_sha256"] = _canonical_sha256(
+        registration
+    )
+    return registration
+
+
+def _append_x11_v1_then_v2(
+    root: Path,
+    *,
+    supersession_at: str = "2026-07-23T00:00:03Z",
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    v1 = _valid_reproduction_registration(root, "X-11")
+    _append_amendment(
+        root,
+        "X-11",
+        amended_at="2026-07-23T00:00:02Z",
+        changes={"register_reproduction": v1},
+    )
+    v2 = _valid_x11_v2_reproduction_registration(root)
+    amendment = _append_amendment(
+        root,
+        "X-11",
+        amended_at=supersession_at,
+        changes={
+            "supersede_reproduction": {
+                "supersedes_reproduction_id": v1["reproduction_id"],
+                "registration": v2,
+            }
+        },
+    )
+    return v1, v2, amendment
 
 
 def _write_pretty_json(path: Path, value: dict[str, Any]) -> str:
@@ -2390,28 +2570,33 @@ def test_x11_reproduction_is_no_spread_only_and_does_not_inherit_prior_locks(
     program_root: Path,
 ) -> None:
     effective = load_experiment_registry(program_root)["X-11"]
-    scope_name = str(REPRODUCTION_CONTRACTS["X-11"]["scope"])
+    scope_name = str(X11_CURRENT_REPRODUCTION_CONTRACT["scope"])
     scope = effective["authorization_scopes"][scope_name]
-    registration = effective["amendments"][-1]["changes"][
-        "register_reproduction"
+    supersession = effective["amendments"][-1]["changes"][
+        "supersede_reproduction"
     ]
+    registration = supersession["registration"]
     reproduction_locks = [
         lock["id"]
         for lock in effective["registration_locks"]
-        if lock["id"].startswith("reproduction:")
+        if lock["id"]
+        == f"reproduction:{registration['reproduction_id']}"
     ]
 
+    assert supersession["supersedes_reproduction_id"] == (
+        X11_V1_REPRODUCTION_ID
+    )
     assert scope["input_binding"]["dataset_ids"] == [
         "DS-NFL-FASTRMODELS",
         "DS-NFLVERSE",
     ]
     assert scope["input_binding"]["model_ids"] == [
-        "MODEL-NFL-FASTRMODELS-NO-SPREAD"
+        "MODEL-NFL-FASTRMODELS-NO-SPREAD-CLOCK-V1"
     ]
     assert scope["required_lock_ids"] == reproduction_locks
     assert "spread_prior_manifest" not in scope["required_lock_ids"]
     assert registration["protocol_path"] == (
-        "registries/protocols/x11_fastrmodels_no_spread_v0.json"
+        "registries/protocols/x11_fastrmodels_no_spread_v1.json"
     )
     protocol_bytes = (
         program_root / registration["protocol_path"]
@@ -2423,6 +2608,599 @@ def test_x11_reproduction_is_no_spread_only_and_does_not_inherit_prior_locks(
         scope,
         sort_keys=True,
     )
+
+
+def test_checked_in_x11_v2_supersession_preserves_v1_history(
+    program_root: Path,
+) -> None:
+    card = _read_card(program_root, "X-11")
+    assert card["results_ref"] == []
+    assert len(card["amendments"]) == 2
+
+    v1 = card["amendments"][0]
+    assert v1["amendment_sha256"] == X11_V1_AMENDMENT_SHA256
+    assert v1["amended_at"] == "2026-07-23T23:49:01Z"
+    assert v1["changes"]["register_reproduction"] == {
+        "reproduction_id": "REPRO-X11-NFL-FASTRMODELS-V1",
+        "scope": "team_h_nfl_fastrmodels_reproduction_v1",
+        "result_class": "poc",
+        "dataset_ids": ["DS-NFL-FASTRMODELS", "DS-NFLVERSE"],
+        "model_bindings": [
+            {
+                "model_id": "MODEL-NFL-FASTRMODELS-NO-SPREAD",
+                "model_version": "v0",
+                "model_record_sha256": (
+                    "sha256:"
+                    "4939626af8975ad8cfddb60190af905c87812eb73f167eb4baa1721e9cde91ec"
+                ),
+            }
+        ],
+        "code_paths": [
+            "src/prediction_market/models/nfl.py",
+            "src/prediction_market/models/nfl_fastrmodels.py",
+        ],
+        "code_sha256": (
+            "sha256:"
+            "5cd141dc145b44a88e950ef297c9f418a8ad91efde503e10f07ace63311c85cd"
+        ),
+        "data_sha256": (
+            "sha256:"
+            "6342fceb33fba8b7f2f3b601f85e11a8e201898419013d0e1a46f9f66623fbc4"
+        ),
+        "protocol_path": (
+            "registries/protocols/"
+            "x11_fastrmodels_no_spread_v0.json"
+        ),
+        "protocol_sha256": X11_V1_PROTOCOL_FILE_SHA256,
+        "reproduction_spec_sha256": (
+            "sha256:"
+            "bfe89b09cbefbfca701bdb2537c14ccb3d92acbd77af4bf37e785db78500371a"
+        ),
+    }
+    assert (
+        "sha256:"
+        + hashlib.sha256(
+            (
+                program_root
+                / "registries/protocols/"
+                "x11_fastrmodels_no_spread_v0.json"
+            ).read_bytes()
+        ).hexdigest()
+        == X11_V1_PROTOCOL_FILE_SHA256
+    )
+
+    v2 = card["amendments"][1]
+    assert v2["prior_sha256"] == X11_V1_AMENDMENT_SHA256
+    assert v2["changes"]["supersede_reproduction"][
+        "supersedes_reproduction_id"
+    ] == X11_V1_REPRODUCTION_ID
+    registration = v2["changes"]["supersede_reproduction"][
+        "registration"
+    ]
+    assert registration["reproduction_id"] == (
+        X11_CURRENT_REPRODUCTION_CONTRACT["reproduction_id"]
+    )
+    assert registration["scope"] == (
+        X11_CURRENT_REPRODUCTION_CONTRACT["scope"]
+    )
+
+    effective = load_experiment_registry(program_root)["X-11"]
+    assert effective["authorization_scopes"][X11_V1_SCOPE][
+        "authorized"
+    ] is False
+    assert effective["authorization_scopes"][registration["scope"]][
+        "authorized"
+    ] is True
+
+
+def test_checked_in_x11_v1_scope_is_rejected_after_supersession(
+    program_root: Path,
+) -> None:
+    effective = load_experiment_registry(program_root)["X-11"]
+    v1 = effective["amendments"][0]["changes"][
+        "register_reproduction"
+    ]
+    result = _valid_result_ref(
+        scope=v1["scope"],
+        result_label="PRELIMINARY",
+        evaluation_started_at="2026-07-24T00:59:00Z",
+        registration_head_sha256=effective[
+            "registration_head_sha256"
+        ],
+        code_sha256=v1["code_sha256"],
+        data_sha256=v1["data_sha256"],
+        dataset_ids=v1["dataset_ids"],
+        model_ids=[
+            binding["model_id"]
+            for binding in v1["model_bindings"]
+        ],
+    )
+
+    with (
+        patch.object(
+            experiments_module,
+            "_utc_now",
+            return_value=datetime(
+                2026, 7, 24, 1, 0, 0, tzinfo=timezone.utc
+            ),
+        ),
+        pytest.raises(
+            UnauthorizedResultScopeError,
+            match="result scope .* is not authorized",
+        ),
+    ):
+        validate_result_ref(program_root, "X-11", result)
+
+
+def test_checked_in_x11_v2_result_gate_opens_only_after_supersession(
+    program_root: Path,
+) -> None:
+    effective = load_experiment_registry(program_root)["X-11"]
+    amendment = effective["amendments"][1]
+    registration = amendment["changes"]["supersede_reproduction"][
+        "registration"
+    ]
+    amended_at = datetime.strptime(
+        amendment["amended_at"], "%Y-%m-%dT%H:%M:%SZ"
+    ).replace(tzinfo=timezone.utc)
+    result = _valid_result_ref(
+        scope=registration["scope"],
+        result_label="PRELIMINARY",
+        evaluation_started_at=(
+            amended_at + timedelta(seconds=1)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        registration_head_sha256=amendment["amendment_sha256"],
+        code_sha256=registration["code_sha256"],
+        data_sha256=registration["data_sha256"],
+        dataset_ids=registration["dataset_ids"],
+        model_ids=[
+            binding["model_id"]
+            for binding in registration["model_bindings"]
+        ],
+    )
+    too_early = dict(
+        result,
+        evaluation_started_at=amendment["amended_at"],
+    )
+
+    with pytest.raises(
+        PreRegistrationEvaluationError,
+        match=(
+            "evaluation must follow input preregistration amendment|"
+            "evaluation must follow the claimed registration head"
+        ),
+    ):
+        validate_result_ref(program_root, "X-11", too_early)
+    assert validate_result_ref(program_root, "X-11", result) == result
+
+
+def test_checked_in_x11_v1_protocol_disambiguates_halftime_by_quarter(
+    program_root: Path,
+) -> None:
+    path = (
+        program_root
+        / "registries/protocols/"
+        "x11_fastrmodels_no_spread_v1.json"
+    )
+    protocol = json.loads(path.read_bytes())
+    assert protocol["identity"] == {
+        "experiment_id": "X-11",
+        "model_id": "MODEL-NFL-FASTRMODELS-NO-SPREAD-CLOCK-V1",
+        "protocol_version": "v1",
+        "reproduction_id": "REPRO-X11-NFL-FASTRMODELS-V2",
+        "result_class": "poc",
+        "scope": "team_h_nfl_fastrmodels_reproduction_v2",
+    }
+    assert protocol["feature_contract"][
+        "half_seconds_remaining_semantics"
+    ] == {
+        "qtr_lte_2": (
+            "half_seconds_remaining=game_seconds_remaining-1800"
+        ),
+        "qtr_gte_3": (
+            "half_seconds_remaining=game_seconds_remaining"
+        ),
+    }
+    assert protocol["census_lock"]["total"][
+        "eligible_rows"
+    ] == 205607
+    assert protocol["census_lock"]["total"][
+        "eligible_non_tie_games"
+    ] == 1420
+    assert protocol["ordering_and_labels"]["tie_policy"] == (
+        "report_separately_and_exclude_from_binary_metrics"
+    )
+
+    protocol_sha256 = (
+        "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    )
+    registration = _read_card(program_root, "X-11")[
+        "amendments"
+    ][1]["changes"]["supersede_reproduction"]["registration"]
+    model = next(
+        row
+        for row in load_model_registry(program_root)
+        if row.model_id
+        == "MODEL-NFL-FASTRMODELS-NO-SPREAD-CLOCK-V1"
+    )
+    assert registration["protocol_sha256"] == protocol_sha256
+    assert model.pit_feature_contract == protocol_sha256
+    assert model.parameter_config_sha256 == protocol_sha256
+
+
+def test_team_h_can_atomically_supersede_x11_v1_with_exact_v2(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    v1, v2, amendment = _append_x11_v1_then_v2(root)
+
+    effective = load_experiment_registry(root)["X-11"]
+    assert effective["registration_head_sha256"] == amendment[
+        "amendment_sha256"
+    ]
+    assert effective["authorization_scopes"][v1["scope"]][
+        "authorized"
+    ] is False
+    v2_scope = effective["authorization_scopes"][v2["scope"]]
+    assert v2_scope == {
+        "authorized": True,
+        "required_result_label": "PRELIMINARY",
+        "required_lock_ids": [
+            f"reproduction:{v2['reproduction_id']}"
+        ],
+        "input_binding": {
+            "result_class": "poc",
+            "dataset_ids": v2["dataset_ids"],
+            "model_ids": [
+                binding["model_id"]
+                for binding in v2["model_bindings"]
+            ],
+            "synthetic_data_sha256": None,
+        },
+    }
+    assert effective["preregistered_inputs"][v1["scope"]][
+        "registered_at"
+    ] == "2026-07-23T00:00:02Z"
+    assert effective["preregistered_inputs"][v2["scope"]] == {
+        "code_sha256": v2["code_sha256"],
+        "data_sha256": v2["data_sha256"],
+        "dataset_ids": v2["dataset_ids"],
+        "model_ids": [
+            binding["model_id"]
+            for binding in v2["model_bindings"]
+        ],
+        "registered_at": "2026-07-23T00:00:03Z",
+    }
+
+
+@pytest.mark.parametrize(
+    ("mutation", "match"),
+    [
+        ("wrong_prior", "must supersede the current reproduction"),
+        ("old_scope", "reproduction contract mismatch"),
+        ("old_model", "reproduction contract mismatch"),
+        ("atomicity", "must be an atomic amendment"),
+    ],
+)
+def test_x11_supersession_rejects_wrong_transition_or_co_mutation(
+    tmp_path: Path,
+    mutation: str,
+    match: str,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    v1 = _valid_reproduction_registration(root, "X-11")
+    _append_amendment(
+        root,
+        "X-11",
+        amended_at="2026-07-23T00:00:02Z",
+        changes={"register_reproduction": v1},
+    )
+    v2 = _valid_x11_v2_reproduction_registration(root)
+    supersession = {
+        "supersedes_reproduction_id": v1["reproduction_id"],
+        "registration": v2,
+    }
+    changes: dict[str, Any] = {
+        "supersede_reproduction": supersession
+    }
+    if mutation == "wrong_prior":
+        supersession["supersedes_reproduction_id"] = (
+            "REPRO-X11-NFL-FASTRMODELS-UNKNOWN"
+        )
+    elif mutation == "old_scope":
+        v2["scope"] = v1["scope"]
+        v2["reproduction_spec_sha256"] = _canonical_sha256(
+            {
+                key: value
+                for key, value in v2.items()
+                if key != "reproduction_spec_sha256"
+            }
+        )
+    elif mutation == "old_model":
+        v2["model_bindings"] = copy.deepcopy(
+            v1["model_bindings"]
+        )
+        v2["reproduction_spec_sha256"] = _canonical_sha256(
+            {
+                key: value
+                for key, value in v2.items()
+                if key != "reproduction_spec_sha256"
+            }
+        )
+    else:
+        changes["status"] = "running"
+    _append_amendment(
+        root,
+        "X-11",
+        amended_at="2026-07-23T00:00:03Z",
+        changes=changes,
+    )
+
+    with pytest.raises(ExperimentRegistryError, match=match):
+        load_experiment_registry(root)
+
+
+def test_x11_supersession_is_single_use(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    v1, v2, _ = _append_x11_v1_then_v2(root)
+    _append_amendment(
+        root,
+        "X-11",
+        amended_at="2026-07-23T00:00:04Z",
+        changes={
+            "supersede_reproduction": {
+                "supersedes_reproduction_id": v1[
+                    "reproduction_id"
+                ],
+                "registration": v2,
+            }
+        },
+    )
+
+    with pytest.raises(
+        ExperimentRegistryError,
+        match="must supersede the current reproduction",
+    ):
+        load_experiment_registry(root)
+
+
+def test_x11_supersession_preserves_v1_input_history_append_only(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    v1, _, _ = _append_x11_v1_then_v2(root)
+    _append_amendment(
+        root,
+        "X-11",
+        amended_at="2026-07-23T00:00:04Z",
+        changes={
+            "preregistered_inputs": [
+                {
+                    "scope": v1["scope"],
+                    "code_sha256": "sha256:" + "c" * 64,
+                    "data_sha256": v1["data_sha256"],
+                    "dataset_ids": v1["dataset_ids"],
+                    "model_ids": [
+                        binding["model_id"]
+                        for binding in v1["model_bindings"]
+                    ],
+                }
+            ]
+        },
+    )
+
+    with pytest.raises(
+        ExperimentRegistryError,
+        match="reproduction inputs are append-once",
+    ):
+        load_experiment_registry(root)
+
+
+def test_superseded_x11_scope_cannot_be_generically_reauthorized(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    v1, _, _ = _append_x11_v1_then_v2(root)
+    attack = _append_amendment(
+        root,
+        "X-11",
+        amended_at="2026-07-23T00:00:04Z",
+        changes={"authorize_scopes": [v1["scope"]]},
+    )
+    old_result = _valid_result_ref(
+        scope=v1["scope"],
+        result_label="PRELIMINARY",
+        evaluation_started_at="2026-07-23T00:00:05Z",
+        registration_head_sha256=attack["amendment_sha256"],
+        code_sha256=v1["code_sha256"],
+        data_sha256=v1["data_sha256"],
+        dataset_ids=v1["dataset_ids"],
+        model_ids=[
+            binding["model_id"]
+            for binding in v1["model_bindings"]
+        ],
+    )
+
+    with pytest.raises(
+        ExperimentRegistryError,
+        match="reproduction scopes cannot be generically authorized",
+    ):
+        load_experiment_registry(root)
+    with pytest.raises(
+        ExperimentRegistryError,
+        match="reproduction scopes cannot be generically authorized",
+    ):
+        validate_result_ref(root, "X-11", old_result)
+
+
+def test_generic_authorization_still_allows_non_reproduction_scope(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    _append_amendment(
+        root,
+        "X-08",
+        amended_at="2026-07-23T00:00:02Z",
+        changes={"authorize_scopes": ["kalshi_capture"]},
+    )
+
+    effective = load_experiment_registry(root)["X-08"]
+    assert effective["authorization_scopes"]["kalshi_capture"][
+        "authorized"
+    ] is True
+
+
+def test_x11_supersession_is_rejected_after_any_v1_result(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    v1 = _valid_reproduction_registration(root, "X-11")
+    registration_amendment = _append_amendment(
+        root,
+        "X-11",
+        amended_at="2026-07-23T00:00:02Z",
+        changes={"register_reproduction": v1},
+    )
+    result = _valid_result_ref(
+        scope=v1["scope"],
+        result_label="PRELIMINARY",
+        evaluation_started_at="2026-07-23T00:00:03Z",
+        registration_head_sha256=registration_amendment[
+            "amendment_sha256"
+        ],
+        code_sha256=v1["code_sha256"],
+        data_sha256=v1["data_sha256"],
+        dataset_ids=v1["dataset_ids"],
+        model_ids=[
+            binding["model_id"]
+            for binding in v1["model_bindings"]
+        ],
+    )
+    _append_amendment(
+        root,
+        "X-11",
+        amended_at="2026-07-23T00:00:04Z",
+        changes={"results_ref": result},
+    )
+    v2 = _valid_x11_v2_reproduction_registration(root)
+    _append_amendment(
+        root,
+        "X-11",
+        amended_at="2026-07-23T00:00:05Z",
+        changes={
+            "supersede_reproduction": {
+                "supersedes_reproduction_id": v1[
+                    "reproduction_id"
+                ],
+                "registration": v2,
+            }
+        },
+    )
+
+    with pytest.raises(
+        ExperimentRegistryError,
+        match="cannot be superseded after evaluation",
+    ):
+        load_experiment_registry(root)
+
+
+def test_x11_supersession_rejects_future_amendment(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    _append_x11_v1_then_v2(
+        root,
+        supersession_at="2026-07-23T00:00:04Z",
+    )
+
+    with (
+        patch.object(
+            experiments_module,
+            "_utc_now",
+            return_value=datetime(
+                2026, 7, 23, 0, 0, 3, tzinfo=timezone.utc
+            ),
+        ),
+        pytest.raises(
+            ExperimentRegistryError,
+            match="reproduction amendment cannot be future-dated",
+        ),
+    ):
+        load_experiment_registry(root)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "match"),
+    [
+        ("spec", "reproduction spec hash mismatch"),
+        ("model", "record hash mismatch"),
+        ("data", "reproduction data hash mismatch"),
+        ("code", "reproduction code hash mismatch"),
+        ("protocol", "reproduction protocol hash mismatch"),
+        ("protocol_content", "reproduction protocol contract mismatch"),
+    ],
+)
+def test_x11_supersession_recomputes_every_v2_binding(
+    tmp_path: Path,
+    mutation: str,
+    match: str,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    v1 = _valid_reproduction_registration(root, "X-11")
+    _append_amendment(
+        root,
+        "X-11",
+        amended_at="2026-07-23T00:00:02Z",
+        changes={"register_reproduction": v1},
+    )
+    v2 = _valid_x11_v2_reproduction_registration(root)
+    if mutation == "spec":
+        v2["reproduction_spec_sha256"] = "sha256:" + "c" * 64
+    elif mutation == "model":
+        v2["model_bindings"][0][
+            "model_record_sha256"
+        ] = "sha256:" + "c" * 64
+    elif mutation in {"data", "code", "protocol"}:
+        v2[
+            {
+                "data": "data_sha256",
+                "code": "code_sha256",
+                "protocol": "protocol_sha256",
+            }[mutation]
+        ] = "sha256:" + "c" * 64
+    else:
+        protocol_path = root / v2["protocol_path"]
+        protocol = json.loads(protocol_path.read_bytes())
+        protocol["bootstrap"]["resamples"] = 201
+        v2["protocol_sha256"] = _write_pretty_json(
+            protocol_path, protocol
+        )
+    if mutation != "spec":
+        v2["reproduction_spec_sha256"] = _canonical_sha256(
+            {
+                key: value
+                for key, value in v2.items()
+                if key != "reproduction_spec_sha256"
+            }
+        )
+    _append_amendment(
+        root,
+        "X-11",
+        amended_at="2026-07-23T00:00:03Z",
+        changes={
+            "supersede_reproduction": {
+                "supersedes_reproduction_id": v1[
+                    "reproduction_id"
+                ],
+                "registration": v2,
+            }
+        },
+    )
+
+    with pytest.raises(ExperimentRegistryError, match=match):
+        load_experiment_registry(root)
 
 
 def test_x11_reproduction_contract_rejects_spread_model_id(

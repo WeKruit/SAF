@@ -198,6 +198,9 @@ def _verified_asset_fixture(
 
 
 def test_frozen_official_identity_and_feature_order() -> None:
+    assert nfl_fastrmodels.MODEL_ID == (
+        "MODEL-NFL-FASTRMODELS-NO-SPREAD-CLOCK-V1"
+    )
     assert nfl_fastrmodels.ASSET_ID == 253928623
     assert nfl_fastrmodels.ASSET_BYTE_LENGTH == 106951
     assert nfl_fastrmodels.ASSET_SHA256 == (
@@ -535,24 +538,93 @@ def test_input_rejects_ineligible_or_orientation_mutated_state(
 
 
 def test_period_disambiguates_halftime_clock_boundary() -> None:
-    boundary_values = list(GOLDEN_VALUES)
-    boundary_values[2] = 1800.0
-    boundary_values[3] = 1800.0
-    boundary_values[4] = 7.0 / math.exp(-2.0)
-
+    first_half_values = list(GOLDEN_VALUES)
+    first_half_values[2] = 0.0
+    first_half_values[3] = 1800.0
+    first_half_values[4] = 7.0 / math.exp(-2.0)
     first_half = _input(
-        values=tuple(boundary_values),
+        values=tuple(first_half_values),
         period=2,
     )
     assert first_half.feature_values[0] == 1.0
-    with pytest.raises(
-        nfl_fastrmodels.OfficialModelInputError,
-        match="receive_2h_ko",
-    ):
-        _input(
-            values=tuple(boundary_values),
-            period=3,
+
+    second_half_values = list(first_half_values)
+    second_half_values[0] = 0.0
+    second_half_values[2] = 1800.0
+    second_half = _input(
+        values=tuple(second_half_values),
+        period=3,
+    )
+    assert second_half.feature_values[0] == 0.0
+
+    for period, wrong_half_seconds in ((2, 1800.0), (3, 0.0)):
+        incoherent = list(
+            first_half_values if period == 2 else second_half_values
         )
+        incoherent[2] = wrong_half_seconds
+        with pytest.raises(
+            nfl_fastrmodels.OfficialModelInputError,
+            match="clock fields",
+        ):
+            _input(values=tuple(incoherent), period=period)
+
+
+@pytest.mark.parametrize(
+    ("values", "posteam", "home_team", "away_team"),
+    [
+        (
+            (
+                1.0,
+                0.0,
+                0.0,
+                1800.0,
+                29.556224395722598,
+                4.0,
+                1.0,
+                5.0,
+                19.0,
+                0.0,
+                3.0,
+            ),
+            "IND",
+            "BAL",
+            "IND",
+        ),
+        (
+            (
+                0.0,
+                0.0,
+                0.0,
+                1800.0,
+                -96.05772928609845,
+                -13.0,
+                1.0,
+                10.0,
+                12.0,
+                1.0,
+                0.0,
+            ),
+            "TB",
+            "WAS",
+            "TB",
+        ),
+    ],
+)
+def test_frozen_2021_halftime_rows_are_valid_official_inputs(
+    values: tuple[float, ...],
+    posteam: str,
+    home_team: str,
+    away_team: str,
+) -> None:
+    model_input = _input(
+        values=values,
+        posteam=posteam,
+        home_team=home_team,
+        away_team=away_team,
+        period=2,
+    )
+
+    assert model_input.feature_values == values
 
 
 def test_official_asset_golden_vector_and_home_away_orientation() -> None:

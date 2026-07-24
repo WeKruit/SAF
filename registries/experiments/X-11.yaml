@@ -111,4 +111,30 @@ experiment_card:
           protocol_sha256: sha256:7957bb56a23ff4908fb70f3219cd2c6a6196e84fddab65ea54d693fb13c914bc
           reproduction_spec_sha256: sha256:bfe89b09cbefbfca701bdb2537c14ccb3d92acbd77af4bf37e785db78500371a
       amendment_sha256: sha256:ad594d2aa06ff7ecc99ba4389d53c2973f1aba8bc922bba45a7c0cedc3ed6177
+    - sequence: 2
+      amended_at: '2026-07-24T00:41:31Z'
+      prior_sha256: sha256:ad594d2aa06ff7ecc99ba4389d53c2973f1aba8bc922bba45a7c0cedc3ed6177
+      approved_by: H
+      reason: 'Pre-evaluation supersession: V1 rejected two valid Q2 halftime rows because game_seconds_remaining=1800 was not disambiguated by qtr; V1 has no results, and V2 was frozen before evaluation.'
+      changes:
+        supersede_reproduction:
+          supersedes_reproduction_id: REPRO-X11-NFL-FASTRMODELS-V1
+          registration:
+            reproduction_id: REPRO-X11-NFL-FASTRMODELS-V2
+            scope: team_h_nfl_fastrmodels_reproduction_v2
+            result_class: poc
+            dataset_ids: [DS-NFL-FASTRMODELS, DS-NFLVERSE]
+            model_bindings:
+              - model_id: MODEL-NFL-FASTRMODELS-NO-SPREAD-CLOCK-V1
+                model_version: v1
+                model_record_sha256: sha256:df098fb7c050669f445bf7115c4575d3409fa591e57ea7eddff511d84f2cf3d3
+            code_paths:
+              - src/prediction_market/models/nfl.py
+              - src/prediction_market/models/nfl_fastrmodels.py
+            code_sha256: sha256:3c1b92679df15dd6a8bce1d4c4bddbcf5c81944f59b3fe85ded7e0e315161e75
+            data_sha256: sha256:6342fceb33fba8b7f2f3b601f85e11a8e201898419013d0e1a46f9f66623fbc4
+            protocol_path: registries/protocols/x11_fastrmodels_no_spread_v1.json
+            protocol_sha256: sha256:3d75a366ed6e9627d50b4831ace348c63890160e2ead8241fddb0ce0fb917bdd
+            reproduction_spec_sha256: sha256:82d81413d3fe851003b64dd014d45a83fcb881ce04487134596fe342dfa4e1d1
+      amendment_sha256: sha256:0dcd4a1a62c7790967023b2383a2cb93eaf35b25e3e4d64baabe8decb8f45960
   registration_record_sha256: sha256:1706e20201346560f38b4bf1ab3f040c8318f871d809eeff03666827b1b5ec4e

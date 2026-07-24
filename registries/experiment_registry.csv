@@ -9,5 +9,5 @@ X-07,registries/experiments/X-07.yaml,F+E,registered,false,2026-07-22,,sha256:82
 X-08,registries/experiments/X-08.yaml,C+B,registered,true,2026-07-22,,sha256:5fbded779da684bae5ab0d8ef2fff5cf1aaa7976f9b28a0261ac3f05ddaef390
 X-09,registries/experiments/X-09.yaml,B+A+H,registered,false,2026-07-22,,sha256:e886d114245fc1e65e24fef84e78d9c34112f2d2fc1ad1d41af9d90e7fe1ef93
 X-10,registries/experiments/X-10.yaml,G+A,registered,false,2026-07-22,,sha256:bb8dfd3ed8a94422059dc7f5c471574012a2e7784f506d3782dc982ac8f8494a
-X-11,registries/experiments/X-11.yaml,D2+H,registered,true,2026-07-22,,sha256:6e46869081eb1c7b28528a6f5b06c63eebd4c6eeb5ef068f06b6689954f09234
+X-11,registries/experiments/X-11.yaml,D2+H,registered,true,2026-07-22,,sha256:82e55a636ed06dfaf34b72fda9bdf0a8d3bf287e0bc71157d597efdd034b7ab6
 X-12,registries/experiments/X-12.yaml,D3+H+I,registered,true,2026-07-22,,sha256:eea61d52c8b031c4a526e4c878c8e0355c12eade61bd516413f4695c16d14886

@@ -28,7 +28,7 @@ from prediction_market.static_store import (
 
 
 DATASET_ID: Final = "DS-NFL-FASTRMODELS"
-MODEL_ID: Final = "MODEL-NFL-FASTRMODELS-NO-SPREAD"
+MODEL_ID: Final = "MODEL-NFL-FASTRMODELS-NO-SPREAD-CLOCK-V1"
 ASSET_ID: Final = 253928623
 ASSET_URL: Final = (
     "https://github.com/nflverse/fastrmodels/releases/download/"
@@ -192,7 +192,7 @@ class NoSpreadModelInput:
             )
         expected_half_seconds = (
             game_seconds_remaining - 1800.0
-            if game_seconds_remaining > 1800.0
+            if self.period <= 2
             else game_seconds_remaining
         )
         if half_seconds_remaining != expected_half_seconds:
