@@ -37,11 +37,11 @@
 - Create: `src/prediction_market/temporal.py`
 - Test: `tests/test_temporal.py`
 
-- [ ] Test the exact predicates: economic pre requires `M0.upper <= play_start.lower`; economic post requires `M0.lower >= finalization.upper`; available pre requires `M3 <= G3`; available post requires `M3 > G3`.
-- [ ] Test that source precision and clock error enter `B - A = [B.lower - A.upper, B.upper - A.lower)` exactly once, and different host/boot/clock/epoch monotonic values cannot be subtracted.
-- [ ] Implement `UtcInterval`, `LocalInstant`, `subtract_intervals`, `same_host_elapsed`, and `classify_event_market_order`; return explicit blocked/unresolved states instead of clamping negative values.
-- [ ] Run: `uv run pytest tests/test_temporal.py -q`. Expected: PASS.
-- [ ] Commit: `git commit -m "feat: add fail-closed temporal join gates"`.
+- [x] Test the exact predicates: economic pre requires `M0.upper <= play_start.lower`; economic post requires `M0.lower >= finalization.upper`; available pre requires `M3 <= G3`; available post requires `M3 > G3`.
+- [x] Test that source precision and clock error enter `B - A = [B.lower - A.upper, B.upper - A.lower)` exactly once, and different host/boot/clock/epoch monotonic values cannot be subtracted.
+- [x] Implement `UtcInterval`, `LocalInstant`, `subtract_intervals`, `same_host_elapsed`, and `classify_event_market_order`; return explicit blocked/unresolved states instead of clamping negative values.
+- [x] Run: `uv run pytest tests/test_temporal.py -q`. Expected: PASS.
+- [x] Commit: `git commit -m "feat: add fail-closed temporal join gates"`.
 
 ### Task 3: Persist capture sidecars and sequence recovery barriers
 
