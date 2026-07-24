@@ -1,0 +1,232 @@
+{
+  "asset": {
+    "byte_length": 106951,
+    "dataset_id": "DS-NFL-FASTRMODELS",
+    "github_release_asset_id": 253928623,
+    "manifest_sha256": "sha256:080d98f34495fe59a532b7c24e17536f471700e92ac8415b682234d7241fe3cb",
+    "model_sha256": "sha256:ff58c98d22e3e36f50f6e82f8e68d3ed0920101132a50d30bb70291df33c0a4c",
+    "schema_fingerprint": "sha256:0032e7efd41481e00519a018d5c572de559b191f790eebafcdaf1307e0942987",
+    "schema_fingerprint_material": {
+      "boosted_rounds": 65,
+      "feature_count": 11,
+      "format": "xgboost_ubjson_booster",
+      "model_variant": "no_spread",
+      "xgboost_runtime": "3.3.0"
+    },
+    "url": "https://github.com/nflverse/fastrmodels/releases/download/model_archive/wp_model.ubj"
+  },
+  "bootstrap": {
+    "ci_level": 0.95,
+    "cluster_unit": "game_id",
+    "report_requested_and_valid": true,
+    "resamples": 200,
+    "seed": 20260723
+  },
+  "census_lock": {
+    "seasons": [
+      {
+        "eligible_non_tie_games": 284,
+        "eligible_rows": 41342,
+        "games": 285,
+        "raw_rows": 49922,
+        "season": 2021
+      },
+      {
+        "eligible_non_tie_games": 282,
+        "eligible_rows": 40937,
+        "games": 284,
+        "raw_rows": 49434,
+        "season": 2022
+      },
+      {
+        "eligible_non_tie_games": 285,
+        "eligible_rows": 41698,
+        "games": 285,
+        "raw_rows": 49665,
+        "season": 2023
+      },
+      {
+        "eligible_non_tie_games": 285,
+        "eligible_rows": 41269,
+        "games": 285,
+        "raw_rows": 49492,
+        "season": 2024
+      },
+      {
+        "eligible_non_tie_games": 284,
+        "eligible_rows": 40361,
+        "games": 285,
+        "raw_rows": 48771,
+        "season": 2025
+      }
+    ],
+    "total": {
+      "eligible_non_tie_games": 1420,
+      "eligible_rows": 205607,
+      "games": 1424,
+      "raw_rows": 247284
+    }
+  },
+  "evaluation_filter": {
+    "eligible_fields_required": [
+      "ep",
+      "score_differential",
+      "play_type",
+      "posteam",
+      "down",
+      "ydstogo",
+      "yardline_100",
+      "half_seconds_remaining",
+      "game_seconds_remaining",
+      "posteam_timeouts_remaining",
+      "defteam_timeouts_remaining"
+    ],
+    "participant_rule": "posteam_and_defteam_must_be_game_participants",
+    "regulation_quarters": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "season_types": [
+      "POST",
+      "REG"
+    ],
+    "seasons": [
+      2021,
+      2022,
+      2023,
+      2024,
+      2025
+    ]
+  },
+  "evidence_boundaries": {
+    "accuracy_oracle": "game_final_result_only",
+    "calibrator": "none_fitted",
+    "evidence_class": "PRELIMINARY",
+    "live_pit_status": "PIT_UNPROVEN",
+    "market_alignment": "not_in_scope_and_not_claimed",
+    "source_home_wp": "diagnostic_only_not_ground_truth",
+    "training": "official_model_not_retrained",
+    "upstream_training_data": "not_redistributed_or_refitted"
+  },
+  "feature_contract": {
+    "Diff_Time_Ratio": "score_differential/exp(-4*((3600-game_seconds_remaining)/3600))",
+    "feature_order": [
+      "receive_2h_ko",
+      "home",
+      "half_seconds_remaining",
+      "game_seconds_remaining",
+      "Diff_Time_Ratio",
+      "score_differential",
+      "down",
+      "ydstogo",
+      "yardline_100",
+      "posteam_timeouts_remaining",
+      "defteam_timeouts_remaining"
+    ],
+    "model_output": "possession_team_win_probability",
+    "variant": "no_spread"
+  },
+  "golden_vector": {
+    "evidence_class": "runtime_regression_fixture_not_accuracy_oracle",
+    "expected_possession_probability": 0.8400148153305054,
+    "numeric_tolerance_absolute": 1e-12,
+    "values": [
+      1.0,
+      1.0,
+      600.0,
+      2400.0,
+      26.555675506591797,
+      7.0,
+      2.0,
+      4.0,
+      45.0,
+      2.0,
+      1.0
+    ]
+  },
+  "identity": {
+    "experiment_id": "X-11",
+    "model_id": "MODEL-NFL-FASTRMODELS-NO-SPREAD",
+    "protocol_version": "v0",
+    "reproduction_id": "REPRO-X11-NFL-FASTRMODELS-V1",
+    "result_class": "poc",
+    "scope": "team_h_nfl_fastrmodels_reproduction_v1"
+  },
+  "latency_protocol": {
+    "excluded": [
+      "io",
+      "market_join",
+      "network",
+      "registry_loading"
+    ],
+    "included": [
+      "state_event_transition",
+      "feature_projection",
+      "official_booster",
+      "probability_output_validation"
+    ]
+  },
+  "metrics": {
+    "calibration": [
+      "slope",
+      "intercept"
+    ],
+    "game_macro": [
+      "Brier",
+      "log_loss"
+    ],
+    "per_season_and_aggregate": true,
+    "reliability_bin_edges": [
+      0.0,
+      0.1,
+      0.2,
+      0.3,
+      0.4,
+      0.5,
+      0.6,
+      0.7,
+      0.8,
+      0.9,
+      1.0
+    ],
+    "row_micro": [
+      "Brier",
+      "log_loss"
+    ],
+    "source_home_wp_diagnostic": [
+      "absolute_delta_distribution"
+    ]
+  },
+  "ordering_and_labels": {
+    "binary_label_source": "game_result_never_home_wp",
+    "duplicate_order_sequence_policy": "retain_all_rows_then_raw_record_ordinal_tiebreak",
+    "primary_order": "order_sequence",
+    "tie_policy": "report_separately_and_exclude_from_binary_metrics"
+  },
+  "output_orientation": {
+    "away_possession": "p_home=1-p_posteam",
+    "home_possession": "p_home=p_posteam"
+  },
+  "prohibitions": [
+    "fit_calibrator",
+    "readme_metric_as_evidence",
+    "retrain_official_model",
+    "run_spread_booster",
+    "source_home_wp_as_label_or_accuracy_oracle",
+    "unregistered_evaluation"
+  ],
+  "runtime": {
+    "expected_boosted_rounds": 65,
+    "expected_feature_count": 11,
+    "native_dependency": "Homebrew libomp runtime only",
+    "xgboost_version": "3.3.0"
+  },
+  "source_commits": {
+    "fastrmodels_feature_training_spec": "75c7b68bc49535370236c38c9826265da075bd71",
+    "nflfastR_feature_helper": "ead5e2f9641490f692d923c04835bd3b90275b4e",
+    "official_model_archive_tag": "9f2495fdb4943087ca663d96706eb5df7973aff4"
+  },
+  "temporal_gate": "evaluation_started_at_must_be_strictly_after_team_h_registration_amendment"
+}

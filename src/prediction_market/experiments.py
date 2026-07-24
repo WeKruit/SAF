@@ -45,12 +45,24 @@ _REPRODUCTION_CONTRACTS = {
         "reproduction_id": "REPRO-X11-NFL-FASTRMODELS-V1",
         "scope": "team_h_nfl_fastrmodels_reproduction_v1",
         "base_scope": "preregistered_pipeline",
-        "dataset_ids": ("DS-NFLVERSE",),
-        "model_ids": (
-            "MODEL-NFL-FASTRMODELS-NO-SPREAD",
-            "MODEL-NFL-FASTRMODELS-SPREAD",
+        "dataset_ids": (
+            "DS-NFL-FASTRMODELS",
+            "DS-NFLVERSE",
         ),
-        "code_paths": ("src/prediction_market/models/nfl.py",),
+        "model_ids": ("MODEL-NFL-FASTRMODELS-NO-SPREAD",),
+        "code_paths": (
+            "src/prediction_market/models/nfl.py",
+            "src/prediction_market/models/nfl_fastrmodels.py",
+        ),
+        "protocol_path": (
+            "registries/protocols/"
+            "x11_fastrmodels_no_spread_v0.json"
+        ),
+        "protocol_content_sha256": (
+            "sha256:"
+            "3e29b0aa7d85a69329b59a74b31487e4736306c9fc80d448a4a43be0b719014a"
+        ),
+        "inherit_base_locks": False,
     },
     "X-12": {
         "reproduction_id": (
@@ -67,6 +79,9 @@ _REPRODUCTION_CONTRACTS = {
             "src/prediction_market/sports/soccer_transition_model.py",
             "src/prediction_market/sports/x12.py",
         ),
+        "protocol_path": None,
+        "protocol_content_sha256": None,
+        "inherit_base_locks": True,
     },
 }
 _X02_TIMESTAMP_AUDIT_PREREGISTRATION = {
@@ -1500,19 +1515,22 @@ def _validate_reproduction_registration(
             f"{experiment_id}: register_reproduction is only valid for "
             "X-11 or X-12"
         )
+    expected_keys = {
+        "reproduction_id",
+        "scope",
+        "result_class",
+        "dataset_ids",
+        "model_bindings",
+        "code_paths",
+        "code_sha256",
+        "data_sha256",
+        "reproduction_spec_sha256",
+    }
+    if experiment_id == "X-11":
+        expected_keys.update({"protocol_path", "protocol_sha256"})
     registration = _exact_keys(
         value,
-        {
-            "reproduction_id",
-            "scope",
-            "result_class",
-            "dataset_ids",
-            "model_bindings",
-            "code_paths",
-            "code_sha256",
-            "data_sha256",
-            "reproduction_spec_sha256",
-        },
+        expected_keys,
         f"{experiment_id} reproduction registration",
     )
     _nonempty_string(
@@ -1621,6 +1639,19 @@ def _validate_reproduction_registration(
         raise ExperimentRegistryError(
             f"{experiment_id}: reproduction contract mismatch"
         )
+    if experiment_id == "X-11":
+        protocol_path = _nonempty_string(
+            registration["protocol_path"],
+            "X-11 reproduction protocol_path",
+        )
+        if protocol_path != contract["protocol_path"]:
+            raise ExperimentRegistryError(
+                "X-11: reproduction contract mismatch"
+            )
+        _sha256(
+            registration["protocol_sha256"],
+            "X-11 reproduction protocol_sha256",
+        )
     _sha256(
         registration["reproduction_spec_sha256"],
         f"{experiment_id} reproduction_spec_sha256",
@@ -1673,6 +1704,65 @@ def _reproduction_code_sha256(
     ).hexdigest()
 
 
+def _reproduction_data_sha256(datasets: tuple[Any, ...]) -> str:
+    bindings = [
+        {
+            "dataset_id": dataset.dataset_id,
+            "manifest_sha256": dataset.manifest_sha256,
+        }
+        for dataset in datasets
+    ]
+    return "sha256:" + hashlib.sha256(
+        _canonical_bytes(bindings)
+    ).hexdigest()
+
+
+def _validate_reproduction_protocol(
+    program_root: Path,
+    experiment_id: str,
+    registration: dict[str, Any],
+) -> None:
+    contract = _REPRODUCTION_CONTRACTS[experiment_id]
+    protocol_path = contract["protocol_path"]
+    expected_content_sha256 = contract["protocol_content_sha256"]
+    if protocol_path is None:
+        return
+    path = _safe_file(
+        program_root,
+        registration["protocol_path"],
+        f"{experiment_id} reproduction protocol",
+    )
+    raw = path.read_bytes()
+    actual_file_sha256 = "sha256:" + hashlib.sha256(raw).hexdigest()
+    if actual_file_sha256 != registration["protocol_sha256"]:
+        raise ExperimentRegistryError(
+            f"{experiment_id}: reproduction protocol hash mismatch"
+        )
+    document = _decode_json_object(
+        raw,
+        f"{experiment_id} reproduction protocol",
+    )
+    try:
+        canonical_protocol = json.dumps(
+            document,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ExperimentRegistryError(
+            f"{experiment_id}: reproduction protocol is not canonical JSON"
+        ) from exc
+    actual_content_sha256 = (
+        "sha256:" + hashlib.sha256(canonical_protocol).hexdigest()
+    )
+    if actual_content_sha256 != expected_content_sha256:
+        raise ExperimentRegistryError(
+            f"{experiment_id}: reproduction protocol contract mismatch"
+        )
+
+
 def _validate_reproduction_bindings(
     program_root: Path,
     experiment_id: str,
@@ -1721,12 +1811,12 @@ def _validate_reproduction_bindings(
         raise ExperimentRegistryError(
             f"{experiment_id}: reproduction code hash mismatch"
         )
-    if len(datasets) != 1:
-        raise ExperimentRegistryError(
-            f"{experiment_id}: reproduction requires exactly one dataset "
-            "manifest"
-        )
-    if registration["data_sha256"] != datasets[0].manifest_sha256:
+    _validate_reproduction_protocol(
+        program_root,
+        experiment_id,
+        registration,
+    )
+    if registration["data_sha256"] != _reproduction_data_sha256(datasets):
         raise ExperimentRegistryError(
             f"{experiment_id}: reproduction data hash mismatch"
         )
@@ -2584,8 +2674,12 @@ def _apply_amendments(
             base_scope = effective["authorization_scopes"][
                 base_scope_name
             ]
-            inherited_lock_ids = list(
-                base_scope["required_lock_ids"]
+            inherited_lock_ids = (
+                list(base_scope["required_lock_ids"])
+                if _REPRODUCTION_CONTRACTS[experiment_id][
+                    "inherit_base_locks"
+                ]
+                else []
             )
             effective["authorization_scopes"][scope_name] = {
                 "authorized": True,

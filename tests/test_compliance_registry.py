@@ -179,11 +179,28 @@ def test_license_register_rejects_review_id_missing_from_stable_catalog(
 
 def test_license_rows_are_evidence_dated_and_have_due_gate() -> None:
     register = load_data_license_register(PROJECT_ROOT)
+    by_id = {row.catalog_item_id: row for row in register}
 
-    assert all(row.evidence_as_of == "2026-07-22" for row in register)
+    assert {
+        row.catalog_item_id: row.evidence_as_of for row in register
+    } == {
+        **{
+            row.catalog_item_id: "2026-07-22"
+            for row in register
+            if row.catalog_item_id != "I-018"
+        },
+        "I-018": "2026-07-23",
+    }
     assert all(row.evidence_url.startswith("https://") for row in register)
     assert all(row.owner == "I" for row in register)
-    assert all(row.version == "v0" for row in register)
+    assert all(
+        row.version == ("v0.1" if row.catalog_item_id == "I-018" else "v0")
+        for row in register
+    )
+    assert by_id["I-018"].evidence_url.endswith(
+        "/9f2495fdb4943087ca663d96706eb5df7973aff4/LICENSE.md"
+    )
+    assert "FASTRMODELS-MIT" in by_id["I-018"].approval_ref
     assert all(row.due_gate == "Team_I_compliance_green" for row in register)
 
 

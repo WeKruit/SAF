@@ -69,12 +69,19 @@ REPRODUCTION_CONTRACTS = {
         "reproduction_id": "REPRO-X11-NFL-FASTRMODELS-V1",
         "scope": "team_h_nfl_fastrmodels_reproduction_v1",
         "base_scope": "preregistered_pipeline",
-        "dataset_ids": ["DS-NFLVERSE"],
+        "dataset_ids": ["DS-NFL-FASTRMODELS", "DS-NFLVERSE"],
         "model_ids": [
             "MODEL-NFL-FASTRMODELS-NO-SPREAD",
-            "MODEL-NFL-FASTRMODELS-SPREAD",
         ],
-        "code_paths": ["src/prediction_market/models/nfl.py"],
+        "code_paths": [
+            "src/prediction_market/models/nfl.py",
+            "src/prediction_market/models/nfl_fastrmodels.py",
+        ],
+        "protocol_path": (
+            "registries/protocols/"
+            "x11_fastrmodels_no_spread_v0.json"
+        ),
+        "inherit_base_locks": False,
     },
     "X-12": {
         "reproduction_id": "REPRO-X12-SOCCER-DYNAMIC-TRANSITION-V1",
@@ -260,7 +267,52 @@ def _copy_program_fixture(tmp_path: Path) -> Path:
         destination = root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(PROJECT_ROOT / relative, destination)
+    for contract in REPRODUCTION_CONTRACTS.values():
+        protocol_path = contract.get("protocol_path")
+        if protocol_path is None:
+            continue
+        relative = Path(str(protocol_path))
+        destination = root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(PROJECT_ROOT / relative, destination)
+    _remove_checked_in_x11_reproduction(root)
     return root
+
+
+def _remove_checked_in_x11_reproduction(root: Path) -> None:
+    """Keep mutation fixtures anchored to X-11's immutable base card."""
+
+    card = _read_card(root, "X-11")
+    registration_index = next(
+        (
+            index
+            for index, amendment in enumerate(card["amendments"])
+            if "register_reproduction" in amendment["changes"]
+        ),
+        None,
+    )
+    if registration_index is None:
+        return
+    card["amendments"] = card["amendments"][:registration_index]
+    _write_card(root, "X-11", card)
+    _update_registry_card_hash(root, "X-11")
+
+    ledger_path = root / "registries" / "experiment_amendment_ledger.csv"
+    with ledger_path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = reader.fieldnames
+        rows = list(reader)
+    assert fieldnames is not None
+    rows = [
+        row
+        for row in rows
+        if row["experiment_id"] != "X-11"
+        or int(row["sequence"]) <= registration_index
+    ]
+    with ledger_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def _read_card(root: Path, experiment_id: str) -> dict:
@@ -417,7 +469,6 @@ def _seed_reproduction_model_rows(
         template = by_id["MODEL-NFL-NFLFASTR-COMPARATOR"]
         required = (
             "MODEL-NFL-FASTRMODELS-NO-SPREAD",
-            "MODEL-NFL-FASTRMODELS-SPREAD",
         )
     else:
         template = by_id["MODEL-SOCCER-FIVE-MINUTE-TRANSITION"]
@@ -467,6 +518,13 @@ def _valid_reproduction_registration(
         row.dataset_id: row for row in load_dataset_registry(root)
     }
     code_paths = [str(item) for item in contract["code_paths"]]
+    dataset_bindings = [
+        {
+            "dataset_id": dataset_id,
+            "manifest_sha256": datasets[dataset_id].manifest_sha256,
+        }
+        for dataset_id in dataset_ids
+    ]
     registration: dict[str, Any] = {
         "reproduction_id": (
             str(contract["reproduction_id"])
@@ -492,8 +550,15 @@ def _valid_reproduction_registration(
         ],
         "code_paths": code_paths,
         "code_sha256": _reproduction_code_sha256(root, code_paths),
-        "data_sha256": datasets[dataset_ids[0]].manifest_sha256,
+        "data_sha256": _canonical_sha256(dataset_bindings),
     }
+    protocol_path = contract.get("protocol_path")
+    if protocol_path is not None:
+        protocol_bytes = (root / str(protocol_path)).read_bytes()
+        registration["protocol_path"] = str(protocol_path)
+        registration["protocol_sha256"] = (
+            "sha256:" + hashlib.sha256(protocol_bytes).hexdigest()
+        )
     registration["reproduction_spec_sha256"] = _canonical_sha256(
         registration
     )
@@ -2220,9 +2285,15 @@ def test_team_h_can_register_an_exact_preliminary_poc_reproduction(
         if lock["id"]
         not in {item["id"] for item in base["registration_locks"]}
     ]
-    base_lock_ids = base["authorization_scopes"][
-        REPRODUCTION_CONTRACTS[experiment_id]["base_scope"]
-    ]["required_lock_ids"]
+    base_lock_ids = (
+        base["authorization_scopes"][
+            REPRODUCTION_CONTRACTS[experiment_id]["base_scope"]
+        ]["required_lock_ids"]
+        if REPRODUCTION_CONTRACTS[experiment_id].get(
+            "inherit_base_locks", True
+        )
+        else []
+    )
 
     assert registration["code_paths"] == REPRODUCTION_CONTRACTS[
         experiment_id
@@ -2231,12 +2302,18 @@ def test_team_h_can_register_an_exact_preliminary_poc_reproduction(
         root,
         registration["code_paths"],
     )
-    dataset = next(
-        row
-        for row in load_dataset_registry(root)
-        if row.dataset_id == registration["dataset_ids"][0]
+    datasets = {
+        row.dataset_id: row for row in load_dataset_registry(root)
+    }
+    assert registration["data_sha256"] == _canonical_sha256(
+        [
+            {
+                "dataset_id": dataset_id,
+                "manifest_sha256": datasets[dataset_id].manifest_sha256,
+            }
+            for dataset_id in registration["dataset_ids"]
+        ]
     )
-    assert registration["data_sha256"] == dataset.manifest_sha256
     assert (
         effective["registration_record_sha256"]
         == base["registration_record_sha256"]
@@ -2290,22 +2367,172 @@ def test_team_h_can_register_an_exact_preliminary_poc_reproduction(
         dataset_ids=registration["dataset_ids"],
         model_ids=model_ids,
     )
-    with pytest.raises(
-        UnresolvedRegistrationLockError,
-        match="unresolved registration locks",
-    ):
-        validate_result_ref(root, experiment_id, result)
+    if base_lock_ids:
+        with pytest.raises(
+            UnresolvedRegistrationLockError,
+            match="unresolved registration locks",
+        ):
+            validate_result_ref(root, experiment_id, result)
 
-    resolution_amendment = _resolve_reproduction_base_locks(
-        root,
-        experiment_id,
-        amended_at="2026-07-23T00:00:03Z",
-    )
-    result["evaluation_started_at"] = "2026-07-23T00:00:04Z"
-    result["registration_head_sha256"] = resolution_amendment[
-        "amendment_sha256"
-    ]
+        resolution_amendment = _resolve_reproduction_base_locks(
+            root,
+            experiment_id,
+            amended_at="2026-07-23T00:00:03Z",
+        )
+        result["evaluation_started_at"] = "2026-07-23T00:00:04Z"
+        result["registration_head_sha256"] = resolution_amendment[
+            "amendment_sha256"
+        ]
     assert validate_result_ref(root, experiment_id, result) == result
+
+
+def test_x11_reproduction_is_no_spread_only_and_does_not_inherit_prior_locks(
+    program_root: Path,
+) -> None:
+    effective = load_experiment_registry(program_root)["X-11"]
+    scope_name = str(REPRODUCTION_CONTRACTS["X-11"]["scope"])
+    scope = effective["authorization_scopes"][scope_name]
+    registration = effective["amendments"][-1]["changes"][
+        "register_reproduction"
+    ]
+    reproduction_locks = [
+        lock["id"]
+        for lock in effective["registration_locks"]
+        if lock["id"].startswith("reproduction:")
+    ]
+
+    assert scope["input_binding"]["dataset_ids"] == [
+        "DS-NFL-FASTRMODELS",
+        "DS-NFLVERSE",
+    ]
+    assert scope["input_binding"]["model_ids"] == [
+        "MODEL-NFL-FASTRMODELS-NO-SPREAD"
+    ]
+    assert scope["required_lock_ids"] == reproduction_locks
+    assert "spread_prior_manifest" not in scope["required_lock_ids"]
+    assert registration["protocol_path"] == (
+        "registries/protocols/x11_fastrmodels_no_spread_v0.json"
+    )
+    protocol_bytes = (
+        program_root / registration["protocol_path"]
+    ).read_bytes()
+    assert registration["protocol_sha256"] == (
+        "sha256:" + hashlib.sha256(protocol_bytes).hexdigest()
+    )
+    assert "MODEL-NFL-FASTRMODELS-SPREAD" not in json.dumps(
+        scope,
+        sort_keys=True,
+    )
+
+
+def test_x11_reproduction_contract_rejects_spread_model_id(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    registration = _valid_reproduction_registration(root, "X-11")
+    registration["model_bindings"] = [
+        {
+            "model_id": "MODEL-NFL-FASTRMODELS-SPREAD",
+            "model_version": "v0",
+            "model_record_sha256": "sha256:" + "a" * 64,
+        }
+    ]
+    registration["reproduction_spec_sha256"] = _canonical_sha256(
+        {
+            key: value
+            for key, value in registration.items()
+            if key != "reproduction_spec_sha256"
+        }
+    )
+    _append_amendment(
+        root,
+        "X-11",
+        amended_at="2026-07-23T00:00:02Z",
+        changes={"register_reproduction": registration},
+    )
+
+    with pytest.raises(
+        ExperimentRegistryError,
+        match="reproduction contract mismatch",
+    ):
+        load_experiment_registry(root)
+
+
+@pytest.mark.parametrize(
+    ("path", "replacement"),
+    [
+        (("evaluation_filter", "regulation_quarters"), [1, 2, 3, 4, 5]),
+        (("bootstrap", "resamples"), 199),
+        (("asset", "github_release_asset_id"), 253928624),
+    ],
+)
+def test_x11_protocol_semantics_cannot_be_rebound_after_mutation(
+    tmp_path: Path,
+    path: tuple[str, str],
+    replacement: object,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    registration = _valid_reproduction_registration(root, "X-11")
+    protocol_path = root / registration["protocol_path"]
+    protocol = json.loads(protocol_path.read_bytes())
+    protocol[path[0]][path[1]] = replacement
+    rendered = (
+        json.dumps(
+            protocol,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+    protocol_path.write_bytes(rendered)
+    registration["protocol_sha256"] = (
+        "sha256:" + hashlib.sha256(rendered).hexdigest()
+    )
+    registration["reproduction_spec_sha256"] = _canonical_sha256(
+        {
+            key: value
+            for key, value in registration.items()
+            if key != "reproduction_spec_sha256"
+        }
+    )
+    _append_amendment(
+        root,
+        "X-11",
+        amended_at="2026-07-23T00:00:02Z",
+        changes={"register_reproduction": registration},
+    )
+
+    with pytest.raises(
+        ExperimentRegistryError,
+        match="reproduction protocol contract mismatch",
+    ):
+        load_experiment_registry(root)
+
+
+def test_x11_asset_manifest_change_breaks_reproduction_data_binding(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    registration = _valid_reproduction_registration(root, "X-11")
+    _update_dataset_registry(
+        root,
+        "DS-NFL-FASTRMODELS",
+        manifest_sha256="sha256:" + "a" * 64,
+    )
+    _append_amendment(
+        root,
+        "X-11",
+        amended_at="2026-07-23T00:00:02Z",
+        changes={"register_reproduction": registration},
+    )
+
+    with pytest.raises(
+        ExperimentRegistryError,
+        match="reproduction data hash mismatch",
+    ):
+        load_experiment_registry(root)
 
 
 def test_register_reproduction_is_limited_to_x11_and_x12(
@@ -2568,6 +2795,10 @@ def test_register_reproduction_recomputes_code_and_data_bindings(
     ("experiment_id", "code_path"),
     [
         ("X-11", "src/prediction_market/models/nfl.py"),
+        (
+            "X-11",
+            "src/prediction_market/models/nfl_fastrmodels.py",
+        ),
         (
             "X-12",
             "src/prediction_market/sports/soccer_transition_model.py",

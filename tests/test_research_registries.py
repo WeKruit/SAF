@@ -25,6 +25,7 @@ EXPECTED_DATASET_IDS = {
     "DS-POLYBENCH",
     "DS-NBA-CANDIDATE",
     "DS-NFLVERSE",
+    "DS-NFL-FASTRMODELS",
     "DS-STATSBOMB-OPEN",
     "DS-RETROSHEET",
     "DS-F1-JOLPICA",
@@ -40,6 +41,7 @@ EXPECTED_MODEL_IDS = {
     "MODEL-NFL-LOGISTIC",
     "MODEL-NFL-GBDT",
     "MODEL-NFL-NFLFASTR-COMPARATOR",
+    "MODEL-NFL-FASTRMODELS-NO-SPREAD",
     "MODEL-NFL-DRIVE-TRANSITION",
     "MODEL-SOCCER-DIXON-COLES",
     "MODEL-SOCCER-FIVE-MINUTE-TRANSITION",
@@ -55,6 +57,7 @@ EXPECTED_LICENSE_REVIEW_IDS = {
     "DS-POLYBENCH": "R-043",
     "DS-NBA-CANDIDATE": "O-005",
     "DS-NFLVERSE": "I-018",
+    "DS-NFL-FASTRMODELS": "I-018",
     "DS-STATSBOMB-OPEN": "O-004",
     "DS-RETROSHEET": "O-007",
     "DS-F1-JOLPICA": "O-008",
@@ -317,6 +320,10 @@ def test_dataset_registry_covers_canonical_secondary_and_blocked_sources() -> No
     assert by_id["DS-NFLVERSE"].license == "CC-BY-4.0"
     assert "release_id:58152862" in by_id["DS-NFLVERSE"].source_version
     assert "observed_at:2026-07-22" in by_id["DS-NFLVERSE"].source_version
+    assert by_id["DS-NFL-FASTRMODELS"].catalog_item_ids == ("I-018",)
+    assert by_id["DS-NFL-FASTRMODELS"].license == "MIT"
+    assert by_id["DS-NFL-FASTRMODELS"].license_status == "approved"
+    assert by_id["DS-NFL-FASTRMODELS"].allowed_experiments == ("X-11",)
     assert by_id["DS-RETROSHEET"].allowed_experiments == ()
     assert by_id["DS-F1-JOLPICA"].catalog_item_ids == ("O-008",)
     assert by_id["DS-F1-JOLPICA"].license == "CC-BY-NC-SA-4.0"
@@ -413,10 +420,15 @@ def test_dataset_registry_rows_have_fixed_governance_metadata() -> None:
             _without(pmxt, "bundle_sha256")
         ),
         "DS-POLYMARKET-V1": polymarket["derived_extract"]["manifest_sha256"],
-        "DS-NFLVERSE": _canonical_sha256(
-            _without(nfl["input_inventory"], "inventory_sha256")
-        ),
-        "DS-STATSBOMB-OPEN": _canonical_sha256(
+            "DS-NFLVERSE": _canonical_sha256(
+                _without(nfl["input_inventory"], "inventory_sha256")
+            ),
+            "DS-NFL-FASTRMODELS": (
+                "sha256:"
+                "080d98f34495fe59a532b7c24e17536f471700e92ac8415b"
+                "682234d7241fe3cb"
+            ),
+            "DS-STATSBOMB-OPEN": _canonical_sha256(
             _without(
                 soccer["input_inventory"],
                 "inventory_sha256",
@@ -481,6 +493,10 @@ def test_model_registry_covers_required_sport_models_and_transitions() -> None:
         "no_score",
     )
     assert by_id["MODEL-NFL-DRIVE-TRANSITION"].experiment_id == "X-11"
+    assert (
+        by_id["MODEL-NFL-FASTRMODELS-NO-SPREAD"].experiment_id
+        == "X-11"
+    )
     assert by_id["MODEL-NFL-DRIVE-TRANSITION"].horizon == (
         "next_state_transition"
     )

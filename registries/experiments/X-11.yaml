@@ -86,5 +86,29 @@ experiment_card:
     - large_scale_microservices
     - readme_return_strategy_selection
     - unregistered_quick_backtest
-  amendments: []
+  amendments:
+    - sequence: 1
+      amended_at: '2026-07-23T23:49:01Z'
+      prior_sha256: sha256:1706e20201346560f38b4bf1ab3f040c8318f871d809eeff03666827b1b5ec4e
+      approved_by: H
+      reason: Preregister the verified NFL official no-spread reproduction inputs before any 2021-2025 evaluation.
+      changes:
+        register_reproduction:
+          reproduction_id: REPRO-X11-NFL-FASTRMODELS-V1
+          scope: team_h_nfl_fastrmodels_reproduction_v1
+          result_class: poc
+          dataset_ids: [DS-NFL-FASTRMODELS, DS-NFLVERSE]
+          model_bindings:
+            - model_id: MODEL-NFL-FASTRMODELS-NO-SPREAD
+              model_version: v0
+              model_record_sha256: sha256:4939626af8975ad8cfddb60190af905c87812eb73f167eb4baa1721e9cde91ec
+          code_paths:
+            - src/prediction_market/models/nfl.py
+            - src/prediction_market/models/nfl_fastrmodels.py
+          code_sha256: sha256:5cd141dc145b44a88e950ef297c9f418a8ad91efde503e10f07ace63311c85cd
+          data_sha256: sha256:6342fceb33fba8b7f2f3b601f85e11a8e201898419013d0e1a46f9f66623fbc4
+          protocol_path: registries/protocols/x11_fastrmodels_no_spread_v0.json
+          protocol_sha256: sha256:7957bb56a23ff4908fb70f3219cd2c6a6196e84fddab65ea54d693fb13c914bc
+          reproduction_spec_sha256: sha256:bfe89b09cbefbfca701bdb2537c14ccb3d92acbd77af4bf37e785db78500371a
+      amendment_sha256: sha256:ad594d2aa06ff7ecc99ba4389d53c2973f1aba8bc922bba45a7c0cedc3ed6177
   registration_record_sha256: sha256:1706e20201346560f38b4bf1ab3f040c8318f871d809eeff03666827b1b5ec4e
