@@ -149,34 +149,22 @@ def test_nfl_latency_report_binds_the_selected_raw_ordinals(
     )
 
 
-def _statsbomb_start_event() -> tuple[
+def _statsbomb_half_start_event() -> tuple[
     soccer_game_state.SoccerGameState,
     soccer_game_state.SoccerGameEvent,
 ]:
     game_id = "game_statsbomb_latency_fixture"
     raw_event = {
-        "id": "statsbomb-latency-event-1",
-        "index": 1,
+        "id": "statsbomb-latency-event-3",
+        "index": 3,
         "period": 1,
         "timestamp": "00:00:00.000",
         "minute": 0,
         "second": 0,
-        "type": {"id": 35, "name": "Starting XI"},
+        "type": {"id": 18, "name": "Half Start"},
         "team": {"id": 10, "name": "Home"},
-        "tactics": {
-            "formation": 433,
-            "lineup": [
-                {
-                    "player": {
-                        "id": 1_000 + player,
-                        "name": f"Home Player {player}",
-                    },
-                    "position": {"id": player, "name": f"Position {player}"},
-                    "jersey_number": player,
-                }
-                for player in range(1, 12)
-            ],
-        },
+        "possession": 1,
+        "possession_team": {"id": 10, "name": "Home"},
     }
     payload = soccer_game_state.statsbomb_event_payload(
         raw_event,
@@ -189,7 +177,7 @@ def _statsbomb_start_event() -> tuple[
         source_system="statsbomb",
         source_stream="events",
         raw_object_hash="sha256:" + "8" * 64,
-        raw_record_ordinals=(0,),
+        raw_record_ordinals=(2,),
         partition="synthetic-latency-fixture",
         fetched_at="2026-07-22T12:00:00Z",
         source_at=None,
@@ -200,8 +188,8 @@ def _statsbomb_start_event() -> tuple[
             "participant_statsbomb_20",
         ),
         native_namespace="statsbomb.event",
-        native_ids=("statsbomb-latency-event-1",),
-        normalized_source_sequence=1,
+        native_ids=("statsbomb-latency-event-3",),
+        normalized_source_sequence=3,
         normalized_payload=payload,
     )
     event = soccer_game_state.adapt_statsbomb_event(
@@ -210,10 +198,27 @@ def _statsbomb_start_event() -> tuple[
         raw_parents=bundle.raw,
     )
     return (
-        soccer_game_state.initial_soccer_game_state(
-            game_id,
+        soccer_game_state.SoccerGameState(
+            game_id=game_id,
             home_team_id=10,
             away_team_id=20,
+            lifecycle="not_started",
+            sequence=2,
+            period=1,
+            possession_id=1,
+            possession_team_id=10,
+            last_action="Starting XI",
+            last_event_id="evt_" + "2" * 64,
+            active_players=(
+                soccer_game_state.SoccerTeamPlayers(
+                    team_id=10,
+                    player_ids=tuple(range(1_001, 1_012)),
+                ),
+                soccer_game_state.SoccerTeamPlayers(
+                    team_id=20,
+                    player_ids=tuple(range(2_001, 2_012)),
+                ),
+            ),
         ),
         event,
     )
@@ -581,7 +586,7 @@ def _calibrated_soccer_evidence() -> dict[str, object]:
 
 
 def test_soccer_latency_applies_fitted_temperature_after_dynamic_prediction() -> None:
-    previous_state, event = _statsbomb_start_event()
+    previous_state, event = _statsbomb_half_start_event()
     _, fixture_model, calibration = _soccer_fixture_models()
 
     next_state, features, distribution, calibrated = (

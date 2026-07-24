@@ -77,6 +77,7 @@ ART-D3-001,artifacts/game-state/soccer/evidence_pipeline_poc_v0.md,D3,v0,2026-08
 ART-D3-002,artifacts/game-state/soccer/x12_real_data_poc_v0.json,D3+H+I,v0,2026-08-05_W2_review,POC_ONLY
 ART-D3-003,artifacts/game-state/soccer_real_replay_validation_v1.json,D3+C,v1,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
 ART-D3-004,src/prediction_market/sports/soccer_season_census.py,D3+C+H,v0,2026-08-05_W2_review,complete
+ART-D3-005,artifacts/game-state/soccer_real_replay_validation_v2.json,D3+C+H,v2,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
 ART-D4-001,artifacts/game-state/mlb/source_inventory_v0.json,D4+I,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
 ART-D4-002,artifacts/game-state/mlb_real_replay_validation_v0.json,D4+C,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
 ART-D5-001,artifacts/game-state/f1/source_inventory_v0.json,D5+I,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY

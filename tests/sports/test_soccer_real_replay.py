@@ -14,6 +14,7 @@ from prediction_market.experiments import load_experiment_registry
 from prediction_market.sports.soccer_game_state import (
     SoccerGameEvent,
     SoccerGameState,
+    SoccerGameStateError,
     adapt_statsbomb_event,
     initial_soccer_game_state,
     reduce_soccer_game_state,
@@ -79,15 +80,10 @@ def _adapt(
     native_event_id = raw_event["id"]
     assert type(sequence) is int
     assert type(native_event_id) is str
-    quality_flags = (
-        ("clock_jump", "out_of_order")
-        if (sequence, native_event_id) == REGISTERED_CLOCK_ANOMALY
-        else ()
-    )
     payload = statsbomb_event_payload(
         raw_event,
         game_id=GAME_ID,
-        quality_flags=quality_flags,
+        quality_flags=(),
     )
     _assert_x12_registered()
     canonical_refs = {
@@ -137,7 +133,7 @@ def _adapt(
         },
         experiment_id=None,
         rule_snapshot_ref=None,
-        quality_flags=quality_flags,
+        quality_flags=(),
         payload={
             "dataset_id": "DS-STATSBOMB-OPEN",
             "partition": f"events-{MATCH_ID}",
@@ -167,7 +163,7 @@ def _adapt(
         },
         experiment_id="X-12",
         rule_snapshot_ref=None,
-        quality_flags=quality_flags,
+        quality_flags=(),
         payload=payload,
     )
     with patch(
@@ -186,27 +182,21 @@ def _replay(
     *,
     home_team_id: int,
     away_team_id: int,
-) -> tuple[SoccerGameState, int]:
+) -> tuple[SoccerGameState, SoccerGameStateError]:
     state = initial_soccer_game_state(
         GAME_ID,
         home_team_id=home_team_id,
         away_team_id=away_team_id,
     )
-    clock_regressions = 0
     for event in events:
-        if (
-            event.period == state.period
-            and (
-                event.clock_ms < state.clock_ms
-                or event.period_clock_ms < state.period_clock_ms
-            )
-        ):
-            clock_regressions += 1
-        state = reduce_soccer_game_state(state, event)
-    return state, clock_regressions
+        try:
+            state = reduce_soccer_game_state(state, event)
+        except SoccerGameStateError as exc:
+            return state, exc
+    raise AssertionError("the frozen match unexpectedly reached source end")
 
 
-def test_frozen_statsbomb_match_replays_twice_with_identical_state() -> None:
+def test_frozen_statsbomb_match_fails_closed_twice_at_the_same_native_anomaly() -> None:
     raw_events = _load_frozen_json(
         _raw_object(f"events-{MATCH_ID}", EVENT_OBJECT_SHA256),
         EVENT_OBJECT_SHA256,
@@ -224,12 +214,12 @@ def test_frozen_statsbomb_match_replays_twice_with_identical_state() -> None:
     events = [_adapt(raw_event) for raw_event in raw_events]
     assert _adapt(raw_events[0]) == events[0]
 
-    first, first_clock_regressions = _replay(
+    first, first_error = _replay(
         events,
         home_team_id=home_team_id,
         away_team_id=away_team_id,
     )
-    second, second_clock_regressions = _replay(
+    second, second_error = _replay(
         events,
         home_team_id=home_team_id,
         away_team_id=away_team_id,
@@ -238,24 +228,14 @@ def test_frozen_statsbomb_match_replays_twice_with_identical_state() -> None:
     assert len(raw_events) == 3_175
     assert first == second
     assert first.state_sha256 == second.state_sha256
-    assert first.sequence == len(raw_events)
-    assert first.period == 2
-    assert (first.home_score, first.away_score) == (
-        match["home_score"],
-        match["away_score"],
-    )
-    assert len(first.cards) == 8
-    assert len(first.substitutions) == 6
-    assert tuple(len(team.player_ids) for team in first.active_players) == (
-        11,
-        10,
-    )
-    assert first.in_play is False
-    assert first.last_action == "Half End"
+    assert first.sequence == REGISTERED_CLOCK_ANOMALY[0] - 1
+    assert events[first.sequence].native_event_id == REGISTERED_CLOCK_ANOMALY[1]
+    assert events[first.sequence].clock_ms < first.clock_ms
+    assert first_error.category == second_error.category == "clock_regression"
+    assert str(first_error) == str(second_error)
     assert first.terminal is False
     assert first.terminal_reason is None
-    assert first.quality_flags == ("clock_jump", "out_of_order")
-    assert first_clock_regressions == second_clock_regressions == 1
+    assert first.quality_flags == ()
 
 
 def test_statsbomb_adapter_requires_a_fully_bound_event_envelope() -> None:

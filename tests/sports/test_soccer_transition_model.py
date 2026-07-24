@@ -21,12 +21,17 @@ def _state(
         game_id="game_statsbomb_1",
         home_team_id=10,
         away_team_id=20,
+        lifecycle="in_play",
         sequence=12,
         period=2,
         clock_ms=clock_ms,
         period_clock_ms=max(0, clock_ms - 45 * 60 * 1_000),
         home_score=home_score,
         away_score=away_score,
+        possession_id=8,
+        possession_team_id=10,
+        last_action="Pass",
+        last_event_id="evt_" + "1" * 64,
         cards=cards,
     )
 
@@ -357,6 +362,25 @@ def test_transition_features_reject_terminal_or_pregame_state() -> None:
                 game_id="game_statsbomb_1",
                 home_team_id=10,
                 away_team_id=20,
+                lifecycle="not_started",
+            )
+        )
+    with pytest.raises(
+        transition.SoccerTransitionModelError,
+        match="started",
+    ):
+        transition.extract_transition_features(
+            SoccerGameState(
+                game_id="game_statsbomb_1",
+                home_team_id=10,
+                away_team_id=20,
+                lifecycle="not_started",
+                sequence=1,
+                period=1,
+                possession_id=1,
+                possession_team_id=10,
+                last_action="Starting XI",
+                last_event_id="evt_" + "1" * 64,
             )
         )
     with pytest.raises(
@@ -364,7 +388,11 @@ def test_transition_features_reject_terminal_or_pregame_state() -> None:
         match="terminal",
     ):
         transition.extract_transition_features(
-            replace(_state(), terminal=True, terminal_reason="match_end")
+            replace(
+                _state(),
+                lifecycle="finished",
+                period_complete=True,
+            )
         )
 
 
@@ -385,7 +413,14 @@ def test_transition_features_reject_future_cards_and_non_full_horizons() -> None
         transition.SoccerTransitionModelError,
         match="regulation",
     ):
-        transition.extract_transition_features(replace(_state(), period=3))
+        transition.extract_transition_features(
+            replace(
+                _state(),
+                period=3,
+                clock_ms=90 * 60 * 1_000,
+                period_clock_ms=0,
+            )
+        )
 
     with pytest.raises(
         transition.SoccerTransitionModelError,

@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from prediction_market.contracts import EventEnvelopeV0
 from prediction_market.sports.event_envelopes import (
@@ -25,41 +25,99 @@ _MAX_TOP_LEVEL_FIELDS = 64
 _MAX_TEXT_LENGTH = 256
 _MAX_SOURCE_COORDINATE_MILLI = 1_000_000
 _SOURCE_COORDINATE_OUT_OF_BOUNDS_FLAG = "source_coordinate_out_of_bounds"
+_ALLOWED_QUALITY_FLAGS = frozenset({_SOURCE_COORDINATE_OUT_OF_BOUNDS_FLAG})
 _CARD_NAMES = frozenset({"Yellow Card", "Second Yellow", "Red Card"})
-_BALL_ACTIONS = frozenset(
+_PERIOD_BASE_MINUTES = {1: 0, 2: 45, 3: 90, 4: 105, 5: 120}
+_PERIOD_START_ACTIONS = frozenset({"Half Start", "Period Start"})
+_PERIOD_END_ACTIONS = frozenset({"Half End", "Period End"})
+_ADMINISTRATIVE_ACTIONS = frozenset(
+    {
+        "Bad Behaviour",
+        "Player Off",
+        "Player On",
+        "Tactical Shift",
+    }
+)
+_ACTIVE_ACTIONS = frozenset(
     {
         "Ball Receipt*",
+        "Ball Recovery",
+        "Block",
         "Carry",
         "Clearance",
+        "Dispossessed",
         "Dribble",
+        "Dribbled Past",
         "Duel",
+        "Error",
+        "50/50",
         "Goal Keeper",
         "Interception",
         "Miscontrol",
         "Pass",
         "Pressure",
+        "Referee Ball-Drop",
+        "Shield",
         "Shot",
     }
 )
 _STOPPAGE_ACTIONS = frozenset(
     {
-        "Bad Behaviour",
         "Foul Committed",
-        "Half End",
-        "Half Start",
-        "Match End",
+        "Foul Won",
+        "Injury Stoppage",
+        "Offside",
         "Own Goal Against",
         "Own Goal For",
-        "Period End",
-        "Period Start",
-        "Starting XI",
         "Substitution",
+    }
+)
+_SUPPORTED_ACTIONS = frozenset(
+    {
+        "Starting XI",
+        "Match End",
+        *_PERIOD_START_ACTIONS,
+        *_PERIOD_END_ACTIONS,
+        *_ADMINISTRATIVE_ACTIONS,
+        *_ACTIVE_ACTIONS,
+        *_STOPPAGE_ACTIONS,
+    }
+)
+_ALLOWED_AFTER_PERIOD_END = frozenset(
+    {
+        "Bad Behaviour",
+        "Injury Stoppage",
+        "Match End",
+        "Player Off",
+        "Player On",
+        "Substitution",
+        "Tactical Shift",
+        *_PERIOD_END_ACTIONS,
+    }
+)
+_LIFECYCLES = frozenset({"not_started", "in_play", "paused", "finished"})
+_VALID_PERIOD_TRANSITIONS = frozenset(
+    {
+        (1, 2),
+        (2, 3),
+        (2, 5),
+        (3, 4),
+        (4, 5),
     }
 )
 
 
 class SoccerGameStateError(ValueError):
     """A soccer event or state violates the point-in-time state contract."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        category: str = "schema_violation",
+    ) -> None:
+        super().__init__(message)
+        self.category = category
 
 
 def _required_text(value: object, field_name: str) -> str:
@@ -229,11 +287,11 @@ class SoccerGameEvent:
     period_clock_ms: int
     action: str
     team_id: int
+    possession_id: int
+    possession_team_id: int
     event_id: str
     lineup_player_ids: tuple[int, ...] = ()
     player_id: int | None = None
-    possession_id: int | None = None
-    possession_team_id: int | None = None
     play_pattern: str | None = None
     ball_x_milli: int | None = None
     ball_y_milli: int | None = None
@@ -241,11 +299,13 @@ class SoccerGameEvent:
     end_ball_y_milli: int | None = None
     pass_outcome: str | None = None
     shot_outcome: str | None = None
+    shot_type: str | None = None
     card: str | None = None
     replacement_player_id: int | None = None
     player_off_permanent: bool | None = None
     score_for_team_id: int | None = None
-    in_play: bool | None = None
+    native_out: bool = False
+    off_camera: bool = False
     quality_flags: tuple[str, ...] = ()
     sport: str = field(default="soccer", init=False)
 
@@ -257,7 +317,18 @@ class SoccerGameEvent:
         _required_int(self.clock_ms, "clock_ms")
         _required_int(self.period_clock_ms, "period_clock_ms")
         _required_text(self.action, "action")
+        if self.action not in _SUPPORTED_ACTIONS:
+            raise SoccerGameStateError(
+                f"unsupported StatsBomb action: {self.action}",
+                category="unsupported_action",
+            )
         _required_int(self.team_id, "team_id", minimum=1)
+        _required_int(self.possession_id, "possession_id", minimum=1)
+        _required_int(
+            self.possession_team_id,
+            "possession_team_id",
+            minimum=1,
+        )
         if re.fullmatch(r"evt_[0-9a-f]{64}", self.event_id) is None:
             raise SoccerGameStateError(
                 "event_id must be an external EventEnvelope evt_<sha256>"
@@ -283,8 +354,6 @@ class SoccerGameEvent:
             )
         for field_name in (
             "player_id",
-            "possession_id",
-            "possession_team_id",
             "replacement_player_id",
             "score_for_team_id",
         ):
@@ -295,6 +364,7 @@ class SoccerGameEvent:
             "play_pattern",
             "pass_outcome",
             "shot_outcome",
+            "shot_type",
         ):
             value = getattr(self, field_name)
             if value is not None:
@@ -309,6 +379,14 @@ class SoccerGameEvent:
             )
         for quality_flag in self.quality_flags:
             _required_text(quality_flag, "quality_flags[]")
+        unsupported_quality_flags = (
+            set(self.quality_flags) - _ALLOWED_QUALITY_FLAGS
+        )
+        if unsupported_quality_flags:
+            raise SoccerGameStateError(
+                "event contains an unsupported quality flag",
+                category="unsupported_quality_flag",
+            )
         allow_source_out_of_bounds = (
             _SOURCE_COORDINATE_OUT_OF_BOUNDS_FLAG in self.quality_flags
         )
@@ -390,8 +468,23 @@ class SoccerGameEvent:
             raise SoccerGameStateError(
                 "score_for_team_id requires a goal shot or Own Goal For"
             )
-        if self.in_play is not None and type(self.in_play) is not bool:
-            raise SoccerGameStateError("in_play must be a boolean or null")
+        if self.action == "Shot":
+            if self.shot_outcome is None or self.shot_type is None:
+                raise SoccerGameStateError(
+                    "Shot requires shot_outcome and shot_type"
+                )
+        elif self.shot_outcome is not None or self.shot_type is not None:
+            raise SoccerGameStateError(
+                "only Shot can contain shot outcome or type"
+            )
+        if self.action != "Pass" and self.pass_outcome is not None:
+            raise SoccerGameStateError(
+                "only Pass can contain pass_outcome"
+            )
+        if type(self.native_out) is not bool:
+            raise SoccerGameStateError("native_out must be boolean")
+        if type(self.off_camera) is not bool:
+            raise SoccerGameStateError("off_camera must be boolean")
 
 
 @dataclass(frozen=True, slots=True)
@@ -401,27 +494,35 @@ class SoccerGameState:
     game_id: str
     home_team_id: int
     away_team_id: int
+    lifecycle: Literal["not_started", "in_play", "paused", "finished"]
     sequence: int = 0
     period: int = 0
     clock_ms: int = 0
     period_clock_ms: int = 0
     home_score: int = 0
     away_score: int = 0
+    home_shootout_score: int = 0
+    away_shootout_score: int = 0
+    home_shootout_attempts: int = 0
+    away_shootout_attempts: int = 0
     possession_id: int | None = None
     possession_team_id: int | None = None
     play_pattern: str | None = None
     ball_x_milli: int | None = None
     ball_y_milli: int | None = None
-    in_play: bool = False
+    period_complete: bool = False
     last_action: str | None = None
     last_event_id: str | None = None
+    last_event_native_out: bool = False
+    last_event_off_camera: bool = False
     cards: tuple[SoccerCard, ...] = ()
     substitutions: tuple[SoccerSubstitution, ...] = ()
     players_off: tuple[SoccerPlayerOff, ...] = ()
     active_players: tuple[SoccerTeamPlayers, ...] = ()
     quality_flags: tuple[str, ...] = ()
-    terminal: bool = False
-    terminal_reason: str | None = None
+    in_play: bool = field(init=False)
+    terminal: bool = field(init=False)
+    terminal_reason: str | None = field(init=False)
     sport: str = field(default="soccer", init=False)
     state_sha256: str = field(init=False)
 
@@ -433,15 +534,75 @@ class SoccerGameState:
             raise SoccerGameStateError(
                 "home_team_id and away_team_id must differ"
             )
+        if self.lifecycle not in _LIFECYCLES:
+            raise SoccerGameStateError(
+                "lifecycle must be not_started, in_play, paused, or finished"
+            )
+        object.__setattr__(
+            self,
+            "in_play",
+            self.lifecycle == "in_play",
+        )
+        object.__setattr__(
+            self,
+            "terminal",
+            self.lifecycle == "finished",
+        )
+        object.__setattr__(
+            self,
+            "terminal_reason",
+            "match_end" if self.lifecycle == "finished" else None,
+        )
         _required_int(self.sequence, "sequence")
         _required_int(self.period, "period", maximum=5)
         _required_int(self.clock_ms, "clock_ms")
         _required_int(self.period_clock_ms, "period_clock_ms")
         _required_int(self.home_score, "home_score")
         _required_int(self.away_score, "away_score")
+        _required_int(
+            self.home_shootout_score,
+            "home_shootout_score",
+        )
+        _required_int(
+            self.away_shootout_score,
+            "away_shootout_score",
+        )
+        _required_int(
+            self.home_shootout_attempts,
+            "home_shootout_attempts",
+        )
+        _required_int(
+            self.away_shootout_attempts,
+            "away_shootout_attempts",
+        )
+        if (
+            self.home_shootout_score > self.home_shootout_attempts
+            or self.away_shootout_score > self.away_shootout_attempts
+        ):
+            raise SoccerGameStateError(
+                "shootout score cannot exceed shootout attempts"
+            )
+        if (
+            self.period < 5
+            and (
+                self.home_shootout_score
+                or self.away_shootout_score
+                or self.home_shootout_attempts
+                or self.away_shootout_attempts
+            )
+        ):
+            raise SoccerGameStateError(
+                "shootout state requires period 5"
+            )
+        if (self.possession_id is None) != (
+            self.possession_team_id is None
+        ):
+            raise SoccerGameStateError(
+                "possession_id and possession_team_id must be supplied together"
+            )
         if self.possession_id is not None:
             _required_int(self.possession_id, "possession_id", minimum=1)
-        if self.possession_team_id is not None:
+            assert self.possession_team_id is not None
             _required_int(
                 self.possession_team_id,
                 "possession_team_id",
@@ -451,6 +612,55 @@ class SoccerGameState:
                 raise SoccerGameStateError(
                     "possession_team_id is not a game team"
                 )
+        if self.sequence == 0:
+            if (
+                self.period != 0
+                or self.clock_ms != 0
+                or self.period_clock_ms != 0
+                or self.lifecycle != "not_started"
+                or self.possession_id is not None
+                or self.last_action is not None
+                or self.last_event_id is not None
+            ):
+                raise SoccerGameStateError(
+                    "sequence-zero state must be the unobserved pre-match state"
+                )
+        else:
+            if (
+                self.period == 0
+                or self.possession_id is None
+                or self.last_action is None
+                or self.last_event_id is None
+            ):
+                raise SoccerGameStateError(
+                    "observed state requires period, possession, and last event"
+                )
+        if self.period > 0 and self.clock_ms != (
+            _PERIOD_BASE_MINUTES[self.period] * 60_000
+            + self.period_clock_ms
+        ):
+            raise SoccerGameStateError(
+                "state clock and period clock are inconsistent"
+            )
+        if self.lifecycle == "not_started" and self.period not in {0, 1}:
+            raise SoccerGameStateError(
+                "not_started lifecycle is only valid before period 1 starts"
+            )
+        if type(self.period_complete) is not bool:
+            raise SoccerGameStateError("period_complete must be boolean")
+        if self.period_complete and self.lifecycle not in {
+            "paused",
+            "finished",
+        }:
+            raise SoccerGameStateError(
+                "completed period requires paused or finished lifecycle"
+            )
+        if self.lifecycle == "finished" and (
+            not self.period_complete or self.period not in {2, 4, 5}
+        ):
+            raise SoccerGameStateError(
+                "finished lifecycle requires a completed final period"
+            )
         if self.play_pattern is not None:
             _required_text(self.play_pattern, "play_pattern")
         allow_source_out_of_bounds = (
@@ -482,8 +692,6 @@ class SoccerGameState:
                 _required_int(
                     self.ball_y_milli, "ball_y_milli", maximum=80_000
                 )
-        if type(self.in_play) is not bool:
-            raise SoccerGameStateError("in_play must be a boolean")
         if self.last_action is not None:
             _required_text(self.last_action, "last_action")
         if self.last_event_id is not None and re.fullmatch(
@@ -491,6 +699,14 @@ class SoccerGameState:
         ) is None:
             raise SoccerGameStateError(
                 "last_event_id must be a canonical event id"
+            )
+        if type(self.last_event_native_out) is not bool:
+            raise SoccerGameStateError(
+                "last_event_native_out must be boolean"
+            )
+        if type(self.last_event_off_camera) is not bool:
+            raise SoccerGameStateError(
+                "last_event_off_camera must be boolean"
             )
         if type(self.cards) is not tuple or any(
             not isinstance(card, SoccerCard) for card in self.cards
@@ -520,6 +736,10 @@ class SoccerGameState:
             )
         for quality_flag in self.quality_flags:
             _required_text(quality_flag, "quality_flags[]")
+        if set(self.quality_flags) - _ALLOWED_QUALITY_FLAGS:
+            raise SoccerGameStateError(
+                "state contains an unsupported quality flag"
+            )
         active_players = self.active_players
         if active_players == ():
             active_players = (
@@ -562,10 +782,6 @@ class SoccerGameState:
                 raise SoccerGameStateError(
                     "a Player Off player cannot remain active"
                 )
-        if self.terminal != (self.terminal_reason is not None):
-            raise SoccerGameStateError(
-                "terminal and terminal_reason must agree"
-            )
         material = {
             item.name: getattr(self, item.name)
             for item in fields(self)
@@ -579,7 +795,11 @@ class SoccerGameState:
         return self.home_team_id, self.away_team_id
 
 
-def _event_clocks(raw_event: Mapping[str, object]) -> tuple[int, int]:
+def _event_clocks(
+    raw_event: Mapping[str, object],
+    *,
+    period: int,
+) -> tuple[int, int]:
     minute = _required_int(
         raw_event.get("minute"), "minute", minimum=0, maximum=300
     )
@@ -606,6 +826,14 @@ def _event_clocks(raw_event: Mapping[str, object]) -> tuple[int, int]:
         + millisecond
     )
     clock_ms = (minute * 60 + second) * 1_000 + millisecond
+    expected_clock_ms = (
+        _PERIOD_BASE_MINUTES[period] * 60_000 + period_clock_ms
+    )
+    if clock_ms != expected_clock_ms:
+        raise SoccerGameStateError(
+            "event clock and period clock are inconsistent",
+            category="clock_inconsistent",
+        )
     return clock_ms, period_clock_ms
 
 
@@ -731,14 +959,15 @@ def _action_details(
     str | None,
     str | None,
     str | None,
+    str | None,
     int | None,
     int | None,
-    bool | None,
 ]:
     end_x: int | None = None
     end_y: int | None = None
     pass_outcome: str | None = None
     shot_outcome: str | None = None
+    shot_type: str | None = None
     card: str | None = None
     replacement_player_id: int | None = None
     score_for_team_id: int | None = None
@@ -770,6 +999,9 @@ def _action_details(
         shot_outcome = _optional_entity_name(shot, "outcome")
         if shot_outcome is None:
             raise SoccerGameStateError("Shot requires shot.outcome")
+        shot_type = _optional_entity_name(shot, "type")
+        if shot_type is None:
+            raise SoccerGameStateError("Shot requires shot.type")
         if shot_outcome == "Goal":
             score_for_team_id = team_id
     elif action == "Substitution":
@@ -809,26 +1041,15 @@ def _action_details(
                 f"unsupported StatsBomb card: {card}"
             )
 
-    if action == "Pass":
-        in_play = pass_outcome not in {"Out", "Pass Offside"}
-    elif action == "Shot":
-        in_play = shot_outcome in {"Blocked", "Saved", "Saved to Post"}
-    elif action in _STOPPAGE_ACTIONS:
-        in_play = False
-    elif action in _BALL_ACTIONS:
-        in_play = True
-    else:
-        in_play = None
-
     return (
         end_x,
         end_y,
         pass_outcome,
         shot_outcome,
+        shot_type,
         card,
         replacement_player_id,
         score_for_team_id,
-        in_play,
     )
 
 
@@ -846,24 +1067,51 @@ def statsbomb_event_payload(
         or len(quality_flags) != len(set(quality_flags))
     ):
         raise SoccerGameStateError("quality_flags must be a unique tuple")
+    if set(quality_flags) - _ALLOWED_QUALITY_FLAGS:
+        raise SoccerGameStateError(
+            "quality_flags contains an unsupported quality flag",
+            category="unsupported_quality_flag",
+        )
     allow_source_out_of_bounds = (
         _SOURCE_COORDINATE_OUT_OF_BOUNDS_FLAG in quality_flags
     )
     event_type = _required_mapping(event.get("type"), "type")
     team = _required_mapping(event.get("team"), "team")
     action = _required_text(event_type.get("name"), "type.name")
-    clock_ms, period_clock_ms = _event_clocks(event)
+    if action not in _SUPPORTED_ACTIONS:
+        raise SoccerGameStateError(
+            f"unsupported StatsBomb action: {action}",
+            category="unsupported_action",
+        )
+    period = _required_int(
+        event.get("period"),
+        "period",
+        minimum=1,
+        maximum=5,
+    )
+    clock_ms, period_clock_ms = _event_clocks(
+        event,
+        period=period,
+    )
     team_id = _required_int(team.get("id"), "team.id", minimum=1)
     possession = event.get("possession")
-    possession_id = (
-        None
-        if possession is None
-        else _required_int(possession, "possession", minimum=1)
+    possession_id = _required_int(
+        possession,
+        "possession",
+        minimum=1,
     )
     possession_team_id = _optional_entity_id(event, "possession_team")
-    if possession_id is None and possession_team_id is not None:
+    if possession_team_id is None:
         raise SoccerGameStateError(
-            "possession_team requires a possession identifier"
+            "StatsBomb event requires possession_team"
+        )
+    native_out = event.get("out", False)
+    off_camera = event.get("off_camera", False)
+    if type(native_out) is not bool:
+        raise SoccerGameStateError("out must be boolean when present")
+    if type(off_camera) is not bool:
+        raise SoccerGameStateError(
+            "off_camera must be boolean when present"
         )
     play_pattern = _optional_entity_name(event, "play_pattern")
     player_off_permanent: bool | None = None
@@ -892,10 +1140,10 @@ def statsbomb_event_payload(
         end_y,
         pass_outcome,
         shot_outcome,
+        shot_type,
         card,
         replacement_player_id,
         score_for_team_id,
-        in_play,
     ) = _action_details(
         event,
         action=action,
@@ -925,12 +1173,7 @@ def statsbomb_event_payload(
         "game_id": _required_text(game_id, "game_id"),
         "sequence": _required_int(event.get("index"), "index", minimum=1),
         "native_event_id": _required_text(event.get("id"), "id"),
-        "period": _required_int(
-            event.get("period"),
-            "period",
-            minimum=1,
-            maximum=5,
-        ),
+        "period": period,
         "clock_ms": clock_ms,
         "period_clock_ms": period_clock_ms,
         "action": action,
@@ -946,11 +1189,13 @@ def statsbomb_event_payload(
         "end_ball_y_milli": end_y,
         "pass_outcome": pass_outcome,
         "shot_outcome": shot_outcome,
+        "shot_type": shot_type,
         "card": card,
         "replacement_player_id": replacement_player_id,
         "player_off_permanent": player_off_permanent,
         "score_for_team_id": score_for_team_id,
-        "in_play": in_play,
+        "native_out": native_out,
+        "off_camera": off_camera,
         "quality_flags": list(sorted(quality_flags)),
     }
 
@@ -1027,6 +1272,7 @@ def initial_soccer_game_state(
         game_id=game_id,
         home_team_id=home_team_id,
         away_team_id=away_team_id,
+        lifecycle="not_started",
     )
 
 
@@ -1054,6 +1300,47 @@ def _active_ids_for(
     raise SoccerGameStateError("event team is not present in active_players")
 
 
+def _next_lifecycle(
+    state: SoccerGameState,
+    event: SoccerGameEvent,
+) -> Literal["not_started", "in_play", "paused", "finished"]:
+    if event.action == "Starting XI":
+        return "not_started"
+    if event.action in _PERIOD_START_ACTIONS:
+        return "in_play"
+    if event.action in _PERIOD_END_ACTIONS:
+        return "paused"
+    if event.action == "Match End":
+        return "finished"
+    if event.action in _ADMINISTRATIVE_ACTIONS:
+        return state.lifecycle
+    if event.native_out:
+        return "paused"
+    if event.action == "Pass":
+        return (
+            "paused"
+            if event.pass_outcome
+            in {"Injury Clearance", "Out", "Pass Offside"}
+            else "in_play"
+        )
+    if event.action == "Shot":
+        if event.period == 5:
+            return "paused"
+        return (
+            "paused"
+            if event.shot_outcome in {"Goal", "Off T", "Wayward"}
+            else "in_play"
+        )
+    if event.action in _STOPPAGE_ACTIONS:
+        return "paused"
+    if event.action in _ACTIVE_ACTIONS:
+        return "in_play"
+    raise SoccerGameStateError(
+        f"unsupported StatsBomb action: {event.action}",
+        category="unsupported_action",
+    )
+
+
 def reduce_soccer_game_state(
     state: SoccerGameState,
     event: SoccerGameEvent,
@@ -1065,26 +1352,57 @@ def reduce_soccer_game_state(
     if not isinstance(event, SoccerGameEvent):
         raise SoccerGameStateError("event must be SoccerGameEvent")
     if state.terminal:
-        raise SoccerGameStateError("terminal state cannot accept more events")
+        raise SoccerGameStateError(
+            "terminal state cannot accept more events",
+            category="terminal_event",
+        )
     if event.game_id != state.game_id:
         raise SoccerGameStateError("event game_id does not match state game_id")
     if event.sequence != state.sequence + 1:
         raise SoccerGameStateError(
             "event sequence must be contiguous and increasing"
         )
+    if event.event_id == state.last_event_id:
+        raise SoccerGameStateError(
+            "event identity cannot repeat",
+            category="duplicate_event",
+        )
     if event.team_id not in state.team_ids:
         raise SoccerGameStateError("event team_id is not a game team")
-    if (
-        event.possession_team_id is not None
-        and event.possession_team_id not in state.team_ids
-    ):
+    if event.possession_team_id not in state.team_ids:
         raise SoccerGameStateError(
             "event possession_team_id is not a game team"
         )
-    if event.period < state.period:
-        raise SoccerGameStateError("event period cannot regress")
-    if event.period > state.period + 1:
-        raise SoccerGameStateError("event period cannot skip a period")
+    if state.period == 0:
+        if event.period != 1:
+            raise SoccerGameStateError(
+                "invalid initial period transition",
+                category="period_transition",
+            )
+    elif event.period < state.period:
+        raise SoccerGameStateError(
+            "event period transition cannot regress",
+            category="period_transition",
+        )
+    elif event.period > state.period:
+        if (
+            (state.period, event.period) not in _VALID_PERIOD_TRANSITIONS
+            or event.action not in _PERIOD_START_ACTIONS
+            or not state.period_complete
+        ):
+            raise SoccerGameStateError(
+                "invalid soccer period transition",
+                category="period_transition",
+            )
+    if (
+        state.period_complete
+        and event.period == state.period
+        and event.action not in _ALLOWED_AFTER_PERIOD_END
+    ):
+        raise SoccerGameStateError(
+            "active event cannot follow a completed period",
+            category="post_period_end_active_event",
+        )
     same_period_clock_regression = (
         event.period == state.period
         and (
@@ -1092,31 +1410,120 @@ def reduce_soccer_game_state(
             or event.period_clock_ms < state.period_clock_ms
         )
     )
-    if same_period_clock_regression and not {
-        "clock_jump",
-        "out_of_order",
-    }.issubset(event.quality_flags):
+    if same_period_clock_regression:
         raise SoccerGameStateError(
-            "same-period clock regression requires clock_jump and "
-            "out_of_order quality flags"
-        )
-    if event.period > state.period and state.period > 0 and event.action not in {
-        "Half Start",
-        "Period Start",
-    }:
-        raise SoccerGameStateError(
-            "a new period requires an explicit period start event"
+            "same-period clock regression fails closed",
+            category="clock_regression",
         )
     if (
-        event.action in {"Half Start", "Period Start"}
+        event.action in _PERIOD_START_ACTIONS
         and event.period_clock_ms != 0
     ):
         raise SoccerGameStateError(
             "period start event must have a zero period clock"
         )
-    if event.action == "Match End" and event.period < 2:
+    if event.action == "Starting XI" and (
+        state.lifecycle != "not_started"
+        or event.period != 1
+        or event.period_clock_ms != 0
+    ):
         raise SoccerGameStateError(
-            "Match End cannot occur before the second period"
+            "Starting XI is only valid before period 1 starts",
+            category="lifecycle_transition",
+        )
+    if event.action in _PERIOD_START_ACTIONS:
+        same_period_duplicate = (
+            event.period == state.period
+            and state.last_action in _PERIOD_START_ACTIONS
+            and state.period_clock_ms == 0
+        )
+        first_period_start = (
+            event.period == 1
+            and state.lifecycle == "not_started"
+            and not state.period_complete
+        )
+        new_period_start = event.period > state.period
+        if not (
+            same_period_duplicate
+            or first_period_start
+            or new_period_start
+        ):
+            raise SoccerGameStateError(
+                "invalid period start lifecycle transition",
+                category="lifecycle_transition",
+            )
+        if event.period == 1 and any(
+            len(team.player_ids) != 11 for team in state.active_players
+        ):
+            raise SoccerGameStateError(
+                "period 1 cannot start before both lineups are known",
+                category="lineup_incomplete",
+            )
+    elif event.action in _PERIOD_END_ACTIONS:
+        duplicate_end = (
+            state.period_complete
+            and state.last_action in _PERIOD_END_ACTIONS
+            and event.period == state.period
+            and event.clock_ms == state.clock_ms
+            and event.period_clock_ms == state.period_clock_ms
+        )
+        if state.lifecycle == "not_started" or (
+            state.period_complete and not duplicate_end
+        ):
+            raise SoccerGameStateError(
+                "invalid period end lifecycle transition",
+                category="lifecycle_transition",
+            )
+    elif event.action == "Match End":
+        if (
+            event.period != state.period
+            or event.period not in {2, 4, 5}
+            or not state.period_complete
+        ):
+            raise SoccerGameStateError(
+                "Match End requires a completed final period",
+                category="finalization_invalid",
+            )
+    elif (
+        state.lifecycle == "not_started"
+        and event.action != "Starting XI"
+    ):
+        raise SoccerGameStateError(
+            "active or administrative event cannot precede period start",
+            category="lifecycle_transition",
+        )
+    if state.possession_id is None:
+        if event.possession_id != 1:
+            raise SoccerGameStateError(
+                "first observed possession must be 1",
+                category="possession_gap",
+            )
+    else:
+        if event.possession_id < state.possession_id:
+            raise SoccerGameStateError(
+                "possession id cannot regress",
+                category="possession_regression",
+            )
+        if event.possession_id > state.possession_id + 1:
+            raise SoccerGameStateError(
+                "possession id cannot skip",
+                category="possession_gap",
+            )
+        if (
+            event.possession_id == state.possession_id
+            and event.possession_team_id != state.possession_team_id
+        ):
+            raise SoccerGameStateError(
+                "same possession id cannot change possession team",
+                category="possession_team_mismatch",
+            )
+    if event.period == 5 and (
+        (event.action == "Shot" and event.shot_type != "Penalty")
+        or event.action in {"Own Goal Against", "Own Goal For"}
+    ):
+        raise SoccerGameStateError(
+            "unsupported shootout scoring semantics",
+            category="unsupported_shootout_semantics",
         )
 
     active_players = state.active_players
@@ -1282,15 +1689,29 @@ def reduce_soccer_game_state(
 
     home_score = state.home_score
     away_score = state.away_score
+    home_shootout_score = state.home_shootout_score
+    away_shootout_score = state.away_shootout_score
+    home_shootout_attempts = state.home_shootout_attempts
+    away_shootout_attempts = state.away_shootout_attempts
+    if event.period == 5 and event.action == "Shot":
+        if event.team_id == state.home_team_id:
+            home_shootout_attempts += 1
+            if event.shot_outcome == "Goal":
+                home_shootout_score += 1
+        else:
+            away_shootout_attempts += 1
+            if event.shot_outcome == "Goal":
+                away_shootout_score += 1
     if event.score_for_team_id is not None:
         if event.score_for_team_id not in state.team_ids:
             raise SoccerGameStateError(
                 "score_for_team_id is not a game team"
             )
-        if event.score_for_team_id == state.home_team_id:
-            home_score += 1
-        else:
-            away_score += 1
+        if event.period != 5:
+            if event.score_for_team_id == state.home_team_id:
+                home_score += 1
+            else:
+                away_score += 1
 
     ball_x_milli = state.ball_x_milli
     ball_y_milli = state.ball_y_milli
@@ -1301,25 +1722,29 @@ def reduce_soccer_game_state(
         ball_x_milli = event.ball_x_milli
         ball_y_milli = event.ball_y_milli
 
-    terminal = event.action == "Match End"
+    lifecycle = _next_lifecycle(state, event)
+    period_complete = (
+        True
+        if event.action in _PERIOD_END_ACTIONS or event.action == "Match End"
+        else False
+        if event.action in _PERIOD_START_ACTIONS
+        else state.period_complete
+    )
     return replace(
         state,
+        lifecycle=lifecycle,
         sequence=event.sequence,
         period=event.period,
         clock_ms=event.clock_ms,
         period_clock_ms=event.period_clock_ms,
         home_score=home_score,
         away_score=away_score,
-        possession_id=(
-            event.possession_id
-            if event.possession_id is not None
-            else state.possession_id
-        ),
-        possession_team_id=(
-            event.possession_team_id
-            if event.possession_id is not None
-            else state.possession_team_id
-        ),
+        home_shootout_score=home_shootout_score,
+        away_shootout_score=away_shootout_score,
+        home_shootout_attempts=home_shootout_attempts,
+        away_shootout_attempts=away_shootout_attempts,
+        possession_id=event.possession_id,
+        possession_team_id=event.possession_team_id,
         play_pattern=(
             event.play_pattern
             if event.play_pattern is not None
@@ -1327,11 +1752,11 @@ def reduce_soccer_game_state(
         ),
         ball_x_milli=ball_x_milli,
         ball_y_milli=ball_y_milli,
-        in_play=(
-            event.in_play if event.in_play is not None else state.in_play
-        ),
+        period_complete=period_complete,
         last_action=event.action,
         last_event_id=event.event_id,
+        last_event_native_out=event.native_out,
+        last_event_off_camera=event.off_camera,
         cards=cards,
         substitutions=substitutions,
         players_off=players_off,
@@ -1339,8 +1764,6 @@ def reduce_soccer_game_state(
         quality_flags=tuple(
             sorted(set(state.quality_flags).union(event.quality_flags))
         ),
-        terminal=terminal,
-        terminal_reason="match_end" if terminal else None,
     )
 
 
@@ -1357,7 +1780,7 @@ class SoccerGameStateReducer:
         default="soccer.statsbomb.event-reducer",
         init=False,
     )
-    reducer_version: str = field(default="v2", init=False)
+    reducer_version: str = field(default="v3", init=False)
 
     def reduce(
         self,

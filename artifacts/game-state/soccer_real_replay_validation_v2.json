@@ -1,0 +1,218 @@
+{
+  "artifact_id": "EV-SOCCER-GAME-STATE-REAL-REPLAY-v2",
+  "artifact_type": "soccer_real_replay_validation",
+  "artifact_version": "v2",
+  "artifact_sha256": "sha256:e6d5e27c470b4fad0bac0af6ee170514562a89b634d523d59ef7b656404e6c85",
+  "generated_at": "2026-07-23T23:58:03Z",
+  "validation_class": "ENGINEERING_VALIDATION",
+  "formal_experiment_result": false,
+  "experiment_context": "X-12",
+  "overall_outcome": "DETERMINISTIC_STRICT_PARTIAL_REPLAY",
+  "result_claim_boundary": {
+    "predictive_accuracy_measured": false,
+    "model_inference_latency_measured": false,
+    "prediction_market_alignment_measured": false,
+    "independent_final_score_oracle_used": false,
+    "permitted_claim": "Reducer v3 deterministically reduces each frozen match only through its strict valid prefix, fails closed at the first state-contract violation, and separately inventories every adaptable native row.",
+    "forbidden_claims": [
+      "All 380 matches reached a terminal or source-end final state.",
+      "Frozen StatsBomb match metadata is an independent score oracle for frozen StatsBomb event rows.",
+      "Reducer-only latency is model inference latency or a production SLA.",
+      "This validation establishes predictive accuracy, market alignment, or trading alpha."
+    ]
+  },
+  "implementation": {
+    "adapter": "prediction_market.sports.soccer_game_state.statsbomb_event_payload",
+    "reducer": "prediction_market.sports.soccer_game_state.reduce_soccer_game_state",
+    "reducer_id": "soccer.statsbomb.event-reducer",
+    "reducer_version": "v3",
+    "census_runner": "prediction_market.sports.soccer_season_census",
+    "census_version": "v1",
+    "base_git_commit": "1efc6f04b02cefc904d706eb76dc9b0d36ea9dc9",
+    "files": {
+      "src/prediction_market/sports/soccer_game_state.py": "sha256:c2c664fe1c23011ecbb79f972d6cb65470effce3f8a85566a9e64915cc55899e",
+      "src/prediction_market/sports/soccer_season_census.py": "sha256:89bff6216eda9988ecb743e84a49c644ab3f25f4b08345aaab6268ea5b2306de",
+      "tests/sports/test_soccer_game_state.py": "sha256:2feb74061298c3742bb3f3abf8382fe7c61c46b42f00e24e6148f834cb80adaa",
+      "tests/sports/test_soccer_game_state_v3.py": "sha256:a380faecfbea7c1ea1278b382e7b99710e6a8b085bd76eb9b1d03ee805698146",
+      "tests/sports/test_soccer_transition_model.py": "sha256:c16706158d479b3e852b9edea732f4e002ed299075d6d96c16e715b5ed165080",
+      "tests/sports/test_soccer_real_replay.py": "sha256:948077e4637af22224d076c7d57c2df7ec0748c929c4d3ce50d92ad1969942de",
+      "tests/sports/test_soccer_real_replay_artifact_v2.py": "sha256:d2191f0377f2b265a68818cb45963cec11d848c190fc41bed0f6bc2ce04ec6f1",
+      "tests/sports/test_soccer_season_census.py": "sha256:592a639a34abfd93f4ef109777384cd97750d6217c93c29bb615932b7c039339",
+      "tests/sports/test_soccer_season_census_v3.py": "sha256:93179b2190cbaf369d49bba9263a42263b889b28cdc2bf7bfaccf352738acbad"
+    }
+  },
+  "source": {
+    "dataset_id": "DS-STATSBOMB-OPEN",
+    "license_ref": "O-004",
+    "license_status": "research_only",
+    "upstream_commit": "b0bc9f22dd77c206ddedc1d742893b3bbe64baec",
+    "competition_id": 2,
+    "season_id": 27,
+    "competition": "Premier League",
+    "season": "2015/16",
+    "match_count": 380,
+    "event_partition_count": 380,
+    "verified_manifest_count": 381,
+    "manifest_inventory_sha256": "sha256:5b773586683f40b8da6b0040087310ecc94a2cd20e16e04a75e034cc390cd751",
+    "source_event_count": 1313773,
+    "verification": "Every manifest and immutable object is verified by the static-store reader before JSON adaptation."
+  },
+  "state_contract": {
+    "lifecycle_values": [
+      "not_started",
+      "in_play",
+      "paused",
+      "finished"
+    ],
+    "lifecycle_is_reducer_derived": true,
+    "native_out_preserved": true,
+    "native_off_camera_preserved": true,
+    "administrative_rows_explicitly_classified": true,
+    "regulation_periods_supported": true,
+    "extra_time_periods_supported": true,
+    "shootout_period_supported": true,
+    "shootout_score_separate_from_match_score": true,
+    "clock_regression_override_flags_supported": false,
+    "unknown_native_actions_fail_closed": true,
+    "terminal_requires_explicit_match_end_after_completed_final_period": true,
+    "same_possession_team_change_fails_closed": true,
+    "possession_regression_or_gap_fails_closed": true,
+    "active_event_after_period_end_fails_closed": true
+  },
+  "season_replay": {
+    "command": "PYTHONPATH=src .venv/bin/python -m prediction_market.sports.soccer_season_census --program-root . --scan-runs 2",
+    "expected_cli_exit": 1,
+    "expected_cli_exit_reason": "The CLI passes only when every game is finished without a strict failure; this frozen source intentionally demonstrates unproven finalization and fail-closed native anomalies.",
+    "scan_runs": 2,
+    "scan_wall_ns": 355682058417,
+    "deterministic": true,
+    "run_objects_equal": true,
+    "canonical_state_sha256": "sha256:ea25b7809c1b13186307b430f65fb0716d794cb9d6bf20fdd617b7b9660b1b58",
+    "canonical_report_sha256": "sha256:850d9db677df79021b3b8165fc9b1af68b02518ed0f3c7a06f72bfa8a4c21d18",
+    "per_run": {
+      "games_total": 380,
+      "completed_to_source_end": 243,
+      "finished_games": 0,
+      "finalization_unproven": 243,
+      "fail_closed_games": 137,
+      "source_events": 1313773,
+      "events_adapted": 1313773,
+      "events_attempted": 1090963,
+      "events_reduced": 1090826,
+      "first_failure_category_counts": {
+        "clock_regression": 135,
+        "possession_regression": 1,
+        "post_period_end_active_event": 1
+      },
+      "lifecycle_state_counts_after_successful_reductions": {
+        "not_started": 760,
+        "in_play": 1049587,
+        "paused": 40479,
+        "finished": 0
+      },
+      "native_flag_counts_over_all_adapted_rows": {
+        "administrative": 8048,
+        "off_camera": 18529,
+        "out": 12193
+      },
+      "quality_flag_counts_over_all_adapted_rows": {
+        "source_coordinate_out_of_bounds": 3
+      }
+    },
+    "failure_boundary": {
+      "policy": "Only the strict prefix before each game's first reducer violation is reduced. All remaining native rows are still adapted and scanned for source anomalies but cannot mutate state.",
+      "events_rejected_at_first_failure": 137,
+      "events_not_attempted_after_first_failure": 222810,
+      "failures_canonical_sha256": "sha256:47d3ae81b589751da0b197aa19fa65275ca181e7fc3cd0fa1b85e28198eddc9b",
+      "category_examples": {
+        "clock_regression": {
+          "match_id": 3754037,
+          "failed_sequence": 1973,
+          "error": "same-period clock regression fails closed"
+        },
+        "possession_regression": {
+          "match_id": 3754136,
+          "failed_sequence": 1182,
+          "error": "possession id cannot regress"
+        },
+        "post_period_end_active_event": {
+          "match_id": 3754171,
+          "failed_sequence": 1976,
+          "error": "active event cannot follow a completed period"
+        }
+      }
+    },
+    "all_native_row_anomaly_census": {
+      "clock_regression": 139,
+      "possession_regression": 1,
+      "post_period_end_active_event": 2,
+      "interpretation": "These counts scan all adaptable source rows and therefore intentionally exceed per-game first-failure counts when later anomalies follow an earlier failure."
+    },
+    "finalization_boundary": {
+      "finished_games": 0,
+      "source_end_finalization_unproven": 243,
+      "failed_before_source_end": 137,
+      "terminal_inferred_from_source_end_or_half_end": false,
+      "interpretation": "No successfully replayed frozen match reaches the explicit reducer-v3 finalization evidence required to enter lifecycle=finished."
+    }
+  },
+  "same_source_score_consistency": {
+    "games_checked": 380,
+    "agreements": 380,
+    "disagreements": 0,
+    "disagreement_match_ids": [],
+    "evidence_boundary": "Final-score metadata and event rows are frozen exports from the same StatsBomb source. Agreement is an internal raw-export consistency check only; it is not an independent oracle and does not prove the partial reducer states are final scores."
+  },
+  "reducer_latency": {
+    "scope": "Successful reduce_soccer_game_state calls before each game's first strict failure",
+    "timer": "time.perf_counter_ns",
+    "quantile_method": "nearest-rank",
+    "warmup_calls": 0,
+    "sample_count": 1090826,
+    "sample_count_equals_events_reduced": true,
+    "total_ns": 45101679574,
+    "min_ns": 32667,
+    "p50_ns": 37917,
+    "p95_ns": 52750,
+    "p99_ns": 94292,
+    "max_ns": 10577875,
+    "throughput_events_per_second": 24186,
+    "throughput_rounding": "nearest integer from sample_count * 1e9 / total_ns",
+    "benchmark_wall_ns": 160699336042,
+    "excluded": [
+      "manifest and object verification",
+      "JSON decoding",
+      "event adaptation",
+      "EventEnvelope content-id construction",
+      "failed reducer calls",
+      "model feature extraction",
+      "model inference",
+      "prediction-market joins"
+    ],
+    "interpretation": "Observed local reducer-v3 engineering timing only. It is neither a model latency measurement nor a production SLA."
+  },
+  "runtime": {
+    "python": "3.13.12",
+    "system": "Darwin",
+    "release": "25.5.0",
+    "machine": "arm64",
+    "processor": "arm"
+  },
+  "verification": {
+    "tdd_red": [
+      "tests/sports/test_soccer_game_state_v3.py: 7 failed before reducer-v3 implementation",
+      "tests/sports/test_soccer_season_census_v3.py: import failed before census-v1 latency and classification implementation",
+      "tests/sports/test_soccer_real_replay_artifact_v2.py: 3 failed before the artifact self-hash was added"
+    ],
+    "green_command": ".venv/bin/pytest -q --basetemp=/tmp/pytest-soccer-v3-final tests/sports/test_soccer_game_state.py tests/sports/test_soccer_game_state_v3.py tests/sports/test_soccer_transition_model.py tests/sports/test_soccer_season_census.py tests/sports/test_soccer_season_census_v3.py tests/sports/test_soccer_real_replay.py tests/sports/test_soccer_real_replay_artifact_v2.py",
+    "green_result": "51 passed",
+    "compile_check": "python -m compileall completed successfully"
+  },
+  "limitations": [
+    "The season census constructs canonical normalized event content IDs but does not instantiate the full registry-backed EventEnvelope object for every row.",
+    "The frozen source has no independent final-score oracle.",
+    "Strict failure prevents later rows in the same game from mutating reducer state.",
+    "The Premier League 2015/16 frozen season contains regulation matches; extra-time and shootout semantics are verified with synthetic contract tests.",
+    "This artifact contains no live point-in-time availability proof, prediction model output, or market data."
+  ]
+}

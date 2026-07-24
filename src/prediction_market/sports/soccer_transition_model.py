@@ -418,7 +418,11 @@ def extract_transition_features(
         raise SoccerTransitionModelError(
             "terminal state cannot produce a transition forecast"
         )
-    if state.sequence == 0 or state.period == 0:
+    if (
+        state.lifecycle == "not_started"
+        or state.sequence == 0
+        or state.period == 0
+    ):
         raise SoccerTransitionModelError(
             "the match must have started before transition prediction"
         )

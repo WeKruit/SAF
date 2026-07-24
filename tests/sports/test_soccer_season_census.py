@@ -41,6 +41,11 @@ def _event(
         "second": second,
         "type": {"id": 1, "name": action},
         "team": {"id": team_id, "name": f"Team {team_id}"},
+        "possession": 1,
+        "possession_team": {
+            "id": team_id,
+            "name": f"Team {team_id}",
+        },
     }
     if action == "Shot":
         value["shot"] = {
@@ -49,6 +54,7 @@ def _event(
                 "id": 97 if shot_goal else 96,
                 "name": "Goal" if shot_goal else "Saved",
             },
+            "type": {"id": 87, "name": "Open Play"},
         }
     return value
 
@@ -204,16 +210,23 @@ def test_loaded_season_census_replays_every_game_twice_deterministically() -> No
     assert report.run_summaries[0] == report.run_summaries[1]
     summary = report.run_summaries[0]
     assert summary.games_total == 2
-    assert summary.completed_games == 2
-    assert summary.fail_closed_games == 0
+    assert summary.completed_to_source_end == 0
+    assert summary.finished_games == 0
+    assert summary.finalization_unproven == 0
+    assert summary.fail_closed_games == 2
     assert summary.source_events == 4
-    assert summary.events_reduced == 4
-    assert summary.score_mismatches == 0
-    assert summary.clock_regressions == 1
-    assert dict(summary.quality_flag_counts) == {
-        "clock_jump": 1,
-        "out_of_order": 1,
+    assert summary.events_adapted == 4
+    assert summary.events_attempted == 2
+    assert summary.events_reduced == 0
+    assert summary.same_source_score_agreements == 2
+    assert summary.same_source_score_disagreements == 0
+    assert dict(summary.failure_category_counts) == {
+        "lifecycle_transition": 2,
     }
+    assert dict(summary.native_anomaly_counts) == {
+        "clock_regression": 1,
+    }
+    assert dict(summary.quality_flag_counts) == {}
     assert summary.canonical_state_sha256.startswith("sha256:")
     assert loader.calls == 4
 
@@ -249,9 +262,10 @@ def test_loaded_season_census_reports_score_mismatch_without_hiding_state() -> N
     )
 
     summary = report.run_summaries[0]
-    assert summary.completed_games == 1
-    assert summary.score_mismatches == 1
-    assert summary.score_mismatch_match_ids == (103,)
+    assert summary.completed_to_source_end == 0
+    assert summary.fail_closed_games == 1
+    assert summary.same_source_score_disagreements == 1
+    assert summary.same_source_score_disagreement_match_ids == (103,)
 
 
 def test_cli_fails_closed_when_deterministic_census_has_score_mismatch(
@@ -337,7 +351,7 @@ def test_cli_fails_closed_when_deterministic_census_has_incomplete_game(
         scan_runs=2,
     )
     assert report.deterministic is True
-    assert report.run_summaries[0].completed_games == 0
+    assert report.run_summaries[0].completed_to_source_end == 0
     assert report.run_summaries[0].fail_closed_games == 1
 
     monkeypatch.setattr(

@@ -95,6 +95,11 @@ def _starting_xi_event(
         "second": 0,
         "type": {"id": 35, "name": "Starting XI"},
         "team": {"id": team_id, "name": f"Team {team_id}"},
+        "possession": 1,
+        "possession_team": {
+            "id": HOME_TEAM_ID,
+            "name": f"Team {HOME_TEAM_ID}",
+        },
         "tactics": {
             "formation": 433,
             "lineup": [
@@ -144,10 +149,19 @@ def _event(
         "second": second,
         "type": {"id": 1, "name": action},
         "team": {"id": team_id, "name": f"Team {team_id}"},
+        "possession": 1,
+        "possession_team": {
+            "id": HOME_TEAM_ID,
+            "name": f"Team {HOME_TEAM_ID}",
+        },
     }
     if player_id is not None:
         event["player"] = {"id": player_id, "name": f"Player {player_id}"}
     event.update(extra)
+    if action == "Shot":
+        shot = event.get("shot")
+        assert isinstance(shot, dict)
+        shot.setdefault("type", {"id": 87, "name": "Open Play"})
     return event
 
 
@@ -251,7 +265,8 @@ def test_adapter_normalizes_pass_clock_possession_and_coordinates_to_integers() 
     assert (event.ball_x_milli, event.ball_y_milli) == (35_125, 40_000)
     assert (event.end_ball_x_milli, event.end_ball_y_milli) == (60_500, 41_000)
     assert event.pass_outcome is None
-    assert event.in_play is True
+    assert event.native_out is False
+    assert event.off_camera is False
     assert not _contains_binary_float(asdict(event))
 
 
@@ -266,7 +281,7 @@ def test_adapter_extracts_goal_card_and_substitution_without_lookahead() -> None
             minute=12,
             second=5,
             timestamp="00:12:05.500",
-            possession=8,
+            possession=3,
             possession_team={"id": HOME_TEAM_ID, "name": "Home"},
             play_pattern={"id": 1, "name": "Regular Play"},
             location=[108, 38.5],
@@ -310,13 +325,11 @@ def test_adapter_extracts_goal_card_and_substitution_without_lookahead() -> None
     )
 
     assert goal.shot_outcome == "Goal"
+    assert goal.shot_type == "Open Play"
     assert goal.score_for_team_id == HOME_TEAM_ID
-    assert goal.in_play is False
     assert (goal.end_ball_x_milli, goal.end_ball_y_milli) == (120_000, 40_000)
     assert red_card.card == "Red Card"
-    assert red_card.in_play is False
     assert substitution.replacement_player_id == 1012
-    assert substitution.in_play is False
 
 
 def _starting_states() -> tuple[SoccerGameState, SoccerGameState, SoccerGameState]:
@@ -347,7 +360,7 @@ def _starting_states() -> tuple[SoccerGameState, SoccerGameState, SoccerGameStat
             game_id=GAME_ID,
         ),
     )
-    return initial, home_started, both_started
+    return initial, home_started, replace(both_started, lifecycle="in_play")
 
 
 def test_reducer_initializes_team_lineups_without_mutating_prior_states() -> None:
@@ -410,7 +423,7 @@ def test_reducer_updates_possession_ball_last_action_and_goal_score() -> None:
             minute=12,
             second=5,
             timestamp="00:12:05.500",
-            possession=8,
+            possession=3,
             possession_team={"id": HOME_TEAM_ID, "name": "Home"},
             play_pattern={"id": 1, "name": "Regular Play"},
             location=[108, 38.5],
@@ -483,7 +496,7 @@ def test_statsbomb_own_goal_pair_scores_once_for_beneficiary_team() -> None:
             minute=10,
             second=5,
             timestamp="00:10:05.000",
-            possession=3,
+            possession=2,
             possession_team={"id": HOME_TEAM_ID, "name": "Home"},
         ),
         game_id=GAME_ID,
@@ -498,7 +511,7 @@ def test_statsbomb_own_goal_pair_scores_once_for_beneficiary_team() -> None:
             minute=10,
             second=5,
             timestamp="00:10:05.000",
-            possession=3,
+            possession=2,
             possession_team={"id": HOME_TEAM_ID, "name": "Home"},
         ),
         game_id=GAME_ID,
@@ -509,8 +522,8 @@ def test_statsbomb_own_goal_pair_scores_once_for_beneficiary_team() -> None:
 
     assert own_goal_for.score_for_team_id == HOME_TEAM_ID
     assert own_goal_against.score_for_team_id is None
-    assert own_goal_for.in_play is False
-    assert own_goal_against.in_play is False
+    assert own_goal_for.native_out is False
+    assert own_goal_against.native_out is False
     assert (after_pair.home_score, after_pair.away_score) == (1, 0)
 
 
@@ -772,6 +785,16 @@ def test_period_change_and_explicit_match_end_are_fail_closed() -> None:
         _event(
             index=7,
             native_id="statsbomb-native-7",
+            action="Half End",
+            team_id=HOME_TEAM_ID,
+            period=2,
+            minute=90,
+            second=0,
+            timestamp="00:45:00.000",
+        ),
+        _event(
+            index=8,
+            native_id="statsbomb-native-8",
             action="Match End",
             team_id=HOME_TEAM_ID,
             period=2,
@@ -786,7 +809,7 @@ def test_period_change_and_explicit_match_end_are_fail_closed() -> None:
             adapt_statsbomb_event(raw, game_id=GAME_ID),
         )
 
-    assert state.sequence == 7
+    assert state.sequence == 8
     assert state.period == 2
     assert state.clock_ms == 5_400_000
     assert state.in_play is False
@@ -794,8 +817,8 @@ def test_period_change_and_explicit_match_end_are_fail_closed() -> None:
     assert state.terminal_reason == "match_end"
     after_end = adapt_statsbomb_event(
         _event(
-            index=8,
-            native_id="statsbomb-native-8",
+            index=9,
+            native_id="statsbomb-native-9",
             action="Pass",
             team_id=HOME_TEAM_ID,
             period=2,
@@ -857,32 +880,21 @@ def test_reducer_rejects_game_sequence_period_and_time_invariant_violations() ->
     with pytest.raises(SoccerGameStateError, match="clock regression"):
         reduce_soccer_game_state(state, regressed_clock)
 
-    authorized_regression = adapt_statsbomb_event(
-        _event(
-            index=4,
-            native_id="statsbomb-native-4",
-            action="Pass",
-            team_id=HOME_TEAM_ID,
-            minute=9,
-            second=59,
-            timestamp="00:09:59.000",
-            **{"pass": {"end_location": [50, 40]}},
-        ),
-        game_id=GAME_ID,
-        quality_flags=("clock_jump", "out_of_order"),
-    )
-    after_regressed_clock = reduce_soccer_game_state(
-        state,
-        authorized_regression,
-    )
-    assert regressed_clock.clock_ms == 599_000
-    assert regressed_clock.period_clock_ms == 599_000
-    assert after_regressed_clock.clock_ms == 599_000
-    assert after_regressed_clock.period_clock_ms == 599_000
-    assert after_regressed_clock.quality_flags == (
-        "clock_jump",
-        "out_of_order",
-    )
+    with pytest.raises(SoccerGameStateError, match="quality flag"):
+        adapt_statsbomb_event(
+            _event(
+                index=4,
+                native_id="statsbomb-native-4",
+                action="Pass",
+                team_id=HOME_TEAM_ID,
+                minute=9,
+                second=59,
+                timestamp="00:09:59.000",
+                **{"pass": {"end_location": [50, 40]}},
+            ),
+            game_id=GAME_ID,
+            quality_flags=("clock_jump", "out_of_order"),
+        )
 
     non_starting_next_period = adapt_statsbomb_event(
         _event(
@@ -898,7 +910,7 @@ def test_reducer_rejects_game_sequence_period_and_time_invariant_violations() ->
         ),
         game_id=GAME_ID,
     )
-    with pytest.raises(SoccerGameStateError, match="period start"):
+    with pytest.raises(SoccerGameStateError, match="period transition"):
         reduce_soccer_game_state(state, non_starting_next_period)
 
     malformed_period_start = adapt_statsbomb_event(
@@ -914,7 +926,7 @@ def test_reducer_rejects_game_sequence_period_and_time_invariant_violations() ->
         ),
         game_id=GAME_ID,
     )
-    with pytest.raises(SoccerGameStateError, match="period clock"):
+    with pytest.raises(SoccerGameStateError, match="period transition"):
         reduce_soccer_game_state(state, malformed_period_start)
 
 
@@ -1120,7 +1132,7 @@ def test_reducer_object_integrates_with_common_hash_chain() -> None:
     )
 
     assert isinstance(SOCCER_GAME_STATE_REDUCER, SoccerGameStateReducer)
-    assert SOCCER_GAME_STATE_REDUCER.reducer_version == "v2"
+    assert SOCCER_GAME_STATE_REDUCER.reducer_version == "v3"
     trace = advance_state(SOCCER_GAME_STATE_REDUCER, initial, event)
 
     assert trace.sport == "soccer"

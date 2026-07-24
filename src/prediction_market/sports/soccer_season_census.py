@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import time
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
@@ -37,6 +39,51 @@ _SOURCE = "statsbomb"
 _COMPETITION_ID = "cmp_statsbomb_2"
 _EXPERIMENT_ID = "X-12"
 _COORDINATE_FLAG = "source_coordinate_out_of_bounds"
+_REDUCER_VERSION = "v3"
+_ADMINISTRATIVE_ACTIONS = frozenset(
+    {
+        "Bad Behaviour",
+        "Half End",
+        "Half Start",
+        "Injury Stoppage",
+        "Match End",
+        "Period End",
+        "Period Start",
+        "Player Off",
+        "Player On",
+        "Starting XI",
+        "Substitution",
+        "Tactical Shift",
+    }
+)
+_ACTIVE_AFTER_PERIOD_END = frozenset(
+    {
+        "Ball Receipt*",
+        "Ball Recovery",
+        "Block",
+        "Carry",
+        "Clearance",
+        "Dispossessed",
+        "Dribble",
+        "Dribbled Past",
+        "Duel",
+        "Error",
+        "50/50",
+        "Foul Committed",
+        "Foul Won",
+        "Goal Keeper",
+        "Interception",
+        "Miscontrol",
+        "Offside",
+        "Own Goal Against",
+        "Own Goal For",
+        "Pass",
+        "Pressure",
+        "Referee Ball-Drop",
+        "Shield",
+        "Shot",
+    }
+)
 
 
 class SoccerSeasonCensusError(ValueError):
@@ -57,44 +104,114 @@ class FrozenStatsBombEventPartition:
 class SoccerSeasonCensusFailure:
     match_id: int
     failed_sequence: int | None
+    category: str
     error: str
 
 
 @dataclass(frozen=True, slots=True)
 class SoccerSeasonCensusRun:
     games_total: int
-    completed_games: int
+    completed_to_source_end: int
+    finished_games: int
+    finalization_unproven: int
     fail_closed_games: int
     source_events: int
+    events_adapted: int
+    events_attempted: int
     events_reduced: int
-    score_mismatches: int
-    score_mismatch_match_ids: tuple[int, ...]
-    clock_regressions: int
+    failure_category_counts: tuple[tuple[str, int], ...]
+    native_anomaly_counts: tuple[tuple[str, int], ...]
+    lifecycle_state_counts: tuple[tuple[str, int], ...]
+    native_flag_counts: tuple[tuple[str, int], ...]
     quality_flag_counts: tuple[tuple[str, int], ...]
+    same_source_score_games_checked: int
+    same_source_score_agreements: int
+    same_source_score_disagreements: int
+    same_source_score_disagreement_match_ids: tuple[int, ...]
     canonical_state_sha256: str
     failures: tuple[SoccerSeasonCensusFailure, ...]
 
 
 @dataclass(frozen=True, slots=True)
+class SoccerReducerLatencySummary:
+    scope: str
+    timer: str
+    quantile_method: str
+    sample_count: int
+    total_ns: int
+    min_ns: int
+    p50_ns: int
+    p95_ns: int
+    p99_ns: int
+    max_ns: int
+    throughput_events_per_second: float
+
+
+@dataclass(frozen=True, slots=True)
 class SoccerSeasonCensusReport:
     census_version: str
+    reducer_version: str
     dataset_id: str
     source_version: str
     scan_runs: int
     deterministic: bool
     canonical_state_sha256: str
+    score_evidence_boundary: str
     run_summaries: tuple[SoccerSeasonCensusRun, ...]
 
     def to_document(self) -> dict[str, object]:
         document = asdict(self)
         for summary in document["run_summaries"]:  # type: ignore[index]
-            summary["quality_flag_counts"] = dict(  # type: ignore[index]
-                summary["quality_flag_counts"]  # type: ignore[index]
-            )
+            for field_name in (
+                "failure_category_counts",
+                "native_anomaly_counts",
+                "lifecycle_state_counts",
+                "native_flag_counts",
+                "quality_flag_counts",
+            ):
+                summary[field_name] = dict(summary[field_name])  # type: ignore[index]
         return document
 
 
 EventLoader = Callable[[int], FrozenStatsBombEventPartition]
+
+
+def summarize_reducer_latencies_ns(
+    samples_ns: Sequence[int],
+) -> SoccerReducerLatencySummary:
+    """Summarize measured reducer calls with deterministic nearest-rank quantiles."""
+
+    if (
+        isinstance(samples_ns, (str, bytes))
+        or not isinstance(samples_ns, Sequence)
+        or not samples_ns
+        or any(type(value) is not int or value <= 0 for value in samples_ns)
+    ):
+        raise SoccerSeasonCensusError(
+            "reducer latency samples must be positive integer nanoseconds"
+        )
+    ordered = tuple(sorted(samples_ns))
+
+    def nearest_rank(quantile: float) -> int:
+        rank = max(1, math.ceil(quantile * len(ordered)))
+        return ordered[rank - 1]
+
+    total_ns = sum(ordered)
+    return SoccerReducerLatencySummary(
+        scope="reduce_soccer_game_state only",
+        timer="time.perf_counter_ns",
+        quantile_method="nearest-rank",
+        sample_count=len(ordered),
+        total_ns=total_ns,
+        min_ns=ordered[0],
+        p50_ns=nearest_rank(0.50),
+        p95_ns=nearest_rank(0.95),
+        p99_ns=nearest_rank(0.99),
+        max_ns=ordered[-1],
+        throughput_events_per_second=(
+            len(ordered) * 1_000_000_000 / total_ns
+        ),
+    )
 
 
 def _required_match_int(
@@ -276,19 +393,64 @@ def _domain_event(
     return SoccerGameEvent(event_id=event_id, **values)  # type: ignore[arg-type]
 
 
+def _native_anomaly_categories(
+    *,
+    previous: SoccerGameEvent | None,
+    event: SoccerGameEvent,
+    completed_periods: set[int],
+) -> tuple[str, ...]:
+    categories: list[str] = []
+    if previous is not None:
+        if event.period == previous.period and (
+            event.clock_ms < previous.clock_ms
+            or event.period_clock_ms < previous.period_clock_ms
+        ):
+            categories.append("clock_regression")
+        if event.possession_id < previous.possession_id:
+            categories.append("possession_regression")
+        elif event.possession_id > previous.possession_id + 1:
+            categories.append("possession_gap")
+        elif (
+            event.possession_id == previous.possession_id
+            and event.possession_team_id != previous.possession_team_id
+        ):
+            categories.append("possession_team_mismatch")
+    if (
+        event.period in completed_periods
+        and event.action in _ACTIVE_AFTER_PERIOD_END
+    ):
+        categories.append("post_period_end_active_event")
+    return tuple(categories)
+
+
+def _error_category(error: BaseException) -> str:
+    if isinstance(error, SoccerGameStateError):
+        return error.category
+    return "adapter_schema_violation"
+
+
 def _census_once(
     *,
     matches: Sequence[Mapping[str, Any]],
     load_events: EventLoader,
 ) -> SoccerSeasonCensusRun:
-    completed_games = 0
+    completed_to_source_end = 0
+    finished_games = 0
+    finalization_unproven = 0
     source_events = 0
+    events_adapted = 0
+    events_attempted = 0
     events_reduced = 0
-    clock_regressions = 0
-    flag_counts: Counter[str] = Counter()
-    score_mismatch_match_ids: list[int] = []
+    failure_categories: Counter[str] = Counter()
+    native_anomalies: Counter[str] = Counter()
+    lifecycle_counts: Counter[str] = Counter()
+    native_flag_counts: Counter[str] = Counter()
+    quality_flag_counts: Counter[str] = Counter()
+    same_source_score_games_checked = 0
+    same_source_score_agreements = 0
+    score_disagreement_match_ids: list[int] = []
     failures: list[SoccerSeasonCensusFailure] = []
-    state_hashes: list[dict[str, object]] = []
+    game_results: list[dict[str, object]] = []
 
     for match in matches:
         match_id = _required_match_int(match, "match_id", minimum=1)
@@ -308,41 +470,30 @@ def _census_once(
             home_team_id=home_team_id,
             away_team_id=away_team_id,
         )
-        failed_sequence: int | None = None
-        try:
-            for raw_event in partition.events:
-                raw_sequence = raw_event.get("index")
-                failed_sequence = (
-                    raw_sequence if type(raw_sequence) is int else None
-                )
-                flags: set[str] = set()
-                if _has_source_coordinate_out_of_bounds(raw_event):
-                    flags.add(_COORDINATE_FLAG)
-                quality_flags = tuple(sorted(flags))
+        previous_native_event: SoccerGameEvent | None = None
+        completed_periods: set[int] = set()
+        game_failure: SoccerSeasonCensusFailure | None = None
+        all_rows_adapted = True
+        derived_home_score = 0
+        derived_away_score = 0
+
+        for raw_event in partition.events:
+            raw_sequence_value = raw_event.get("index")
+            raw_sequence = (
+                raw_sequence_value
+                if type(raw_sequence_value) is int
+                else None
+            )
+            flags: set[str] = set()
+            if _has_source_coordinate_out_of_bounds(raw_event):
+                flags.add(_COORDINATE_FLAG)
+            quality_flags = tuple(sorted(flags))
+            try:
                 payload = statsbomb_event_payload(
                     raw_event,
                     game_id=game_id,
                     quality_flags=quality_flags,
                 )
-                period = payload["period"]
-                clock_ms = payload["clock_ms"]
-                period_clock_ms = payload["period_clock_ms"]
-                if (
-                    period == state.period
-                    and (
-                        clock_ms < state.clock_ms  # type: ignore[operator]
-                        or period_clock_ms < state.period_clock_ms  # type: ignore[operator]
-                    )
-                ):
-                    flags.update(("clock_jump", "out_of_order"))
-                    clock_regressions += 1
-                    quality_flags = tuple(sorted(flags))
-                    payload = statsbomb_event_payload(
-                        raw_event,
-                        game_id=game_id,
-                        quality_flags=quality_flags,
-                    )
-                flag_counts.update(quality_flags)
                 event_id = _event_envelope_id(
                     payload=payload,
                     object_sha256=partition.object_sha256,
@@ -352,46 +503,136 @@ def _census_once(
                     away_team_id=away_team_id,
                     quality_flags=quality_flags,
                 )
-                event = _domain_event(payload=payload, event_id=event_id)
-                state = reduce_soccer_game_state(state, event)
-                events_reduced += 1
-        except (SoccerGameStateError, ValueError, TypeError) as error:
-            failures.append(
-                SoccerSeasonCensusFailure(
-                    match_id=match_id,
-                    failed_sequence=failed_sequence,
-                    error=str(error),
+                event = _domain_event(
+                    payload=payload,
+                    event_id=event_id,
+                )
+            except (SoccerGameStateError, ValueError, TypeError) as error:
+                all_rows_adapted = False
+                category = _error_category(error)
+                native_anomalies[category] += 1
+                if game_failure is None:
+                    game_failure = SoccerSeasonCensusFailure(
+                        match_id=match_id,
+                        failed_sequence=raw_sequence,
+                        category=category,
+                        error=str(error),
+                    )
+                continue
+
+            events_adapted += 1
+            quality_flag_counts.update(event.quality_flags)
+            if event.native_out:
+                native_flag_counts["out"] += 1
+            if event.off_camera:
+                native_flag_counts["off_camera"] += 1
+            if event.action in _ADMINISTRATIVE_ACTIONS:
+                native_flag_counts["administrative"] += 1
+            native_anomalies.update(
+                _native_anomaly_categories(
+                    previous=previous_native_event,
+                    event=event,
+                    completed_periods=completed_periods,
                 )
             )
-            continue
+            previous_native_event = event
+            if event.action in {"Half End", "Period End"}:
+                completed_periods.add(event.period)
 
-        completed_games += 1
-        if (
-            state.home_score != expected_home_score
-            or state.away_score != expected_away_score
-        ):
-            score_mismatch_match_ids.append(match_id)
-        state_hashes.append(
+            if event.period != 5 and event.score_for_team_id is not None:
+                if event.score_for_team_id == home_team_id:
+                    derived_home_score += 1
+                elif event.score_for_team_id == away_team_id:
+                    derived_away_score += 1
+
+            if game_failure is not None:
+                continue
+            events_attempted += 1
+            try:
+                state = reduce_soccer_game_state(state, event)
+            except (SoccerGameStateError, ValueError, TypeError) as error:
+                game_failure = SoccerSeasonCensusFailure(
+                    match_id=match_id,
+                    failed_sequence=event.sequence,
+                    category=_error_category(error),
+                    error=str(error),
+                )
+                continue
+            events_reduced += 1
+            lifecycle_counts[state.lifecycle] += 1
+
+        if all_rows_adapted:
+            same_source_score_games_checked += 1
+            if (
+                derived_home_score == expected_home_score
+                and derived_away_score == expected_away_score
+            ):
+                same_source_score_agreements += 1
+            else:
+                score_disagreement_match_ids.append(match_id)
+
+        if game_failure is not None:
+            failures.append(game_failure)
+            failure_categories[game_failure.category] += 1
+            result_status = "fail_closed"
+            finalization_status = "not_reached"
+        else:
+            completed_to_source_end += 1
+            if state.terminal:
+                finished_games += 1
+                result_status = "finished"
+                finalization_status = "proven"
+            else:
+                finalization_unproven += 1
+                result_status = "source_end_unproven"
+                finalization_status = "unproven"
+        game_results.append(
             {
                 "match_id": match_id,
-                "final_state_sha256": state.state_sha256,
+                "source_event_count": len(partition.events),
+                "last_reduced_sequence": state.sequence,
+                "state_sha256": state.state_sha256,
+                "result_status": result_status,
+                "finalization_status": finalization_status,
+                "failure_category": (
+                    None
+                    if game_failure is None
+                    else game_failure.category
+                ),
             }
         )
 
-    state_hashes.sort(key=lambda item: int(item["match_id"]))
+    game_results.sort(key=lambda item: int(item["match_id"]))
+    canonical_state_sha256 = canonical_sha256(
+        {
+            "reducer_version": _REDUCER_VERSION,
+            "game_results": game_results,
+        }
+    )
     return SoccerSeasonCensusRun(
         games_total=len(matches),
-        completed_games=completed_games,
+        completed_to_source_end=completed_to_source_end,
+        finished_games=finished_games,
+        finalization_unproven=finalization_unproven,
         fail_closed_games=len(failures),
         source_events=source_events,
+        events_adapted=events_adapted,
+        events_attempted=events_attempted,
         events_reduced=events_reduced,
-        score_mismatches=len(score_mismatch_match_ids),
-        score_mismatch_match_ids=tuple(sorted(score_mismatch_match_ids)),
-        clock_regressions=clock_regressions,
-        quality_flag_counts=tuple(sorted(flag_counts.items())),
-        canonical_state_sha256=canonical_sha256(
-            {"game_final_states": state_hashes}
+        failure_category_counts=tuple(sorted(failure_categories.items())),
+        native_anomaly_counts=tuple(sorted(native_anomalies.items())),
+        lifecycle_state_counts=tuple(sorted(lifecycle_counts.items())),
+        native_flag_counts=tuple(sorted(native_flag_counts.items())),
+        quality_flag_counts=tuple(sorted(quality_flag_counts.items())),
+        same_source_score_games_checked=same_source_score_games_checked,
+        same_source_score_agreements=same_source_score_agreements,
+        same_source_score_disagreements=len(
+            score_disagreement_match_ids
         ),
+        same_source_score_disagreement_match_ids=tuple(
+            sorted(score_disagreement_match_ids)
+        ),
+        canonical_state_sha256=canonical_state_sha256,
         failures=tuple(failures),
     )
 
@@ -418,14 +659,79 @@ def census_loaded_statsbomb_season(
     )
     deterministic = all(summary == summaries[0] for summary in summaries[1:])
     return SoccerSeasonCensusReport(
-        census_version="v0",
+        census_version="v1",
+        reducer_version=_REDUCER_VERSION,
         dataset_id=_DATASET_ID,
         source_version=STATSBOMB_COMMIT,
         scan_runs=scan_runs,
         deterministic=deterministic,
         canonical_state_sha256=summaries[0].canonical_state_sha256,
+        score_evidence_boundary=(
+            "Final-score metadata and event rows are frozen exports from "
+            "the same StatsBomb source; agreement is an internal "
+            "consistency check, not an independent oracle."
+        ),
         run_summaries=summaries,
     )
+
+
+def benchmark_loaded_statsbomb_season_reducer(
+    *,
+    matches: Sequence[Mapping[str, Any]],
+    load_events: EventLoader,
+) -> SoccerReducerLatencySummary:
+    """Measure only successful reducer calls before each game's first failure."""
+
+    samples_ns: list[int] = []
+    for match in matches:
+        match_id = _required_match_int(match, "match_id", minimum=1)
+        home_team_id = _team_id(match, "home")
+        away_team_id = _team_id(match, "away")
+        partition = load_events(match_id)
+        if partition.match_id != match_id:
+            raise SoccerSeasonCensusError(
+                "event partition match_id does not match requested match"
+            )
+        game_id = f"game_statsbomb_{match_id}"
+        state = initial_soccer_game_state(
+            game_id,
+            home_team_id=home_team_id,
+            away_team_id=away_team_id,
+        )
+        for raw_event in partition.events:
+            quality_flags = (
+                (_COORDINATE_FLAG,)
+                if _has_source_coordinate_out_of_bounds(raw_event)
+                else ()
+            )
+            payload = statsbomb_event_payload(
+                raw_event,
+                game_id=game_id,
+                quality_flags=quality_flags,
+            )
+            event_id = _event_envelope_id(
+                payload=payload,
+                object_sha256=partition.object_sha256,
+                fetched_at=partition.fetched_at,
+                match_id=match_id,
+                home_team_id=home_team_id,
+                away_team_id=away_team_id,
+                quality_flags=quality_flags,
+            )
+            event = _domain_event(payload=payload, event_id=event_id)
+            started_ns = time.perf_counter_ns()
+            try:
+                next_state = reduce_soccer_game_state(state, event)
+            except SoccerGameStateError:
+                break
+            elapsed_ns = time.perf_counter_ns() - started_ns
+            if elapsed_ns <= 0:
+                raise SoccerSeasonCensusError(
+                    "perf_counter_ns did not advance"
+                )
+            samples_ns.append(elapsed_ns)
+            state = next_state
+    return summarize_reducer_latencies_ns(tuple(samples_ns))
 
 
 def _one_manifest(directory: Path, *, context: str) -> Path:
@@ -437,12 +743,11 @@ def _one_manifest(directory: Path, *, context: str) -> Path:
     return paths[0]
 
 
-def run_frozen_statsbomb_season_census(
+def _frozen_statsbomb_season_inputs(
     *,
     program_root: str | Path,
-    scan_runs: int = 2,
-) -> SoccerSeasonCensusReport:
-    """Verify and replay all 380 frozen Premier League 2015/16 partitions."""
+) -> tuple[tuple[Mapping[str, Any], ...], EventLoader]:
+    """Verify and load the frozen Premier League 2015/16 season inputs."""
 
     root = Path(program_root).resolve()
     store_root = root / "var" / "raw"
@@ -515,6 +820,19 @@ def run_frozen_statsbomb_season_census(
             events=tuple(loaded_events),
         )
 
+    return matches, load_events
+
+
+def run_frozen_statsbomb_season_census(
+    *,
+    program_root: str | Path,
+    scan_runs: int = 2,
+) -> SoccerSeasonCensusReport:
+    """Verify and replay all 380 frozen Premier League 2015/16 partitions."""
+
+    matches, load_events = _frozen_statsbomb_season_inputs(
+        program_root=program_root,
+    )
     return census_loaded_statsbomb_season(
         matches=matches,
         load_events=load_events,
@@ -522,14 +840,32 @@ def run_frozen_statsbomb_season_census(
     )
 
 
+def benchmark_frozen_statsbomb_season_reducer(
+    *,
+    program_root: str | Path,
+) -> SoccerReducerLatencySummary:
+    """Benchmark reducer-only calls over the frozen season's strict replay prefix."""
+
+    matches, load_events = _frozen_statsbomb_season_inputs(
+        program_root=program_root,
+    )
+    return benchmark_loaded_statsbomb_season_reducer(
+        matches=matches,
+        load_events=load_events,
+    )
+
+
 def _report_passes(report: SoccerSeasonCensusReport) -> bool:
     return report.deterministic and all(
-        summary.completed_games == summary.games_total
+        summary.completed_to_source_end == summary.games_total
+        and summary.finished_games == summary.games_total
+        and summary.finalization_unproven == 0
         and summary.fail_closed_games == 0
         and not summary.failures
+        and summary.events_adapted == summary.source_events
         and summary.events_reduced == summary.source_events
-        and summary.score_mismatches == 0
-        and not summary.score_mismatch_match_ids
+        and summary.same_source_score_disagreements == 0
+        and not summary.same_source_score_disagreement_match_ids
         for summary in report.run_summaries
     )
 
@@ -566,10 +902,14 @@ if __name__ == "__main__":
 
 __all__ = [
     "FrozenStatsBombEventPartition",
+    "SoccerReducerLatencySummary",
     "SoccerSeasonCensusError",
     "SoccerSeasonCensusFailure",
     "SoccerSeasonCensusReport",
     "SoccerSeasonCensusRun",
+    "benchmark_frozen_statsbomb_season_reducer",
+    "benchmark_loaded_statsbomb_season_reducer",
     "census_loaded_statsbomb_season",
     "run_frozen_statsbomb_season_census",
+    "summarize_reducer_latencies_ns",
 ]
