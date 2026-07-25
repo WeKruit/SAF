@@ -11,6 +11,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from prediction_market.pmxt.archive import ArchiveEntry
+from prediction_market.pmxt.data_store import pmxt_canonical_key
 from prediction_market.pmxt.full_day import (
     FullDayInputError,
     HourlyObjectRef,
@@ -29,6 +30,18 @@ ASSET = "asset-home"
 
 def _digest(value: bytes) -> str:
     return "sha256:" + hashlib.sha256(value).hexdigest()
+
+
+class _HydrateStore:
+    def __init__(self, objects: dict[str, bytes]) -> None:
+        self.objects = dict(objects)
+        self.requested_keys: list[str] = []
+
+    def read_object_chunks(self, key: str, *, chunk_size: int = 1024 * 1024):
+        self.requested_keys.append(key)
+        payload = self.objects[key]
+        for offset in range(0, len(payload), chunk_size):
+            yield payload[offset : offset + chunk_size]
 
 
 def _schema() -> pa.Schema:
@@ -198,6 +211,87 @@ def test_full_day_preflight_verifies_partition_schema_and_counts(
         "all_contract_full_day_semantic_reconstruction",
         "independent_price_and_size_comparison",
     )
+
+
+def test_full_day_preflight_does_not_contact_s3_when_local_objects_are_valid(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest(tmp_path)
+    store = _HydrateStore({})
+
+    preflight_full_day_inputs(
+        tmp_path,
+        manifest,
+        object_store=store,
+        s3_prefix="prediction-market",
+    )
+
+    assert store.requested_keys == []
+
+
+def test_full_day_preflight_hydrates_missing_local_object_from_supabase_s3(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest(tmp_path)
+    first = manifest.objects[0]
+    first_path = tmp_path / first.object_path
+    payload = first_path.read_bytes()
+    first_path.unlink()
+    key = pmxt_canonical_key("prediction-market", first.object_sha256)
+    store = _HydrateStore({key: payload})
+
+    preflight_full_day_inputs(
+        tmp_path,
+        manifest,
+        object_store=store,
+        s3_prefix="prediction-market",
+    )
+
+    assert store.requested_keys == [key]
+    assert first_path.read_bytes() == payload
+
+
+def test_full_day_preflight_fails_closed_when_hydrated_object_hash_mismatches(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest(tmp_path)
+    first = manifest.objects[0]
+    first_path = tmp_path / first.object_path
+    first_path.unlink()
+    key = pmxt_canonical_key("prediction-market", first.object_sha256)
+    store = _HydrateStore({key: b"wrong remote payload"})
+
+    with pytest.raises(FullDayInputError, match="hydrated PMXT SHA-256 mismatch"):
+        preflight_full_day_inputs(
+            tmp_path,
+            manifest,
+            object_store=store,
+            s3_prefix="prediction-market",
+        )
+
+    assert not first_path.exists()
+    assert list(tmp_path.glob("*.partial")) == []
+
+
+def test_full_day_preflight_fails_closed_when_remote_object_is_missing(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest(tmp_path)
+    first = manifest.objects[0]
+    first_path = tmp_path / first.object_path
+    first_path.unlink()
+    store = _HydrateStore({})
+
+    with pytest.raises(FullDayInputError, match="remote PMXT object is missing"):
+        preflight_full_day_inputs(
+            tmp_path,
+            manifest,
+            object_store=store,
+            s3_prefix="prediction-market",
+        )
+
+    assert not first_path.exists()
+    assert list(tmp_path.glob("*.partial")) == []
 
 
 def test_full_day_preflight_rejects_object_outside_locked_receive_hour(
