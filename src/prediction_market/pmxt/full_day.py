@@ -27,6 +27,11 @@ from prediction_market.pmxt.archive import (
     ArchiveIntegrityError,
     read_parquet_events,
 )
+from prediction_market.pmxt.data_store import (
+    DataStoreError,
+    configured_object_store_if_available,
+    hydrate_pmxt_object,
+)
 from prediction_market.pmxt.reconstructor import PMXTValidationError, reconstruct
 
 
@@ -378,12 +383,40 @@ def _sha256_path(path: Path) -> str:
 
 
 def _verified_paths(
-    raw_root: str | Path, manifest: FullDayManifest
+    raw_root: str | Path,
+    manifest: FullDayManifest,
+    *,
+    object_store: Any | None = None,
+    s3_prefix: str | None = None,
 ) -> tuple[Path, ...]:
     root = Path(raw_root)
     paths: list[Path] = []
+    configured_store: tuple[Any, str] | None = None
     for item in manifest.objects:
-        path = _resolve_locked_path(root, item.object_path)
+        try:
+            path = _resolve_locked_path(root, item.object_path)
+        except FullDayInputError as exc:
+            if "locked object does not exist" not in str(exc):
+                raise
+            store = object_store
+            prefix = s3_prefix
+            if store is None:
+                if configured_store is None:
+                    configured_store = configured_object_store_if_available()
+                if configured_store is None:
+                    raise
+                store, configured_prefix = configured_store
+                prefix = prefix or configured_prefix
+            try:
+                path = hydrate_pmxt_object(
+                    root,
+                    item.object_path,
+                    item.object_sha256,
+                    store,
+                    prefix=prefix,
+                )
+            except DataStoreError as hydrate_error:
+                raise FullDayInputError(str(hydrate_error)) from hydrate_error
         if _sha256_path(path) != item.object_sha256:
             raise FullDayInputError(
                 f"locked object SHA-256 mismatch: {item.object_path}"
@@ -446,7 +479,11 @@ def _native_markets(paths: Sequence[Path]) -> tuple[str, ...]:
 
 
 def preflight_full_day_inputs(
-    raw_root: str | Path, manifest: FullDayManifest
+    raw_root: str | Path,
+    manifest: FullDayManifest,
+    *,
+    object_store: Any | None = None,
+    s3_prefix: str | None = None,
 ) -> FullDayPreflightReport:
     """Verify all 24 objects and measure their real full-day scale.
 
@@ -456,7 +493,12 @@ def preflight_full_day_inputs(
     """
 
     validate_full_day_manifest(manifest)
-    paths = _verified_paths(raw_root, manifest)
+    paths = _verified_paths(
+        raw_root,
+        manifest,
+        object_store=object_store,
+        s3_prefix=s3_prefix,
+    )
     if len(paths) != len(manifest.objects):
         raise FullDayInputError("verified object count differs from manifest")
 
@@ -624,18 +666,35 @@ def preflight_full_day_inputs(
         provisional,
         report_sha256=_sha256_bytes(_canonical_bytes(material)),
     )
-    if _verified_paths(raw_root, manifest) != paths:
+    if (
+        _verified_paths(
+            raw_root,
+            manifest,
+            object_store=object_store,
+            s3_prefix=s3_prefix,
+        )
+        != paths
+    ):
         raise FullDayInputError("locked object paths changed during preflight")
     return report
 
 
 def run_full_day_reconstruction(
-    raw_root: str | Path, manifest: FullDayManifest
+    raw_root: str | Path,
+    manifest: FullDayManifest,
+    *,
+    object_store: Any | None = None,
+    s3_prefix: str | None = None,
 ) -> FullDayReconstructionReport:
     """Reconstruct every market while keeping the independent-data gate open."""
 
     validate_full_day_manifest(manifest)
-    paths = _verified_paths(raw_root, manifest)
+    paths = _verified_paths(
+        raw_root,
+        manifest,
+        object_store=object_store,
+        s3_prefix=s3_prefix,
+    )
     markets = _native_markets(paths)
     results: list[MarketReconstruction] = []
     try:
@@ -654,7 +713,12 @@ def run_full_day_reconstruction(
         raise FullDayInputError(f"PMXT full-day reconstruction failed: {exc}") from exc
 
     # Detect replacement or mutation that happened anywhere during enumeration/read.
-    post_read_paths = _verified_paths(raw_root, manifest)
+    post_read_paths = _verified_paths(
+        raw_root,
+        manifest,
+        object_store=object_store,
+        s3_prefix=s3_prefix,
+    )
     if post_read_paths != paths:
         raise FullDayInputError("locked object paths changed during reconstruction")
 

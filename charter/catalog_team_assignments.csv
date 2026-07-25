@@ -1,5 +1,11 @@
 catalog_item_id,team,responsibility
 R-001,A,primary
+O-009,I,primary
+O-009,C,secondary
+O-009,D2,secondary
+O-010,I,primary
+O-010,C,secondary
+O-010,D2,secondary
 R-001,E,secondary
 R-002,A,primary
 R-002,E,secondary

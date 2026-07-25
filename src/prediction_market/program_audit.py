@@ -347,10 +347,10 @@ def _registered_experiment_ids(root: Path) -> set[str]:
             identifiers.add(experiment_id)
     except csv.Error as error:
         raise ResearchRegistryError("invalid experiment registry CSV") from error
-    expected = {f"X-{number:02d}" for number in range(1, 13)}
+    expected = {f"X-{number:02d}" for number in range(1, 15)}
     if identifiers != expected:
         raise ResearchRegistryError(
-            "experiment registry must contain exactly X-01 through X-12"
+            "experiment registry must contain exactly X-01 through X-14"
         )
     return identifiers
 

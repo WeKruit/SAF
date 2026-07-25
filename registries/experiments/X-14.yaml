@@ -1,0 +1,117 @@
+experiment_card:
+  id: X-14
+  name: NFL prospective game-feed and market-L2 association
+  owner_team: B+C+D2+H
+  status: registered
+  hypothesis: A frozen prospective NFL game and complete single-game market universe can be captured with independently preserved source and local receive times so that event-to-market association can later be measured without historical timestamp ambiguity.
+  data:
+    - source: Prospective NFL game feed
+      version: unresolved:sports_feed_and_timestamp_contract
+      pit_basis: provider source-received time plus local receive time and explicit play revision
+    - source: Polymarket public market WebSocket
+      version: unresolved:polymarket_single_game_token_universe
+      pit_basis: exchange source time plus local receive time within explicit connection epochs
+    - source: Kalshi authenticated live orderbook WebSocket
+      version: blocked:kalshi_credentials
+      pit_basis: exchange source time plus local receive time within explicit connection epochs
+  method: Freeze one game by UTC scheduled start and ordered away and home teams then capture every Polymarket token whose settlement depends only on that game and conditionally capture exact Kalshi event markets when credentials exist. Persist snapshots deltas BBO trades and play revisions in immutable hourly segments; reconnects or gaps start new epochs and no gap is bridged.
+  leakage_checks:
+    - Stable venue IDs are bound by UTC scheduled start and ordered teams; title matching and venue date suffixes are not primary identity.
+    - Market creation metadata recorder start resolution and every source and local receive timestamp remain distinct.
+    - Historical trades-only observations and prospective L2 observations cannot enter one association input.
+    - No association result is accepted before the complete game and market resolution are observed.
+  split: n.a. prospective capture and measurement; no predictive model fitting
+  metrics: [capture coverage by event kind, hourly segment count, connection epoch count, sequence gap count, source-local receive delta distribution, play revision count, market-resolution coverage]
+  pass_criteria: The frozen session has a complete single-game token inventory creation metadata continuous immutable capture from its first governed snapshot through resolution explicit gap epochs and a complete sports play-revision feed with both timestamp layers.
+  fail_criteria: Missing token coverage missing source or local receive time an unsegmented reconnect a bridged sequence gap a missing play revision raw hash failure or mixed historical and prospective lineage invalidates the affected association input.
+  cost_estimate: {compute: bounded single-game prospective capture, human_days: unresolved}
+  dependencies: [X-08]
+  registered_at: '2026-07-25'
+  result_acceptance_not_before: '2026-07-26T00:00:00Z'
+  due_gate: null
+  results_ref: []
+  promotion_decision: ''
+  execution_authorized: true
+  completion_required_scopes: [prospective_capture]
+  authorization_scopes:
+    prospective_capture:
+      authorized: true
+      required_result_label: PRELIMINARY
+      required_lock_ids: [first_session_game_binding, polymarket_single_game_token_universe, capture_window, sports_feed_and_timestamp_contract, continuity_and_gap_policy, association_provenance_policy, h_measurement_approval]
+      input_binding:
+        result_class: poc
+        dataset_ids: [DS-POLYMARKET-PUBLIC]
+        model_ids: []
+        synthetic_data_sha256: null
+    kalshi_prospective_capture:
+      authorized: true
+      required_result_label: PRELIMINARY
+      required_lock_ids: [first_session_game_binding, capture_window, sports_feed_and_timestamp_contract, kalshi_credentials, continuity_and_gap_policy, association_provenance_policy, h_measurement_approval]
+      input_binding:
+        result_class: poc
+        dataset_ids: [DS-KALSHI-LIVE-L2]
+        model_ids: []
+        synthetic_data_sha256: null
+    causal_latency_or_execution:
+      authorized: false
+      permanent_no_go: true
+      required_result_label: FORMAL
+      required_lock_ids: [first_session_game_binding, polymarket_single_game_token_universe, capture_window, sports_feed_and_timestamp_contract, continuity_and_gap_policy, association_provenance_policy, h_measurement_approval]
+      input_binding:
+        result_class: formal
+        dataset_ids: [DS-KALSHI-LIVE-L2, DS-POLYMARKET-PUBLIC]
+        model_ids: []
+        synthetic_data_sha256: null
+  registration_locks:
+    - {id: first_session_game_binding, status: resolved, reason: 'The first candidate session is CAR at ARI scheduled 2026-08-07T00:00:00Z; Polymarket event ID 684046 with native game ID 19453 and Kalshi event KXNFLGAME-26AUG06CARARI are bound by UTC start plus ordered teams, while venue date suffixes and titles are not identity.'}
+    - {id: polymarket_single_game_token_universe, status: unresolved, reason: 'Every condition and token under Polymarket event ID 684046 whose settlement depends only on CAR at ARI must be enumerated and hashed before recorder start; moneyline spread total and any additional single-game families are included.'}
+    - {id: capture_window, status: unresolved, reason: 'Market creation metadata recorder start initial snapshot game completion and final resolution boundaries must be frozen without claiming unobserved L2 before local recorder start.'}
+    - {id: sports_feed_and_timestamp_contract, status: unresolved, reason: 'A legally eligible prospective NFL feed with source-received time local receive time stable play identity and revision sequence has not been selected.'}
+    - {id: kalshi_credentials, status: unresolved, reason: 'Kalshi L2 remains disabled until an account and RSA API key reference are available; no secret may enter code or artifacts.'}
+    - {id: continuity_and_gap_policy, status: resolved, reason: 'RawSegmentWriter provides immutable hourly segments; every reconnect or sequence gap starts a new epoch and the new epoch requires a fresh snapshot before deltas.'}
+    - {id: association_provenance_policy, status: resolved, reason: 'The X-14 validator rejects any association input mixing historical trades-only with prospective L2 lineage.'}
+    - {id: h_measurement_approval, status: resolved, reason: 'Team H approved PRELIMINARY prospective capture measurement with no model fitting causal latency execution or alpha claim.'}
+  measurement_exemption: false
+  falsified_direction_is_valid_measurement: false
+  dataset_ids: [DS-KALSHI-LIVE-L2, DS-POLYMARKET-PUBLIC]
+  source_time_only: false
+  causal_or_execution_claims_authorized: false
+  prospective_confirmatory_protocol:
+    role: PROSPECTIVE_CONFIRMATORY
+    discovery_experiment_id: X-13
+    recorder_continuity_experiment_id: X-08
+    historical_holdout_selector_owner: X-13
+    prediction_commit_precedes_reaction_read: true
+    reaction_data_access_before_prediction_commit: false
+  prospective_session:
+    session_id: nfl-2026-car-ari
+    game_id: nfl-2026-08-07-car-ari
+    scheduled_start_utc: '2026-08-07T00:00:00Z'
+    away_team: CAR
+    home_team: ARI
+    identity_basis: scheduled_start_utc+away_team+home_team
+    polymarket_event_id: '684046'
+    polymarket_event_slug: nfl-car-ari-2026-08-07
+    polymarket_native_game_id: '19453'
+    kalshi_event_id: KXNFLGAME-26AUG06CARARI
+    venue_date_suffix_is_identity: false
+    capture_start_boundary: market_creation
+    capture_end_boundary: market_resolution
+  linked_first_artifact_due_gates: []
+  source_lineage:
+    charter_file: charter/research_program_charter_v0.2.md
+    charter_sections: ['Team B', 'Team C', 'Team D2', 'Team H', '§9 preregistration discipline', 'NO-GO']
+    catalog_item_ids: []
+  program_no_go_restrictions:
+    - real_money_execution
+    - maker_strategy_live
+    - exact_queue_fill_claim_from_pmxt_l2
+    - multi_venue_simultaneous_execution_arbitrage
+    - live_copy_trading
+    - llm_hot_path
+    - reinforcement_learning
+    - large_scale_microservices
+    - readme_return_strategy_selection
+    - unregistered_quick_backtest
+  amendments: []
+  registration_record_sha256: sha256:b4b7fdb194de6a06ae5113c487cf7c347d5fdd41878b7060e22464ea93320a10

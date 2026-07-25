@@ -66,6 +66,7 @@ ART-B-004,artifacts/venue-connectivity/polymarket-public-smoke-v0/raw/source=pol
 ART-B-005,artifacts/venue-connectivity/polymarket-public-smoke-v0/manifests/source=polymarket/stream=market/date=2026-07-23/hour=00/f314dd555f2d04e939674c8e46ea78d3b331d1737daf9691c911b24072b63b21.manifest.json,B+C,v0,X08_prospective_recorder_continuity,complete
 ART-B-006,artifacts/venue-connectivity/polymarket_recorder_supervisor_v1.md,B+C,v1,X08_prospective_recorder_continuity,complete
 ART-B-007,artifacts/venue-connectivity/polymarket_recorder_smoke_20260722_v1.json,B+C,v1,X08_prospective_recorder_continuity,PRELIMINARY_RESEARCH_ONLY
+ART-B-008,artifacts/venue-connectivity/public_api_transport_probe_20260724_v0.json,B+C+H,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
 ART-D1-001,artifacts/game-state/nba/baseline_v0.md,D1+H,v0,X06_calibration_gate,complete
 ART-D1-003,artifacts/game-state/nba_state_engine_validation_v0.json,D1+H,v0,X06_contract_harness,PRELIMINARY_RESEARCH_ONLY
 ART-D2-001,artifacts/game-state/nfl/evidence_pipeline_poc_v0.md,D2,v0,2026-08-05_W2_review,complete
@@ -74,6 +75,15 @@ ART-D2-003,artifacts/game-state/nfl_real_replay_validation_v1.json,D2+C,v1,2026-
 ART-D2-004,artifacts/game-state/nfl/polymarket_v1_game_binding_audit_v0.json,D2+C+H,v0,2026-08-05_W2_review,RETROSPECTIVE_RESEARCH_ONLY
 ART-D2-005,artifacts/game-state/nfl_season_state_validation_v2.json,D2+C+H,v2,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
 ART-D2-006,artifacts/game-state/nfl/fastrmodels_no_spread_reproduction_v2.json,D2+H,v2,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
+ART-D2-007,src/prediction_market/sports/nfl_dal_det_audit.py,D2+C+H,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
+ART-D2-008,artifacts/audit/nfl/nfl_2025_14_dal_det_evidence_audit_v0.json,D2+C+H,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
+ART-D2-009,artifacts/audit/nfl/nfl_2025_14_dal_det_completion_dossier_v0.md,D2+C+H,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
+ART-D2-010,src/prediction_market/sports/nfl_dal_det_timeline.py,D2+C+H,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
+ART-D2-011,artifacts/audit/nfl/nfl_2025_14_dal_det_source_timeline_v0.json,D2+C+H,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
+ART-D2-012,artifacts/audit/nfl/nfl_2025_14_dal_det_event_personnel_timeline_v1.json,D2+C+I,v1,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
+ART-D2-013,artifacts/audit/nfl/nfl_2025_14_dal_det_event_market_source_time_timeline_v1.json,D2+C+H,v1,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
+ART-D2-014,artifacts/audit/nfl/nfl_2025_14_dal_det_official_scorecard_crosscheck_v0.json,D2+C+I,v0,Team_I_compliance_green,PRELIMINARY_RESEARCH_ONLY
+ART-D2-015,artifacts/audit/nfl/nfl_2025_14_dal_det_first_layer_review_v0.json,D2+C+H+I,v0,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
 ART-D3-001,artifacts/game-state/soccer/evidence_pipeline_poc_v0.md,D3,v0,2026-08-05_W2_review,complete
 ART-D3-002,artifacts/game-state/soccer/x12_real_data_poc_v0.json,D3+H+I,v0,2026-08-05_W2_review,POC_ONLY
 ART-D3-003,artifacts/game-state/soccer_real_replay_validation_v1.json,D3+C,v1,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
@@ -112,3 +122,5 @@ ART-H-010,artifacts/game-state/research_calibration_review_v1.md,H+D1+D2+D3+D4+D
 ART-H-011,artifacts/game-state/mature_model_reproduction_audit_v1.md,H+D2+D3,v1,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
 ART-H-012,artifacts/game-state/mature_model_reproduction_audit_v2.md,H+D2+D3,v2,2026-08-05_W2_review,PRELIMINARY_RESEARCH_ONLY
 ART-P-006,artifacts/game-state/current_validation_report_zh_v2.md,A+H,v2,2026-08-05_W2_review,complete
+ART-X-013,registries/experiments/X-13.yaml,C+D2+E+H,v0,2026-08-05_W2_review,registered
+ART-H-013,artifacts/validation/validation_standard_v1.md,H,v1,2026-08-05_W2_review,registered

@@ -17,7 +17,7 @@ import yaml
 from prediction_market.raw_store import RawStoreError, read_verified_segment
 
 
-EXPERIMENT_IDS = tuple(f"X-{number:02d}" for number in range(1, 13))
+EXPERIMENT_IDS = tuple(f"X-{number:02d}" for number in range(1, 15))
 _EXPERIMENT_ID_SET = frozenset(EXPERIMENT_IDS)
 _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _DATASET_ID_RE = re.compile(r"^DS-[A-Z0-9][A-Z0-9-]*$")
@@ -25,6 +25,14 @@ _MODEL_ID_RE = re.compile(r"^MODEL-[A-Z0-9][A-Z0-9-]*$")
 _UTC_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 _DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 _RESULT_ACCEPTANCE_NOT_BEFORE = "2026-07-23T00:00:00Z"
+_X13_RESULT_ACCEPTANCE_NOT_BEFORE = "2026-07-25T04:40:00Z"
+_X14_RESULT_ACCEPTANCE_NOT_BEFORE = "2026-07-26T00:00:00Z"
+_X13_SOURCE_DATASET_IDS = [
+    "DS-KALSHI-HISTORICAL",
+    "DS-NFLVERSE",
+    "DS-NFLVERSE-PARTICIPATION",
+    "DS-POLYMARKET-PUBLIC",
+]
 _X08_CAPTURE_STREAMS = {
     "DS-KALSHI-LIVE-L2": ("kalshi", "orderbook"),
     "DS-POLYMARKET-PUBLIC": ("polymarket", "market"),
@@ -314,6 +322,8 @@ _TRUSTED_BASE_REGISTRATIONS = {
     "X-10": "sha256:bb1fc8aca25e10250bdef744b682788afab1b83357855b7c6a6231086623911a",
     "X-11": "sha256:1706e20201346560f38b4bf1ab3f040c8318f871d809eeff03666827b1b5ec4e",
     "X-12": "sha256:f1482d5268cbcb556ae8ac8fb37f15d31586cbc2e13565cb05f0341efcabdc96",
+    "X-13": "sha256:f637a647e881a048866e0dd4003b65b4397e6194cf6e58cc13c65be69920a697",
+    "X-14": "sha256:b4b7fdb194de6a06ae5113c487cf7c347d5fdd41878b7060e22464ea93320a10",
 }
 
 _COMMON_CARD_FIELDS = frozenset(
@@ -368,6 +378,19 @@ _OPTIONAL_CARD_FIELDS = {
     "X-10": {"recall_denominator_registered"},
     "X-11": {"dataset_ids", "output_contract", "tie_policy"},
     "X-12": {"dataset_ids", "output_contract", "promotion_restriction"},
+    "X-13": {
+        "artifact_dependencies",
+        "causal_or_execution_claims_authorized",
+        "dataset_ids",
+        "source_time_only",
+    },
+    "X-14": {
+        "causal_or_execution_claims_authorized",
+        "dataset_ids",
+        "prospective_confirmatory_protocol",
+        "prospective_session",
+        "source_time_only",
+    },
 }
 _EXPERIMENT_REGISTRY_FIELDS = [
     "experiment_id",
@@ -416,12 +439,13 @@ _REQUIRED_TASK3_ARTIFACTS = frozenset(
         "registries/experiment_amendment_ledger.csv",
         "registries/artifact_registry.csv",
         "artifacts/validation/validation_standard_v0.md",
+        "artifacts/validation/validation_standard_v1.md",
         "src/prediction_market/experiments.py",
         "tests/test_experiment_registry.py",
         "contracts/model-output/v1.schema.yaml",
         "registries/dataset_registry.csv",
         "registries/model_registry.csv",
-        *(f"registries/experiments/X-{number:02d}.yaml" for number in range(1, 13)),
+        *(f"registries/experiments/X-{number:02d}.yaml" for number in range(1, 14)),
     }
 )
 _RESULT_FIELDS = frozenset(
@@ -438,7 +462,17 @@ _RESULT_FIELDS = frozenset(
     }
 )
 _INPUT_BOUND_EXPERIMENT_IDS = frozenset(
-    {"X-01", "X-02", "X-03", "X-06", "X-08", "X-11", "X-12"}
+    {
+        "X-01",
+        "X-02",
+        "X-03",
+        "X-06",
+        "X-08",
+        "X-11",
+        "X-12",
+        "X-13",
+        "X-14",
+    }
 )
 
 
@@ -635,7 +669,7 @@ def _validate_card_inventory(root: Path) -> None:
         raise ExperimentRegistryError("cannot enumerate experiment card inventory") from exc
     expected = {f"{experiment_id}.yaml" for experiment_id in EXPERIMENT_IDS}
     if names != expected:
-        raise ExperimentRegistryError("experiment card inventory must be exactly X-01 through X-12")
+        raise ExperimentRegistryError("experiment card inventory must be exactly X-01 through X-14")
 
 
 def _validate_artifact_registry(root: Path) -> None:
@@ -1241,6 +1275,43 @@ def _validate_scopes(
             )
 
 
+def _validate_x13_historical_holdout_selector(
+    value: Any,
+    *,
+    label: str,
+) -> dict[str, Any]:
+    selector = _exact_keys(
+        value,
+        {
+            "owner_experiment_id",
+            "selection_inputs_exclude_market_reaction",
+            "frozen_before_reaction_access",
+            "seed",
+            "selection_size",
+            "evidence_index_sha256",
+            "selection_id",
+        },
+        label,
+    )
+    if (
+        selector["owner_experiment_id"] != "X-13"
+        or selector["selection_inputs_exclude_market_reaction"] is not True
+        or selector["frozen_before_reaction_access"] is not True
+        or selector["seed"] != 20260725
+        or selector["selection_size"] != 20
+    ):
+        raise ExperimentRegistryError("X-13: invalid historical holdout selector")
+    _sha256(
+        selector["evidence_index_sha256"],
+        "X-13 holdout evidence index",
+    )
+    _sha256(
+        selector["selection_id"],
+        "X-13 holdout selection",
+    )
+    return selector
+
+
 def _validate_card_structure(card: dict[str, Any], experiment_id: str) -> None:
     expected = _COMMON_CARD_FIELDS | _OPTIONAL_CARD_FIELDS[experiment_id]
     if set(card) != expected:
@@ -1263,9 +1334,17 @@ def _validate_card_structure(card: dict[str, Any], experiment_id: str) -> None:
         raise ExperimentRegistryError(f"{experiment_id}: invalid status")
     if type(card["registered_at"]) is not str or _DATE_RE.fullmatch(card["registered_at"]) is None:
         raise ExperimentRegistryError(f"{experiment_id}: invalid registered_at")
-    if card["registered_at"] != "2026-07-22":
+    expected_registered_at = {
+        "X-13": "2026-07-24",
+        "X-14": "2026-07-25",
+    }.get(experiment_id, "2026-07-22")
+    if card["registered_at"] != expected_registered_at:
         raise ExperimentRegistryError(f"{experiment_id}: immutable registration date changed")
-    if card["result_acceptance_not_before"] != _RESULT_ACCEPTANCE_NOT_BEFORE:
+    expected_acceptance_boundary = {
+        "X-13": _X13_RESULT_ACCEPTANCE_NOT_BEFORE,
+        "X-14": _X14_RESULT_ACCEPTANCE_NOT_BEFORE,
+    }.get(experiment_id, _RESULT_ACCEPTANCE_NOT_BEFORE)
+    if card["result_acceptance_not_before"] != expected_acceptance_boundary:
         raise ExperimentRegistryError(f"{experiment_id}: immutable preregistration boundary changed")
     if card["due_gate"] is not None:
         raise ExperimentRegistryError(f"{experiment_id}: due_gate must be null")
@@ -1431,6 +1510,88 @@ def _validate_card_structure(card: dict[str, Any], experiment_id: str) -> None:
             raise ExperimentRegistryError(
                 f"{experiment_id}: formal promotion restriction must be "
                 "a permanent NO-GO"
+            )
+    if "source_time_only" in card:
+        expected_source_only = experiment_id != "X-14"
+        if card["source_time_only"] is not expected_source_only:
+            raise ExperimentRegistryError(
+                f"{experiment_id}: source_time_only contract changed"
+            )
+        if card["causal_or_execution_claims_authorized"] is not False:
+            raise ExperimentRegistryError(
+                f"{experiment_id}: causal or execution claims are unauthorized"
+            )
+    if "prospective_session" in card:
+        session = _exact_keys(
+            card["prospective_session"],
+            {
+                "session_id",
+                "game_id",
+                "scheduled_start_utc",
+                "away_team",
+                "home_team",
+                "identity_basis",
+                "polymarket_event_id",
+                "polymarket_event_slug",
+                "polymarket_native_game_id",
+                "kalshi_event_id",
+                "venue_date_suffix_is_identity",
+                "capture_start_boundary",
+                "capture_end_boundary",
+            },
+            f"{experiment_id} prospective_session",
+        )
+        for field_name in (
+            "session_id",
+            "game_id",
+            "away_team",
+            "home_team",
+            "polymarket_event_id",
+            "polymarket_event_slug",
+            "polymarket_native_game_id",
+            "kalshi_event_id",
+        ):
+            _nonempty_string(
+                session[field_name],
+                f"{experiment_id} prospective_session {field_name}",
+            )
+        _canonical_utc(
+            session["scheduled_start_utc"],
+            f"{experiment_id} prospective scheduled_start_utc",
+        )
+        if (
+            session["identity_basis"]
+            != "scheduled_start_utc+away_team+home_team"
+            or session["venue_date_suffix_is_identity"] is not False
+            or session["capture_start_boundary"] != "market_creation"
+            or session["capture_end_boundary"] != "market_resolution"
+        ):
+            raise ExperimentRegistryError(
+                f"{experiment_id}: invalid prospective session identity or boundary"
+            )
+    if "prospective_confirmatory_protocol" in card:
+        protocol = _exact_keys(
+            card["prospective_confirmatory_protocol"],
+            {
+                "role",
+                "discovery_experiment_id",
+                "recorder_continuity_experiment_id",
+                "historical_holdout_selector_owner",
+                "prediction_commit_precedes_reaction_read",
+                "reaction_data_access_before_prediction_commit",
+            },
+            f"{experiment_id} prospective_confirmatory_protocol",
+        )
+        if protocol != {
+            "role": "PROSPECTIVE_CONFIRMATORY",
+            "discovery_experiment_id": "X-13",
+            "recorder_continuity_experiment_id": "X-08",
+            "historical_holdout_selector_owner": "X-13",
+            "prediction_commit_precedes_reaction_read": True,
+            "reaction_data_access_before_prediction_commit": False,
+        }:
+            raise ExperimentRegistryError(
+                f"{experiment_id}: invalid prospective confirmatory protocol"
             )
     if type(card["amendments"]) is not list:
         raise ExperimentRegistryError(f"{experiment_id}: amendments must be a list")
@@ -1879,6 +2040,7 @@ def _validate_changes(changes: Any, experiment_id: str) -> dict[str, Any]:
         "timestamp_input_manifest_binding",
         "register_reproduction",
         "supersede_reproduction",
+        "historical_holdout_selector",
     }
     if not set(changes).issubset(allowed):
         raise ExperimentRegistryError(f"{experiment_id}: uncontrolled amendment changes")
@@ -1978,6 +2140,16 @@ def _validate_changes(changes: Any, experiment_id: str) -> dict[str, Any]:
             _validate_result_shape(changes["results_ref"])
         except InvalidResultReferenceError as exc:
             raise ExperimentRegistryError(f"{experiment_id}: invalid appended results_ref: {exc}") from exc
+    if "historical_holdout_selector" in changes:
+        if experiment_id != "X-13":
+            raise ExperimentRegistryError(
+                f"{experiment_id}: historical holdout selector is only valid "
+                "for X-13"
+            )
+        _validate_x13_historical_holdout_selector(
+            changes["historical_holdout_selector"],
+            label="X-13 amended historical_holdout_selector",
+        )
     if "observed_elapsed_evidence" in changes:
         if experiment_id != "X-08":
             raise ExperimentRegistryError(
@@ -2133,6 +2305,57 @@ def _validate_changes(changes: Any, experiment_id: str) -> dict[str, Any]:
                 "X-02: timestamp_input_manifest requires the structured "
                 "input manifest binding"
             )
+    if experiment_id == "X-13":
+        resolved_items = changes.get("resolve_locks", [])
+        input_items = changes.get("preregistered_inputs", [])
+        targets_source_bundle = any(
+            item.get("lock_id") == "source_manifest_bundle"
+            for item in resolved_items
+        )
+        targets_preliminary_input = any(
+            item.get("scope") == "preliminary_source_time_only"
+            for item in input_items
+        )
+        if targets_source_bundle or targets_preliminary_input:
+            exact_input = (
+                len(input_items) == 1
+                and input_items[0]["scope"]
+                == "preliminary_source_time_only"
+                and input_items[0]["dataset_ids"]
+                == _X13_SOURCE_DATASET_IDS
+                and input_items[0]["model_ids"] == []
+            )
+            exact_initial_shape = (
+                set(changes)
+                == {"resolve_locks", "preregistered_inputs"}
+                and len(resolved_items) == 1
+                and resolved_items[0]["lock_id"]
+                == "source_manifest_bundle"
+                and exact_input
+                and input_items[0]["data_sha256"]
+                == resolved_items[0]["evidence_ref"]
+            )
+            exact_pre_result_supersession_shape = (
+                set(changes)
+                in (
+                    {"preregistered_inputs"},
+                    {
+                        "historical_holdout_selector",
+                        "preregistered_inputs",
+                    },
+                )
+                and not resolved_items
+                and exact_input
+            )
+            if not (
+                exact_initial_shape
+                or exact_pre_result_supersession_shape
+            ):
+                raise ExperimentRegistryError(
+                    "X-13: atomic source manifest bundle amendment must "
+                    "contain exactly its initial lock/input binding or one "
+                    "pre-result code supersession"
+                )
     return changes
 
 
@@ -2154,6 +2377,74 @@ class _RegistrationMeta:
     archive_audit_clarified: bool = False
     timestamp_audit_preregistered: bool = False
     timestamp_input_manifest_bound: bool = False
+
+
+def _validate_x13_preregistered_input_transition(
+    *,
+    effective: dict[str, Any],
+    meta: _RegistrationMeta,
+    item: dict[str, Any],
+    initial_atomic_binding: bool,
+    amended_time: datetime,
+) -> None:
+    if item["scope"] != "preliminary_source_time_only":
+        return
+    if amended_time > _utc_now():
+        raise ExperimentRegistryError(
+            "X-13: input preregistration cannot be future-dated"
+        )
+    prior = meta.preregistered_inputs.get(item["scope"])
+    if initial_atomic_binding:
+        if prior is not None:
+            raise ExperimentRegistryError(
+                "X-13: initial source binding cannot replace prior inputs"
+            )
+        return
+    if prior is None:
+        raise ExperimentRegistryError(
+            "X-13: first source input binding must resolve its lock atomically"
+        )
+    prior_scope_results = [
+        result
+        for result in meta.stored_results
+        if result["scope"] == item["scope"]
+    ]
+    if prior_scope_results and (
+        "historical_holdout_selector" not in effective
+        or any(
+            result["result_label"] != "PRELIMINARY"
+            for result in prior_scope_results
+        )
+    ):
+        raise ExperimentRegistryError(
+            "X-13: post-result discovery iteration requires the frozen "
+            "historical holdout and PRELIMINARY-only prior results"
+        )
+    source_lock = next(
+        (
+            lock
+            for lock in effective["registration_locks"]
+            if lock["id"] == "source_manifest_bundle"
+        ),
+        None,
+    )
+    if (
+        source_lock is None
+        or source_lock["status"] != "resolved"
+        or source_lock.get("evidence_ref") != item["data_sha256"]
+    ):
+        raise ExperimentRegistryError(
+            "X-13: input supersession must preserve the resolved source bundle"
+        )
+    for field_name in ("data_sha256", "dataset_ids", "model_ids"):
+        if item[field_name] != prior[field_name]:
+            raise ExperimentRegistryError(
+                "X-13: input supersession may change only code_sha256"
+            )
+    if item["code_sha256"] == prior["code_sha256"]:
+        raise ExperimentRegistryError(
+            "X-13: input supersession must bind a new code_sha256"
+        )
 
 
 def _observed_elapsed_days(meta: _RegistrationMeta) -> int:
@@ -2634,13 +2925,25 @@ def _apply_amendments(
     }:
         raise ExperimentRegistryError(f"{experiment_id}: ledger base record mismatch")
     effective = copy.deepcopy(base_card)
-    meta = _RegistrationMeta(head=base_card["registration_record_sha256"])
+    base_effective_at = base_card["result_acceptance_not_before"]
+    meta = _RegistrationMeta(
+        head=base_card["registration_record_sha256"],
+        head_at=base_effective_at,
+    )
     meta.scope_authorized_at = {
-        scope_name: _RESULT_ACCEPTANCE_NOT_BEFORE
+        scope_name: base_effective_at
         for scope_name, scope in effective["authorization_scopes"].items()
         if scope["authorized"] is True and not scope.get("permanent_no_go", False)
     }
-    prior_time = _canonical_utc(_RESULT_ACCEPTANCE_NOT_BEFORE, "registration boundary")
+    meta.lock_resolved_at = {
+        lock["id"]: base_effective_at
+        for lock in effective["registration_locks"]
+        if lock["status"] == "resolved"
+    }
+    prior_time = _canonical_utc(
+        base_effective_at,
+        "registration boundary",
+    )
     for expected_sequence, amendment in enumerate(base_card["amendments"], start=1):
         expected_keys = {
             "sequence",
@@ -2903,6 +3206,14 @@ def _apply_amendments(
             meta.registered_reproduction_id = reproduction_id
             meta.registered_reproduction_scope = scope_name
             meta.registered_reproduction_scopes.add(scope_name)
+        if "historical_holdout_selector" in changes:
+            if "historical_holdout_selector" in effective:
+                raise ExperimentRegistryError(
+                    "X-13: historical holdout selector is append-once"
+                )
+            effective["historical_holdout_selector"] = copy.deepcopy(
+                changes["historical_holdout_selector"]
+            )
         if "resolve_locks" in changes:
             lock_by_id = {lock["id"]: lock for lock in effective["registration_locks"]}
             for item in changes["resolve_locks"]:
@@ -2933,6 +3244,20 @@ def _apply_amendments(
                 meta.scope_authorized_at[scope_name] = amendment["amended_at"]
         if "preregistered_inputs" in changes:
             for item in changes["preregistered_inputs"]:
+                if experiment_id == "X-13":
+                    _validate_x13_preregistered_input_transition(
+                        effective=effective,
+                        meta=meta,
+                        item=item,
+                        initial_atomic_binding=any(
+                            resolved["lock_id"]
+                            == "source_manifest_bundle"
+                            for resolved in changes.get(
+                                "resolve_locks", []
+                            )
+                        ),
+                        amended_time=amended_time,
+                    )
                 if (
                     item["scope"]
                     in meta.registered_reproduction_scopes
@@ -3148,7 +3473,7 @@ def _load_registry_internal(
             raise ExperimentRegistryError(f"duplicate experiment registry row: {experiment_id}")
         row_by_id[experiment_id] = row
     if set(row_by_id) != _EXPERIMENT_ID_SET:
-        raise ExperimentRegistryError("registry must contain exactly X-01 through X-12")
+        raise ExperimentRegistryError("registry must contain exactly X-01 through X-14")
 
     catalog_gates = _catalog_gates(root)
     base_cards: dict[str, dict[str, Any]] = {}

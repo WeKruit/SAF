@@ -53,11 +53,11 @@ R-051,research_catalog.csv:row51,research,A Reality Check for Data Snooping (200
 R-052,research_catalog.csv:row52,research,The Probability of Backtest Overfitting (2016),H,,core,stage0_foundation,evidence_card,-,assigned,2026-08-05_W2_review
 R-053,research_catalog.csv:row53,research,The Deflated Sharpe Ratio (2014),H,,core,stage0_foundation,evidence_card,-,assigned,2026-08-05_W2_review
 R-054,research_catalog.csv:row54,research,Pseudo-Mathematics and Financial Charlatanism (2014),H,G,background,stage0_foundation,evidence_card,-,assigned,backlog
-I-001,implementation_catalog.csv:row1,implementation,Polymarket Market WebSocket,B,C,core,stage0_foundation,capability_matrix_entry,X-08,assigned,2026-08-05_W2_review
+I-001,implementation_catalog.csv:row1,implementation,Polymarket Market WebSocket,B,C,core,stage0_foundation,capability_matrix_entry,X-08;X-13,assigned,2026-08-05_W2_review
 I-002,implementation_catalog.csv:row2,implementation,Polymarket Sports WebSocket,B,D1;D2,core,stage0_foundation,capability_matrix_entry,-,assigned,2026-08-05_W2_review
 I-003,implementation_catalog.csv:row3,implementation,Polymarket Unified SDK / CLOB V2,B,,core,stage0_foundation,capability_matrix_entry,X-09,assigned,2026-08-05_W2_review
 I-004,implementation_catalog.csv:row4,implementation,Kalshi WebSocket Orderbook,B,C,core,stage0_foundation,capability_matrix_entry,X-08,assigned,2026-08-05_W2_review
-I-005,implementation_catalog.csv:row5,implementation,Kalshi Historical Data API,C,B,core,stage0_foundation,audit_report_section,X-08,assigned,2026-08-05_W2_review
+I-005,implementation_catalog.csv:row5,implementation,Kalshi Historical Data API,C,B,core,stage0_foundation,audit_report_section,X-08;X-13,assigned,2026-08-05_W2_review
 I-006,implementation_catalog.csv:row6,implementation,Kalshi FIX,B,,advanced,stage2_expansion,capability_matrix_entry,-,assigned,2026-08-19_W4_review
 I-007,implementation_catalog.csv:row7,implementation,NautilusTrader,B,F,core,stage0_foundation,capability_matrix_entry,X-09,assigned,2026-08-05_W2_review
 I-008,implementation_catalog.csv:row8,implementation,hftbacktest,F,,core,stage1_baseline,reuse_assessment,X-07,assigned,2026-08-05_W2_review
@@ -70,7 +70,7 @@ I-014,implementation_catalog.csv:row14,implementation,Gnosis Prediction Market A
 I-015,implementation_catalog.csv:row15,implementation,ForecastBench,G,H,advanced,stage1_baseline,module_report_section,-,assigned,2026-08-19_W4_review
 I-016,implementation_catalog.csv:row16,implementation,PolyBench,G,E,advanced,stage1_baseline,module_report_section,-,assigned,2026-08-19_W4_review
 I-017,implementation_catalog.csv:row17,implementation,Predict Raven,G,,background,stage1_baseline,module_report_section,-,assigned,backlog
-I-018,implementation_catalog.csv:row18,implementation,nflfastR,D2,C,core,stage0_foundation,data_pipeline_poc,X-11,assigned,2026-08-05_W2_review
+I-018,implementation_catalog.csv:row18,implementation,nflfastR,D2,C,core,stage0_foundation,data_pipeline_poc,X-11;X-13,assigned,2026-08-05_W2_review
 I-019,implementation_catalog.csv:row19,implementation,StatsBomb Open Data,D3,C;I,core,stage0_foundation,data_pipeline_poc,X-12,assigned,2026-08-05_W2_review
 I-020,implementation_catalog.csv:row20,implementation,Metrica Sports Sample Data,D3,,background,stage0_foundation,data_pipeline_poc,-,assigned,backlog
 I-021,implementation_catalog.csv:row21,implementation,nba_api,D1,C;I,core,stage0_foundation,data_pipeline_poc,X-04;X-06,assigned,2026-08-05_W2_review
@@ -78,11 +78,13 @@ I-022,implementation_catalog.csv:row22,implementation,Polymarket-Kalshi Weather 
 I-023,implementation_catalog.csv:row23,implementation,Polymarket Copy-Trading Bots,G,,background,stage2_expansion,module_report_section,-,assigned,backlog
 I-024,implementation_catalog.csv:row24,implementation,PolyTerm,G,,background,stage2_expansion,module_report_section,-,assigned,backlog
 I-025,implementation_catalog.csv:row25,implementation,PolyWorld,G,,background,stage2_expansion,module_report_section,-,assigned,backlog
-O-001,charter_appendix_A_2026-07-22,operational_evidence,Polymarket API / 交易条款（docs.polymarket.com ToS）,I,B,core,stage0_foundation,license_register_entry,-,assigned,Team_I_compliance_green
+O-001,charter_appendix_A_2026-07-22,operational_evidence,Polymarket API / 交易条款（docs.polymarket.com ToS）,I,B,core,stage0_foundation,license_register_entry,X-13,assigned,Team_I_compliance_green
 O-002,charter_appendix_A_2026-07-22,operational_evidence,Polymarket 费用与延迟规则（trading/fees + orders/create；venue_rule_snapshot 数据源）,I,B;F,core,stage0_foundation,license_register_entry,X-07,assigned,Team_I_compliance_green
-O-003,charter_appendix_A_2026-07-22,operational_evidence,Kalshi API agreement 与交易规则,I,B,core,stage0_foundation,license_register_entry,-,assigned,Team_I_compliance_green
+O-003,charter_appendix_A_2026-07-22,operational_evidence,Kalshi API agreement 与交易规则,I,B,core,stage0_foundation,license_register_entry,X-13,assigned,Team_I_compliance_green
 O-004,charter_appendix_A_2026-07-22,operational_evidence,StatsBomb open data LICENSE.pdf 商用条款,I,D3,core,stage0_foundation,license_register_entry,X-12,assigned,Team_I_compliance_green
 O-005,charter_appendix_A_2026-07-22,operational_evidence,nba_api / NBA.com ToS 使用边界,I,D1,core,stage0_foundation,license_register_entry,-,assigned,Team_I_compliance_green
 O-006,charter_appendix_A_2026-07-22,operational_evidence,PMXT Archive CC BY 4.0 署名义务,I,C,core,stage0_foundation,license_register_entry,X-01,assigned,Team_I_compliance_green
 O-007,charter_appendix_A_2026-07-22,operational_evidence,Retrosheet notice.txt 署名义务与覆盖范围,I,D4,core,stage0_foundation,license_register_entry,-,assigned,Team_I_compliance_green
 O-008,charter_appendix_A_2026-07-22,operational_evidence,FastF1 (theOehrly/Fast-F1) 与 Jolpica license / 运维单点风险,I,D5,core,stage0_foundation,license_register_entry,-,assigned,Team_I_compliance_green
+O-009,source_discovery_2026-07-24,operational_evidence,nflverse participation（FTN via nflverse）许可、署名与赛后发布边界,I,C;D2,core,stage0_foundation,license_register_entry,X-13,assigned,Team_I_compliance_green
+O-010,source_discovery_2026-07-24,operational_evidence,NFL 官方 Gamebook 的版权与独立复核使用边界,I,C;D2,core,stage0_foundation,license_register_entry,X-13,assigned,Team_I_compliance_green

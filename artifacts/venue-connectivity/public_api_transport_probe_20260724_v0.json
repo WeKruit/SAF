@@ -1,0 +1,40 @@
+{
+  "artifact_type": "public_api_transport_probe",
+  "artifact_version": "v0",
+  "owner": "B+C+H",
+  "measured_at": "2026-07-24T21:53:16Z",
+  "methodology": {
+    "execution_location": "project workstation; network location not independently geolocated",
+    "request_method": "sequential HTTPS GET",
+    "sample_count": 30,
+    "curl_metric": "time_total",
+    "response_bodies": "discarded",
+    "percentile_convention": "nearest-rank; p50=ceil(0.50*n), p95=ceil(0.95*n), p99=ceil(0.99*n)",
+    "claim_boundary": "measures client HTTP round-trip only; excludes on-field-to-provider publication latency and does not measure WebSocket delivery"
+  },
+  "endpoints": [
+    {
+      "venue": "polymarket",
+      "url": "https://gamma-api.polymarket.com/events?slug=nfl-dal-det-2025-12-04",
+      "http_statuses": [200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200],
+      "time_total_ms": [375.663, 140.852, 177.486, 107.017, 138.734, 185.944, 102.899, 126.395, 160.22, 178.963, 121.761, 104.435, 153.656, 135.31, 112.084, 143.118, 182.455, 147.328, 105.342, 144.592, 133.124, 212.221, 108.686, 82.707, 146.436, 139.063, 198.875, 156.167, 144.752, 101.09],
+      "p50_ms": 140.852,
+      "p95_ms": 212.221,
+      "p99_ms": 375.663,
+      "minimum_ms": 82.707,
+      "maximum_ms": 375.663
+    },
+    {
+      "venue": "kalshi",
+      "url": "https://api.elections.kalshi.com/trade-api/v2/markets?limit=1",
+      "http_statuses": [200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200],
+      "time_total_ms": [118.108, 75.672, 54.355, 54.153, 65.198, 55.309, 59.11, 70.368, 57.475, 56.558, 62.701, 54.157, 48.378, 57.367, 73.579, 62.113, 53.985, 49.418, 61.523, 51.42, 58.245, 56.621, 52.361, 56.318, 53.747, 55.097, 48.25, 49.917, 55.239, 52.25],
+      "p50_ms": 55.309,
+      "p95_ms": 75.672,
+      "p99_ms": 118.108,
+      "minimum_ms": 48.25,
+      "maximum_ms": 118.108
+    }
+  ],
+  "decision": "Use millisecond source-availability scenarios for the source-time timeline. Do not treat these HTTP probes as event-feed latency, WebSocket latency, or a venue execution guarantee."
+}
