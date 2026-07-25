@@ -7,10 +7,10 @@ import hashlib
 import json
 import os
 import re
-from dataclasses import dataclass, field
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterator, Mapping, Protocol
+from typing import Any, Callable, Iterator, Mapping, Protocol, Sequence, TypeVar
 
 from prediction_market.sports.nfl_x13_dashboard import (
     X13DashboardExportError,
@@ -34,6 +34,8 @@ _ENV_NAMES = (
     "PM_DATA_S3_ACCESS_KEY_ID",
     "PM_DATA_S3_SECRET_ACCESS_KEY",
 )
+_WorkItem = TypeVar("_WorkItem")
+_WorkResult = TypeVar("_WorkResult")
 
 
 class DashboardStoreError(RuntimeError):
@@ -623,6 +625,45 @@ def _store_for(
     )
 
 
+def _require_worker_count(max_workers: int) -> int:
+    if (
+        isinstance(max_workers, bool)
+        or not isinstance(max_workers, int)
+        or not 1 <= max_workers <= _MAX_WORKERS_LIMIT
+    ):
+        raise DashboardStoreError(
+            f"dashboard workers must be between 1 and "
+            f"{_MAX_WORKERS_LIMIT}"
+        )
+    return max_workers
+
+
+def _run_bounded(
+    items: Sequence[_WorkItem],
+    operation: Callable[[_WorkItem], _WorkResult],
+    *,
+    max_workers: int,
+    thread_name_prefix: str,
+) -> tuple[_WorkResult, ...]:
+    workers = _require_worker_count(max_workers)
+    executor = ThreadPoolExecutor(
+        max_workers=workers,
+        thread_name_prefix=thread_name_prefix,
+    )
+    futures: list[Future[_WorkResult]] = []
+    try:
+        futures = [executor.submit(operation, item) for item in items]
+        results = tuple(future.result() for future in futures)
+    except BaseException:
+        for future in futures:
+            future.cancel()
+        executor.shutdown(wait=True, cancel_futures=True)
+        raise
+    else:
+        executor.shutdown(wait=True)
+        return results
+
+
 def publish_dashboard_export(
     export_root: str | Path,
     config: DashboardS3Config,
@@ -632,43 +673,24 @@ def publish_dashboard_export(
 ) -> DashboardPublishResult:
     """Publish immutable content first and update the latest pointer last."""
 
-    if (
-        isinstance(max_workers, bool)
-        or not isinstance(max_workers, int)
-        or not 1 <= max_workers <= _MAX_WORKERS_LIMIT
-    ):
-        raise DashboardStoreError(
-            f"dashboard publish workers must be between 1 and "
-            f"{_MAX_WORKERS_LIMIT}"
-        )
+    _require_worker_count(max_workers)
     _normalized_root_prefix(config.prefix)
     _, manifest, manifest_object, objects = _load_local_export(export_root)
     store = _store_for(config, object_store)
-    executor = ThreadPoolExecutor(
+
+    def publish_item(item: _LocalObject) -> bool:
+        return _publish_immutable_object(
+            store,
+            key=dashboard_object_key(config.prefix, item.sha256),
+            item=item,
+        )
+
+    _run_bounded(
+        objects,
+        publish_item,
         max_workers=max_workers,
-        thread_name_prefix="x13-dashboard-s3",
+        thread_name_prefix="x13-dashboard-publish",
     )
-    futures: list[Future[bool]] = []
-    try:
-        for item in objects:
-            key = dashboard_object_key(config.prefix, item.sha256)
-            futures.append(
-                executor.submit(
-                    _publish_immutable_object,
-                    store,
-                    key=key,
-                    item=item,
-                )
-            )
-        for future in futures:
-            future.result()
-    except BaseException:
-        for future in futures:
-            future.cancel()
-        executor.shutdown(wait=True, cancel_futures=True)
-        raise
-    else:
-        executor.shutdown(wait=True)
     total_bytes = sum(len(item.payload) for item in objects)
     manifest_key = dashboard_object_key(
         config.prefix, manifest_object.sha256
@@ -707,9 +729,11 @@ def verify_dashboard_publication(
     config: DashboardS3Config,
     *,
     object_store: DashboardObjectStore | None = None,
+    max_workers: int = _DEFAULT_MAX_WORKERS,
 ) -> DashboardVerifyResult:
     """Re-read the pointer, manifest, and every referenced remote object."""
 
+    _require_worker_count(max_workers)
     _normalized_root_prefix(config.prefix)
     store = _store_for(config, object_store)
     pointer_key = dashboard_latest_pointer_key(config.prefix)
@@ -776,15 +800,25 @@ def verify_dashboard_publication(
                 "remote dashboard object has conflicting lengths"
             )
         objects[object_sha256] = byte_length
-    total_bytes = 0
-    for object_sha256, byte_length in sorted(objects.items()):
+    object_items = tuple(sorted(objects.items()))
+
+    def verify_item(item: tuple[str, int]) -> int:
+        object_sha256, byte_length = item
         _verify_remote_object(
             store,
             key=dashboard_object_key(config.prefix, object_sha256),
             expected_sha256=object_sha256,
             expected_size=byte_length,
         )
-        total_bytes += byte_length
+        return byte_length
+
+    verified_lengths = _run_bounded(
+        object_items,
+        verify_item,
+        max_workers=max_workers,
+        thread_name_prefix="x13-dashboard-verify",
+    )
+    total_bytes = sum(verified_lengths)
     final_pointer_raw = _read_remote(
         store, pointer_key, max_bytes=_MAX_POINTER_BYTES
     )

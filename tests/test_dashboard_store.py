@@ -92,6 +92,9 @@ class FakeS3:
         self.upload_delay_seconds = 0.0
         self.active_content_puts = 0
         self.peak_content_puts = 0
+        self.read_delay_seconds = 0.0
+        self.active_content_reads = 0
+        self.peak_content_reads = 0
 
     def head_object(self, key: str) -> dict[str, object] | None:
         with self.lock:
@@ -166,6 +169,18 @@ class FakeS3:
     def read_object_chunks(
         self, key: str, *, chunk_size: int = 1024 * 1024
     ) -> Iterator[bytes]:
+        content_read = "/objects/sha256/" in key
+        if content_read and self.read_delay_seconds:
+            with self.lock:
+                self.active_content_reads += 1
+                self.peak_content_reads = max(
+                    self.peak_content_reads, self.active_content_reads
+                )
+            try:
+                time.sleep(self.read_delay_seconds)
+            finally:
+                with self.lock:
+                    self.active_content_reads -= 1
         with self.lock:
             self.read_counts[key] = self.read_counts.get(key, 0) + 1
             try:
@@ -709,6 +724,68 @@ def test_verify_rereads_pointer_manifest_and_every_remote_object(
         )
 
 
+def test_remote_verification_is_bounded_parallel_and_deterministic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_s3 = FakeS3()
+    export_root = _write_export(tmp_path, monkeypatch)
+    published = publish_dashboard_export(
+        export_root, fake_s3.config, object_store=fake_s3
+    )
+    fake_s3.read_delay_seconds = 0.01
+    fake_s3.peak_content_reads = 0
+
+    verified = verify_dashboard_publication(
+        fake_s3.config,
+        object_store=fake_s3,
+        max_workers=4,
+    )
+
+    assert 1 < fake_s3.peak_content_reads <= 4
+    assert verified.verified_object_count == (
+        published.verified_object_count
+    )
+    assert verified.total_verified_bytes == (
+        published.total_verified_bytes
+    )
+    assert verified.pointer_sha256 == published.pointer_sha256
+
+
+def test_parallel_remote_verification_failure_waits_and_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_s3 = FakeS3()
+    export_root = _write_export(tmp_path, monkeypatch)
+    publish_dashboard_export(
+        export_root, fake_s3.config, object_store=fake_s3
+    )
+    fake_s3.objects[_content_keys(fake_s3)[0]] = b"tampered"
+    fake_s3.read_delay_seconds = 0.005
+
+    with pytest.raises(DashboardStoreError, match="hash mismatch"):
+        verify_dashboard_publication(
+            fake_s3.config,
+            object_store=fake_s3,
+            max_workers=4,
+        )
+
+    assert fake_s3.active_content_reads == 0
+
+
+@pytest.mark.parametrize("workers", [0, -1, 33, True])
+def test_invalid_verify_worker_count_is_rejected_before_remote_read(
+    workers: int,
+) -> None:
+    fake_s3 = FakeS3()
+    with pytest.raises(DashboardStoreError, match="workers"):
+        verify_dashboard_publication(
+            fake_s3.config,
+            object_store=fake_s3,
+            max_workers=workers,
+        )
+    assert fake_s3.read_counts == {}
+
+
 def test_verify_fails_if_pointer_changes_during_verification(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -864,6 +941,10 @@ def test_cli_has_exact_three_subcommands() -> None:
         ]
     )
     assert arguments.workers == 6
+    verify_arguments = parser.parse_args(
+        ["verify-s3", "--workers", "5"]
+    )
+    assert verify_arguments.workers == 5
 
 
 def test_project_registers_dashboard_cli() -> None:

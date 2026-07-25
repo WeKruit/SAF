@@ -50,6 +50,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "verify-s3", help="verify the current private S3 publication"
     )
     verify.add_argument("--env-file", type=Path)
+    verify.add_argument(
+        "--workers",
+        type=int,
+        default=8,
+        help="bounded remote verification workers (1-32; default: 8)",
+    )
     return parser
 
 
@@ -97,7 +103,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     max_workers=arguments.workers,
                 )
             else:
-                result = verify_dashboard_publication(config)
+                result = verify_dashboard_publication(
+                    config, max_workers=arguments.workers
+                )
             _render(asdict(result))
         return 0
     except (
