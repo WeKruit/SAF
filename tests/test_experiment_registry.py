@@ -4809,7 +4809,9 @@ def test_polymarket_v1_poc_artifact_is_preliminary_and_license_bound(
         }
     assert datasets["DS-POLYMARKET-V1"]["license_status"] == "approved"
     assert datasets["DS-POLYMARKET-V1"]["license_review_id"] == "R-039"
-    assert datasets["DS-POLYMARKET-PUBLIC"]["license_status"] == "pending"
+    assert datasets["DS-POLYMARKET-PUBLIC"]["license_status"] == (
+        "research_only"
+    )
     assert datasets["DS-POLYMARKET-PUBLIC"]["license_review_id"] == "O-001"
 
 

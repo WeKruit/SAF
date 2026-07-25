@@ -320,7 +320,17 @@ def test_dataset_registry_covers_canonical_secondary_and_blocked_sources() -> No
     assert by_id["DS-NBA-CANDIDATE"].use_class == "blocked"
     assert by_id["DS-NBA-CANDIDATE"].status == "blocked"
     assert by_id["DS-KALSHI-HISTORICAL"].auth == "public"
-    assert by_id["DS-KALSHI-HISTORICAL"].license_status == "pending"
+    assert by_id["DS-KALSHI-HISTORICAL"].license_status == "research_only"
+    assert by_id["DS-KALSHI-HISTORICAL"].source_version == (
+        "official-rest-20260723"
+    )
+    assert by_id["DS-POLYMARKET-PUBLIC"].license_status == "research_only"
+    assert by_id["DS-POLYMARKET-PUBLIC"].source_version == (
+        "public-api-20260723"
+    )
+    assert by_id["DS-NFLVERSE-PARTICIPATION"].license_status == (
+        "research_only"
+    )
     assert by_id["DS-PMXT-V2"].license_status == "approved"
     assert by_id["DS-NFLVERSE"].license == "CC-BY-4.0"
     assert "release_id:58152862" in by_id["DS-NFLVERSE"].source_version
@@ -424,9 +434,24 @@ def test_dataset_registry_rows_have_fixed_governance_metadata() -> None:
         "DS-PMXT-V2": _canonical_sha256(
             _without(pmxt, "bundle_sha256")
         ),
+        "DS-POLYMARKET-PUBLIC": (
+            "sha256:"
+            "7714b0132a89a1f8e812e5a8bc78a20e2fb6dfd5c1689c08"
+            "cee9ec9c6dc376d8"
+        ),
         "DS-POLYMARKET-V1": polymarket["derived_extract"]["manifest_sha256"],
+        "DS-KALSHI-HISTORICAL": (
+            "sha256:"
+            "40a886ddb9463720a5f54ad8e3a212216a9a0098ae2d17c823"
+            "0b0d8f33ad2530"
+        ),
             "DS-NFLVERSE": _canonical_sha256(
                 _without(nfl["input_inventory"], "inventory_sha256")
+            ),
+            "DS-NFLVERSE-PARTICIPATION": (
+                "sha256:"
+                "c5b2f2d56b3e04ce8ce6674e09a2571eef39bfefaeb16d2c06"
+                "da50a332b1e291"
             ),
             "DS-NFL-FASTRMODELS": (
                 "sha256:"
