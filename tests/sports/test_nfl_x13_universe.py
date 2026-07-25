@@ -486,6 +486,24 @@ def test_series_registry_proves_every_catalog_identity_and_rejects_unknown() -> 
         manifest_sha256=_digest("series-registry"),
     )
 
+    spoofed = _series_registry_payload()
+    first = spoofed["series"][0]
+    assert isinstance(first, dict)
+    first["settlement_sources"] = [
+        {
+            "name": "NFL",
+            "url": "https://www.nfl.com.evil.test/settlement",
+        }
+    ]
+    with pytest.raises(
+        X13UniverseError,
+        match="lacks NFL settlement provenance",
+    ):
+        validate_kalshi_series_registry(
+            spoofed,
+            manifest_sha256=_digest("series-registry"),
+        )
+
 
 def _kalshi_market(
     *,

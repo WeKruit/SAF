@@ -17,6 +17,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from prediction_market.kalshi_history import KALSHI_API_ROOT
 from prediction_market.polymarket_history import GAMMA_EVENTS_URL
@@ -40,6 +41,25 @@ _SHA256_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _CONDITION_RE = re.compile(r"0x[0-9a-f]{64}\Z")
 _TICKER_RE = re.compile(r"[A-Z0-9][A-Z0-9._-]{0,255}\Z")
 _CANONICAL_COMPARATORS = frozenset({"eq", "gt", "gte", "lt", "lte"})
+
+
+def _is_nfl_settlement_url(value: object) -> bool:
+    if type(value) is not str:
+        return False
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        return False
+    host = parsed.hostname
+    return (
+        parsed.scheme == "https"
+        and parsed.username is None
+        and parsed.password is None
+        and port in {None, 443}
+        and type(host) is str
+        and (host == "nfl.com" or host.endswith(".nfl.com"))
+    )
 
 
 class X13UniverseError(ValueError):
@@ -969,8 +989,7 @@ def validate_kalshi_series_registry(
             type(sources) is not list
             or not any(
                 type(source) is dict
-                and type(source.get("url")) is str
-                and "nfl.com" in source["url"].lower()
+                and _is_nfl_settlement_url(source.get("url"))
                 for source in sources
             )
         ):
