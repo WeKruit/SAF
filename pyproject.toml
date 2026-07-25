@@ -26,6 +26,7 @@ dependencies = [
 [project.scripts]
 audit-pmxt = "prediction_market.cli.audit_pmxt:main"
 pm-data-store = "prediction_market.cli.pm_data_store:main"
+publish-x13-dashboard = "prediction_market.cli.publish_x13_dashboard:main"
 record-markets = "prediction_market.cli.record_markets:main"
 
 [dependency-groups]

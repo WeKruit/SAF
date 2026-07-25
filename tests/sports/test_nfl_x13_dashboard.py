@@ -399,6 +399,78 @@ def test_export_is_deterministic_bounded_and_hash_bound(
         json.loads(raw)
 
 
+def test_public_projection_verifier_reopens_exact_task2_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    batch = _write_batch(tmp_path)
+    _stub_batch_verifier(monkeypatch)
+    exported = dashboard.export_x13_dashboard(
+        batch, tmp_path / "output"
+    )
+
+    verified = dashboard.verify_x13_dashboard_export(
+        exported.publish_root
+    )
+
+    assert verified.publish_root == exported.publish_root
+    assert (
+        verified.manifest_sha256
+        == exported.publish_manifest_sha256
+    )
+    assert verified.batch_id == exported.batch_id
+    assert len(verified.assets) == exported.asset_count
+    assert all(asset.payload for asset in verified.assets)
+
+
+def test_public_projection_verifier_rejects_forged_embedded_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    batch = _write_batch(tmp_path)
+    _stub_batch_verifier(monkeypatch)
+    exported = dashboard.export_x13_dashboard(
+        batch, tmp_path / "output"
+    )
+    manifest_path = exported.manifest_path
+    manifest = json.loads(manifest_path.read_bytes())
+    descriptor = manifest["assets"][0]
+    old_asset = exported.publish_root / descriptor["relative_path"]
+    document = json.loads(old_asset.read_bytes())
+    document["builder_version"] = "forged-builder"
+    replacement_raw = _canonical_bytes(document)
+    replacement_sha = (
+        "sha256:" + hashlib.sha256(replacement_raw).hexdigest()
+    )
+    replacement_relative = (
+        old_asset.parent.relative_to(exported.publish_root)
+        / f"{replacement_sha.replace(':', '-')}.json"
+    ).as_posix()
+    old_asset.unlink()
+    (exported.publish_root / replacement_relative).write_bytes(
+        replacement_raw
+    )
+    descriptor["relative_path"] = replacement_relative
+    descriptor["object_sha256"] = replacement_sha
+    descriptor["byte_length"] = len(replacement_raw)
+    manifest["assets"].sort(key=lambda row: row["relative_path"])
+    replacement_manifest_raw = _canonical_bytes(manifest)
+    replacement_manifest_sha = (
+        "sha256:" + hashlib.sha256(replacement_manifest_raw).hexdigest()
+    )
+    manifest_path.unlink()
+    (
+        manifest_path.parent
+        / f"{replacement_manifest_sha.replace(':', '-')}.json"
+    ).write_bytes(replacement_manifest_raw)
+
+    with pytest.raises(
+        dashboard.X13DashboardExportError,
+        match="embedded.*identity|builder",
+    ):
+        dashboard.verify_x13_dashboard_export(
+            exported.publish_root
+        )
+
+
 def test_export_rejects_tampered_source_after_batch_verification(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

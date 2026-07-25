@@ -71,6 +71,22 @@ class DashboardExportV1:
     asset_count: int
 
 
+@dataclass(frozen=True, slots=True)
+class VerifiedDashboardAssetV1:
+    descriptor: Mapping[str, object]
+    payload: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedDashboardProjectionV1:
+    publish_root: Path
+    batch_id: str
+    manifest_sha256: str
+    manifest: Mapping[str, object]
+    manifest_payload: bytes
+    assets: tuple[VerifiedDashboardAssetV1, ...]
+
+
 class _X13DataScriptParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=False)
@@ -955,6 +971,80 @@ def _verify_published_projection(
     assets: Sequence[Mapping[str, object]],
 ) -> None:
     _directory_anchor(target_fd)
+    try:
+        manifest_value = _require_mapping(
+            json.loads(manifest_raw), "dashboard publish manifest"
+        )
+    except json.JSONDecodeError as error:
+        raise X13DashboardExportError(
+            "dashboard publish manifest is not JSON"
+        ) from error
+    if manifest_raw != _canonical_json_bytes(manifest_value):
+        raise X13DashboardExportError(
+            "dashboard publish manifest is not canonical"
+        )
+    if (
+        manifest_value.get("schema")
+        != "nfl_x13_dashboard_publish_manifest_v1"
+        or manifest_value.get("experiment_id") != "X-13"
+        or manifest_value.get("builder_version")
+        != DASHBOARD_BUILDER_VERSION
+        or manifest_value.get("status")
+        != "PRELIMINARY_SOURCE_TIME_ONLY"
+        or manifest_value.get("game_count") != len(X13_GAME_IDS)
+    ):
+        raise X13DashboardExportError(
+            "dashboard publish manifest identity is not Task 2 output"
+        )
+    batch_id = manifest_value.get("batch_id")
+    if not isinstance(batch_id, str) or _SHA256_RE.fullmatch(batch_id) is None:
+        raise X13DashboardExportError(
+            "dashboard publish manifest batch identity is invalid"
+        )
+    manifest_assets = _require_sequence(
+        manifest_value.get("assets"), "dashboard publish manifest assets"
+    )
+    if (
+        manifest_value.get("asset_count") != len(manifest_assets)
+        or list(manifest_assets) != list(assets)
+    ):
+        raise X13DashboardExportError(
+            "dashboard publish manifest descriptors are inconsistent"
+        )
+    relative_paths = [str(row["relative_path"]) for row in assets]
+    if relative_paths != sorted(relative_paths) or len(
+        set(relative_paths)
+    ) != len(relative_paths):
+        raise X13DashboardExportError(
+            "dashboard publish manifest asset order is invalid"
+        )
+    source_batch_manifest = _require_mapping(
+        manifest_value.get("source_batch_manifest"),
+        "dashboard source batch manifest",
+    )
+    if (
+        source_batch_manifest.get("relative_path")
+        != "batch_manifest.json"
+        or not isinstance(source_batch_manifest.get("sha256"), str)
+        or _SHA256_RE.fullmatch(
+            str(source_batch_manifest.get("sha256"))
+        )
+        is None
+    ):
+        raise X13DashboardExportError(
+            "dashboard source batch binding is invalid"
+        )
+    claim_boundary = _require_mapping(
+        manifest_value.get("claim_boundary"),
+        "dashboard claim boundary",
+    )
+    if any(
+        claim_boundary.get(key) is not False
+        for key in ("causality", "real_latency", "execution", "tradable_alpha")
+    ):
+        raise X13DashboardExportError(
+            "dashboard claim boundary is invalid"
+        )
     expected = {
         str(descriptor["relative_path"]): descriptor for descriptor in assets
     }
@@ -964,7 +1054,115 @@ def _verify_published_projection(
         raise X13DashboardExportError(
             "published dashboard asset set differs from its manifest"
         )
+    role_games: dict[str, set[str]] = {
+        "game_core": set(),
+        "game_contracts": set(),
+        "association_preview": set(),
+    }
+    catalog_count = 0
+    market_identities: set[tuple[str, str]] = set()
     for relative, descriptor in expected.items():
+        role = descriptor.get("logical_role")
+        schema = descriptor.get("schema")
+        role_schemas = {
+            "catalog": "nfl_x13_dashboard_catalog_v1",
+            "game_core": "nfl_x13_dashboard_game_core_v1",
+            "game_contracts": "nfl_x13_dashboard_contracts_v1",
+            "association_preview": (
+                "nfl_x13_dashboard_association_preview_v1"
+            ),
+            "market_series": "nfl_x13_dashboard_market_series_v1",
+        }
+        if (
+            role not in role_schemas
+            or schema != role_schemas[role]
+            or descriptor.get("media_type") != "application/json"
+            or descriptor.get("builder_version")
+            != DASHBOARD_BUILDER_VERSION
+        ):
+            raise X13DashboardExportError(
+                f"dashboard asset descriptor is not Task 2 output: {relative}"
+            )
+        object_sha256 = descriptor.get("object_sha256")
+        source_sha256 = descriptor.get("source_sha256")
+        if (
+            not isinstance(object_sha256, str)
+            or _SHA256_RE.fullmatch(object_sha256) is None
+            or not isinstance(source_sha256, str)
+            or _SHA256_RE.fullmatch(source_sha256) is None
+        ):
+            raise X13DashboardExportError(
+                f"dashboard asset descriptor hash is invalid: {relative}"
+            )
+        relative_path = PurePosixPath(relative)
+        if (
+            relative_path.is_absolute()
+            or relative_path.as_posix() != relative
+            or ".." in relative_path.parts
+            or relative_path.name
+            != object_sha256.replace(":", "-") + ".json"
+        ):
+            raise X13DashboardExportError(
+                f"dashboard asset descriptor path is invalid: {relative}"
+            )
+        sources = [
+            _require_mapping(value, "dashboard asset source")
+            for value in _require_sequence(
+                descriptor.get("source_artifacts"),
+                "dashboard asset source artifacts",
+            )
+        ]
+        if (
+            not sources
+            or sources[0].get("sha256") != source_sha256
+            or any(
+                not isinstance(source.get("relative_path"), str)
+                or not isinstance(source.get("sha256"), str)
+                or _SHA256_RE.fullmatch(str(source.get("sha256")))
+                is None
+                for source in sources
+            )
+        ):
+            raise X13DashboardExportError(
+                f"dashboard asset source binding is invalid: {relative}"
+            )
+        game_id = descriptor.get("game_id")
+        if role == "catalog":
+            catalog_count += 1
+            if (
+                game_id is not None
+                or sources[0] != source_batch_manifest
+                or {str(source["relative_path"]) for source in sources[1:]}
+                != {f"games/{value}.html" for value in X13_GAME_IDS}
+            ):
+                raise X13DashboardExportError(
+                    "dashboard catalog source binding is invalid"
+                )
+        else:
+            if game_id not in X13_GAME_IDS or sources[0].get(
+                "relative_path"
+            ) != f"games/{game_id}.html":
+                raise X13DashboardExportError(
+                    f"dashboard game source binding is invalid: {relative}"
+                )
+            if role in role_games:
+                if str(game_id) in role_games[str(role)]:
+                    raise X13DashboardExportError(
+                        f"dashboard game role is duplicated: {relative}"
+                    )
+                role_games[str(role)].add(str(game_id))
+            if role == "market_series":
+                logical_market_id = descriptor.get("logical_market_id")
+                if not isinstance(logical_market_id, str) or not logical_market_id:
+                    raise X13DashboardExportError(
+                        "dashboard market identity is missing"
+                    )
+                identity = (str(game_id), logical_market_id)
+                if identity in market_identities:
+                    raise X13DashboardExportError(
+                        "dashboard market identity is duplicated"
+                    )
+                market_identities.add(identity)
         raw = _read_regular_file_at(
             target_fd,
             relative,
@@ -987,6 +1185,31 @@ def _verify_published_projection(
             raise X13DashboardExportError(
                 f"published dashboard asset is not canonical: {relative}"
             )
+        document = _require_mapping(value, "dashboard asset document")
+        if (
+            document.get("schema") != schema
+            or document.get("experiment_id") != "X-13"
+            or document.get("batch_id") != batch_id
+            or document.get("builder_version")
+            != DASHBOARD_BUILDER_VERSION
+            or document.get("source_artifacts") != sources
+        ):
+            raise X13DashboardExportError(
+                f"dashboard embedded identity differs from descriptor: {relative}"
+            )
+        payload = _require_mapping(
+            document.get("payload"), "dashboard asset payload"
+        )
+        if role != "catalog" and payload.get("game_id") != game_id:
+            raise X13DashboardExportError(
+                f"dashboard embedded game identity is invalid: {relative}"
+            )
+    if catalog_count != 1 or any(
+        games != set(X13_GAME_IDS) for games in role_games.values()
+    ):
+        raise X13DashboardExportError(
+            "dashboard fixed role coverage is incomplete"
+        )
     observed_manifest = _read_regular_file_at(
         target_fd,
         f"manifests/{manifest_name}",
@@ -994,6 +1217,95 @@ def _verify_published_projection(
     )
     if observed_manifest != manifest_raw:
         raise X13DashboardExportError("published dashboard manifest changed")
+
+
+def verify_x13_dashboard_export(
+    publish_root: str | Path,
+) -> VerifiedDashboardProjectionV1:
+    """Reopen and strictly verify one canonical Task 2 publish root."""
+
+    root = Path(publish_root)
+    descriptor, root_anchor = _open_existing_directory(root)
+    try:
+        inventory = _regular_file_inventory(descriptor)
+        manifests = sorted(
+            relative
+            for relative in inventory
+            if relative.startswith("manifests/")
+        )
+        if len(manifests) != 1:
+            raise X13DashboardExportError(
+                "dashboard projection must contain exactly one manifest"
+            )
+        manifest_relative = manifests[0]
+        manifest_name = PurePosixPath(manifest_relative).name
+        match = re.fullmatch(
+            r"sha256-([0-9a-f]{64})\.json", manifest_name
+        )
+        if match is None:
+            raise X13DashboardExportError(
+                "dashboard projection manifest is not content addressed"
+            )
+        manifest_raw = _read_regular_file_at(
+            descriptor,
+            manifest_relative,
+            max_bytes=MAX_ASSET_BYTES,
+        )
+        manifest_sha256 = _sha256(manifest_raw)
+        if manifest_sha256 != f"sha256:{match.group(1)}":
+            raise X13DashboardExportError(
+                "dashboard projection manifest hash mismatch"
+            )
+        try:
+            manifest = _require_mapping(
+                json.loads(manifest_raw), "dashboard projection manifest"
+            )
+        except json.JSONDecodeError as error:
+            raise X13DashboardExportError(
+                "dashboard projection manifest is not JSON"
+            ) from error
+        assets = [
+            _require_mapping(value, "dashboard projection descriptor")
+            for value in _require_sequence(
+                manifest.get("assets"),
+                "dashboard projection assets",
+            )
+        ]
+        _verify_published_projection(
+            descriptor,
+            manifest_name=manifest_name,
+            manifest_raw=manifest_raw,
+            assets=assets,
+        )
+        batch_id = str(manifest["batch_id"])
+        if root.name != f"batch={batch_id.replace(':', '-')}":
+            raise X13DashboardExportError(
+                "dashboard projection directory identity is invalid"
+            )
+        verified_assets = tuple(
+            VerifiedDashboardAssetV1(
+                descriptor=dict(asset),
+                payload=_read_regular_file_at(
+                    descriptor,
+                    str(asset["relative_path"]),
+                    max_bytes=MAX_ASSET_BYTES,
+                ),
+            )
+            for asset in assets
+        )
+        _assert_directory_anchor(
+            descriptor, root_anchor, "dashboard projection root"
+        )
+        return VerifiedDashboardProjectionV1(
+            publish_root=root,
+            batch_id=batch_id,
+            manifest_sha256=manifest_sha256,
+            manifest=dict(manifest),
+            manifest_payload=manifest_raw,
+            assets=verified_assets,
+        )
+    finally:
+        os.close(descriptor)
 
 
 def _game_assets(
@@ -1633,8 +1945,11 @@ __all__ = [
     "MAX_ASSET_BYTES",
     "DashboardAssetV1",
     "DashboardExportV1",
+    "VerifiedDashboardAssetV1",
+    "VerifiedDashboardProjectionV1",
     "X13DashboardExportError",
     "export_x13_dashboard",
     "extract_presentation_html",
     "main",
+    "verify_x13_dashboard_export",
 ]
