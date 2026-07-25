@@ -8,6 +8,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterator, Mapping, Protocol
 
@@ -21,6 +22,8 @@ _CHUNK_SIZE = 1024 * 1024
 _MAX_OBJECT_BYTES = 8 * 1024 * 1024
 _MAX_POINTER_BYTES = 64 * 1024
 _CONDITIONAL_CREATE_ATTEMPTS = 3
+_DEFAULT_MAX_WORKERS = 8
+_MAX_WORKERS_LIMIT = 32
 _DEFAULT_ROOT_PREFIX = "prediction-market"
 _DASHBOARD_PREFIX = "dashboard/x13"
 _SHA256_RE = re.compile(r"sha256:[0-9a-f]{64}")
@@ -625,17 +628,48 @@ def publish_dashboard_export(
     config: DashboardS3Config,
     *,
     object_store: DashboardObjectStore | None = None,
+    max_workers: int = _DEFAULT_MAX_WORKERS,
 ) -> DashboardPublishResult:
     """Publish immutable content first and update the latest pointer last."""
 
+    if (
+        isinstance(max_workers, bool)
+        or not isinstance(max_workers, int)
+        or not 1 <= max_workers <= _MAX_WORKERS_LIMIT
+    ):
+        raise DashboardStoreError(
+            f"dashboard publish workers must be between 1 and "
+            f"{_MAX_WORKERS_LIMIT}"
+        )
     _normalized_root_prefix(config.prefix)
     _, manifest, manifest_object, objects = _load_local_export(export_root)
     store = _store_for(config, object_store)
-    total_bytes = 0
-    for item in objects:
-        key = dashboard_object_key(config.prefix, item.sha256)
-        _publish_immutable_object(store, key=key, item=item)
-        total_bytes += len(item.payload)
+    executor = ThreadPoolExecutor(
+        max_workers=max_workers,
+        thread_name_prefix="x13-dashboard-s3",
+    )
+    futures: list[Future[bool]] = []
+    try:
+        for item in objects:
+            key = dashboard_object_key(config.prefix, item.sha256)
+            futures.append(
+                executor.submit(
+                    _publish_immutable_object,
+                    store,
+                    key=key,
+                    item=item,
+                )
+            )
+        for future in futures:
+            future.result()
+    except BaseException:
+        for future in futures:
+            future.cancel()
+        executor.shutdown(wait=True, cancel_futures=True)
+        raise
+    else:
+        executor.shutdown(wait=True)
+    total_bytes = sum(len(item.payload) for item in objects)
     manifest_key = dashboard_object_key(
         config.prefix, manifest_object.sha256
     )

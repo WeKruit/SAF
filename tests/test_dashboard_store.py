@@ -5,6 +5,8 @@ import importlib.util
 import json
 import re
 import sys
+import threading
+import time
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -64,6 +66,7 @@ class PutCall:
 
 class FakeS3:
     def __init__(self) -> None:
+        self.lock = threading.RLock()
         self.config = DashboardS3Config(
             endpoint="https://s3.example.test",
             region="us-east-1",
@@ -86,16 +89,20 @@ class FakeS3:
         self.conditional_conflict_key: str | None = None
         self.conditional_conflicts_remaining = 0
         self.conditional_conflict_payload: bytes | None = None
+        self.upload_delay_seconds = 0.0
+        self.active_content_puts = 0
+        self.peak_content_puts = 0
 
     def head_object(self, key: str) -> dict[str, object] | None:
-        payload = self.objects.get(key)
-        if payload is None:
-            return None
-        return {
-            "key": key,
-            "byte_size": len(payload),
-            "metadata": dict(self.metadata.get(key, {})),
-        }
+        with self.lock:
+            payload = self.objects.get(key)
+            if payload is None:
+                return None
+            return {
+                "key": key,
+                "byte_size": len(payload),
+                "metadata": dict(self.metadata.get(key, {})),
+            }
 
     def put_bytes(
         self,
@@ -105,60 +112,73 @@ class FakeS3:
         metadata: dict[str, str],
         create_only: bool,
     ) -> None:
-        self.put_calls.append(
-            PutCall(
-                key=key,
-                checksum_sha256=metadata.get("sha256"),
-                create_only=create_only,
+        if create_only and self.upload_delay_seconds:
+            with self.lock:
+                self.active_content_puts += 1
+                self.peak_content_puts = max(
+                    self.peak_content_puts, self.active_content_puts
+                )
+            try:
+                time.sleep(self.upload_delay_seconds)
+            finally:
+                with self.lock:
+                    self.active_content_puts -= 1
+        with self.lock:
+            self.put_calls.append(
+                PutCall(
+                    key=key,
+                    checksum_sha256=metadata.get("sha256"),
+                    create_only=create_only,
+                )
             )
-        )
-        if (
-            create_only
-            and key == self.conditional_conflict_key
-            and self.conditional_conflicts_remaining > 0
-        ):
-            self.conditional_conflicts_remaining -= 1
-            if self.conditional_conflict_payload is not None:
-                self.objects[key] = self.conditional_conflict_payload
+            if (
+                create_only
+                and key == self.conditional_conflict_key
+                and self.conditional_conflicts_remaining > 0
+            ):
+                self.conditional_conflicts_remaining -= 1
+                if self.conditional_conflict_payload is not None:
+                    self.objects[key] = self.conditional_conflict_payload
+                    self.metadata[key] = {
+                        "sha256": _sha256(
+                            self.conditional_conflict_payload
+                        )
+                    }
+                raise DashboardConditionalRequestConflict(key)
+            if create_only and key == self.race_key:
+                assert self.race_payload is not None
+                self.objects[key] = self.race_payload
                 self.metadata[key] = {
-                    "sha256": _sha256(
-                        self.conditional_conflict_payload
-                    )
+                    "sha256": _sha256(self.race_payload)
                 }
-            raise DashboardConditionalRequestConflict(key)
-        if create_only and key == self.race_key:
-            assert self.race_payload is not None
-            self.objects[key] = self.race_payload
-            self.metadata[key] = {
-                "sha256": _sha256(self.race_payload)
-            }
-            raise DashboardObjectAlreadyExists(key)
-        if create_only and key in self.objects:
-            raise DashboardObjectAlreadyExists(key)
-        if key == self.fail_key:
-            raise OSError("injected upload failure")
-        self.objects[key] = (
-            b"remote corruption" if key == self.corrupt_key else payload
-        )
-        self.metadata[key] = dict(metadata)
-        if key == self.lose_response_key:
-            raise OSError("injected lost response after commit")
+                raise DashboardObjectAlreadyExists(key)
+            if create_only and key in self.objects:
+                raise DashboardObjectAlreadyExists(key)
+            if key == self.fail_key:
+                raise OSError("injected upload failure")
+            self.objects[key] = (
+                b"remote corruption" if key == self.corrupt_key else payload
+            )
+            self.metadata[key] = dict(metadata)
+            if key == self.lose_response_key:
+                raise OSError("injected lost response after commit")
 
     def read_object_chunks(
         self, key: str, *, chunk_size: int = 1024 * 1024
     ) -> Iterator[bytes]:
-        self.read_counts[key] = self.read_counts.get(key, 0) + 1
-        try:
-            payload = self.objects[key]
-        except KeyError as error:
-            raise KeyError(key) from error
-        if (
-            key == self.replace_on_second_read_key
-            and self.read_counts[key] == 2
-        ):
-            assert self.second_read_payload is not None
-            self.objects[key] = self.second_read_payload
-            payload = self.second_read_payload
+        with self.lock:
+            self.read_counts[key] = self.read_counts.get(key, 0) + 1
+            try:
+                payload = self.objects[key]
+            except KeyError as error:
+                raise KeyError(key) from error
+            if (
+                key == self.replace_on_second_read_key
+                and self.read_counts[key] == 2
+            ):
+                assert self.second_read_payload is not None
+                self.objects[key] = self.second_read_payload
+                payload = self.second_read_payload
         for offset in range(0, len(payload), chunk_size):
             yield payload[offset : offset + chunk_size]
 
@@ -263,6 +283,70 @@ def test_publish_uploads_content_objects_before_latest_pointer(
     assert result.pointer_sha256 == _sha256(
         fake_s3.objects[result.pointer_key]
     )
+
+
+def test_content_publication_is_bounded_parallel_and_pointer_remains_last(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_s3 = FakeS3()
+    fake_s3.upload_delay_seconds = 0.01
+    export_root = _write_export(tmp_path, monkeypatch)
+
+    result = publish_dashboard_export(
+        export_root,
+        fake_s3.config,
+        object_store=fake_s3,
+        max_workers=4,
+    )
+
+    assert 1 < fake_s3.peak_content_puts <= 4
+    assert fake_s3.put_calls[-1].key == result.pointer_key
+    assert fake_s3.put_calls[-1].create_only is False
+    assert result.verified_object_count == len(_content_keys(fake_s3))
+    assert result.total_verified_bytes == sum(
+        len(fake_s3.objects[key]) for key in _content_keys(fake_s3)
+    )
+
+
+def test_parallel_content_failure_never_writes_pointer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_s3 = FakeS3()
+    fake_s3.upload_delay_seconds = 0.005
+    export_root = _write_export(tmp_path, monkeypatch)
+    batch = next(export_root.glob("batch=*"))
+    manifest = json.loads(next((batch / "manifests").glob("*.json")).read_bytes())
+    failed_sha = manifest["assets"][0]["object_sha256"]
+    fake_s3.fail_key = dashboard_store.dashboard_object_key(
+        fake_s3.config.prefix, failed_sha
+    )
+
+    with pytest.raises(DashboardStoreError, match="upload"):
+        publish_dashboard_export(
+            export_root,
+            fake_s3.config,
+            object_store=fake_s3,
+            max_workers=4,
+        )
+
+    assert "dashboard/x13/published/latest.json" not in fake_s3.objects
+    assert fake_s3.active_content_puts == 0
+
+
+@pytest.mark.parametrize("workers", [0, -1, 33, True])
+def test_invalid_worker_count_is_rejected_before_publication(
+    tmp_path: Path,
+    workers: int,
+) -> None:
+    fake_s3 = FakeS3()
+    with pytest.raises(DashboardStoreError, match="workers"):
+        publish_dashboard_export(
+            tmp_path / "unused",
+            fake_s3.config,
+            object_store=fake_s3,
+            max_workers=workers,
+        )
+    assert fake_s3.put_calls == []
 
 
 def test_existing_identical_content_and_pointer_are_idempotent(
@@ -770,6 +854,16 @@ def test_cli_has_exact_three_subcommands() -> None:
         "publish-s3",
         "verify-s3",
     }
+    arguments = parser.parse_args(
+        [
+            "publish-s3",
+            "--export-root",
+            "output",
+            "--workers",
+            "6",
+        ]
+    )
+    assert arguments.workers == 6
 
 
 def test_project_registers_dashboard_cli() -> None:

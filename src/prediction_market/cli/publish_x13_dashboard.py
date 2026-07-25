@@ -39,6 +39,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     publish.add_argument("--export-root", type=Path, required=True)
     publish.add_argument("--env-file", type=Path)
+    publish.add_argument(
+        "--workers",
+        type=int,
+        default=8,
+        help="bounded immutable-content upload workers (1-32; default: 8)",
+    )
 
     verify = commands.add_parser(
         "verify-s3", help="verify the current private S3 publication"
@@ -86,7 +92,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             if arguments.command == "publish-s3":
                 result = publish_dashboard_export(
-                    arguments.export_root, config
+                    arguments.export_root,
+                    config,
+                    max_workers=arguments.workers,
                 )
             else:
                 result = verify_dashboard_publication(config)
