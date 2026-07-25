@@ -2186,26 +2186,37 @@ def _validate_changes(changes: Any, experiment_id: str) -> dict[str, Any]:
             for item in input_items
         )
         if targets_source_bundle or targets_preliminary_input:
-            exact_shape = (
-                set(changes)
-                == {"resolve_locks", "preregistered_inputs"}
-                and len(resolved_items) == 1
-                and len(input_items) == 1
-                and resolved_items[0]["lock_id"]
-                == "source_manifest_bundle"
+            exact_input = (
+                len(input_items) == 1
                 and input_items[0]["scope"]
                 == "preliminary_source_time_only"
                 and input_items[0]["dataset_ids"]
                 == _X13_SOURCE_DATASET_IDS
                 and input_items[0]["model_ids"] == []
+            )
+            exact_initial_shape = (
+                set(changes)
+                == {"resolve_locks", "preregistered_inputs"}
+                and len(resolved_items) == 1
+                and resolved_items[0]["lock_id"]
+                == "source_manifest_bundle"
+                and exact_input
                 and input_items[0]["data_sha256"]
                 == resolved_items[0]["evidence_ref"]
             )
-            if not exact_shape:
+            exact_pre_result_supersession_shape = (
+                set(changes) == {"preregistered_inputs"}
+                and not resolved_items
+                and exact_input
+            )
+            if not (
+                exact_initial_shape
+                or exact_pre_result_supersession_shape
+            ):
                 raise ExperimentRegistryError(
                     "X-13: atomic source manifest bundle amendment must "
-                    "contain exactly its lock resolution and preliminary "
-                    "preregistered input"
+                    "contain exactly its initial lock/input binding or one "
+                    "pre-result code supersession"
                 )
     return changes
 
@@ -2228,6 +2239,65 @@ class _RegistrationMeta:
     archive_audit_clarified: bool = False
     timestamp_audit_preregistered: bool = False
     timestamp_input_manifest_bound: bool = False
+
+
+def _validate_x13_preregistered_input_transition(
+    *,
+    effective: dict[str, Any],
+    meta: _RegistrationMeta,
+    item: dict[str, Any],
+    initial_atomic_binding: bool,
+    amended_time: datetime,
+) -> None:
+    if item["scope"] != "preliminary_source_time_only":
+        return
+    if amended_time > _utc_now():
+        raise ExperimentRegistryError(
+            "X-13: input preregistration cannot be future-dated"
+        )
+    prior = meta.preregistered_inputs.get(item["scope"])
+    if initial_atomic_binding:
+        if prior is not None:
+            raise ExperimentRegistryError(
+                "X-13: initial source binding cannot replace prior inputs"
+            )
+        return
+    if prior is None:
+        raise ExperimentRegistryError(
+            "X-13: first source input binding must resolve its lock atomically"
+        )
+    if any(
+        result["scope"] == item["scope"]
+        for result in meta.stored_results
+    ):
+        raise ExperimentRegistryError(
+            "X-13: inputs cannot be superseded after a result"
+        )
+    source_lock = next(
+        (
+            lock
+            for lock in effective["registration_locks"]
+            if lock["id"] == "source_manifest_bundle"
+        ),
+        None,
+    )
+    if (
+        source_lock is None
+        or source_lock["status"] != "resolved"
+        or source_lock.get("evidence_ref") != item["data_sha256"]
+    ):
+        raise ExperimentRegistryError(
+            "X-13: input supersession must preserve the resolved source bundle"
+        )
+    for field_name in ("data_sha256", "dataset_ids", "model_ids"):
+        if item[field_name] != prior[field_name]:
+            raise ExperimentRegistryError(
+                "X-13: input supersession may change only code_sha256"
+            )
+    if item["code_sha256"] == prior["code_sha256"]:
+        raise ExperimentRegistryError(
+            "X-13: input supersession must bind a new code_sha256"
+        )
 
 
 def _observed_elapsed_days(meta: _RegistrationMeta) -> int:
@@ -3019,6 +3089,20 @@ def _apply_amendments(
                 meta.scope_authorized_at[scope_name] = amendment["amended_at"]
         if "preregistered_inputs" in changes:
             for item in changes["preregistered_inputs"]:
+                if experiment_id == "X-13":
+                    _validate_x13_preregistered_input_transition(
+                        effective=effective,
+                        meta=meta,
+                        item=item,
+                        initial_atomic_binding=any(
+                            resolved["lock_id"]
+                            == "source_manifest_bundle"
+                            for resolved in changes.get(
+                                "resolve_locks", []
+                            )
+                        ),
+                        amended_time=amended_time,
+                    )
                 if (
                     item["scope"]
                     in meta.registered_reproduction_scopes

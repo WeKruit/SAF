@@ -285,6 +285,19 @@ def test_polymarket_trade_does_not_fabricate_bbo() -> None:
     assert observation.ask is None
     assert observation.has_executable_bbo is False
 
+    with pytest.raises(X13MarketError, match="price must be an exact decimal"):
+        normalize_polymarket_trade(
+            {
+                "transactionHash": "0xbinary-float",
+                "timestamp": int(_at(10).timestamp()),
+                "price": 0.50,
+                "size": "1",
+            },
+            raw_market_id="0xcondition",
+            logical_market_id=POLY_LOGICAL_MARKET_ID,
+            outcome="DET",
+        )
+
 
 def test_kalshi_trade_and_one_minute_candle_bbo_remain_separate() -> None:
     trade = normalize_kalshi_trade(

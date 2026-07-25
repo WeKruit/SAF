@@ -5494,10 +5494,21 @@ def test_x13_source_bundle_resolution_is_one_exact_atomic_amendment() -> None:
     }
 
     assert experiments_module._validate_changes(exact, "X-13") == exact
+    supersession = {
+        "preregistered_inputs": [
+            {
+                **preliminary_input,
+                "code_sha256": "sha256:" + "7" * 64,
+            }
+        ]
+    }
+    assert (
+        experiments_module._validate_changes(supersession, "X-13")
+        == supersession
+    )
 
     invalid_changes = [
         {"resolve_locks": [source_lock]},
-        {"preregistered_inputs": [preliminary_input]},
         {**exact, "status": "running"},
         {
             **exact,
@@ -5562,6 +5573,99 @@ def test_x13_source_bundle_resolution_is_one_exact_atomic_amendment() -> None:
                 ],
             },
             "X-13",
+        )
+
+
+def test_x13_pre_result_code_supersession_preserves_source_inputs() -> None:
+    import prediction_market.experiments as experiments_module
+
+    scope = "preliminary_source_time_only"
+    data_sha256 = "sha256:" + "2" * 64
+    prior = {
+        "code_sha256": "sha256:" + "1" * 64,
+        "data_sha256": data_sha256,
+        "dataset_ids": [
+            "DS-KALSHI-HISTORICAL",
+            "DS-NFLVERSE",
+            "DS-NFLVERSE-PARTICIPATION",
+            "DS-POLYMARKET-PUBLIC",
+        ],
+        "model_ids": [],
+        "registered_at": "2026-07-25T09:08:22Z",
+    }
+    item = {
+        key: value
+        for key, value in prior.items()
+        if key != "registered_at"
+    }
+    item["scope"] = scope
+    item["code_sha256"] = "sha256:" + "3" * 64
+    effective = {
+        "registration_locks": [
+            {
+                "id": "source_manifest_bundle",
+                "status": "resolved",
+                "evidence_ref": data_sha256,
+            }
+        ]
+    }
+    meta = experiments_module._RegistrationMeta(head="sha256:" + "4" * 64)
+    meta.preregistered_inputs[scope] = prior
+
+    experiments_module._validate_x13_preregistered_input_transition(
+        effective=effective,
+        meta=meta,
+        item=item,
+        initial_atomic_binding=False,
+        amended_time=datetime(2026, 7, 25, 9, 23, 48, tzinfo=timezone.utc),
+    )
+
+    invalid_items = [
+        {**item, "code_sha256": prior["code_sha256"]},
+        {**item, "data_sha256": "sha256:" + "5" * 64},
+        {**item, "dataset_ids": ["DS-NFLVERSE"]},
+        {**item, "model_ids": ["MODEL-NFL-LOGISTIC"]},
+    ]
+    for invalid in invalid_items:
+        with pytest.raises(ExperimentRegistryError, match="X-13"):
+            experiments_module._validate_x13_preregistered_input_transition(
+                effective=effective,
+                meta=meta,
+                item=invalid,
+                initial_atomic_binding=False,
+                amended_time=datetime(
+                    2026, 7, 25, 9, 23, 48, tzinfo=timezone.utc
+                ),
+            )
+
+    meta.stored_results.append({"scope": scope})
+    with pytest.raises(ExperimentRegistryError, match="after a result"):
+        experiments_module._validate_x13_preregistered_input_transition(
+            effective=effective,
+            meta=meta,
+            item=item,
+            initial_atomic_binding=False,
+            amended_time=datetime(
+                2026, 7, 25, 9, 23, 48, tzinfo=timezone.utc
+            ),
+        )
+
+    meta.stored_results.clear()
+    with patch.object(
+        experiments_module,
+        "_utc_now",
+        return_value=datetime(
+            2026, 7, 25, 9, 23, 47, tzinfo=timezone.utc
+        ),
+    ), pytest.raises(ExperimentRegistryError, match="future-dated"):
+        experiments_module._validate_x13_preregistered_input_transition(
+            effective=effective,
+            meta=meta,
+            item=item,
+            initial_atomic_binding=False,
+            amended_time=datetime(
+                2026, 7, 25, 9, 23, 48, tzinfo=timezone.utc
+            ),
         )
 
 

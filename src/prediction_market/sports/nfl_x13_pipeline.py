@@ -392,7 +392,12 @@ def _json_bytes(value: object) -> bytes:
         raise X13PipelineError("payload is not canonical JSON") from error
 
 
-def _strict_json(raw: bytes, *, context: str) -> object:
+def _strict_json(
+    raw: bytes,
+    *,
+    context: str,
+    exact_decimal_numbers: bool = False,
+) -> object:
     def unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
         result: dict[str, object] = {}
         for key, value in pairs:
@@ -407,6 +412,7 @@ def _strict_json(raw: bytes, *, context: str) -> object:
         return json.loads(
             raw.decode("utf-8"),
             object_pairs_hook=unique,
+            parse_float=Decimal if exact_decimal_numbers else float,
             parse_constant=lambda value: (_ for _ in ()).throw(
                 X13PipelineError(
                     f"{context} contains non-finite JSON {value}"
@@ -1711,13 +1717,15 @@ def _receipt_document(
         or manifest.license_status in {"unknown", "blocked"}
     ):
         raise X13PipelineError("capture manifest has an unknown or blocked license")
+    resource = _resource(manifest.source_url)
     payload = _strict_json(
         verified.object_bytes,
         context=f"capture {receipt.manifest_sha256}",
+        exact_decimal_numbers=resource == "polymarket_trades",
     )
     return VerifiedCaptureDocumentV1(
         game_id=game_id,
-        resource=_resource(manifest.source_url),
+        resource=resource,
         manifest_sha256=manifest.manifest_sha256,
         object_sha256=manifest.object_sha256,
         byte_length=manifest.byte_length,

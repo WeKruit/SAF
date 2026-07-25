@@ -459,18 +459,18 @@ def _capture_fixture(
                             f"0xpoly-{request.game_id}-{side}-{offset}"
                         ),
                         "price": price,
-                        "size": "2",
+                        "size": 2.5,
                     }
                     for offset, away_price in (
-                        (-2, "0.50"),
-                        (2, "0.60"),
+                        (-2, 0.50),
+                        (2, 0.60),
                     )
                     for side, outcome, price in (
                         ("away", binding.away_team, away_price),
                         (
                             "home",
                             binding.home_team,
-                            str(Decimal(1) - Decimal(away_price)),
+                            float(Decimal(1) - Decimal(str(away_price))),
                         ),
                     )
                     if params["start"]
@@ -866,6 +866,34 @@ def test_public_pipeline_entrypoints_cannot_inject_authorization() -> None:
     assert "authorization" not in inspect.signature(
         run_x13_full_batch
     ).parameters
+
+
+def test_polymarket_json_numbers_preserve_exact_decimal_values() -> None:
+    import prediction_market.sports.nfl_x13_pipeline as pipeline_module
+
+    payload = pipeline_module._strict_json(
+        b'{"price":0.8399999997,"size":4.48297618e2,"count":2}',
+        context="Polymarket numeric trade fixture",
+        exact_decimal_numbers=True,
+    )
+
+    assert payload == {
+        "price": Decimal("0.8399999997"),
+        "size": Decimal("448.297618"),
+        "count": 2,
+    }
+    assert type(payload["count"]) is int
+    default_payload = pipeline_module._strict_json(
+        b'{"price":0.5}',
+        context="non-trade JSON fixture",
+    )
+    assert type(default_payload["price"]) is float
+    with pytest.raises(pipeline_module.X13PipelineError, match="non-finite"):
+        pipeline_module._strict_json(
+            b'{"price":NaN}',
+            context="invalid Polymarket trade fixture",
+            exact_decimal_numbers=True,
+        )
 
 
 def test_end_to_end_pipeline_reopens_evidence_normalizes_and_publishes(

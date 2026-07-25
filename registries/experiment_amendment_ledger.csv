@@ -20,3 +20,4 @@ X-11,3,sha256:ee5a0ae12f8de8e9a3fe093193a4d730d8281c4a82ff631ae245cf71680879cc,s
 X-12,0,sha256:f1482d5268cbcb556ae8ac8fb37f15d31586cbc2e13565cb05f0341efcabdc96,,,,
 X-13,0,sha256:f637a647e881a048866e0dd4003b65b4397e6194cf6e58cc13c65be69920a697,,,,
 X-13,1,sha256:f2c54c5df05a27d1d6500598bc81d4194f8875dfb82b4219a1ab1991dd9ff133,sha256:f637a647e881a048866e0dd4003b65b4397e6194cf6e58cc13c65be69920a697,2026-07-25T09:08:22Z,H,Bind the exact immutable X-13 source bundle and evaluation code before source-time association evaluation.
+X-13,2,sha256:b160b856da5c1f8115969bbbbda6418fe67fc84e0cffdb121f0ea9a677f1ac2f,sha256:f2c54c5df05a27d1d6500598bc81d4194f8875dfb82b4219a1ab1991dd9ff133,2026-07-25T09:23:48Z,H,Pre-evaluation code supersession after the 2026-07-25T09:11:18Z attempt failed closed before publication: parse official Polymarket JSON-number price and size as exact Decimal at the verified raw boundary; source bundle unchanged and no result exists.
