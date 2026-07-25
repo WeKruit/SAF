@@ -93,5 +93,21 @@ experiment_card:
     - large_scale_microservices
     - readme_return_strategy_selection
     - unregistered_quick_backtest
-  amendments: []
+  amendments:
+    - sequence: 1
+      amended_at: '2026-07-25T09:08:22Z'
+      prior_sha256: sha256:f637a647e881a048866e0dd4003b65b4397e6194cf6e58cc13c65be69920a697
+      approved_by: H
+      reason: Bind the exact immutable X-13 source bundle and evaluation code before source-time association evaluation.
+      changes:
+        resolve_locks:
+          - lock_id: source_manifest_bundle
+            evidence_ref: sha256:aa273e66d8cbfda757cd0e63e4dc00d7087035d0c4bbd723506f7c8958e8f19e
+        preregistered_inputs:
+          - scope: preliminary_source_time_only
+            code_sha256: sha256:82a916ea6f3520992f5a1ec97eecf1257481b4ccfc4ba52301daa209e3ec71e7
+            data_sha256: sha256:aa273e66d8cbfda757cd0e63e4dc00d7087035d0c4bbd723506f7c8958e8f19e
+            dataset_ids: [DS-KALSHI-HISTORICAL, DS-NFLVERSE, DS-NFLVERSE-PARTICIPATION, DS-POLYMARKET-PUBLIC]
+            model_ids: []
+      amendment_sha256: sha256:f2c54c5df05a27d1d6500598bc81d4194f8875dfb82b4219a1ab1991dd9ff133
   registration_record_sha256: sha256:f637a647e881a048866e0dd4003b65b4397e6194cf6e58cc13c65be69920a697
