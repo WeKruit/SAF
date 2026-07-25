@@ -28,6 +28,7 @@ from decimal import Decimal
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Any
+from urllib.parse import urlsplit
 
 from prediction_market.compliance import (
     ComplianceRegistryError,
@@ -1559,21 +1560,47 @@ def load_x13_universe_artifact(
 
 
 def _resource(source_url: str) -> str:
-    if "gamma-api.polymarket.com" in source_url:
+    try:
+        parsed = urlsplit(source_url)
+        port = parsed.port
+    except ValueError as error:
+        raise X13PipelineError(
+            f"unknown captured resource URL: {source_url}"
+        ) from error
+    if (
+        parsed.scheme != "https"
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in {None, 443}
+    ):
+        raise X13PipelineError(
+            f"unknown captured resource URL: {source_url}"
+        )
+    host = parsed.hostname
+    path = parsed.path
+    if (
+        host == "gamma-api.polymarket.com"
+        and (path == "/events" or path.startswith("/events/"))
+    ):
         return "gamma_event"
-    if "data-api.polymarket.com" in source_url and source_url.endswith(
-        _POLYMARKET_DATA_TRADES_PATH
+    if (
+        host == "data-api.polymarket.com"
+        and path == _POLYMARKET_DATA_TRADES_PATH
     ):
         return "polymarket_trades"
-    if source_url.endswith(_KALSHI_HISTORICAL_CUTOFF_PATH):
+    if host != "external-api.kalshi.com":
+        raise X13PipelineError(
+            f"unknown captured resource URL: {source_url}"
+        )
+    if path.endswith(_KALSHI_HISTORICAL_CUTOFF_PATH):
         return "kalshi_cutoff"
-    if source_url.endswith("/candlesticks"):
+    if path.endswith("/candlesticks"):
         return "kalshi_candlesticks"
-    if source_url.endswith(_KALSHI_HISTORICAL_TRADES_PATH):
+    if path.endswith(_KALSHI_HISTORICAL_TRADES_PATH):
         return "kalshi_trades"
-    if source_url.endswith(_KALSHI_HISTORICAL_MARKETS_PATH):
+    if path.endswith(_KALSHI_HISTORICAL_MARKETS_PATH):
         return "kalshi_markets"
-    if source_url.endswith("/series"):
+    if path.endswith("/series"):
         return "kalshi_series"
     raise X13PipelineError(f"unknown captured resource URL: {source_url}")
 

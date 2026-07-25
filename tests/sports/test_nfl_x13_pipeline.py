@@ -896,6 +896,35 @@ def test_polymarket_json_numbers_preserve_exact_decimal_values() -> None:
         )
 
 
+def test_captured_resource_url_requires_exact_https_host() -> None:
+    import prediction_market.sports.nfl_x13_pipeline as pipeline_module
+
+    assert (
+        pipeline_module._resource(
+            "https://gamma-api.polymarket.com/events/40828"
+        )
+        == "gamma_event"
+    )
+    assert (
+        pipeline_module._resource(
+            "https://data-api.polymarket.com/trades"
+        )
+        == "polymarket_trades"
+    )
+    for malicious in (
+        "https://gamma-api.polymarket.com.evil.test/events/40828",
+        "https://evil.test/gamma-api.polymarket.com/events/40828",
+        "https://data-api.polymarket.com.evil.test/trades",
+        "https://evil.test/data-api.polymarket.com/trades",
+        "http://gamma-api.polymarket.com/events/40828",
+    ):
+        with pytest.raises(
+            pipeline_module.X13PipelineError,
+            match="unknown captured resource URL",
+        ):
+            pipeline_module._resource(malicious)
+
+
 def test_association_preview_is_market_covering_stratified_and_deterministic(
 ) -> None:
     import prediction_market.sports.nfl_x13_pipeline as pipeline_module
