@@ -123,4 +123,17 @@ experiment_card:
             dataset_ids: [DS-KALSHI-HISTORICAL, DS-NFLVERSE, DS-NFLVERSE-PARTICIPATION, DS-POLYMARKET-PUBLIC]
             model_ids: []
       amendment_sha256: sha256:b160b856da5c1f8115969bbbbda6418fe67fc84e0cffdb121f0ea9a677f1ac2f
+    - sequence: 3
+      amended_at: '2026-07-25T11:46:07Z'
+      prior_sha256: sha256:b160b856da5c1f8115969bbbbda6418fe67fc84e0cffdb121f0ea9a677f1ac2f
+      approved_by: H
+      reason: 'Pre-evaluation code supersession after the prior source/data-valid batch failed closed at Chromium acceptance before result registration: publish bounded interval-semantic HTML, a market-covering preview, and a hash-bound exploration readiness report; source bundle unchanged and no result exists.'
+      changes:
+        preregistered_inputs:
+          - scope: preliminary_source_time_only
+            code_sha256: sha256:3e671829cec8b20e8285d21b151ae9a99df09efd5f28df9a311034d88e398933
+            data_sha256: sha256:aa273e66d8cbfda757cd0e63e4dc00d7087035d0c4bbd723506f7c8958e8f19e
+            dataset_ids: [DS-KALSHI-HISTORICAL, DS-NFLVERSE, DS-NFLVERSE-PARTICIPATION, DS-POLYMARKET-PUBLIC]
+            model_ids: []
+      amendment_sha256: sha256:a652026456ddc2ea7ce1b2dc84891908e77af645d87589585976820905016838
   registration_record_sha256: sha256:f637a647e881a048866e0dd4003b65b4397e6194cf6e58cc13c65be69920a697
