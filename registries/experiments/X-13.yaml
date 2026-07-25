@@ -136,4 +136,171 @@ experiment_card:
             dataset_ids: [DS-KALSHI-HISTORICAL, DS-NFLVERSE, DS-NFLVERSE-PARTICIPATION, DS-POLYMARKET-PUBLIC]
             model_ids: []
       amendment_sha256: sha256:a652026456ddc2ea7ce1b2dc84891908e77af645d87589585976820905016838
+    - sequence: 4
+      amended_at: '2026-07-25T16:10:10Z'
+      prior_sha256: sha256:a652026456ddc2ea7ce1b2dc84891908e77af645d87589585976820905016838
+      approved_by: H
+      reason: 'Register only the deterministic twenty-game PRELIMINARY_SOURCE_TIME_ONLY source-time batch and presentation artifacts; this is not inference, alpha, latency, causality, or execution evidence, and exploration readiness remains NOT_RUN.'
+      changes:
+        results_ref:
+          scope: preliminary_source_time_only
+          result_label: PRELIMINARY
+          evaluation_started_at: '2026-07-25T11:48:00Z'
+          code_sha256: sha256:3e671829cec8b20e8285d21b151ae9a99df09efd5f28df9a311034d88e398933
+          data_sha256: sha256:aa273e66d8cbfda757cd0e63e4dc00d7087035d0c4bbd723506f7c8958e8f19e
+          result_sha256: sha256:b3438a2571237d112c45fc3ebc3f713b62fb42af21d2de87b17371322e567101
+          registration_head_sha256: sha256:a652026456ddc2ea7ce1b2dc84891908e77af645d87589585976820905016838
+          dataset_ids: [DS-KALSHI-HISTORICAL, DS-NFLVERSE, DS-NFLVERSE-PARTICIPATION, DS-POLYMARKET-PUBLIC]
+          model_ids: []
+      amendment_sha256: sha256:dc7b9006ccea5512713f2be0487f7affaa0978b08a80fe092141f49506ebbe51
+    - sequence: 5
+      amended_at: '2026-07-25T19:02:30Z'
+      prior_sha256: sha256:dc7b9006ccea5512713f2be0487f7affaa0978b08a80fe092141f49506ebbe51
+      approved_by: H
+      reason: Append the reaction-blind historical holdout selector and freeze the corrected focal-team, audited-orientation factor and missing-cell publication code for a reproducible post-hoc discovery iteration. This does not rewrite the X-13 genesis or prior amendments, does not claim clean discovery preregistration, and leaves holdout reactions untouched.
+      changes:
+        historical_holdout_selector:
+          owner_experiment_id: X-13
+          selection_inputs_exclude_market_reaction: true
+          frozen_before_reaction_access: true
+          seed: 20260725
+          selection_size: 20
+          evidence_index_sha256: sha256:350d9e5895191eefc0f92fd83c9ceba317c88ea6104936c3af2f68f92893e358
+          selection_id: sha256:6ce0c257106fa8badd9b43d7a5615fa582ce8d0eae714bdf1453334116716294
+        preregistered_inputs:
+          - scope: preliminary_source_time_only
+            code_sha256: sha256:47f0ca537ceb1046ab11c6eb9e00225f62e11c80ffb28d53d05693a57d9470f3
+            data_sha256: sha256:aa273e66d8cbfda757cd0e63e4dc00d7087035d0c4bbd723506f7c8958e8f19e
+            dataset_ids: [DS-KALSHI-HISTORICAL, DS-NFLVERSE, DS-NFLVERSE-PARTICIPATION, DS-POLYMARKET-PUBLIC]
+            model_ids: []
+      amendment_sha256: sha256:439c17864c9676d832345e1d2a34bd4dca06a33a7fa85ad768dd4309d814d185
+    - sequence: 6
+      amended_at: '2026-07-25T19:04:55Z'
+      prior_sha256: sha256:439c17864c9676d832345e1d2a34bd4dca06a33a7fa85ad768dd4309d814d185
+      approved_by: H
+      reason: Pre-evaluation code supersession after the corrected runner failed closed before publication because invalid or no-trade cells legitimately carry null staleness. Permit null staleness only outside observed-trade rows; source bundle, factor policy, and holdout selector are unchanged.
+      changes:
+        preregistered_inputs:
+          - scope: preliminary_source_time_only
+            code_sha256: sha256:acf4a92e75c0215f0442136b3644985748b370648e6cc58d61c77db42c8abbfa
+            data_sha256: sha256:aa273e66d8cbfda757cd0e63e4dc00d7087035d0c4bbd723506f7c8958e8f19e
+            dataset_ids: [DS-KALSHI-HISTORICAL, DS-NFLVERSE, DS-NFLVERSE-PARTICIPATION, DS-POLYMARKET-PUBLIC]
+            model_ids: []
+      amendment_sha256: sha256:74df766f85b99be6a029a85499f8e605005a8f3228408512fea0a41ddffca24d
+    - sequence: 7
+      amended_at: '2026-07-25T19:11:40Z'
+      prior_sha256: sha256:74df766f85b99be6a029a85499f8e605005a8f3228408512fea0a41ddffca24d
+      approved_by: H
+      reason: Pre-evaluation code supersession after the prior runner was interrupted before publication while sorting the complete delay-zero audit projection. Separate the frozen focal-outcome analysis projection from the complete missing and ambiguous audit publication projection without changing factors horizons support gates data or the frozen holdout.
+      changes:
+        preregistered_inputs:
+          - scope: preliminary_source_time_only
+            code_sha256: sha256:48f75952c3566e1406b50eef17e59a095b14636073e9f2dace1948372dfd7d51
+            data_sha256: sha256:aa273e66d8cbfda757cd0e63e4dc00d7087035d0c4bbd723506f7c8958e8f19e
+            dataset_ids: [DS-KALSHI-HISTORICAL, DS-NFLVERSE, DS-NFLVERSE-PARTICIPATION, DS-POLYMARKET-PUBLIC]
+            model_ids: []
+      amendment_sha256: sha256:a58d6b59b576bc9fef5bd769144950454478b39586261bb09d318a84d9ca3d33
+    - sequence: 8
+      amended_at: '2026-07-25T19:14:11Z'
+      prior_sha256: sha256:a58d6b59b576bc9fef5bd769144950454478b39586261bb09d318a84d9ca3d33
+      approved_by: H
+      reason: Pre-evaluation code supersession after the sequence 7 runner failed closed before publication because the provenance invariant incorrectly required a focal team on explicitly signal-ineligible routine rows. Restrict that invariant to signal-event-eligible rows without changing the eligible observations factor policy horizons support gates data or frozen holdout.
+      changes:
+        preregistered_inputs:
+          - scope: preliminary_source_time_only
+            code_sha256: sha256:b28307799f204e645a99efab2fddf561daab9022dda2e6484289a7f90c95584a
+            data_sha256: sha256:aa273e66d8cbfda757cd0e63e4dc00d7087035d0c4bbd723506f7c8958e8f19e
+            dataset_ids: [DS-KALSHI-HISTORICAL, DS-NFLVERSE, DS-NFLVERSE-PARTICIPATION, DS-POLYMARKET-PUBLIC]
+            model_ids: []
+      amendment_sha256: sha256:180295775c487ceb20eef4eac1bd88ad9207bb69b041ecb169ebf56f36d5a16a
+    - sequence: 9
+      amended_at: '2026-07-25T19:15:45Z'
+      prior_sha256: sha256:180295775c487ceb20eef4eac1bd88ad9207bb69b041ecb169ebf56f36d5a16a
+      approved_by: H
+      reason: Pre-evaluation code supersession after the sequence 8 runner failed closed before publication because the complete audit projection preserved exact decimal source strings while the analysis projection normalized numeric measures. Normalize the same frozen price volume staleness and age fields at the audit projection boundary without changing data factors horizons support gates or holdout.
+      changes:
+        preregistered_inputs:
+          - scope: preliminary_source_time_only
+            code_sha256: sha256:adba2909186425031ff133edc59495826f9bbec985ba0003c78223c527995f26
+            data_sha256: sha256:aa273e66d8cbfda757cd0e63e4dc00d7087035d0c4bbd723506f7c8958e8f19e
+            dataset_ids: [DS-KALSHI-HISTORICAL, DS-NFLVERSE, DS-NFLVERSE-PARTICIPATION, DS-POLYMARKET-PUBLIC]
+            model_ids: []
+      amendment_sha256: sha256:46c6de2e2a0b8d26ca84d02867f3235dfe5750728af593600fd65a7996e9b228
+    - sequence: 10
+      amended_at: '2026-07-25T19:18:05Z'
+      prior_sha256: sha256:46c6de2e2a0b8d26ca84d02867f3235dfe5750728af593600fd65a7996e9b228
+      approved_by: H
+      reason: Append the checksum-verified X-13 twenty-game post-hoc discovery bundle. Every ranked factor remains DISCOVERY_ONLY and requires the already frozen reaction-blind holdout; this result makes no causal latency execution tradeability or alpha claim.
+      changes:
+        results_ref:
+          scope: preliminary_source_time_only
+          result_label: PRELIMINARY
+          evaluation_started_at: '2026-07-25T19:16:47Z'
+          code_sha256: sha256:adba2909186425031ff133edc59495826f9bbec985ba0003c78223c527995f26
+          data_sha256: sha256:aa273e66d8cbfda757cd0e63e4dc00d7087035d0c4bbd723506f7c8958e8f19e
+          result_sha256: sha256:50112456ac3f94650a10661b10eb7ef15492e36cefc4e5c5209d4937429dec26
+          registration_head_sha256: sha256:46c6de2e2a0b8d26ca84d02867f3235dfe5750728af593600fd65a7996e9b228
+          dataset_ids: [DS-KALSHI-HISTORICAL, DS-NFLVERSE, DS-NFLVERSE-PARTICIPATION, DS-POLYMARKET-PUBLIC]
+          model_ids: []
+      amendment_sha256: sha256:d8498f0bcad6b1b635cfb19a4c51327bc2886ed14f043d86c031e58bf3a83a3e
+    - sequence: 11
+      amended_at: '2026-07-25T19:20:03Z'
+      prior_sha256: sha256:d8498f0bcad6b1b635cfb19a4c51327bc2886ed14f043d86c031e58bf3a83a3e
+      approved_by: H
+      reason: Supersede only the PRELIMINARY report-rendering code after the checksum-verified discovery bundle revealed that its prose called every delay-zero audit cell an actual observation. Report total audit cells actual-trade observations and missing or invalid cells separately; the frozen analysis data factors estimates horizons support gates and holdout remain unchanged.
+      changes:
+        preregistered_inputs:
+          - scope: preliminary_source_time_only
+            code_sha256: sha256:d7190dd764486ac2acedeb0453245b86b892216fdfbd538fd099418e0ac1dff2
+            data_sha256: sha256:aa273e66d8cbfda757cd0e63e4dc00d7087035d0c4bbd723506f7c8958e8f19e
+            dataset_ids: [DS-KALSHI-HISTORICAL, DS-NFLVERSE, DS-NFLVERSE-PARTICIPATION, DS-POLYMARKET-PUBLIC]
+            model_ids: []
+      amendment_sha256: sha256:3cb7549aaaf56b6f599a498cb0c700a8cc10775cb6bb50de9043d9bfd19c69f4
+    - sequence: 12
+      amended_at: '2026-07-25T19:21:47Z'
+      prior_sha256: sha256:3cb7549aaaf56b6f599a498cb0c700a8cc10775cb6bb50de9043d9bfd19c69f4
+      approved_by: H
+      reason: Append the checksum-verified X-13 discovery bundle with corrected audit-cell versus actual-trade reporting. Statistical estimates are unchanged from the prior PRELIMINARY bundle; every factor remains DISCOVERY_ONLY and the frozen holdout reactions remain unread.
+      changes:
+        results_ref:
+          scope: preliminary_source_time_only
+          result_label: PRELIMINARY
+          evaluation_started_at: '2026-07-25T19:21:00Z'
+          code_sha256: sha256:d7190dd764486ac2acedeb0453245b86b892216fdfbd538fd099418e0ac1dff2
+          data_sha256: sha256:aa273e66d8cbfda757cd0e63e4dc00d7087035d0c4bbd723506f7c8958e8f19e
+          result_sha256: sha256:25eb19c1c965ee8cd1ecd993ec211b48f093f7733db0b487ec30fff947c337c7
+          registration_head_sha256: sha256:3cb7549aaaf56b6f599a498cb0c700a8cc10775cb6bb50de9043d9bfd19c69f4
+          dataset_ids: [DS-KALSHI-HISTORICAL, DS-NFLVERSE, DS-NFLVERSE-PARTICIPATION, DS-POLYMARKET-PUBLIC]
+          model_ids: []
+      amendment_sha256: sha256:313e3a7c1cb8e359a8b39eb57cb4d2223a058f12e49a43308cad4a0e2d02f892
+    - sequence: 13
+      amended_at: '2026-07-25T19:27:13Z'
+      prior_sha256: sha256:313e3a7c1cb8e359a8b39eb57cb4d2223a058f12e49a43308cad4a0e2d02f892
+      approved_by: H
+      reason: Supersede only PRELIMINARY market-coverage provenance rendering after regression review found that zero-observation audit groups were labelled actual_trade. Label those groups audit_cell_no_actual_trade while preserving complete audit cells and all frozen analysis data factors estimates horizons support gates and holdout.
+      changes:
+        preregistered_inputs:
+          - scope: preliminary_source_time_only
+            code_sha256: sha256:215611d826e8081c6102e960ba609a7af8202e020c1da1203847b1b18defddae
+            data_sha256: sha256:aa273e66d8cbfda757cd0e63e4dc00d7087035d0c4bbd723506f7c8958e8f19e
+            dataset_ids: [DS-KALSHI-HISTORICAL, DS-NFLVERSE, DS-NFLVERSE-PARTICIPATION, DS-POLYMARKET-PUBLIC]
+            model_ids: []
+      amendment_sha256: sha256:3524b04124ab04edb470ac81baa977c6f36ba76016e9e3509c2f841b68b6d6a3
+    - sequence: 14
+      amended_at: '2026-07-25T19:29:20Z'
+      prior_sha256: sha256:3524b04124ab04edb470ac81baa977c6f36ba76016e9e3509c2f841b68b6d6a3
+      approved_by: H
+      reason: Append the checksum-verified final X-13 PRELIMINARY discovery bundle with distinct actual-trade audit-gap and Kalshi candle coverage provenance. Statistical estimates remain unchanged every factor remains DISCOVERY_ONLY and frozen holdout reactions remain unread.
+      changes:
+        results_ref:
+          scope: preliminary_source_time_only
+          result_label: PRELIMINARY
+          evaluation_started_at: '2026-07-25T19:28:37Z'
+          code_sha256: sha256:215611d826e8081c6102e960ba609a7af8202e020c1da1203847b1b18defddae
+          data_sha256: sha256:aa273e66d8cbfda757cd0e63e4dc00d7087035d0c4bbd723506f7c8958e8f19e
+          result_sha256: sha256:9e4afe95b6c9dd500cfd10221575e8a546592485eb5829d6027b61ad38b397be
+          registration_head_sha256: sha256:3524b04124ab04edb470ac81baa977c6f36ba76016e9e3509c2f841b68b6d6a3
+          dataset_ids: [DS-KALSHI-HISTORICAL, DS-NFLVERSE, DS-NFLVERSE-PARTICIPATION, DS-POLYMARKET-PUBLIC]
+          model_ids: []
+      amendment_sha256: sha256:500db0eb1199487593f6c4a7298d160fc9ab600c502e17586a1465d1824a3cd9
   registration_record_sha256: sha256:f637a647e881a048866e0dd4003b65b4397e6194cf6e58cc13c65be69920a697

@@ -951,7 +951,7 @@ def preserve_capture_response(
         )[0],
         schema_fingerprint=_SCHEMA_FINGERPRINT,
         license_ref=license_ref,
-        license_status="pending",
+        license_status="research_only",
         upstream_partition=f"x13-{request_digest}",
         object_kind="byte_exact_original",
         lineage={

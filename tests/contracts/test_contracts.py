@@ -601,6 +601,20 @@ def test_event_envelope_accepts_registered_x11_with_v1_model_output() -> None:
     assert envelope.payload_schema_version == "v1"
 
 
+def test_event_and_model_output_contracts_accept_registered_x14() -> None:
+    contracts = _contracts()
+    event = _raw_event()
+    event["experiment_id"] = "X-14"
+    event["event_id"] = contracts.event_id_for(event)
+    output = {**_model_output(), "experiment_id": "X-14"}
+
+    envelope = contracts.validate_event_envelope_v0(PROJECT_ROOT, event)
+    model_output = contracts.ModelOutputV1.model_validate(output)
+
+    assert envelope.experiment_id == "X-14"
+    assert model_output.experiment_id == "X-14"
+
+
 def test_generic_v0_validator_rejects_program_root_governed_event_contract() -> None:
     contracts = _contracts()
     schema_name = "event-envelope/v0.schema.yaml"
@@ -1287,7 +1301,7 @@ def test_controlled_python_enums_are_exact() -> None:
         }
     )
     assert contracts.REGISTERED_EXPERIMENT_IDS == frozenset(
-        f"X-{number:02d}" for number in range(1, 14)
+        f"X-{number:02d}" for number in range(1, 15)
     )
     assert "gap_detected" in contracts.QUALITY_FLAGS
     assert "source_coordinate_out_of_bounds" in contracts.QUALITY_FLAGS

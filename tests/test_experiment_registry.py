@@ -41,7 +41,7 @@ import prediction_market.raw_store as raw_store_module  # noqa: E402
 from prediction_market.raw_store import RawSegmentWriter  # noqa: E402
 
 
-EXPECTED_EXPERIMENT_IDS = {f"X-{number:02d}" for number in range(1, 14)}
+EXPECTED_EXPERIMENT_IDS = {f"X-{number:02d}" for number in range(1, 15)}
 EXPECTED_MEASUREMENT_EXEMPTIONS = {"X-02", "X-03", "X-07"}
 EXPECTED_NO_GOS = {
     "real_money_execution",
