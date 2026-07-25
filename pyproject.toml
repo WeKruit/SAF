@@ -9,6 +9,7 @@ description = "Governed prediction-market research program"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "boto3",
     "cryptography",
     "duckdb",
     "httpx",
@@ -24,6 +25,7 @@ dependencies = [
 
 [project.scripts]
 audit-pmxt = "prediction_market.cli.audit_pmxt:main"
+pm-data-store = "prediction_market.cli.pm_data_store:main"
 record-markets = "prediction_market.cli.record_markets:main"
 
 [dependency-groups]
