@@ -18,3 +18,4 @@ X-11,1,sha256:ad594d2aa06ff7ecc99ba4389d53c2973f1aba8bc922bba45a7c0cedc3ed6177,s
 X-11,2,sha256:0dcd4a1a62c7790967023b2383a2cb93eaf35b25e3e4d64baabe8decb8f45960,sha256:ad594d2aa06ff7ecc99ba4389d53c2973f1aba8bc922bba45a7c0cedc3ed6177,2026-07-24T00:41:31Z,H,"Pre-evaluation supersession: V1 rejected two valid Q2 halftime rows because game_seconds_remaining=1800 was not disambiguated by qtr; V1 has no results, and V2 was frozen before evaluation."
 X-11,3,sha256:ee5a0ae12f8de8e9a3fe093193a4d730d8281c4a82ff631ae245cf71680879cc,sha256:0dcd4a1a62c7790967023b2383a2cb93eaf35b25e3e4d64baabe8decb8f45960,2026-07-24T01:25:04Z,H,"Append the official no-spread V2 PRELIMINARY, PIT_UNPROVEN reproduction result after evaluation; no formal promotion or completion decision."
 X-12,0,sha256:f1482d5268cbcb556ae8ac8fb37f15d31586cbc2e13565cb05f0341efcabdc96,,,,
+X-13,0,sha256:f637a647e881a048866e0dd4003b65b4397e6194cf6e58cc13c65be69920a697,,,,

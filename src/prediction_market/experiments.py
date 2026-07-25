@@ -17,7 +17,7 @@ import yaml
 from prediction_market.raw_store import RawStoreError, read_verified_segment
 
 
-EXPERIMENT_IDS = tuple(f"X-{number:02d}" for number in range(1, 13))
+EXPERIMENT_IDS = tuple(f"X-{number:02d}" for number in range(1, 14))
 _EXPERIMENT_ID_SET = frozenset(EXPERIMENT_IDS)
 _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _DATASET_ID_RE = re.compile(r"^DS-[A-Z0-9][A-Z0-9-]*$")
@@ -25,6 +25,13 @@ _MODEL_ID_RE = re.compile(r"^MODEL-[A-Z0-9][A-Z0-9-]*$")
 _UTC_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 _DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 _RESULT_ACCEPTANCE_NOT_BEFORE = "2026-07-23T00:00:00Z"
+_X13_RESULT_ACCEPTANCE_NOT_BEFORE = "2026-07-25T04:40:00Z"
+_X13_SOURCE_DATASET_IDS = [
+    "DS-KALSHI-HISTORICAL",
+    "DS-NFLVERSE",
+    "DS-NFLVERSE-PARTICIPATION",
+    "DS-POLYMARKET-PUBLIC",
+]
 _X08_CAPTURE_STREAMS = {
     "DS-KALSHI-LIVE-L2": ("kalshi", "orderbook"),
     "DS-POLYMARKET-PUBLIC": ("polymarket", "market"),
@@ -314,6 +321,7 @@ _TRUSTED_BASE_REGISTRATIONS = {
     "X-10": "sha256:bb1fc8aca25e10250bdef744b682788afab1b83357855b7c6a6231086623911a",
     "X-11": "sha256:1706e20201346560f38b4bf1ab3f040c8318f871d809eeff03666827b1b5ec4e",
     "X-12": "sha256:f1482d5268cbcb556ae8ac8fb37f15d31586cbc2e13565cb05f0341efcabdc96",
+    "X-13": "sha256:f637a647e881a048866e0dd4003b65b4397e6194cf6e58cc13c65be69920a697",
 }
 
 _COMMON_CARD_FIELDS = frozenset(
@@ -368,6 +376,12 @@ _OPTIONAL_CARD_FIELDS = {
     "X-10": {"recall_denominator_registered"},
     "X-11": {"dataset_ids", "output_contract", "tie_policy"},
     "X-12": {"dataset_ids", "output_contract", "promotion_restriction"},
+    "X-13": {
+        "artifact_dependencies",
+        "causal_or_execution_claims_authorized",
+        "dataset_ids",
+        "source_time_only",
+    },
 }
 _EXPERIMENT_REGISTRY_FIELDS = [
     "experiment_id",
@@ -416,12 +430,13 @@ _REQUIRED_TASK3_ARTIFACTS = frozenset(
         "registries/experiment_amendment_ledger.csv",
         "registries/artifact_registry.csv",
         "artifacts/validation/validation_standard_v0.md",
+        "artifacts/validation/validation_standard_v1.md",
         "src/prediction_market/experiments.py",
         "tests/test_experiment_registry.py",
         "contracts/model-output/v1.schema.yaml",
         "registries/dataset_registry.csv",
         "registries/model_registry.csv",
-        *(f"registries/experiments/X-{number:02d}.yaml" for number in range(1, 13)),
+        *(f"registries/experiments/X-{number:02d}.yaml" for number in range(1, 14)),
     }
 )
 _RESULT_FIELDS = frozenset(
@@ -438,7 +453,16 @@ _RESULT_FIELDS = frozenset(
     }
 )
 _INPUT_BOUND_EXPERIMENT_IDS = frozenset(
-    {"X-01", "X-02", "X-03", "X-06", "X-08", "X-11", "X-12"}
+    {
+        "X-01",
+        "X-02",
+        "X-03",
+        "X-06",
+        "X-08",
+        "X-11",
+        "X-12",
+        "X-13",
+    }
 )
 
 
@@ -635,7 +659,7 @@ def _validate_card_inventory(root: Path) -> None:
         raise ExperimentRegistryError("cannot enumerate experiment card inventory") from exc
     expected = {f"{experiment_id}.yaml" for experiment_id in EXPERIMENT_IDS}
     if names != expected:
-        raise ExperimentRegistryError("experiment card inventory must be exactly X-01 through X-12")
+        raise ExperimentRegistryError("experiment card inventory must be exactly X-01 through X-13")
 
 
 def _validate_artifact_registry(root: Path) -> None:
@@ -1263,9 +1287,17 @@ def _validate_card_structure(card: dict[str, Any], experiment_id: str) -> None:
         raise ExperimentRegistryError(f"{experiment_id}: invalid status")
     if type(card["registered_at"]) is not str or _DATE_RE.fullmatch(card["registered_at"]) is None:
         raise ExperimentRegistryError(f"{experiment_id}: invalid registered_at")
-    if card["registered_at"] != "2026-07-22":
+    expected_registered_at = (
+        "2026-07-24" if experiment_id == "X-13" else "2026-07-22"
+    )
+    if card["registered_at"] != expected_registered_at:
         raise ExperimentRegistryError(f"{experiment_id}: immutable registration date changed")
-    if card["result_acceptance_not_before"] != _RESULT_ACCEPTANCE_NOT_BEFORE:
+    expected_acceptance_boundary = (
+        _X13_RESULT_ACCEPTANCE_NOT_BEFORE
+        if experiment_id == "X-13"
+        else _RESULT_ACCEPTANCE_NOT_BEFORE
+    )
+    if card["result_acceptance_not_before"] != expected_acceptance_boundary:
         raise ExperimentRegistryError(f"{experiment_id}: immutable preregistration boundary changed")
     if card["due_gate"] is not None:
         raise ExperimentRegistryError(f"{experiment_id}: due_gate must be null")
@@ -1431,6 +1463,15 @@ def _validate_card_structure(card: dict[str, Any], experiment_id: str) -> None:
             raise ExperimentRegistryError(
                 f"{experiment_id}: formal promotion restriction must be "
                 "a permanent NO-GO"
+            )
+    if "source_time_only" in card:
+        if card["source_time_only"] is not True:
+            raise ExperimentRegistryError(
+                f"{experiment_id}: source_time_only must remain true"
+            )
+        if card["causal_or_execution_claims_authorized"] is not False:
+            raise ExperimentRegistryError(
+                f"{experiment_id}: causal or execution claims are unauthorized"
             )
     if type(card["amendments"]) is not list:
         raise ExperimentRegistryError(f"{experiment_id}: amendments must be a list")
@@ -2133,6 +2174,39 @@ def _validate_changes(changes: Any, experiment_id: str) -> dict[str, Any]:
                 "X-02: timestamp_input_manifest requires the structured "
                 "input manifest binding"
             )
+    if experiment_id == "X-13":
+        resolved_items = changes.get("resolve_locks", [])
+        input_items = changes.get("preregistered_inputs", [])
+        targets_source_bundle = any(
+            item.get("lock_id") == "source_manifest_bundle"
+            for item in resolved_items
+        )
+        targets_preliminary_input = any(
+            item.get("scope") == "preliminary_source_time_only"
+            for item in input_items
+        )
+        if targets_source_bundle or targets_preliminary_input:
+            exact_shape = (
+                set(changes)
+                == {"resolve_locks", "preregistered_inputs"}
+                and len(resolved_items) == 1
+                and len(input_items) == 1
+                and resolved_items[0]["lock_id"]
+                == "source_manifest_bundle"
+                and input_items[0]["scope"]
+                == "preliminary_source_time_only"
+                and input_items[0]["dataset_ids"]
+                == _X13_SOURCE_DATASET_IDS
+                and input_items[0]["model_ids"] == []
+                and input_items[0]["data_sha256"]
+                == resolved_items[0]["evidence_ref"]
+            )
+            if not exact_shape:
+                raise ExperimentRegistryError(
+                    "X-13: atomic source manifest bundle amendment must "
+                    "contain exactly its lock resolution and preliminary "
+                    "preregistered input"
+                )
     return changes
 
 
@@ -2634,13 +2708,25 @@ def _apply_amendments(
     }:
         raise ExperimentRegistryError(f"{experiment_id}: ledger base record mismatch")
     effective = copy.deepcopy(base_card)
-    meta = _RegistrationMeta(head=base_card["registration_record_sha256"])
+    base_effective_at = base_card["result_acceptance_not_before"]
+    meta = _RegistrationMeta(
+        head=base_card["registration_record_sha256"],
+        head_at=base_effective_at,
+    )
     meta.scope_authorized_at = {
-        scope_name: _RESULT_ACCEPTANCE_NOT_BEFORE
+        scope_name: base_effective_at
         for scope_name, scope in effective["authorization_scopes"].items()
         if scope["authorized"] is True and not scope.get("permanent_no_go", False)
     }
-    prior_time = _canonical_utc(_RESULT_ACCEPTANCE_NOT_BEFORE, "registration boundary")
+    meta.lock_resolved_at = {
+        lock["id"]: base_effective_at
+        for lock in effective["registration_locks"]
+        if lock["status"] == "resolved"
+    }
+    prior_time = _canonical_utc(
+        base_effective_at,
+        "registration boundary",
+    )
     for expected_sequence, amendment in enumerate(base_card["amendments"], start=1):
         expected_keys = {
             "sequence",
@@ -3148,7 +3234,7 @@ def _load_registry_internal(
             raise ExperimentRegistryError(f"duplicate experiment registry row: {experiment_id}")
         row_by_id[experiment_id] = row
     if set(row_by_id) != _EXPERIMENT_ID_SET:
-        raise ExperimentRegistryError("registry must contain exactly X-01 through X-12")
+        raise ExperimentRegistryError("registry must contain exactly X-01 through X-13")
 
     catalog_gates = _catalog_gates(root)
     base_cards: dict[str, dict[str, Any]] = {}

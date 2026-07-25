@@ -1,0 +1,97 @@
+experiment_card:
+  id: X-13
+  name: NFL 20-game source-time event and historical market exploration
+  owner_team: C+D2+E+H
+  status: registered
+  hypothesis: Frozen finalized NFL information episodes may exhibit repeatable source-time price-path associations across Polymarket and Kalshi after game state contract identity and timestamp uncertainty are audited independently.
+  data:
+    - source: nflverse 2025 play-by-play
+      version: unresolved:source_manifest_bundle
+      pit_basis: source-reported play time represented as an uncertainty interval
+    - source: nflverse participation derived from FTN
+      version: unresolved:source_manifest_bundle
+      pit_basis: postgame participation rows with no exact substitution or injury timestamp claim
+    - source: Polymarket official public market metadata and historical trades
+      version: unresolved:source_manifest_bundle
+      pit_basis: exchange source timestamp with fetch provenance
+    - source: Kalshi official historical markets trades and one-minute candles
+      version: unresolved:source_manifest_bundle
+      pit_basis: exchange source timestamp and candle interval with fetch provenance
+  method: Build deterministic full-depth replay contract and market timelines for exactly twenty frozen 2025 season regular and postseason games then report only preregistered source-time associations and case series.
+  leakage_checks:
+    - Game selection and event taxonomy are frozen without inspecting market price direction.
+    - Raw objects contract universe source-time semantics horizons and analysis whitelist are content-addressed before association evaluation.
+    - No future play revised postgame feature or later market observation may enter an earlier episode state.
+    - Same-second source intervals remain unordered and contaminated windows are excluded from isolated-event estimates.
+  split: Fixed Core-12 plus Rare-enrichment-8 sample; game-cluster bootstrap and leave-one-game-out stability only; not league-representative incidence
+  metrics: [eligible episode count, source-time signed price change, first-trade path, horizon VWAP, maximum excursion, overshoot and reversal candidate, cross-venue directional concordance, game-cluster bootstrap interval, leave-one-game-out stability]
+  pass_criteria: Publish all twenty deterministic replays and complete source-relative market inventories with immutable hashes and explicitly bounded timestamp ambiguity; qualifying estimates must satisfy preregistered minimum game and episode counts.
+  fail_criteria: Any missing terminal pagination proof unknown contract dependency raw hash mismatch unresolved binding future feature fabricated quote or unregistered analysis invalidates the affected artifact and blocks atomic batch publication.
+  cost_estimate: {compute: bounded local batch plus public REST capture, human_days: unresolved}
+  dependencies: []
+  registered_at: '2026-07-24'
+  result_acceptance_not_before: '2026-07-25T04:40:00Z'
+  due_gate: null
+  results_ref: []
+  promotion_decision: ''
+  execution_authorized: true
+  completion_required_scopes: [preliminary_source_time_only]
+  authorization_scopes:
+    preliminary_source_time_only:
+      authorized: true
+      required_result_label: PRELIMINARY
+      required_lock_ids: [game_sample_and_bindings, contract_universe, source_time_interval_semantics, analysis_whitelist, h_split_approval, source_manifest_bundle]
+      input_binding:
+        result_class: poc
+        dataset_ids: [DS-KALSHI-HISTORICAL, DS-NFLVERSE, DS-NFLVERSE-PARTICIPATION, DS-POLYMARKET-PUBLIC]
+        model_ids: []
+        synthetic_data_sha256: null
+    formal_causal_or_execution:
+      authorized: false
+      permanent_no_go: true
+      required_result_label: FORMAL
+      required_lock_ids: [game_sample_and_bindings, contract_universe, source_time_interval_semantics, analysis_whitelist, h_split_approval, source_manifest_bundle]
+      input_binding:
+        result_class: formal
+        dataset_ids: [DS-KALSHI-HISTORICAL, DS-NFLVERSE, DS-NFLVERSE-PARTICIPATION, DS-POLYMARKET-PUBLIC]
+        model_ids: []
+        synthetic_data_sha256: null
+  registration_locks:
+    - {id: game_sample_and_bindings, status: resolved, reason: Exactly twenty game IDs and their direct Polymarket and Kalshi winner bindings were frozen before price-direction exploration.}
+    - {id: contract_universe, status: resolved, reason: All contracts whose settlement depends only on one target game are analysis candidates; cross-game MVE is inventory only.}
+    - {id: source_time_interval_semantics, status: resolved, reason: Game seconds trade seconds and Kalshi one-minute candles remain explicit intervals with no invented within-interval order.}
+    - {id: analysis_whitelist, status: resolved, reason: Horizons delay scenarios event families minimum counts contamination policy and allowed interactions are frozen.}
+    - {id: h_split_approval, status: resolved, reason: Team H approved the fixed Core-12 plus Rare-enrichment-8 descriptive and clustered validation design.}
+    - {id: source_manifest_bundle, status: unresolved, reason: The twenty-game raw sports and venue object manifests must be captured and frozen before association evaluation.}
+  measurement_exemption: false
+  falsified_direction_is_valid_measurement: false
+  dataset_ids: [DS-KALSHI-HISTORICAL, DS-NFLVERSE, DS-NFLVERSE-PARTICIPATION, DS-POLYMARKET-PUBLIC]
+  source_time_only: true
+  causal_or_execution_claims_authorized: false
+  artifact_dependencies:
+    - {path: artifacts/validation/validation_standard_v1.md, version: v1, sha256: 'sha256:273a8c57eb12f69342d6e0124c94177bce97d677c20532bb29ade99c608c2629'}
+  linked_first_artifact_due_gates:
+    - {catalog_item_id: I-001, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: I-005, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: I-018, due_gate: 2026-08-05_W2_review}
+    - {catalog_item_id: O-001, due_gate: Team_I_compliance_green}
+    - {catalog_item_id: O-003, due_gate: Team_I_compliance_green}
+    - {catalog_item_id: O-009, due_gate: Team_I_compliance_green}
+    - {catalog_item_id: O-010, due_gate: Team_I_compliance_green}
+  source_lineage:
+    charter_file: charter/research_program_charter_v0.2.md
+    charter_sections: ['Team C', 'Team D2', 'Team H', '§9 preregistration discipline', 'NO-GO']
+    catalog_item_ids: [I-001, I-005, I-018, O-001, O-003, O-009, O-010]
+  program_no_go_restrictions:
+    - real_money_execution
+    - maker_strategy_live
+    - exact_queue_fill_claim_from_pmxt_l2
+    - multi_venue_simultaneous_execution_arbitrage
+    - live_copy_trading
+    - llm_hot_path
+    - reinforcement_learning
+    - large_scale_microservices
+    - readme_return_strategy_selection
+    - unregistered_quick_backtest
+  amendments: []
+  registration_record_sha256: sha256:f637a647e881a048866e0dd4003b65b4397e6194cf6e58cc13c65be69920a697

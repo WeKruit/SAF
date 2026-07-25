@@ -126,22 +126,22 @@ def test_source_manifest_contains_exact_required_filenames() -> None:
     assert report.source_files == REQUIRED_SOURCE_FILENAMES
 
 
-def test_catalog_contains_exactly_87_unique_ids() -> None:
+def test_catalog_contains_exactly_89_unique_ids() -> None:
     catalog_rows = _csv_rows(CHARTER_DIR / "catalog_registry.csv")
     catalog_ids = [row["catalog_item_id"] for row in catalog_rows]
-    assert len(catalog_rows) == 87
-    assert len(set(catalog_ids)) == 87
+    assert len(catalog_rows) == 89
+    assert len(set(catalog_ids)) == 89
 
     report = _validate()
-    assert report.catalog_count == 87
+    assert report.catalog_count == 89
 
 
-def test_assignment_table_contains_exactly_150_rows() -> None:
+def test_assignment_table_contains_exactly_156_rows() -> None:
     assignment_rows = _csv_rows(CHARTER_DIR / "catalog_team_assignments.csv")
-    assert len(assignment_rows) == 150
+    assert len(assignment_rows) == 156
 
     report = _validate()
-    assert report.assignment_count == 150
+    assert report.assignment_count == 156
 
 
 def test_all_assignments_reference_known_catalog_ids() -> None:
@@ -383,5 +383,5 @@ def test_cli_prints_exact_concise_success() -> None:
     result = _run_validator(PROJECT_ROOT)
 
     assert result.returncode == 0
-    assert result.stdout == "OK: 3 sources, 87 catalog items, 150 assignments\n"
+    assert result.stdout == "OK: 3 sources, 89 catalog items, 156 assignments\n"
     assert result.stderr == ""

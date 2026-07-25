@@ -1287,7 +1287,7 @@ def test_controlled_python_enums_are_exact() -> None:
         }
     )
     assert contracts.REGISTERED_EXPERIMENT_IDS == frozenset(
-        f"X-{number:02d}" for number in range(1, 13)
+        f"X-{number:02d}" for number in range(1, 14)
     )
     assert "gap_detected" in contracts.QUALITY_FLAGS
     assert "source_coordinate_out_of_bounds" in contracts.QUALITY_FLAGS

@@ -73,7 +73,7 @@ QUALITY_FLAGS = frozenset(
 )
 
 REGISTERED_EXPERIMENT_IDS = frozenset(
-    f"X-{number:02d}" for number in range(1, 13)
+    f"X-{number:02d}" for number in range(1, 14)
 )
 
 EVENT_TYPES = frozenset(

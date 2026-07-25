@@ -52,7 +52,7 @@ USE_STATUSES = frozenset(
 ATTRIBUTION_STATUSES = frozenset({"UNKNOWN", "YES", "NO"})
 OPERATIONAL_USE_STATUSES = frozenset({"UNKNOWN", "RESEARCH_ONLY", "BLOCKED", "APPROVED"})
 EXPECTED_LICENSE_REVIEW_IDS = (
-    *(f"O-{number:03d}" for number in range(1, 9)),
+    *(f"O-{number:03d}" for number in range(1, 11)),
     "R-039",
     "I-018",
     "R-042",
@@ -303,7 +303,7 @@ def load_data_license_register(root: str | Path) -> tuple[DataLicenseRow, ...]:
     ids = [row["catalog_item_id"] for row in raw_rows]
     if tuple(ids) != EXPECTED_LICENSE_REVIEW_IDS:
         raise ComplianceRegistryError(
-            "catalog_item_id rows must be exactly O-001 through O-008, "
+            "catalog_item_id rows must be exactly O-001 through O-010, "
             "R-039, I-018, R-042, and R-043 in order"
         )
     stable_catalog_ids = _stable_catalog_ids(root)

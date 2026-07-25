@@ -41,7 +41,7 @@ import prediction_market.raw_store as raw_store_module  # noqa: E402
 from prediction_market.raw_store import RawSegmentWriter  # noqa: E402
 
 
-EXPECTED_EXPERIMENT_IDS = {f"X-{number:02d}" for number in range(1, 13)}
+EXPECTED_EXPERIMENT_IDS = {f"X-{number:02d}" for number in range(1, 14)}
 EXPECTED_MEASUREMENT_EXEMPTIONS = {"X-02", "X-03", "X-07"}
 EXPECTED_NO_GOS = {
     "real_money_execution",
@@ -62,7 +62,7 @@ EXPECTED_TASK_3_PATHS = {
     "artifacts/validation/validation_standard_v0.md",
     "src/prediction_market/experiments.py",
     "tests/test_experiment_registry.py",
-    *(f"registries/experiments/X-{number:02d}.yaml" for number in range(1, 13)),
+    *(f"registries/experiments/X-{number:02d}.yaml" for number in range(1, 14)),
 }
 REPRODUCTION_CONTRACTS = {
     "X-11": {
@@ -4004,6 +4004,7 @@ def test_phase_execution_authorization_is_exact_and_fail_closed(
         "X-08",
         "X-11",
         "X-12",
+        "X-13",
     }
     assert registry["X-04"]["authorization_scopes"]["formal_result"][
         "authorized"
@@ -5414,6 +5415,154 @@ def test_seed_cards_reject_results_until_scope_inputs_are_preregistered(
         else:
             with pytest.raises(InvalidResultReferenceError, match="preregistered"):
                 validate_result_ref(program_root, experiment_id, result_ref)
+
+
+def test_x13_result_preserves_base_lock_resolution_history(
+    tmp_path: Path,
+) -> None:
+    root = _copy_program_fixture(tmp_path)
+    dataset_ids = [
+        "DS-KALSHI-HISTORICAL",
+        "DS-NFLVERSE",
+        "DS-NFLVERSE-PARTICIPATION",
+        "DS-POLYMARKET-PUBLIC",
+    ]
+    for index, dataset_id in enumerate(dataset_ids, start=4):
+        _update_dataset_registry(
+            root,
+            dataset_id,
+            license_status="research_only",
+            manifest_sha256=f"sha256:{str(index) * 64}",
+            status="registered",
+        )
+    amendment = _append_amendment(
+        root,
+        "X-13",
+        amended_at="2026-07-25T04:41:00Z",
+        changes={
+            "resolve_locks": [
+                {
+                    "lock_id": "source_manifest_bundle",
+                    "evidence_ref": "sha256:" + "2" * 64,
+                }
+            ],
+            "preregistered_inputs": [
+                {
+                    "scope": "preliminary_source_time_only",
+                    "code_sha256": "sha256:" + "1" * 64,
+                    "data_sha256": "sha256:" + "2" * 64,
+                    "dataset_ids": dataset_ids,
+                    "model_ids": [],
+                }
+            ],
+        },
+    )
+    result_ref = _valid_result_ref(
+        scope="preliminary_source_time_only",
+        result_label="PRELIMINARY",
+        evaluation_started_at="2026-07-25T04:42:00Z",
+        registration_head_sha256=amendment["amendment_sha256"],
+        dataset_ids=dataset_ids,
+    )
+
+    assert validate_result_ref(root, "X-13", result_ref) == result_ref
+
+
+def test_x13_source_bundle_resolution_is_one_exact_atomic_amendment() -> None:
+    import prediction_market.experiments as experiments_module
+
+    evidence_ref = "sha256:" + "4" * 64
+    source_lock = {
+        "lock_id": "source_manifest_bundle",
+        "evidence_ref": evidence_ref,
+    }
+    preliminary_input = {
+        "scope": "preliminary_source_time_only",
+        "code_sha256": "sha256:" + "1" * 64,
+        "data_sha256": evidence_ref,
+        "dataset_ids": [
+            "DS-KALSHI-HISTORICAL",
+            "DS-NFLVERSE",
+            "DS-NFLVERSE-PARTICIPATION",
+            "DS-POLYMARKET-PUBLIC",
+        ],
+        "model_ids": [],
+    }
+    exact = {
+        "resolve_locks": [source_lock],
+        "preregistered_inputs": [preliminary_input],
+    }
+
+    assert experiments_module._validate_changes(exact, "X-13") == exact
+
+    invalid_changes = [
+        {"resolve_locks": [source_lock]},
+        {"preregistered_inputs": [preliminary_input]},
+        {**exact, "status": "running"},
+        {
+            **exact,
+            "resolve_locks": [
+                source_lock,
+                {
+                    "lock_id": "analysis_whitelist",
+                    "evidence_ref": "sha256:" + "5" * 64,
+                },
+            ],
+        },
+        {
+            **exact,
+            "preregistered_inputs": [
+                preliminary_input,
+                {
+                    **preliminary_input,
+                    "scope": "formal_causal_or_execution",
+                },
+            ],
+        },
+        {
+            **exact,
+            "preregistered_inputs": [
+                {
+                    **preliminary_input,
+                    "model_ids": ["MODEL-NFL-LOGISTIC"],
+                }
+            ],
+        },
+        {
+            **exact,
+            "preregistered_inputs": [
+                {
+                    **preliminary_input,
+                    "data_sha256": "sha256:" + "6" * 64,
+                }
+            ],
+        },
+    ]
+    for changes in invalid_changes:
+        with pytest.raises(
+            ExperimentRegistryError,
+            match="X-13.*atomic source manifest bundle",
+        ):
+            experiments_module._validate_changes(changes, "X-13")
+
+    with pytest.raises(
+        ExperimentRegistryError,
+        match="canonical sorted unique ID list",
+    ):
+        experiments_module._validate_changes(
+            {
+                **exact,
+                "preregistered_inputs": [
+                    {
+                        **preliminary_input,
+                        "dataset_ids": list(
+                            reversed(preliminary_input["dataset_ids"])
+                        ),
+                    }
+                ],
+            },
+            "X-13",
+        )
 
 
 def test_valid_result_requires_matching_preregistered_inputs_and_head(

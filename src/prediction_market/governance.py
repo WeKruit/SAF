@@ -15,8 +15,8 @@ REQUIRED_SOURCE_FILENAMES = (
     "catalog_registry.csv",
     "catalog_team_assignments.csv",
 )
-EXPECTED_CATALOG_COUNT = 87
-EXPECTED_ASSIGNMENT_COUNT = 150
+EXPECTED_CATALOG_COUNT = 89
+EXPECTED_ASSIGNMENT_COUNT = 156
 ALLOWED_RESPONSIBILITIES = frozenset({"primary", "secondary"})
 
 

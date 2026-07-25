@@ -123,13 +123,13 @@ def test_license_review_ids_are_exactly_the_stable_catalog_ids() -> None:
     register = load_data_license_register(PROJECT_ROOT)
 
     assert {row.catalog_item_id for row in register} == {
-        *(f"O-{number:03d}" for number in range(1, 9)),
+        *(f"O-{number:03d}" for number in range(1, 11)),
         "R-039",
         "I-018",
         "R-042",
         "R-043",
     }
-    assert len(register) == 12
+    assert len(register) == 14
     by_id = {row.catalog_item_id: row for row in register}
     for review_id in ("O-006", "R-039", "I-018"):
         assert by_id[review_id].status == "GREEN"
@@ -187,9 +187,11 @@ def test_license_rows_are_evidence_dated_and_have_due_gate() -> None:
         **{
             row.catalog_item_id: "2026-07-22"
             for row in register
-            if row.catalog_item_id != "I-018"
+                if row.catalog_item_id not in {"I-018", "O-009", "O-010"}
         },
-        "I-018": "2026-07-23",
+                "I-018": "2026-07-23",
+                "O-009": "2026-07-24",
+                "O-010": "2026-07-24",
     }
     assert all(row.evidence_url.startswith("https://") for row in register)
     assert all(row.owner == "I" for row in register)

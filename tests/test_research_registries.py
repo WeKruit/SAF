@@ -25,6 +25,8 @@ EXPECTED_DATASET_IDS = {
     "DS-POLYBENCH",
     "DS-NBA-CANDIDATE",
     "DS-NFLVERSE",
+    "DS-NFLVERSE-PARTICIPATION",
+    "DS-NFL-OFFICIAL-GAMEBOOK",
     "DS-NFL-FASTRMODELS",
     "DS-STATSBOMB-OPEN",
     "DS-RETROSHEET",
@@ -58,6 +60,8 @@ EXPECTED_LICENSE_REVIEW_IDS = {
     "DS-POLYBENCH": "R-043",
     "DS-NBA-CANDIDATE": "O-005",
     "DS-NFLVERSE": "I-018",
+    "DS-NFLVERSE-PARTICIPATION": "O-009",
+    "DS-NFL-OFFICIAL-GAMEBOOK": "O-010",
     "DS-NFL-FASTRMODELS": "I-018",
     "DS-STATSBOMB-OPEN": "O-004",
     "DS-RETROSHEET": "O-007",
@@ -671,7 +675,7 @@ def test_registered_sport_experiment_ids_are_current_in_handoff_docs() -> None:
         PROJECT_ROOT / "artifacts/game-state/soccer/evidence_pipeline_poc_v0.md"
     ).read_text(encoding="utf-8")
     validation = (
-        PROJECT_ROOT / "artifacts/validation/validation_standard_v0.md"
+        PROJECT_ROOT / "artifacts/validation/validation_standard_v1.md"
     ).read_text(encoding="utf-8")
     readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
 
@@ -683,5 +687,5 @@ def test_registered_sport_experiment_ids_are_current_in_handoff_docs() -> None:
     assert "`execution_authorized: true`" in soccer
     assert "formal" in nfl.lower() and "unauthorized" in nfl.lower()
     assert "formal" in soccer.lower() and "unauthorized" in soccer.lower()
-    assert "X-01 through X-12" in validation
-    assert "X-01 through X-12" in readme
+    assert "X-01 through X-13" in validation
+    assert "X-01 through X-13" in readme
