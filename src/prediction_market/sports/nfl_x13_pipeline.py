@@ -8,6 +8,7 @@ turns caller-supplied ``PASS`` flags into proof and never weakens the
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
 import math
 import os
@@ -39,6 +40,7 @@ from prediction_market.experiments import (
 from prediction_market.sports.nfl_x13_association import (
     AssociationResultV1,
     AssociationEvidenceError,
+    X13_REGISTERED_ANALYSIS_LOCK_V1,
     X13AssociationStreamV1,
     _semantic_orientation_key,
     audit_layer_m,
@@ -107,7 +109,7 @@ from prediction_market.static_store import (
 
 
 _SHA256_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
-_BUILDER_VERSION = "nfl-x13-pipeline-v1"
+_BUILDER_VERSION = "nfl-x13-pipeline-v2"
 _REQUIRED_SCOPE = "preliminary_source_time_only"
 _REQUIRED_LICENSE_REFS = ("I-018", "O-001", "O-003", "O-009")
 _X13_PREREGISTERED_DATASET_IDS = (
@@ -2622,6 +2624,131 @@ def _presentation_payload(
     }
 
 
+class _AssociationPreviewSampler:
+    """Build a bounded deterministic preview without canonical-order bias."""
+
+    def __init__(self, *, limit: int) -> None:
+        if type(limit) is not int or limit <= 0:
+            raise X13PipelineError(
+                "association preview limit must be a positive integer"
+            )
+        self._limit = limit
+        self._reservoir_capacity = limit * 2
+        self._first_by_market: dict[str, Mapping[str, object]] = {}
+        self._seen_rows: set[str] = set()
+        self._seen_strata: set[tuple[object, ...]] = set()
+        self._stratum_reservoir: list[
+            tuple[int, str, str, Mapping[str, object]]
+        ] = []
+        self._row_reservoir: list[
+            tuple[int, str, str, Mapping[str, object]]
+        ] = []
+
+    @staticmethod
+    def _stratum(row: Mapping[str, object]) -> tuple[object, ...]:
+        return (
+            row.get("logical_market_id"),
+            row.get("delay_scenario_seconds"),
+            row.get("horizon_seconds"),
+            row.get("episode_type"),
+            row.get("validity_status"),
+        )
+
+    def _offer(
+        self,
+        reservoir: list[tuple[int, str, str, Mapping[str, object]]],
+        *,
+        score: int,
+        ordering_key: str,
+        row_key: str,
+        row: Mapping[str, object],
+    ) -> None:
+        entry = (-score, ordering_key, row_key, row)
+        if len(reservoir) < self._reservoir_capacity:
+            heapq.heappush(reservoir, entry)
+        elif entry > reservoir[0]:
+            heapq.heapreplace(reservoir, entry)
+
+    def add(self, row: Mapping[str, object]) -> None:
+        value = MappingProxyType(dict(row))
+        logical_market_id = value.get("logical_market_id")
+        if type(logical_market_id) is not str or not logical_market_id:
+            raise X13PipelineError(
+                "association preview row lacks logical market identity"
+            )
+        self._first_by_market.setdefault(logical_market_id, value)
+
+        row_key = canonical_sha256(dict(value))
+        if row_key in self._seen_rows:
+            return
+        self._seen_rows.add(row_key)
+        row_score = int(row_key.removeprefix("sha256:"), 16)
+        self._offer(
+            self._row_reservoir,
+            score=row_score,
+            ordering_key=row_key,
+            row_key=row_key,
+            row=value,
+        )
+
+        stratum = self._stratum(value)
+        if stratum in self._seen_strata:
+            return
+        self._seen_strata.add(stratum)
+        stratum_key = json.dumps(
+            stratum,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        stratum_sha256 = canonical_sha256(list(stratum))
+        self._offer(
+            self._stratum_reservoir,
+            score=int(stratum_sha256.removeprefix("sha256:"), 16),
+            ordering_key=stratum_key,
+            row_key=row_key,
+            row=value,
+        )
+
+    @staticmethod
+    def _ordered(
+        reservoir: Sequence[
+            tuple[int, str, str, Mapping[str, object]]
+        ],
+    ) -> list[Mapping[str, object]]:
+        return [
+            row
+            for negative_score, ordering_key, row_key, row in sorted(
+                reservoir,
+                key=lambda item: (-item[0], item[1], item[2]),
+            )
+        ]
+
+    def finalize(self) -> tuple[Mapping[str, object], ...]:
+        if len(self._first_by_market) > self._limit:
+            raise X13PipelineError(
+                "association preview cannot cover every eligible market "
+                "within its frozen row limit"
+            )
+        selected: list[Mapping[str, object]] = []
+        selected_ids: set[str] = set()
+
+        def append(row: Mapping[str, object]) -> None:
+            row_id = canonical_sha256(dict(row))
+            if row_id in selected_ids or len(selected) >= self._limit:
+                return
+            selected_ids.add(row_id)
+            selected.append(row)
+
+        for market_id in sorted(self._first_by_market):
+            append(self._first_by_market[market_id])
+        for row in self._ordered(self._stratum_reservoir):
+            append(row)
+        for row in self._ordered(self._row_reservoir):
+            append(row)
+        return tuple(selected)
+
+
 def _has_actual_market_evidence(row: Mapping[str, object]) -> bool:
     return (
         row.get("first_post_event_trade") is not None
@@ -2920,7 +3047,9 @@ def _stream_game_associations(
         prepared.universe_game.game_id,
         disk_gate=disk_gate,
     )
-    presentation: list[Mapping[str, object]] = []
+    presentation_sampler = _AssociationPreviewSampler(
+        limit=_PRESENTATION_ROW_LIMIT_PER_GAME
+    )
     presentation_eligible_count = 0
     contaminated: set[str] = set()
     actual_count = 0
@@ -2943,10 +3072,7 @@ def _stream_game_associations(
                 or association.contaminated
             ):
                 presentation_eligible_count += 1
-                if len(presentation) < _PRESENTATION_ROW_LIMIT_PER_GAME:
-                    presentation.append(
-                        MappingProxyType(_presentation_payload(row))
-                    )
+                presentation_sampler.add(_presentation_payload(row))
         artifacts = sink.close()
     except Exception:
         for writer in sink._writers.values():
@@ -2965,8 +3091,17 @@ def _stream_game_associations(
         raise X13PipelineError(
             f"{stream.game_id} Parquet partition cardinality mismatch"
         )
+    presentation = presentation_sampler.finalize()
+    expected_presentation_count = min(
+        presentation_eligible_count,
+        _PRESENTATION_ROW_LIMIT_PER_GAME,
+    )
+    if len(presentation) != expected_presentation_count:
+        raise X13PipelineError(
+            "association stratified preview did not fill its frozen row limit"
+        )
     return _StreamedGameV1(
-        presentation_rows=tuple(presentation),
+        presentation_rows=presentation,
         presentation_eligible_count=presentation_eligible_count,
         presentation_omitted_count=(
             presentation_eligible_count - len(presentation)
@@ -3090,7 +3225,7 @@ def _game_payload(
             ),
             "presentation_row_limit": _PRESENTATION_ROW_LIMIT_PER_GAME,
             "presentation_selection_order": (
-                "first_rows_in_canonical_association_stream_order"
+                "deterministic_market_coverage_then_hashed_stratum_reservoir_v1"
             ),
             "presentation_filter": (
                 "actual_market_evidence_and_ambiguous_or_contaminated_status"
@@ -3580,6 +3715,282 @@ def _contract_semantic_overlap_audit(
     }
 
 
+def _exploration_readiness_report(
+    *,
+    association_paths: Sequence[Path],
+    expected_candidate_row_count: int,
+    input_root_analysis_lock_sha256: str,
+) -> dict[str, object]:
+    """Count independent candidate units and refuse an unfrozen estimand."""
+
+    if (
+        not association_paths
+        or type(expected_candidate_row_count) is not int
+        or expected_candidate_row_count <= 0
+    ):
+        raise X13PipelineError(
+            "exploration readiness requires full association evidence"
+        )
+    _require_sha256(
+        input_root_analysis_lock_sha256,
+        "input_root_analysis_lock_sha256",
+    )
+    resolved_paths: list[str] = []
+    partition_sha256s: list[str] = []
+    for path in association_paths:
+        if not isinstance(path, Path):
+            raise X13PipelineError(
+                "exploration association path must be a Path"
+            )
+        try:
+            resolved = path.resolve(strict=True)
+        except OSError as error:
+            raise X13PipelineError(
+                "exploration association evidence is missing"
+            ) from error
+        if not resolved.is_file() or resolved.suffix != ".parquet":
+            raise X13PipelineError(
+                "exploration association evidence must be Parquet"
+            )
+        resolved_paths.append(str(resolved))
+        partition_sha256s.append(_file_identity(resolved)[0])
+    try:
+        import duckdb
+    except ImportError as error:  # pragma: no cover - direct dependency
+        raise X13PipelineError(
+            "duckdb is required for exploration readiness audit"
+        ) from error
+
+    connection = duckdb.connect(database=":memory:")
+    try:
+        connection.read_parquet(resolved_paths).create_view(
+            "association_candidates"
+        )
+        candidate_row_count = int(
+            connection.execute(
+                "SELECT count(*) FROM association_candidates"
+            ).fetchone()[0]
+        )
+        if candidate_row_count != expected_candidate_row_count:
+            raise X13PipelineError(
+                "exploration candidate cardinality changed"
+            )
+        connection.execute(
+            """
+            CREATE TEMP VIEW observed_candidates AS
+            SELECT *
+            FROM association_candidates
+            WHERE validity_status = 'OBSERVED'
+              AND NOT contaminated
+              AND NOT order_ambiguous
+            """
+        )
+        (
+            observed_row_count,
+            unique_episode_count,
+            episode_venue_unit_count,
+            observed_game_count,
+        ) = (
+            int(value)
+            for value in connection.execute(
+                """
+                SELECT
+                    count(*),
+                    count(DISTINCT (game_id, episode_id)),
+                    count(DISTINCT (game_id, episode_id, venue)),
+                    count(DISTINCT game_id)
+                FROM observed_candidates
+                """
+            ).fetchone()
+        )
+        unit_distribution = connection.execute(
+            """
+            WITH units AS (
+                SELECT game_id, episode_id, venue, count(*) AS unit_rows
+                FROM observed_candidates
+                GROUP BY game_id, episode_id, venue
+            )
+            SELECT
+                count(*),
+                count_if(unit_rows > 1),
+                coalesce(quantile_disc(unit_rows, 0.50), 0),
+                coalesce(quantile_disc(unit_rows, 0.95), 0),
+                coalesce(max(unit_rows), 0)
+            FROM units
+            """
+        ).fetchone()
+        by_venue = [
+            {
+                "venue": str(venue),
+                "observed_row_count": int(row_count),
+                "unique_episode_count": int(episode_count),
+                "game_count": int(game_count),
+            }
+            for venue, row_count, episode_count, game_count in (
+                connection.execute(
+                    """
+                    SELECT
+                        venue,
+                        count(*),
+                        count(DISTINCT (game_id, episode_id)),
+                        count(DISTINCT game_id)
+                    FROM observed_candidates
+                    GROUP BY venue
+                    ORDER BY venue
+                    """
+                ).fetchall()
+            )
+        ]
+        by_game = [
+            {
+                "game_id": str(game_id),
+                "unique_episode_count": int(episode_count),
+            }
+            for game_id, episode_count in connection.execute(
+                """
+                SELECT game_id, count(DISTINCT episode_id)
+                FROM observed_candidates
+                GROUP BY game_id
+                ORDER BY game_id
+                """
+            ).fetchall()
+        ]
+    finally:
+        connection.close()
+
+    venue_by_id = {row["venue"]: row for row in by_venue}
+    nominal_count_threshold_met = (
+        unique_episode_count >= 300
+        and observed_game_count >= 16
+        and all(
+            venue_by_id.get(venue, {}).get("unique_episode_count", 0)
+            >= 100
+            for venue in ("kalshi", "polymarket")
+        )
+    )
+    maximum_game_episode_count = max(
+        (
+            int(row["unique_episode_count"])
+            for row in by_game
+        ),
+        default=0,
+    )
+    maximum_game_contribution = (
+        None
+        if unique_episode_count == 0
+        else format(
+            (
+                Decimal(maximum_game_episode_count)
+                / Decimal(unique_episode_count)
+            ).quantize(Decimal("0.000001")),
+            "f",
+        )
+    )
+    registered_whitelist = []
+    for hypothesis in X13_REGISTERED_ANALYSIS_LOCK_V1.hypotheses:
+        if hypothesis.hypothesis_id == "event_superclass":
+            status = "NOT_RUN_PRIMARY_PROJECTION_NOT_FROZEN"
+        elif hypothesis.hypothesis_id == "sequence":
+            status = "NOT_RUN_OPERATIONAL_SEQUENCE_DEFINITION_NOT_FROZEN"
+        elif hypothesis.hypothesis_id == "fair_delta_by_pre_event_liquidity":
+            status = (
+                "NOT_RUN_FAIR_DELTA_AND_PRE_EVENT_LIQUIDITY_NOT_SUPPLIED"
+            )
+        else:
+            status = "NOT_RUN_PIT_UNPROVEN_FAIR_DELTA_NOT_SUPPLIED"
+        registered_whitelist.append(
+            {
+                "hypothesis_id": hypothesis.hypothesis_id,
+                "hypothesis_family": hypothesis.hypothesis_family,
+                "analysis_kind": hypothesis.analysis_kind,
+                "approved_groups": list(hypothesis.approved_groups),
+                "estimand": hypothesis.estimand,
+                "status": status,
+            }
+        )
+    return {
+        "schema": "nfl_x13_exploration_readiness_report_v1",
+        "experiment_id": X13_EXPERIMENT_ID,
+        "status": X13_STATUS,
+        "analysis_status": "NOT_RUN_UNRESOLVED_ESTIMAND",
+        "source_binding": {
+            "registered_analysis_spec_lock_id": (
+                X13_REGISTERED_ANALYSIS_LOCK_V1.lock_id
+            ),
+            "input_root_analysis_lock_sha256": (
+                input_root_analysis_lock_sha256
+            ),
+            "association_partition_sha256s": sorted(
+                partition_sha256s
+            ),
+        },
+        "candidate_evidence": {
+            "candidate_row_count": candidate_row_count,
+            "observed_row_count": observed_row_count,
+            "unique_episode_count": unique_episode_count,
+            "episode_venue_unit_count": episode_venue_unit_count,
+            "repeated_episode_venue_unit_count": int(
+                unit_distribution[1]
+            ),
+            "episode_venue_rows_p50": int(unit_distribution[2]),
+            "episode_venue_rows_p95": int(unit_distribution[3]),
+            "episode_venue_rows_max": int(unit_distribution[4]),
+            "game_count": observed_game_count,
+            "by_venue": by_venue,
+            "by_game": by_game,
+            "maximum_single_game_contribution": (
+                maximum_game_contribution
+            ),
+        },
+        "candidate_support_envelope": {
+            "thresholds": {
+                "eligible_episode_count": 300,
+                "game_count": 16,
+                "per_venue_episode_count": 100,
+            },
+            "nominal_support_threshold_met": (
+                nominal_count_threshold_met
+            ),
+            "gate_evaluated": False,
+            "category_concentration_not_evaluated": True,
+            "status": (
+                "NOT_RUN_PRIMARY_PROJECTION_NOT_FROZEN"
+            ),
+            "reason": (
+                "candidate rows repeat episode-venue units across contract, "
+                "outcome, delay, and horizon; no frozen one-row projection "
+                "or estimand exists"
+            ),
+        },
+        "registered_whitelist": registered_whitelist,
+        "inference_controls": {
+            "game_cluster_bootstrap": (
+                "NOT_RUN_BOOTSTRAP_REPLICATE_COUNT_NOT_FROZEN"
+            ),
+            "leave_one_game_out": (
+                "NOT_RUN_PRIMARY_PROJECTION_NOT_FROZEN"
+            ),
+            "multiple_testing_correction": (
+                "NOT_RUN_NO_EFFECT_TESTS_EXECUTED"
+            ),
+        },
+        "required_before_inference": [
+            "freeze one delay and horizon projection",
+            "freeze logical market outcome and orientation projection",
+            "freeze one episode-venue estimand",
+            "freeze sequence operational definitions",
+            "freeze bootstrap replicate count",
+        ],
+        "claim_boundary": {
+            "association_candidates_only": True,
+            "causality": False,
+            "real_latency": False,
+            "execution": False,
+            "tradeable_alpha": False,
+        },
+    }
+
+
 def _prepare_game(
     *,
     game_state: Any,
@@ -3850,6 +4261,32 @@ def execute_x13_pipeline(
                 role="association_cardinality_report",
                 payload=cardinality_payload,
                 row_count=len(partition_descriptors),
+            )
+        )
+        exploration_readiness_payload = _exploration_readiness_report(
+            association_paths=tuple(
+                artifact.source_path
+                for artifact in auxiliary
+                if artifact.role == "association_candidate_table"
+            ),
+            expected_candidate_row_count=actual_association_count,
+            input_root_analysis_lock_sha256=(
+                active_authorization.analysis_lock_sha256
+            ),
+        )
+        auxiliary.append(
+            _write_auxiliary_json(
+                staging_root,
+                relative_path=(
+                    "reports/exploration-readiness-report-v1.json"
+                ),
+                role="exploration_readiness_report",
+                payload=exploration_readiness_payload,
+                row_count=int(
+                    exploration_readiness_payload[
+                        "candidate_evidence"
+                    ]["unique_episode_count"]
+                ),
             )
         )
         auxiliary.append(

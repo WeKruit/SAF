@@ -51,7 +51,7 @@ def test_x13_is_preregistered_before_source_time_exploration() -> None:
     assert x13["causal_or_execution_claims_authorized"] is False
 
 
-def test_x13_unknown_or_unresolved_inputs_fail_closed(
+def test_x13_resolved_source_bundle_and_unknown_registry_fail_closed(
     tmp_path: Path,
 ) -> None:
     registry = load_experiment_registry(PROJECT_ROOT)
@@ -62,7 +62,16 @@ def test_x13_unknown_or_unresolved_inputs_fail_closed(
         for lock in x13["registration_locks"]
         if lock["status"] == "unresolved"
     }
-    assert unresolved == {"source_manifest_bundle"}
+    assert unresolved == set()
+    source_manifest_lock = next(
+        lock
+        for lock in x13["registration_locks"]
+        if lock["id"] == "source_manifest_bundle"
+    )
+    assert source_manifest_lock["evidence_ref"] == (
+        "sha256:"
+        "aa273e66d8cbfda757cd0e63e4dc00d7087035d0c4bbd723506f7c8958e8f19e"
+    )
 
     with pytest.raises(ExperimentRegistryError):
         load_experiment_registry(tmp_path)

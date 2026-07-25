@@ -896,6 +896,157 @@ def test_polymarket_json_numbers_preserve_exact_decimal_values() -> None:
         )
 
 
+def test_association_preview_is_market_covering_stratified_and_deterministic(
+) -> None:
+    import prediction_market.sports.nfl_x13_pipeline as pipeline_module
+
+    rows = [
+        {
+            "episode_id": f"episode-{index}",
+            "episode_type": "score" if index % 2 else "turnover",
+            "logical_market_id": market_id,
+            "outcome": "YES",
+            "delay_scenario_seconds": index % 2,
+            "horizon_seconds": 10 if index % 3 else 30,
+            "validity_status": "OBSERVED",
+        }
+        for index, market_id in enumerate(
+            ("market-a", "market-a", "market-b", "market-b", "market-c", "market-c")
+        )
+    ]
+
+    first = pipeline_module._AssociationPreviewSampler(limit=4)
+    second = pipeline_module._AssociationPreviewSampler(limit=4)
+    for row in rows:
+        first.add(row)
+        second.add(dict(row))
+    first.add(dict(rows[0]))
+    second.add(dict(rows[0]))
+
+    selected = first.finalize()
+
+    assert selected == second.finalize()
+    assert len(selected) == 4
+    assert {row["logical_market_id"] for row in selected} == {
+        "market-a",
+        "market-b",
+        "market-c",
+    }
+    assert len(
+        {
+            (
+                row["logical_market_id"],
+                row["delay_scenario_seconds"],
+                row["horizon_seconds"],
+                row["episode_type"],
+                row["validity_status"],
+            )
+            for row in selected
+        }
+    ) == 4
+
+
+def test_exploration_readiness_counts_episode_units_but_refuses_inference(
+    tmp_path: Path,
+) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    import prediction_market.sports.nfl_x13_pipeline as pipeline_module
+
+    rows = []
+    for index, (
+        game_id,
+        episode_id,
+        venue,
+        validity_status,
+    ) in enumerate(
+        (
+            ("game-a", "episode-1", "kalshi", "OBSERVED"),
+            ("game-a", "episode-1", "kalshi", "OBSERVED"),
+            ("game-a", "episode-1", "polymarket", "OBSERVED"),
+            ("game-b", "episode-2", "kalshi", "OBSERVED"),
+            ("game-b", "episode-3", "kalshi", "NO_POST_TRADE"),
+        )
+    ):
+        rows.append(
+            {
+                "game_id": game_id,
+                "episode_id": episode_id,
+                "episode_type": "touchdown",
+                "contract_id": f"contract-{index}",
+                "logical_market_id": f"market-{index}",
+                "venue": venue,
+                "family": "moneyline",
+                "outcome": "YES",
+                "source_time_start_utc": "2026-01-01T00:00:00Z",
+                "source_time_end_utc": "2026-01-01T00:00:01Z",
+                "delay_scenario_seconds": 0,
+                "horizon_seconds": 10,
+                "pre_event_actual_trade": "0.4",
+                "first_post_event_trade": "0.5",
+                "vwap": "0.5",
+                "signed_price_change": "0.1",
+                "maximum_excursion": "0.1",
+                "net_change_60s": "0.1",
+                "trade_count": 1,
+                "volume": "1",
+                "staleness_seconds": "0",
+                "overshoot_candidate": False,
+                "reversal_candidate": False,
+                "two_venue_direction_consistency": "UNAVAILABLE",
+                "order_ambiguous": False,
+                "contaminated": False,
+                "validity_status": validity_status,
+            }
+        )
+    path = tmp_path / "associations.parquet"
+    table = pa.Table.from_pylist(
+        rows,
+        schema=pipeline_module._association_arrow_schema(),
+    )
+    pq.write_table(table, path)
+
+    report = pipeline_module._exploration_readiness_report(
+        association_paths=(path,),
+        expected_candidate_row_count=5,
+        input_root_analysis_lock_sha256=SHA_A,
+    )
+
+    assert report["candidate_evidence"]["candidate_row_count"] == 5
+    assert report["candidate_evidence"]["observed_row_count"] == 4
+    assert report["candidate_evidence"]["unique_episode_count"] == 2
+    assert report["candidate_evidence"]["episode_venue_unit_count"] == 3
+    assert report["candidate_evidence"]["repeated_episode_venue_unit_count"] == 1
+    assert report["candidate_support_envelope"][
+        "nominal_support_threshold_met"
+    ] is False
+    assert report["candidate_support_envelope"]["gate_evaluated"] is False
+    assert report["candidate_support_envelope"]["status"] == (
+        "NOT_RUN_PRIMARY_PROJECTION_NOT_FROZEN"
+    )
+    assert {
+        item["hypothesis_id"] for item in report["registered_whitelist"]
+    } == {
+        hypothesis.hypothesis_id
+        for hypothesis in (
+            pipeline_module.X13_REGISTERED_ANALYSIS_LOCK_V1.hypotheses
+        )
+    }
+    assert all(
+        item["status"].startswith("NOT_RUN")
+        for item in report["registered_whitelist"]
+    )
+    assert report["source_binding"]["registered_analysis_spec_lock_id"] == (
+        pipeline_module.X13_REGISTERED_ANALYSIS_LOCK_V1.lock_id
+    )
+    assert report["source_binding"]["input_root_analysis_lock_sha256"] == SHA_A
+    assert len(
+        report["source_binding"]["association_partition_sha256s"]
+    ) == 1
+    assert report["claim_boundary"]["tradeable_alpha"] is False
+
+
 def test_end_to_end_pipeline_reopens_evidence_normalizes_and_publishes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

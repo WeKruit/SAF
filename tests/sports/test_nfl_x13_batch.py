@@ -4,6 +4,7 @@ import hashlib
 import json
 from copy import deepcopy
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -61,6 +62,10 @@ _REQUIRED_REPORTS = {
     "lineage_report": (
         "reports/lineage-report-v1.json",
         "nfl_x13_lineage_report_v1",
+    ),
+    "exploration_readiness_report": (
+        "reports/exploration-readiness-report-v1.json",
+        "nfl_x13_exploration_readiness_report_v1",
     ),
 }
 
@@ -314,7 +319,7 @@ def _game_payload(game_id: str) -> dict[str, object]:
             "presentation_omitted_count": 0,
             "presentation_row_limit": 5_000,
             "presentation_selection_order": (
-                "first_rows_in_canonical_association_stream_order"
+                "deterministic_market_coverage_then_hashed_stratum_reservoir_v1"
             ),
             "presentation_filter": (
                 "actual_market_evidence_and_ambiguous_or_contaminated_status"
@@ -700,10 +705,340 @@ def test_render_is_offline_generic_and_shows_both_outcomes() -> None:
     assert "http://" not in html
     assert "<script src=" not in html
     assert "<link " not in html
-    assert 'data-provenance="observed"' in html
-    assert 'data-provenance="derived_complement"' in html
-    assert "const observedRows=" in html
-    assert "const derivedRows=" in html
+    assert '"provenance":"observed"' in html
+    assert '"provenance":"derived_complement"' in html
+    assert 'data-provenance="${esc(provenance)}"' in html
+    assert '"series_kind":"trade_range"' in html
+    assert "Math.min(...times)" not in html
+    assert "Math.max(...times)" not in html
+    assert "point_limit_per_series" in html
+    assert "Full JSON/Parquet remains the analysis source" in html
+    assert 'id="market-display-coverage"' in html
+
+
+def test_html_presentation_groups_same_interval_trade_prices_as_one_range(
+) -> None:
+    payload = _game_payload("2025_01_BAL_BUF")
+    logical_market_id = payload["contracts"][0]["logical_market_id"]
+    template = payload["observations"][0]
+    payload["observations"] = []
+    for index, (price, size) in enumerate(
+        (("0.40", "2"), ("0.50", "3"), ("0.60", "5")),
+        start=1,
+    ):
+        row = deepcopy(template)
+        row["observation_id"] = f"test-observation-{index}"
+        row["price"] = price
+        row["size"] = size
+        payload["observations"].append(row)
+
+    presentation = batch_module._build_html_presentation_v1(payload)
+    series = next(
+        row
+        for row in presentation["market_series"]
+        if row["logical_market_id"] == logical_market_id
+        and row["outcome"] == payload["teams"]["away"]
+        and row["provenance"] == "observed"
+        and row["series_kind"] == "trade_range"
+    )
+
+    assert series["original_observation_count"] == 3
+    assert series["interval_group_count"] == 1
+    assert series["display_point_count"] == 1
+    assert series["points"] == [
+        {
+            "source_start": "2025-09-07T17:00:02Z",
+            "source_end": "2025-09-07T17:00:03Z",
+            "price_min": "0.4",
+            "price_max": "0.6",
+            "trade_count": 3,
+            "size_complete": True,
+            "sum_size": "10",
+            "vwap": "0.53",
+            "interval_group_count": 1,
+            "contains_discontinuity": False,
+            "connect_to_previous": False,
+            "segment_id": 0,
+        }
+    ]
+
+
+def test_html_trade_series_only_connects_strictly_adjacent_intervals() -> None:
+    payload = _game_payload("2025_01_BAL_BUF")
+    template = payload["observations"][0]
+    payload["observations"] = []
+    intervals = (
+        ("2025-09-07T17:00:00Z", "2025-09-07T17:00:01Z"),
+        ("2025-09-07T17:00:01Z", "2025-09-07T17:00:02Z"),
+        ("2025-09-07T17:00:03Z", "2025-09-07T17:00:04Z"),
+        ("2025-09-07T17:00:03.500000Z", "2025-09-07T17:00:04.500000Z"),
+    )
+    for index, (source_start, source_end) in enumerate(intervals, start=1):
+        row = deepcopy(template)
+        row["observation_id"] = f"test-observation-{index}"
+        row["source_start"] = source_start
+        row["source_end"] = source_end
+        row["price"] = f"0.{index + 3}"
+        payload["observations"].append(row)
+
+    presentation = batch_module._build_html_presentation_v1(payload)
+    series = next(
+        row
+        for row in presentation["market_series"]
+        if row["series_kind"] == "trade_range"
+        and row["provenance"] == "observed"
+    )
+
+    assert series["display_point_count"] == 4
+    assert [
+        point["connect_to_previous"] for point in series["points"]
+    ] == [False, True, False, False]
+    assert [point["segment_id"] for point in series["points"]] == [0, 0, 1, 2]
+
+
+def test_html_trade_series_is_deterministic_bounded_and_preserves_aggregates(
+) -> None:
+    payload = _game_payload("2025_01_BAL_BUF")
+    template = payload["observations"][0]
+    payload["observations"] = []
+    base = datetime(2025, 9, 7, 17, tzinfo=timezone.utc)
+    for index in range(1_025):
+        row = deepcopy(template)
+        row["observation_id"] = f"test-observation-{index:04d}"
+        row["source_start"] = (
+            base + timedelta(seconds=index)
+        ).isoformat().replace("+00:00", "Z")
+        row["source_end"] = (
+            base + timedelta(seconds=index + 1)
+        ).isoformat().replace("+00:00", "Z")
+        row["price"] = "0.01" if index % 2 == 0 else "0.99"
+        row["size"] = "2"
+        payload["observations"].append(row)
+
+    first = batch_module._build_html_presentation_v1(payload)
+    second = batch_module._build_html_presentation_v1(deepcopy(payload))
+    series = next(
+        row
+        for row in first["market_series"]
+        if row["series_kind"] == "trade_range"
+    )
+
+    assert first == second
+    assert canonical_payload_hash(first) == canonical_payload_hash(second)
+    assert series["interval_group_count"] == 1_025
+    assert series["display_point_count"] <= 512
+    assert series["reduced"] is True
+    assert sum(point["trade_count"] for point in series["points"]) == 1_025
+    assert sum(
+        Decimal(point["sum_size"]) for point in series["points"]
+    ) == Decimal("2050")
+    assert min(point["price_min"] for point in series["points"]) == "0.01"
+    assert max(point["price_max"] for point in series["points"]) == "0.99"
+
+
+def test_html_bbo_series_is_bounded_without_losing_candle_semantics() -> None:
+    payload = _game_payload("2025_01_BAL_BUF")
+    contract = payload["contracts"][1]
+    template = _candle_observation(
+        raw_market_id=_BINDING_BY_GAME_ID[
+            "2025_01_BAL_BUF"
+        ].kalshi_away_ticker,
+        logical_market_id=contract["logical_market_id"],
+        outcome=payload["teams"]["away"],
+        bid="0.42",
+        ask="0.62",
+    )
+    payload["observations"] = []
+    base = datetime(2025, 9, 7, 17, tzinfo=timezone.utc)
+    for index in range(513):
+        row = deepcopy(template)
+        row["observation_id"] = f"test-candle-{index:04d}"
+        row["source_start"] = (
+            base + timedelta(minutes=index)
+        ).isoformat().replace("+00:00", "Z")
+        row["source_end"] = (
+            base + timedelta(minutes=index + 1)
+        ).isoformat().replace("+00:00", "Z")
+        row["yes_bid_ohlc"] = {
+            "open": "0.40",
+            "high": "0.45",
+            "low": "0.35",
+            "close": "0.42",
+        }
+        row["yes_ask_ohlc"] = {
+            "open": "0.60",
+            "high": "0.65",
+            "low": "0.55",
+            "close": "0.62",
+        }
+        row["volume"] = "10"
+        row["size"] = "10"
+        row["open_interest"] = str(index)
+        payload["observations"].append(row)
+
+    presentation = batch_module._build_html_presentation_v1(payload)
+    series = next(
+        row
+        for row in presentation["market_series"]
+        if row["series_kind"] == "bbo_candle"
+    )
+
+    assert series["original_observation_count"] == 513
+    assert series["display_point_count"] <= 512
+    assert series["reduced"] is True
+    assert sum(Decimal(point["volume"]) for point in series["points"]) == (
+        Decimal("5130")
+    )
+    assert {
+        point["bid_ohlc"]["low"] for point in series["points"]
+    } == {"0.35"}
+    assert {
+        point["bid_ohlc"]["high"] for point in series["points"]
+    } == {"0.45"}
+    assert {
+        point["ask_ohlc"]["low"] for point in series["points"]
+    } == {"0.55"}
+    assert {
+        point["ask_ohlc"]["high"] for point in series["points"]
+    } == {"0.65"}
+
+
+def test_html_bbo_same_interval_does_not_invent_open_or_close_order() -> None:
+    payload = _game_payload("2025_01_BAL_BUF")
+    contract = payload["contracts"][1]
+    first = _candle_observation(
+        raw_market_id=_BINDING_BY_GAME_ID[
+            "2025_01_BAL_BUF"
+        ].kalshi_away_ticker,
+        logical_market_id=contract["logical_market_id"],
+        outcome=payload["teams"]["away"],
+        bid="0.42",
+        ask="0.62",
+    )
+    second = deepcopy(first)
+    first["observation_id"] = "same-interval-a"
+    second["observation_id"] = "same-interval-b"
+    second["yes_bid_ohlc"] = {
+        "open": "0.30",
+        "high": "0.50",
+        "low": "0.25",
+        "close": "0.45",
+    }
+    second["yes_ask_ohlc"] = {
+        "open": "0.70",
+        "high": "0.75",
+        "low": "0.50",
+        "close": "0.55",
+    }
+    payload["observations"] = [first, second]
+
+    presentation = batch_module._build_html_presentation_v1(payload)
+    point = next(
+        row
+        for row in presentation["market_series"]
+        if row["series_kind"] == "bbo_candle"
+    )["points"][0]
+
+    assert point["source_order_ambiguous"] is True
+    assert point["bid_ohlc"] == {
+        "open": None,
+        "high": "0.5",
+        "low": "0.25",
+        "close": None,
+    }
+    assert point["ask_ohlc"] == {
+        "open": None,
+        "high": "0.75",
+        "low": "0.5",
+        "close": None,
+    }
+
+
+def test_renderer_never_uses_midpoint_when_trade_vwap_is_unavailable() -> None:
+    rendered = render_game_html(_game_payload("2025_01_BAL_BUF"))
+
+    assert "(Number(point.price_min)+Number(point.price_max))/2" not in rendered
+    assert (
+        "point.vwap==null||point.contains_discontinuity?null:"
+        "Number(point.vwap)"
+    ) in rendered
+
+
+def test_renderer_exposes_play_scoring_and_role_player_cumulative_stats() -> None:
+    payload = _game_payload("2025_01_BAL_BUF")
+    event = payload["events"][0]
+    event["player_roles"] = {
+        "passer": "Quarter Back",
+        "rusher": "Running Back",
+        "receiver": "Wide Receiver",
+    }
+    payload["stat_ledger"] = [
+        {
+            "through_play_id": event["play_id"],
+            "team_scores": {"BAL": 7, "BUF": 3},
+            "period_scores": {"1": {"BAL": 7, "BUF": 3}},
+            "player_stats": {
+                "Quarter Back": {
+                    "passing_yards": 120,
+                    "passing_touchdowns": 1,
+                },
+                "Running Back": {
+                    "rushing_yards": 45,
+                    "rushing_touchdowns": 0,
+                },
+                "Wide Receiver": {
+                    "receiving_yards": 75,
+                    "receptions": 6,
+                    "receiving_touchdowns": 1,
+                },
+            },
+        }
+    ]
+
+    rendered = render_game_html(payload)
+
+    assert 'id="play-stat-ledger"' in rendered
+    assert "Cumulative team score" in rendered
+    assert "Cumulative period score" in rendered
+    assert '"passer":"Quarter Back"' in rendered
+    assert '"rusher":"Running Back"' in rendered
+    assert '"receiver":"Wide Receiver"' in rendered
+    assert "passing_yards" in rendered
+    assert "rushing_yards" in rendered
+    assert "receiving_yards" in rendered
+    assert "receptions" in rendered
+    assert "receiving_touchdowns" in rendered
+
+
+def test_html_embeds_only_bounded_presentation_with_unique_filters_and_paging(
+) -> None:
+    payload = _game_payload("2025_01_BAL_BUF")
+    full_observation_id = payload["observations"][0]["observation_id"]
+
+    rendered = render_game_html(payload)
+
+    assert '"schema":"nfl_x13_html_presentation_v1"' in rendered
+    assert full_observation_id not in rendered
+    assert '"market_series":' in rendered
+    assert '"observations":' not in rendered
+    assert "Math.min(..." not in rendered
+    assert "Math.max(..." not in rendered
+    assert 'id="venue-selector"' in rendered
+    assert 'id="family-selector"' in rendered
+    assert 'id="contract-selector"' in rendered
+    assert 'id="contract-detail"' in rendered
+    assert 'id="association-horizon"' in rendered
+    assert 'id="association-status"' in rendered
+    assert 'id="association-prev"' in rendered
+    assert 'id="association-next"' in rendered
+    assert "const ASSOCIATION_PAGE_SIZE=100" in rendered
+    assert "D.association_preview" in rendered
+    assert "D.episodes" in rendered
+    assert "presentation preview" in rendered
+    assert "eligible preview pool" in rendered
+    assert "omitted from HTML preview" in rendered
+    assert "full partitioned Parquet" in rendered
+    assert "point_limit_per_series" in rendered
 
 
 def test_render_draws_real_kalshi_candle_bid_ask_without_fabricating_price(
@@ -747,10 +1082,12 @@ def test_render_draws_real_kalshi_candle_bid_ask_without_fabricating_price(
 
     assert "BBO bid" in rendered
     assert "BBO ask" in rendered
-    assert "o.bid!=null&&o.ask!=null" in rendered
+    assert '"series_kind":"bbo_candle"' in rendered
+    assert "point.bid_ohlc" in rendered
+    assert "point.ask_ohlc" in rendered
     assert 'x2="1160" y2="315" stroke="#47627f"/>' in rendered
     assert 'class="bbo-point"' in rendered
-    assert 'class="candle-bbo"' in rendered
+    assert '"bbo-bucket-envelope":"candle-bbo"' in rendered
     assert 'id="market-candle-detail"' in rendered
     assert "Bid O/H/L/C" in rendered
     assert "volume / open interest" in rendered
@@ -800,7 +1137,7 @@ def test_atomic_publish_writes_twenty_html_json_index_and_verifies(
     assert len(list((published / "games").glob("*.html"))) == 20
     assert len(list((published / "games").glob("*.json"))) == 20
     verified = verify_published_batch(published)
-    assert verified["verified_file_count"] == 70
+    assert verified["verified_file_count"] == 71
     assert verified["game_count"] == 20
 
     second = _publish_batch(payloads, output_root=tmp_path)
@@ -848,7 +1185,7 @@ def test_auxiliary_artifacts_are_content_bound_copied_and_verified(
         if value["relative_path"] == artifact.relative_path
     )
     assert descriptor == artifact.descriptor
-    assert verify_published_batch(published)["verified_file_count"] == 70
+    assert verify_published_batch(published)["verified_file_count"] == 71
 
     copied.write_bytes(copied.read_bytes() + b"tamper")
     _rewrite_checksum_ledger(published)

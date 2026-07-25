@@ -13,7 +13,7 @@ import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, localcontext
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -73,6 +73,10 @@ _REQUIRED_NON_TABLE_AUXILIARY = {
     "lineage_report": (
         "reports/lineage-report-v1.json",
         "nfl_x13_lineage_report_v1",
+    ),
+    "exploration_readiness_report": (
+        "reports/exploration-readiness-report-v1.json",
+        "nfl_x13_exploration_readiness_report_v1",
     ),
 }
 X13_ASSOCIATION_SCHEMA_FIELDS = (
@@ -1298,7 +1302,7 @@ def _validate_game_payload(payload: object) -> dict[str, Any]:
         association_coverage.get("presentation_filter")
         != "actual_market_evidence_and_ambiguous_or_contaminated_status"
         or association_coverage.get("presentation_selection_order")
-        != "first_rows_in_canonical_association_stream_order"
+        != _HTML_PRESENTATION_SELECTION_METHOD
         or association_coverage.get("full_table_format")
         != "partitioned_parquet"
     ):
@@ -1520,6 +1524,637 @@ def _embedded_json(payload: Mapping[str, object]) -> str:
     )
 
 
+_HTML_SERIES_POINT_LIMIT = 512
+_HTML_ASSOCIATION_PAGE_SIZE = 100
+_HTML_PRESENTATION_SELECTION_METHOD = (
+    "deterministic_market_coverage_then_hashed_stratum_reservoir_v1"
+)
+_HTML_CONTRACT_FIELDS = (
+    "contract_id",
+    "logical_market_id",
+    "venue_market_id",
+    "venue",
+    "family",
+    "kind",
+    "dependency_game_ids",
+    "analysis_eligible",
+    "outcomes",
+    "outcome_coverage",
+    "condition_id",
+    "raw_contract_ids",
+    "native_subject",
+    "subject",
+    "period",
+    "measure",
+    "comparator",
+    "line",
+    "rule_sha256",
+)
+
+
+def _display_decimal(value: Decimal) -> str:
+    text = format(value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _presentation_decimal(value: object) -> Decimal | None:
+    if isinstance(value, Decimal):
+        number = value
+    elif type(value) in {str, int}:
+        try:
+            number = Decimal(value)
+        except (InvalidOperation, ValueError):
+            return None
+    else:
+        return None
+    return number if number.is_finite() and number >= 0 else None
+
+
+def _trade_interval_point(
+    rows: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    prices = [Decimal(str(row["price"])) for row in rows]
+    sizes = [_presentation_decimal(row.get("size")) for row in rows]
+    size_complete = all(size is not None for size in sizes)
+    sum_size: Decimal | None = None
+    vwap: Decimal | None = None
+    weighted_price_sum: Decimal | None = None
+    if size_complete:
+        sum_size = sum(
+            (size for size in sizes if size is not None),
+            start=Decimal(0),
+        )
+        weighted_price_sum = sum(
+            (
+                price * size
+                for price, size in zip(prices, sizes, strict=True)
+                if size is not None
+            ),
+            start=Decimal(0),
+        )
+        if sum_size > 0:
+            with localcontext() as context:
+                context.prec = 34
+                vwap = weighted_price_sum / sum_size
+    source_start = str(rows[0]["source_start"])
+    source_end = str(rows[0]["source_end"])
+    return {
+        "source_start": source_start,
+        "source_end": source_end,
+        "price_min": _display_decimal(min(prices)),
+        "price_max": _display_decimal(max(prices)),
+        "trade_count": len(rows),
+        "size_complete": size_complete,
+        "sum_size": (
+            _display_decimal(sum_size) if sum_size is not None else None
+        ),
+        "vwap": _display_decimal(vwap) if vwap is not None else None,
+        "interval_group_count": 1,
+        "contains_discontinuity": False,
+        "connect_to_previous": False,
+        "segment_id": 0,
+        "_start_time": _observation_time(source_start, "source_start"),
+        "_end_time": _observation_time(source_end, "source_end"),
+        "_weighted_price_sum": weighted_price_sum,
+    }
+
+
+def _timedelta_microseconds(value: timedelta) -> int:
+    return (
+        value.days * 86_400_000_000
+        + value.seconds * 1_000_000
+        + value.microseconds
+    )
+
+
+def _merge_trade_points(
+    points: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    ordered = sorted(
+        points,
+        key=lambda point: (point["_start_time"], point["_end_time"]),
+    )
+    sizes_complete = all(point["size_complete"] is True for point in ordered)
+    sum_size: Decimal | None = None
+    weighted_price_sum: Decimal | None = None
+    vwap: Decimal | None = None
+    if sizes_complete:
+        sum_size = sum(
+            (Decimal(str(point["sum_size"])) for point in ordered),
+            start=Decimal(0),
+        )
+        weighted_price_sum = sum(
+            (
+                point["_weighted_price_sum"]
+                for point in ordered
+                if isinstance(point["_weighted_price_sum"], Decimal)
+            ),
+            start=Decimal(0),
+        )
+        if sum_size > 0:
+            with localcontext() as context:
+                context.prec = 34
+                vwap = weighted_price_sum / sum_size
+    discontinuity = any(
+        first["_end_time"] != second["_start_time"]
+        for first, second in zip(ordered, ordered[1:])
+    ) or any(point["contains_discontinuity"] is True for point in ordered)
+    return {
+        "source_start": str(ordered[0]["source_start"]),
+        "source_end": str(ordered[-1]["source_end"]),
+        "price_min": _display_decimal(
+            min(Decimal(str(point["price_min"])) for point in ordered)
+        ),
+        "price_max": _display_decimal(
+            max(Decimal(str(point["price_max"])) for point in ordered)
+        ),
+        "trade_count": sum(int(point["trade_count"]) for point in ordered),
+        "size_complete": sizes_complete,
+        "sum_size": (
+            _display_decimal(sum_size) if sum_size is not None else None
+        ),
+        "vwap": _display_decimal(vwap) if vwap is not None else None,
+        "interval_group_count": sum(
+            int(point["interval_group_count"]) for point in ordered
+        ),
+        "contains_discontinuity": discontinuity,
+        "connect_to_previous": False,
+        "segment_id": 0,
+        "_start_time": ordered[0]["_start_time"],
+        "_end_time": ordered[-1]["_end_time"],
+        "_weighted_price_sum": weighted_price_sum,
+    }
+
+
+def _finalize_interval_points(
+    points: Sequence[dict[str, object]],
+) -> list[dict[str, object]]:
+    previous: Mapping[str, object] | None = None
+    segment_id = -1
+    finalized: list[dict[str, object]] = []
+    for point in points:
+        adjacent = (
+            previous is not None
+            and previous["_end_time"] == point["_start_time"]
+            and previous["contains_discontinuity"] is False
+            and point["contains_discontinuity"] is False
+        )
+        if not adjacent:
+            segment_id += 1
+        output = {
+            key: value for key, value in point.items() if not key.startswith("_")
+        }
+        output["connect_to_previous"] = adjacent
+        output["segment_id"] = segment_id
+        finalized.append(output)
+        previous = point
+    return finalized
+
+
+def _reduce_trade_points(
+    points: Sequence[dict[str, object]],
+    *,
+    limit: int,
+) -> list[dict[str, object]]:
+    ordered = sorted(
+        points,
+        key=lambda point: (point["_start_time"], point["_end_time"]),
+    )
+    if len(ordered) <= limit:
+        return _finalize_interval_points(ordered)
+    minimum = ordered[0]["_start_time"]
+    maximum = max(point["_end_time"] for point in ordered)
+    span = max(1, _timedelta_microseconds(maximum - minimum))
+    buckets: dict[int, list[Mapping[str, object]]] = {}
+    for point in ordered:
+        elapsed = _timedelta_microseconds(point["_start_time"] - minimum)
+        bucket = min(limit - 1, elapsed * limit // span)
+        buckets.setdefault(bucket, []).append(point)
+    reduced = [
+        _merge_trade_points(buckets[bucket]) for bucket in sorted(buckets)
+    ]
+    return _finalize_interval_points(reduced)
+
+
+def _ohlc_display(
+    *,
+    first: Mapping[str, object],
+    last: Mapping[str, object],
+    rows: Sequence[Mapping[str, object]],
+) -> dict[str, str | None]:
+    open_value = first.get("open")
+    close_value = last.get("close")
+    return {
+        "open": (
+            _display_decimal(Decimal(str(open_value)))
+            if open_value is not None
+            else None
+        ),
+        "high": _display_decimal(
+            max(Decimal(str(row["high"])) for row in rows)
+        ),
+        "low": _display_decimal(
+            min(Decimal(str(row["low"])) for row in rows)
+        ),
+        "close": (
+            _display_decimal(Decimal(str(close_value)))
+            if close_value is not None
+            else None
+        ),
+    }
+
+
+def _bbo_interval_point(
+    rows: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    ordered = sorted(rows, key=lambda row: str(row.get("observation_id", "")))
+    bids = [
+        _require_mapping(row.get("yes_bid_ohlc"), "yes_bid_ohlc")
+        for row in ordered
+    ]
+    asks = [
+        _require_mapping(row.get("yes_ask_ohlc"), "yes_ask_ohlc")
+        for row in ordered
+    ]
+    volumes = [_presentation_decimal(row.get("volume")) for row in ordered]
+    volume_complete = all(value is not None for value in volumes)
+    volume = (
+        sum(
+            (value for value in volumes if value is not None),
+            start=Decimal(0),
+        )
+        if volume_complete
+        else None
+    )
+    interests = [
+        _presentation_decimal(row.get("open_interest")) for row in ordered
+    ]
+    interest_values = [value for value in interests if value is not None]
+    source_start = str(ordered[0]["source_start"])
+    source_end = str(ordered[0]["source_end"])
+    bid_ohlc = _ohlc_display(first=bids[0], last=bids[-1], rows=bids)
+    ask_ohlc = _ohlc_display(first=asks[0], last=asks[-1], rows=asks)
+    if len(ordered) > 1:
+        bid_ohlc["open"] = None
+        bid_ohlc["close"] = None
+        ask_ohlc["open"] = None
+        ask_ohlc["close"] = None
+    return {
+        "source_start": source_start,
+        "source_end": source_end,
+        "bid_ohlc": bid_ohlc,
+        "ask_ohlc": ask_ohlc,
+        "volume_complete": volume_complete,
+        "volume": _display_decimal(volume) if volume is not None else None,
+        "open_interest": (
+            _display_decimal(interest_values[-1])
+            if len(interest_values) == len(interests)
+            else None
+        ),
+        "open_interest_min": (
+            _display_decimal(min(interest_values)) if interest_values else None
+        ),
+        "open_interest_max": (
+            _display_decimal(max(interest_values)) if interest_values else None
+        ),
+        "candle_count": len(ordered),
+        "interval_group_count": 1,
+        "source_order_ambiguous": len(ordered) > 1,
+        "contains_discontinuity": False,
+        "connect_to_previous": False,
+        "segment_id": 0,
+        "_start_time": _observation_time(source_start, "source_start"),
+        "_end_time": _observation_time(source_end, "source_end"),
+    }
+
+
+def _merge_bbo_points(
+    points: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    ordered = sorted(
+        points,
+        key=lambda point: (point["_start_time"], point["_end_time"]),
+    )
+    bids = [
+        _require_mapping(point["bid_ohlc"], "bid_ohlc") for point in ordered
+    ]
+    asks = [
+        _require_mapping(point["ask_ohlc"], "ask_ohlc") for point in ordered
+    ]
+    volumes = [_presentation_decimal(point.get("volume")) for point in ordered]
+    volume_complete = all(value is not None for value in volumes)
+    volume = (
+        sum(
+            (value for value in volumes if value is not None),
+            start=Decimal(0),
+        )
+        if volume_complete
+        else None
+    )
+    interests = [
+        _presentation_decimal(point.get("open_interest")) for point in ordered
+    ]
+    interest_minima = [
+        _presentation_decimal(point.get("open_interest_min"))
+        for point in ordered
+    ]
+    interest_maxima = [
+        _presentation_decimal(point.get("open_interest_max"))
+        for point in ordered
+    ]
+    valid_minima = [value for value in interest_minima if value is not None]
+    valid_maxima = [value for value in interest_maxima if value is not None]
+    discontinuity = any(
+        first["_end_time"] != second["_start_time"]
+        for first, second in zip(ordered, ordered[1:])
+    ) or any(point["contains_discontinuity"] is True for point in ordered)
+    return {
+        "source_start": str(ordered[0]["source_start"]),
+        "source_end": str(ordered[-1]["source_end"]),
+        "bid_ohlc": _ohlc_display(first=bids[0], last=bids[-1], rows=bids),
+        "ask_ohlc": _ohlc_display(first=asks[0], last=asks[-1], rows=asks),
+        "volume_complete": volume_complete,
+        "volume": _display_decimal(volume) if volume is not None else None,
+        "open_interest": (
+            _display_decimal(interests[-1])
+            if interests and interests[-1] is not None
+            else None
+        ),
+        "open_interest_min": (
+            _display_decimal(min(valid_minima)) if valid_minima else None
+        ),
+        "open_interest_max": (
+            _display_decimal(max(valid_maxima)) if valid_maxima else None
+        ),
+        "candle_count": sum(int(point["candle_count"]) for point in ordered),
+        "interval_group_count": sum(
+            int(point["interval_group_count"]) for point in ordered
+        ),
+        "source_order_ambiguous": any(
+            point["source_order_ambiguous"] is True for point in ordered
+        ),
+        "contains_discontinuity": discontinuity,
+        "connect_to_previous": False,
+        "segment_id": 0,
+        "_start_time": ordered[0]["_start_time"],
+        "_end_time": ordered[-1]["_end_time"],
+    }
+
+
+def _reduce_bbo_points(
+    points: Sequence[dict[str, object]],
+    *,
+    limit: int,
+) -> list[dict[str, object]]:
+    ordered = sorted(
+        points,
+        key=lambda point: (point["_start_time"], point["_end_time"]),
+    )
+    if len(ordered) <= limit:
+        return _finalize_interval_points(ordered)
+    minimum = ordered[0]["_start_time"]
+    maximum = max(point["_end_time"] for point in ordered)
+    span = max(1, _timedelta_microseconds(maximum - minimum))
+    buckets: dict[int, list[Mapping[str, object]]] = {}
+    for point in ordered:
+        elapsed = _timedelta_microseconds(point["_start_time"] - minimum)
+        bucket = min(limit - 1, elapsed * limit // span)
+        buckets.setdefault(bucket, []).append(point)
+    reduced = [
+        _merge_bbo_points(buckets[bucket]) for bucket in sorted(buckets)
+    ]
+    return _finalize_interval_points(reduced)
+
+
+def _build_html_presentation_v1(
+    game: Mapping[str, object],
+) -> dict[str, object]:
+    """Project full analytical data into a deterministic bounded HTML payload."""
+
+    contract_rows = [
+        contract
+        for contract in _require_sequence(game.get("contracts"), "contracts")
+        if isinstance(contract, Mapping)
+        and contract.get("analysis_eligible") is True
+    ]
+    contracts = {
+        str(contract["logical_market_id"]): contract
+        for contract in contract_rows
+    }
+    grouped_trades: dict[
+        tuple[str, str, str],
+        dict[tuple[str, str], list[Mapping[str, object]]],
+    ] = {}
+    grouped_bbo: dict[
+        tuple[str, str, str],
+        dict[tuple[str, str], list[Mapping[str, object]]],
+    ] = {}
+    for value in _require_sequence(game.get("observations"), "observations"):
+        row = _require_mapping(value, "observation")
+        series_key = (
+            str(row["logical_market_id"]),
+            str(row["outcome"]),
+            str(row["provenance"]),
+        )
+        interval_key = (
+            str(row["source_start"]),
+            str(row["source_end"]),
+        )
+        if row.get("price") is not None:
+            grouped_trades.setdefault(series_key, {}).setdefault(
+                interval_key, []
+            ).append(row)
+        if row.get("yes_bid_ohlc") is not None and row.get(
+            "yes_ask_ohlc"
+        ) is not None:
+            grouped_bbo.setdefault(series_key, {}).setdefault(
+                interval_key, []
+            ).append(row)
+    series: list[dict[str, object]] = []
+    for (logical_market_id, outcome, provenance), interval_rows in sorted(
+        grouped_trades.items()
+    ):
+        contract = contracts[logical_market_id]
+        interval_points = [
+            _trade_interval_point(rows)
+            for _, rows in sorted(
+                interval_rows.items(),
+                key=lambda item: (
+                    _observation_time(item[0][0], "source_start"),
+                    _observation_time(item[0][1], "source_end"),
+                ),
+            )
+        ]
+        points = _reduce_trade_points(
+            interval_points,
+            limit=_HTML_SERIES_POINT_LIMIT,
+        )
+        series.append(
+            {
+                "series_kind": "trade_range",
+                "logical_market_id": logical_market_id,
+                "contract_id": contract["contract_id"],
+                "venue": contract["venue"],
+                "family": contract["family"],
+                "outcome": outcome,
+                "provenance": provenance,
+                "original_observation_count": sum(
+                    len(rows) for rows in interval_rows.values()
+                ),
+                "interval_group_count": len(interval_points),
+                "display_point_count": len(points),
+                "reduced": len(points) < len(interval_points),
+                "point_limit": _HTML_SERIES_POINT_LIMIT,
+                "points": points,
+            }
+        )
+    for (logical_market_id, outcome, provenance), interval_rows in sorted(
+        grouped_bbo.items()
+    ):
+        contract = contracts[logical_market_id]
+        interval_points = [
+            _bbo_interval_point(rows)
+            for _, rows in sorted(
+                interval_rows.items(),
+                key=lambda item: (
+                    _observation_time(item[0][0], "source_start"),
+                    _observation_time(item[0][1], "source_end"),
+                ),
+            )
+        ]
+        points = _reduce_bbo_points(
+            interval_points,
+            limit=_HTML_SERIES_POINT_LIMIT,
+        )
+        series.append(
+            {
+                "series_kind": "bbo_candle",
+                "logical_market_id": logical_market_id,
+                "contract_id": contract["contract_id"],
+                "venue": contract["venue"],
+                "family": contract["family"],
+                "outcome": outcome,
+                "provenance": provenance,
+                "original_observation_count": sum(
+                    len(rows) for rows in interval_rows.values()
+                ),
+                "interval_group_count": len(interval_points),
+                "display_point_count": len(points),
+                "reduced": len(points) < len(interval_points),
+                "point_limit": _HTML_SERIES_POINT_LIMIT,
+                "points": points,
+            }
+        )
+    series.sort(
+        key=lambda row: (
+            str(row["logical_market_id"]),
+            str(row["outcome"]),
+            str(row["provenance"]),
+            str(row["series_kind"]),
+        )
+    )
+    projected_contracts = []
+    for contract in contract_rows:
+        projected = {
+            key: contract.get(key)
+            for key in _HTML_CONTRACT_FIELDS
+            if key in contract
+        }
+        projected["selector_key"] = str(contract["logical_market_id"])
+        projected["selector_label"] = str(
+            contract.get("native_subject")
+            or contract.get("subject")
+            or contract["venue_market_id"]
+        )
+        projected_contracts.append(projected)
+    projected_contracts.sort(
+        key=lambda contract: (
+            str(contract["venue"]),
+            str(contract["family"]),
+            str(contract["selector_label"]),
+            str(contract["selector_key"]),
+        )
+    )
+    coverage = _require_mapping(
+        game.get("association_coverage"),
+        "association_coverage",
+    )
+    associations = [
+        dict(_require_mapping(row, "association"))
+        for row in _require_sequence(game.get("associations"), "associations")
+    ]
+    return {
+        "schema": "nfl_x13_html_presentation_v1",
+        "experiment_id": game.get("experiment_id"),
+        "status": game.get("status"),
+        "game_id": game.get("game_id"),
+        "teams": dict(_require_mapping(game.get("teams"), "teams")),
+        "final_score": dict(
+            _require_mapping(game.get("final_score"), "final_score")
+        ),
+        "events": [
+            dict(_require_mapping(row, "event"))
+            for row in _require_sequence(game.get("events"), "events")
+        ],
+        "episodes": [
+            dict(_require_mapping(row, "episode"))
+            for row in _require_sequence(game.get("episodes"), "episodes")
+        ],
+        "stat_ledger": [
+            dict(_require_mapping(row, "stat_ledger"))
+            for row in _require_sequence(game.get("stat_ledger"), "stat_ledger")
+        ],
+        "personnel": dict(
+            _require_mapping(game.get("personnel"), "personnel")
+        ),
+        "contracts": projected_contracts,
+        "market_series": series,
+        "association_preview": associations,
+        "association_coverage": {
+            "full_row_count": coverage.get("actual_full_rows"),
+            "eligible_preview_pool_count": coverage.get(
+                "presentation_eligible_count"
+            ),
+            "preview_row_count": len(associations),
+            "omitted_from_html_preview_count": coverage.get(
+                "presentation_omitted_count"
+            ),
+            "preview_row_limit": coverage.get("presentation_row_limit"),
+            "selection_method": coverage.get("presentation_selection_order"),
+            "selection_filter": coverage.get("presentation_filter"),
+            "full_table_format": coverage.get("full_table_format"),
+            "full_table_partitions": [
+                dict(_require_mapping(row, "association partition"))
+                for row in _require_sequence(
+                    coverage.get("full_table_partitions"),
+                    "full_table_partitions",
+                )
+            ],
+        },
+        "observation_coverage": {
+            "full_observation_count": len(
+                _require_sequence(game.get("observations"), "observations")
+            ),
+            "embedded_series_count": len(series),
+            "embedded_point_count": sum(
+                int(row["display_point_count"]) for row in series
+            ),
+            "point_limit_per_series": _HTML_SERIES_POINT_LIMIT,
+        },
+        "presentation_limits": {
+            "point_limit_per_series": _HTML_SERIES_POINT_LIMIT,
+            "association_dom_page_size": _HTML_ASSOCIATION_PAGE_SIZE,
+        },
+        "market_coverage": dict(
+            _require_mapping(game.get("market_coverage"), "market_coverage")
+        ),
+        "audit": dict(_require_mapping(game.get("audit"), "audit")),
+        "lineage": dict(_require_mapping(game.get("lineage"), "lineage")),
+    }
+
+
 def render_game_html(game_payload: Mapping[str, object]) -> str:
     """Render one generic, dependency-free replay and source-time market review."""
 
@@ -1527,7 +2162,7 @@ def render_game_html(game_payload: Mapping[str, object]) -> str:
     game_id = html.escape(game["game_id"])
     away = html.escape(str(game["teams"]["away"]))
     home = html.escape(str(game["teams"]["home"]))
-    embedded = _embedded_json(game)
+    embedded = _embedded_json(_build_html_presentation_v1(game))
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -1548,10 +2183,10 @@ h1{{font-size:clamp(22px,3vw,38px);line-height:1.05;margin:5px 0}} .eyebrow{{col
 .state-grid{{display:grid;grid-template-columns:repeat(4,minmax(90px,1fr));gap:8px}} .metric{{background:#091624;border:1px solid #1e344d;border-radius:9px;padding:8px}} .metric b{{display:block;font-size:10px;text-transform:uppercase;color:var(--muted);letter-spacing:.06em}} .metric span{{font-size:15px;font-weight:700}}
 .desc{{margin-top:10px;padding:10px;border-left:3px solid #38bdf8;background:#081521;border-radius:0 8px 8px 0;min-height:44px}} .flags{{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}} .flag{{padding:3px 7px;border-radius:5px;background:#20344b;color:#dbeafe;font-size:11px}} .flag.score{{background:#0f766e}} .flag.turnover{{background:#9f1239}} .flag.warn{{background:#92400e}}
 .roster{{display:grid;grid-template-columns:1fr 1fr;gap:10px}} .roster ul{{margin:6px 0 0;padding-left:20px;columns:2;color:#cbd5e1}} .roster-change{{margin-top:10px;color:#fbbf24}}
-.market-controls{{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px}} .market-controls label{{color:var(--muted);font-size:12px}} .market-controls select{{margin-left:6px;background:#102238;border:1px solid #2b4563;color:#fff;border-radius:7px;padding:5px 8px}}
+.market-controls{{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px}} .market-controls label{{color:var(--muted);font-size:12px}} .market-controls select{{margin-left:6px;background:#102238;border:1px solid #2b4563;color:#fff;border-radius:7px;padding:5px 8px;max-width:360px}}
 .tabs{{display:flex;gap:6px;overflow:auto;flex:1;min-width:280px}} .tab{{background:#102238;border:1px solid #2b4563;color:#cbd5e1;border-radius:8px;padding:6px 9px;cursor:pointer;white-space:nowrap}} .tab.active{{color:white;border-color:#38bdf8;background:#153452}}
 #market-chart{{width:100%;height:350px;background:#081521;border-radius:10px;display:block}} .legend{{display:flex;gap:13px;flex-wrap:wrap;color:var(--muted);font-size:12px;margin-top:8px}} .line-sample{{display:inline-block;width:24px;border-top:3px solid;vertical-align:middle;margin-right:5px}} .line-sample.derived{{border-top-style:dashed}}
-.market-detail{{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:8px;margin-top:10px}} .market-detail div{{background:#081521;border:1px solid #1e344d;border-radius:8px;padding:8px;color:#b9d3ea;font-size:12px}} .market-detail b{{color:#fff}}
+.market-detail{{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:8px;margin-top:10px}} .market-detail>div{{background:#081521;border:1px solid #1e344d;border-radius:8px;padding:8px;color:#b9d3ea;font-size:12px}} .market-detail b{{color:#fff}} .pager{{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0}} .pager button{{background:#102238;border:1px solid #2b4563;color:#fff;border-radius:7px;padding:5px 10px}} .pager button:disabled{{opacity:.4}} .pager-summary{{color:var(--muted)}}
 .coverage{{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}} .coverage div{{padding:9px;background:#081521;border-radius:8px}} .coverage strong{{display:block;color:#fff}} table{{width:100%;border-collapse:collapse}} th,td{{padding:8px;text-align:left;border-bottom:1px solid #1e344d;vertical-align:top}} th{{color:#8fb0cd;font-size:11px;text-transform:uppercase;position:sticky;top:0;background:#0d1b2a}} .table-wrap{{max-height:480px;overflow:auto}}
 pre{{white-space:pre-wrap;word-break:break-word;background:#07131f;padding:10px;border-radius:8px;color:#b9d3ea;max-height:300px;overflow:auto}} .empty{{fill:#6b8298;font-size:13px}} footer{{color:#7890a8;padding:18px 4px;text-align:center}}
 @media(max-width:900px){{.grid{{grid-template-columns:1fr}}.wide{{grid-column:auto}}.state-grid{{grid-template-columns:repeat(2,1fr)}}.coverage{{grid-template-columns:1fr}}header{{flex-direction:column}}}}
@@ -1576,14 +2211,17 @@ pre{{white-space:pre-wrap;word-break:break-word;background:#07131f;padding:10px;
     <h2>场上人员与人员包</h2>
     <div class="roster"><div><b id="offense-roster-title">Offense</b><ul id="offense-roster"></ul></div><div><b id="defense-roster-title">Defense</b><ul id="defense-roster"></ul></div></div>
     <div class="roster-change" id="roster-change"></div>
+    <h2 style="margin-top:16px">当前 play 累计统计</h2><div class="market-detail" id="play-stat-ledger"></div>
     <h2 style="margin-top:16px">当前行完整参数</h2><pre id="raw-state"></pre>
   </aside>
   <article class="panel wide">
-    <h2>Prediction market source-time 趋势</h2><div class="market-controls"><div class="tabs" id="market-tabs"></div><label>Delay scenario <select id="delay-scenario"><option value="0">0s</option><option value="1">1s</option><option value="2">2s</option><option value="3">3s</option><option value="5">5s</option><option value="10">10s</option></select></label></div><svg id="market-chart" viewBox="0 0 1200 350" role="img" aria-label="market source-time chart"></svg>
+    <h2>Prediction market source-time 趋势</h2><div class="market-controls"><label>Venue <select id="venue-selector"></select></label><label>Family <select id="family-selector"></select></label><label>Contract <select id="contract-selector"></select></label><label>Delay scenario <select id="delay-scenario"><option value="0">0s</option><option value="1">1s</option><option value="2">2s</option><option value="3">3s</option><option value="5">5s</option><option value="10">10s</option></select></label></div><svg id="market-chart" viewBox="0 0 1200 350" role="img" aria-label="market source-time chart"></svg>
     <div class="legend"><span><i class="line-sample" style="border-color:#38bdf8"></i>observed actual trade</span><span><i class="line-sample derived" style="border-color:#f59e0b"></i>derived / non-observed / non-executable</span><span>BBO bid / BBO ask = Kalshi 原始 1 分钟 candle OHLC</span><span>volume / open interest 为原始 candle 字段</span><span>Polymarket：历史 bid/ask unavailable</span></div>
+    <div class="market-detail" id="contract-detail"></div>
+    <div class="market-detail" id="market-display-coverage"></div>
     <div class="market-detail" id="market-candle-detail"></div>
   </article>
-  <article class="panel wide"><h2>Finalized event episode × market path</h2><div class="table-wrap"><table><thead><tr><th>Episode / type</th><th>Source-time interval</th><th>Contract / outcome</th><th>Delay / Horizon</th><th>Pre / first / VWAP</th><th>Δ / excursion / 60s</th><th>Path / coverage</th><th>状态</th></tr></thead><tbody id="association-body"></tbody></table></div></article>
+  <article class="panel wide"><h2>Finalized event episode × market path</h2><div class="market-controls"><label>Horizon <select id="association-horizon"><option value="all">all</option><option value="1">1s</option><option value="2">2s</option><option value="5">5s</option><option value="10">10s</option><option value="30">30s</option><option value="60">60s</option></select></label><label>Status <select id="association-status"><option value="all">all</option><option value="eligible">eligible</option><option value="order_ambiguous">order ambiguous</option><option value="contaminated">contaminated</option></select></label></div><div class="market-detail" id="association-coverage"></div><div class="pager"><button id="association-prev" type="button">上一页</button><button id="association-next" type="button">下一页</button><span class="pager-summary" id="association-page-summary"></span></div><div class="table-wrap"><table><thead><tr><th>Episode / type</th><th>Source-time interval</th><th>Contract / outcome</th><th>Delay / Horizon</th><th>Pre / first / VWAP</th><th>Δ / excursion / 60s</th><th>Path / coverage</th><th>状态</th></tr></thead><tbody id="association-body"></tbody></table></div></article>
   <article class="panel wide"><h2>覆盖与审计门</h2><div class="coverage" id="coverage"></div><pre id="audit"></pre></article>
 </section>
 <footer>{game_id} · standalone offline artifact · raw hashes + builder + analysis lock embedded</footer>
@@ -1592,7 +2230,7 @@ pre{{white-space:pre-wrap;word-break:break-word;background:#07131f;padding:10px;
 <script>
 "use strict";
 const D=JSON.parse(document.getElementById("x13-data").textContent);
-const events=D.events, slider=document.getElementById("play-slider");
+const events=D.events,slider=document.getElementById("play-slider"),ledgerByPlay=new Map((D.stat_ledger||[]).map(row=>[String(row.through_play_id??row.play_id),row]));
 slider.max=Math.max(0,events.length-1);
 const esc=s=>String(s??"—").replace(/[&<>"']/g,c=>({{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}}[c]));
 const clock=s=>s==null?"—":`${{Math.floor(s/60)}}:${{String(s%60).padStart(2,"0")}}`;
@@ -1616,54 +2254,56 @@ function renderPlay(i){{
  const flags=[]; for(const [key,label,cls] of [["touchdown","TD","score"],["turnover","Turnover","turnover"],["safety","Safety","score"],["blocked_kick","Blocked kick","warn"],["timeout","Timeout","warn"],["review","Review","warn"],["no_play","No play","warn"],["game_end","Game end","warn"]])if(e[key])flags.push(`<span class="flag ${{cls}}">${{label}}</span>`);if(e.play_family==="field_goal")flags.push('<span class="flag score">Field goal attempt</span>'); if(e.penalty_status&&e.penalty_status!=="none")flags.push(`<span class="flag warn">Penalty: ${{esc(e.penalty_status)}}</span>`);document.getElementById("flags").innerHTML=flags.join("")||'<span class="flag">routine</span>';
  document.getElementById("offense-roster-title").textContent=`${{e.offense_team||"Offense"}} · ${{e.formation||"formation unknown"}}`;document.getElementById("defense-roster-title").textContent=`${{e.defense_team||"Defense"}}`;list("offense-roster",e.offense_names);list("defense-roster",e.defense_names);
  document.getElementById("roster-change").textContent=e.between_play_roster_change?`between_play_roster_change: ${{JSON.stringify(e.between_play_roster_change)}}`:"相邻 play roster-set 无已记录变化";
+ const ledger=ledgerByPlay.get(String(e.play_id))||{{}},teamScores=ledger.team_scores||{{}},periodScores=ledger.period_scores||{{}},roles=e.player_roles||{{}},roleNames=[["passer",roles.passer],["rusher",roles.rusher],["receiver",roles.receiver]].filter(([,name])=>name);
+ const teamText=Object.entries(teamScores).map(([team,score])=>`${{esc(team)}} ${{esc(score)}}`).join(" · ")||"unavailable",periodText=Object.entries(periodScores).map(([period,scores])=>`Q${{esc(period)}} ${{Object.entries(scores||{{}}).map(([team,score])=>`${{esc(team)}} ${{esc(score)}}`).join(" · ")}}`).join("<br>")||"unavailable";
+ const playerText=roleNames.length?roleNames.map(([role,name])=>{{const s=(ledger.player_stats||{{}})[name]||{{}};return`<div><b>${{esc(role)}} · ${{esc(name)}}</b><br>passing ${{esc(s.passing_yards??0)}} yd / ${{esc(s.passing_touchdowns??0)}} TD · rushing ${{esc(s.rushing_yards??0)}} yd / ${{esc(s.rushing_touchdowns??0)}} TD · receiving ${{esc(s.receiving_yards??0)}} yd / ${{esc(s.receptions??0)}} rec / ${{esc(s.receiving_touchdowns??0)}} TD</div>`}}).join(""):"<div><b>passer / rusher / receiver</b><br>该 play 无对应角色或累计值</div>";
+ document.getElementById("play-stat-ledger").innerHTML=`<div><b>Cumulative team score</b><br>${{teamText}}</div><div><b>Cumulative period score</b><br>${{periodText}}</div>${{playerText}}`;
  document.getElementById("raw-state").textContent=JSON.stringify(e,null,2);
 }}
 slider.addEventListener("input",()=>renderPlay(Number(slider.value))); renderPlay(0);
-const contracts=D.contracts.filter(c=>c.analysis_eligible), tabs=document.getElementById("market-tabs"),delaySelect=document.getElementById("delay-scenario");
-let active=contracts[0]?.logical_market_id||contracts[0]?.venue_market_id||null,activeDelay=0;
-function marketId(c){{return c.logical_market_id||c.venue_market_id}}
-function chart(){{
- const c=contracts.find(x=>marketId(x)===active), svg=document.getElementById("market-chart"), detail=document.getElementById("market-candle-detail"); if(!c){{svg.innerHTML='<text x="30" y="50" class="empty">该场没有通过 preflight 的可分析合约</text>';detail.textContent="";return}}
-	 const all=D.observations.filter(o=>o.logical_market_id===active), obs=all.filter(o=>o.price!=null), bbo=all.filter(o=>o.bid!=null&&o.ask!=null), parse=t=>Date.parse(t); const times=all.flatMap(o=>[parse(o.source_start),parse(o.source_end)]).filter(Number.isFinite);
-	 if(!times.length){{svg.innerHTML=(c.outcomes||[]).map((outcome,idx)=>`<text x="30" y="${{50+idx*24}}" class="empty">${{esc(outcome)}} · coverage unavailable · no fabricated path</text>`).join("");detail.textContent="无可展示的历史 candle";return}}
- const min=Math.min(...times),max=Math.max(...times),span=Math.max(1000,max-min),x=t=>60+(parse(t)-min)/span*1000,y=p=>315-Number(p)*280,utc=t=>new Date(t).toISOString().slice(11,19);
- let out='<line x1="60" y1="35" x2="60" y2="315" stroke="#47627f"/><line x1="60" y1="315" x2="1160" y2="315" stroke="#47627f"/>';
- for(const p of [0,.25,.5,.75,1])out+=`<line x1="55" y1="${{y(p)}}" x2="1160" y2="${{y(p)}}" stroke="#20364d"/><text x="48" y="${{y(p)+4}}" text-anchor="end" fill="#8ba2b8">${{p.toFixed(2)}}</text>`;
- for(let i=0;i<=4;i++){{const tick=min+span*i/4,tx=60+1000*i/4;out+=`<line x1="${{tx}}" y1="315" x2="${{tx}}" y2="321" stroke="#7890a8"/><text x="${{tx}}" y="338" text-anchor="middle" fill="#8ba2b8">${{utc(tick)}} UTC</text>`}}
- const overlays=(D.associations||[]).filter(a=>a.logical_market_id===active&&Number(a.delay_scenario_seconds)===activeDelay);const seenEpisodes=new Set();for(const a of overlays){{if(seenEpisodes.has(a.episode_id))continue;seenEpisodes.add(a.episode_id);const t=parse(a.source_time_start_utc);if(!Number.isFinite(t)||t<min||t>max)continue;const color=a.contaminated?"#ef4444":a.order_ambiguous?"#f59e0b":"#34d399";out+=`<line x1="${{x(a.source_time_start_utc)}}" y1="35" x2="${{x(a.source_time_start_utc)}}" y2="315" stroke="${{color}}" stroke-width="1.5" opacity=".65"/><text x="${{x(a.source_time_start_utc)+3}}" y="48" fill="${{color}}" font-size="10">${{esc(a.episode_type||"event")}}</text>`}}
- const palette=["#38bdf8","#f59e0b","#a78bfa","#34d399"];
- (c.outcomes||[]).forEach((outcome,idx)=>{{
-  const color=palette[idx%palette.length];
-  const outcomeRows=obs.filter(o=>o.outcome===outcome).sort((a,b)=>parse(a.source_start)-parse(b.source_start));
-  const observedRows=outcomeRows.filter(o=>o.provenance==="observed");
-  const derivedRows=outcomeRows.filter(o=>o.provenance==="derived_complement");
-  const quotes=bbo.filter(o=>o.outcome===outcome).sort((a,b)=>parse(a.source_end)-parse(b.source_end));
-  if(observedRows.length){{
-   const points=observedRows.map(o=>`${{x(o.source_start)}},${{y(o.price)}}`).join(" ");
-   out+=`<polyline data-provenance="observed" points="${{points}}" fill="none" stroke="${{color}}" stroke-width="3"/>${{observedRows.map(o=>`<circle cx="${{x(o.source_start)}}" cy="${{y(o.price)}}" r="3.5" fill="${{color}}"/>`).join("")}}<text x="${{x(observedRows.at(-1).source_start)-8}}" y="${{y(observedRows.at(-1).price)}}" text-anchor="end" fill="${{color}}">${{esc(outcome)}} observed trade</text>`;
-  }}
-  if(derivedRows.length){{
-   const points=derivedRows.map(o=>`${{x(o.source_start)}},${{y(o.price)}}`).join(" ");
-   out+=`<polyline data-provenance="derived_complement" points="${{points}}" fill="none" stroke="${{color}}" stroke-width="3" stroke-dasharray="10 8"/>${{derivedRows.map(o=>`<circle cx="${{x(o.source_start)}}" cy="${{y(o.price)}}" r="3.5" fill="none" stroke="${{color}}"/>`).join("")}}<text x="${{x(derivedRows.at(-1).source_start)-8}}" y="${{y(derivedRows.at(-1).price)}}" text-anchor="end" fill="${{color}}">${{esc(outcome)}} derived / non-observed</text>`;
-  }}
-  if(quotes.length){{
-   const candleQuotes=quotes.filter(o=>o.yes_bid_ohlc&&o.yes_ask_ohlc);
-   out+=candleQuotes.map(o=>{{const cx=x(o.source_end),bidO=o.yes_bid_ohlc,askO=o.yes_ask_ohlc,title=`${{outcome}} · ${{o.source_start}} → ${{o.source_end}} · bid O/H/L/C ${{bidO.open}}/${{bidO.high}}/${{bidO.low}}/${{bidO.close}} · ask O/H/L/C ${{askO.open}}/${{askO.high}}/${{askO.low}}/${{askO.close}} · volume ${{o.volume}} · open interest ${{o.open_interest}}`;return`<g class="candle-bbo"><title>${{esc(title)}}</title><line x1="${{cx-4}}" y1="${{y(bidO.high)}}" x2="${{cx-4}}" y2="${{y(bidO.low)}}" stroke="${{color}}" stroke-width="3"/><line x1="${{cx-9}}" y1="${{y(bidO.open)}}" x2="${{cx-4}}" y2="${{y(bidO.open)}}" stroke="${{color}}" stroke-width="2"/><line x1="${{cx-4}}" y1="${{y(bidO.close)}}" x2="${{cx+1}}" y2="${{y(bidO.close)}}" stroke="${{color}}" stroke-width="2"/><line x1="${{cx+4}}" y1="${{y(askO.high)}}" x2="${{cx+4}}" y2="${{y(askO.low)}}" stroke="${{color}}" stroke-width="3" opacity=".65"/><line x1="${{cx-1}}" y1="${{y(askO.open)}}" x2="${{cx+4}}" y2="${{y(askO.open)}}" stroke="${{color}}" stroke-width="2" opacity=".65"/><line x1="${{cx+4}}" y1="${{y(askO.close)}}" x2="${{cx+9}}" y2="${{y(askO.close)}}" stroke="${{color}}" stroke-width="2" opacity=".65"/></g>`}}).join("");
-   out+=quotes.map(o=>`<line x1="${{x(o.source_end)}}" y1="${{y(o.ask)}}" x2="${{x(o.source_end)}}" y2="${{y(o.bid)}}" stroke="${{color}}" stroke-width="8" opacity=".28"/><circle class="bbo-point" cx="${{x(o.source_end)}}" cy="${{y(o.bid)}}" r="3" fill="${{color}}"/><circle class="bbo-point" cx="${{x(o.source_end)}}" cy="${{y(o.ask)}}" r="3" fill="${{color}}"/>`).join("");
-   const bidPoints=quotes.map(o=>`${{x(o.source_end)}},${{y(o.bid)}}`).join(" "),askPoints=quotes.map(o=>`${{x(o.source_end)}},${{y(o.ask)}}`).join(" ");
-   out+=`<polyline points="${{bidPoints}}" fill="none" stroke="${{color}}" stroke-width="2" stroke-dasharray="5 4"/><polyline points="${{askPoints}}" fill="none" stroke="${{color}}" stroke-width="2" stroke-dasharray="2 4"/><text x="${{x(quotes.at(-1).source_end)-8}}" y="${{y(quotes.at(-1).bid)+12}}" text-anchor="end" fill="${{color}}">${{esc(outcome)}} BBO bid / BBO ask</text>`;
-  }}
-  if(!outcomeRows.length&&!quotes.length)out+=`<text x="70" y="${{55+idx*22}}" class="empty">${{esc(outcome)}} · coverage unavailable · no fabricated path</text>`;
- }});
- svg.innerHTML=out;
- const ohlc=v=>["open","high","low","close"].map(key=>esc(v?.[key])).join(" / ");
- const candleRows=bbo.filter(o=>o.yes_bid_ohlc&&o.yes_ask_ohlc).sort((a,b)=>parse(a.source_end)-parse(b.source_end));
- detail.innerHTML=candleRows.length?candleRows.slice(-8).map(o=>`<div><b>${{esc(o.outcome)}} · ${{esc(o.source_start)}} → ${{esc(o.source_end)}}</b><br>Bid O/H/L/C: ${{ohlc(o.yes_bid_ohlc)}}<br>Ask O/H/L/C: ${{ohlc(o.yes_ask_ohlc)}}<br>volume / open interest: ${{esc(o.volume)}} / ${{esc(o.open_interest)}}</div>`).join(""):"<div>该逻辑 market 没有 Kalshi 历史 candle OHLC；不从成交价伪造 bid/ask。</div>";
+const contracts=D.contracts,venueSelect=document.getElementById("venue-selector"),familySelect=document.getElementById("family-selector"),contractSelect=document.getElementById("contract-selector"),delaySelect=document.getElementById("delay-scenario");
+let active=contracts[0]?.selector_key||null,activeDelay=0,associationPage=0;
+const ASSOCIATION_PAGE_SIZE=100,parse=t=>Date.parse(t),unique=values=>[...new Set(values)].sort((a,b)=>String(a).localeCompare(String(b)));
+function options(select,values,current,label=value=>value){{select.innerHTML=values.map(value=>`<option value="${{esc(value)}}" ${{value===current?"selected":""}}>${{esc(label(value))}}</option>`).join("")}}
+function activeContract(){{return contracts.find(contract=>contract.selector_key===active)}}
+function syncSelectors(level="all"){{
+ const venues=unique(contracts.map(contract=>contract.venue));if(level==="all")options(venueSelect,venues,activeContract()?.venue||venues[0]);
+ const venue=venueSelect.value||venues[0],families=unique(contracts.filter(contract=>contract.venue===venue).map(contract=>contract.family));if(level!=="contract")options(familySelect,families,level==="all"&&activeContract()?.venue===venue?activeContract()?.family:families[0]);
+ const family=familySelect.value||families[0],filtered=contracts.filter(contract=>contract.venue===venue&&contract.family===family);if(!filtered.some(contract=>contract.selector_key===active))active=filtered[0]?.selector_key||null;
+ options(contractSelect,filtered.map(contract=>contract.selector_key),active,key=>{{const contract=contracts.find(row=>row.selector_key===key);return`${{contract?.selector_label||key}} · ${{key}}`}});
 }}
-function tabsRender(){{tabs.innerHTML=contracts.map(c=>`<button class="tab ${{marketId(c)===active?"active":""}}" data-id="${{esc(marketId(c))}}">${{esc(c.family)}} · ${{esc(c.venue)}}</button>`).join("");tabs.querySelectorAll("button").forEach(b=>b.onclick=()=>{{active=b.dataset.id;tabsRender();chart()}})}}delaySelect.addEventListener("change",()=>{{activeDelay=Number(delaySelect.value);chart()}}); tabsRender();chart();
-document.getElementById("association-body").innerHTML=(D.associations||[]).map(a=>`<tr><td>${{esc(a.episode_id)}}<br>${{esc(a.episode_type)}}</td><td>${{esc(a.source_time_start_utc)}} → ${{esc(a.source_time_end_utc)}}</td><td>${{esc(a.logical_market_id)}}<br>${{esc(a.outcome)}}</td><td>${{esc(a.delay_scenario_seconds)}}s / ${{esc(a.horizon_seconds)}}s</td><td>${{esc(a.pre_event_actual_trade)}} / ${{esc(a.first_post_event_trade)}} / ${{esc(a.vwap)}}</td><td>${{esc(a.signed_price_change)}} / ${{esc(a.maximum_excursion)}} / ${{esc(a.net_change_60s)}}</td><td>trades=${{esc(a.trade_count)}} · volume=${{esc(a.volume)}} · stale=${{esc(a.staleness_seconds)}}<br>overshoot_candidate=${{esc(a.overshoot_candidate)}} · reversal_candidate=${{esc(a.reversal_candidate)}} · venues=${{esc(a.two_venue_direction_consistency)}}</td><td>${{a.order_ambiguous?"order_ambiguous ":""}}${{a.contaminated?"contaminated ":""}}${{esc(a.validity_status||"eligible")}}</td></tr>`).join("")||'<tr><td colspan="8">暂无满足 actual-observation 与 isolation 门的 association candidate</td></tr>';
+function contractDetail(){{
+ const contract=activeContract(),target=document.getElementById("contract-detail");if(!contract){{target.innerHTML="<div>无可分析合约</div>";return}}
+ target.innerHTML=`<div><b>${{esc(contract.selector_label)}}</b><br>venue / family / kind: ${{esc(contract.venue)}} / ${{esc(contract.family)}} / ${{esc(contract.kind)}}<br>contract_id: ${{esc(contract.contract_id)}}<br>logical_market_id: ${{esc(contract.logical_market_id)}}<br>venue_market_id: ${{esc(contract.venue_market_id)}}</div><div><b>Structured proposition</b><br>subject: ${{esc(contract.subject)}}<br>period / measure: ${{esc(contract.period)}} / ${{esc(contract.measure)}}<br>comparator / line: ${{esc(contract.comparator)}} / ${{esc(contract.line)}}<br>outcomes: ${{esc((contract.outcomes||[]).join(" / "))}}</div><div><b>Coverage / rule</b><br>${{Object.entries(contract.outcome_coverage||{{}}).map(([outcome,status])=>`${{esc(outcome)}}: ${{esc(status)}}`).join("<br>")}}<br>rule_sha256: ${{esc(contract.rule_sha256)}}</div>`;
+}}
+function pathSegments(points,value,x,y,color,dash,provenance){{
+ const groups=[];let current=[];for(const point of points){{const raw=value(point),numeric=raw==null?NaN:Number(raw);if(!Number.isFinite(numeric)){{if(current.length)groups.push(current);current=[];continue}}if(!point.connect_to_previous&&current.length){{groups.push(current);current=[]}}current.push({{point,value:numeric}})}}if(current.length)groups.push(current);
+ return groups.map(group=>{{const coords=group.map(item=>`${{x(item.point.source_start)}},${{y(item.value)}}`).join(" ");return group.length>1?`<polyline data-provenance="${{esc(provenance)}}" points="${{coords}}" fill="none" stroke="${{color}}" stroke-width="2.5" ${{dash?`stroke-dasharray="${{dash}}"`:""}}/>`:""}}).join("");
+}}
+function chart(){{
+ const contract=activeContract(),svg=document.getElementById("market-chart"),display=document.getElementById("market-display-coverage"),detail=document.getElementById("market-candle-detail"),series=(D.market_series||[]).filter(row=>row.logical_market_id===active);if(!contract){{svg.innerHTML='<text x="30" y="50" class="empty">该场没有通过 preflight 的可分析合约</text>';display.innerHTML="";detail.innerHTML="";return}}
+ let min=Infinity,max=-Infinity;for(const row of series)for(const point of row.points||[])for(const key of ["source_start","source_end"]){{const stamp=parse(point[key]);if(Number.isFinite(stamp)){{if(stamp<min)min=stamp;if(stamp>max)max=stamp}}}}
+ if(!Number.isFinite(min)||!Number.isFinite(max)){{svg.innerHTML=(contract.outcomes||[]).map((outcome,index)=>`<text x="30" y="${{50+index*24}}" class="empty">${{esc(outcome)}} · coverage unavailable · no fabricated path</text>`).join("");display.innerHTML=`<div>full observations: ${{esc(D.observation_coverage.full_observation_count)}} · embedded bounded points: 0 · analysis uses full JSON/Parquet, not the HTML projection</div>`;detail.innerHTML="<div>无可展示的历史 candle</div>";contractDetail();return}}
+ const span=Math.max(1000,max-min),x=t=>60+(parse(t)-min)/span*1000,y=p=>315-Number(p)*280,utc=t=>new Date(t).toISOString().slice(11,19);let out='<line x1="60" y1="35" x2="60" y2="315" stroke="#47627f"/><line x1="60" y1="315" x2="1160" y2="315" stroke="#47627f"/>';
+ for(const probability of [0,.25,.5,.75,1])out+=`<line x1="55" y1="${{y(probability)}}" x2="1160" y2="${{y(probability)}}" stroke="#20364d"/><text x="48" y="${{y(probability)+4}}" text-anchor="end" fill="#8ba2b8">${{probability.toFixed(2)}}</text>`;
+ for(let index=0;index<=4;index++){{const tick=min+span*index/4,tx=60+1000*index/4;out+=`<line x1="${{tx}}" y1="315" x2="${{tx}}" y2="321" stroke="#7890a8"/><text x="${{tx}}" y="338" text-anchor="middle" fill="#8ba2b8">${{utc(tick)}} UTC</text>`}}
+ for(const episode of D.episodes||[]){{const start=parse(episode.source_time_start_utc),end=parse(episode.source_time_end_utc)+activeDelay*1000;if(!Number.isFinite(start)||start<min||start>max)continue;const kind=String(episode.episode_type||"event"),color=/score|touchdown|field_goal|safety/.test(kind)?"#34d399":/turnover|interception|fumble/.test(kind)?"#ef4444":"#f59e0b",x1=x(episode.source_time_start_utc),x2=Number.isFinite(end)?60+(end-min)/span*1000:x1;out+=`<rect x="${{x1}}" y="35" width="${{Math.max(1,x2-x1)}}" height="280" fill="${{color}}" opacity=".08"/><line x1="${{x1}}" y1="35" x2="${{x1}}" y2="315" stroke="${{color}}" stroke-width="1.5" opacity=".7"/><text x="${{x1+3}}" y="48" fill="${{color}}" font-size="10">${{esc(kind)}}</text>`}}
+ const palette=["#38bdf8","#f59e0b","#a78bfa","#34d399"];for(const [index,outcome] of (contract.outcomes||[]).entries()){{const color=palette[index%palette.length],outcomeSeries=series.filter(row=>row.outcome===outcome);
+  for(const row of outcomeSeries.filter(row=>row.series_kind==="trade_range")){{const derived=row.provenance==="derived_complement",anchor=point=>point.vwap==null||point.contains_discontinuity?null:Number(point.vwap);out+=pathSegments(row.points,anchor,x,y,color,derived?"10 8":"",row.provenance);for(const point of row.points){{const cx=x(point.source_start),anchorValue=anchor(point),title=`${{outcome}} · ${{point.source_start}} → ${{point.source_end}} · range ${{point.price_min}}–${{point.price_max}} · trades ${{point.trade_count}} · volume ${{point.sum_size}} · VWAP ${{point.vwap}} · interval groups ${{point.interval_group_count}} · gap/overlap inside bucket ${{point.contains_discontinuity}}`;out+=`<g data-provenance="${{esc(row.provenance)}}"><title>${{esc(title)}}</title><line x1="${{cx}}" y1="${{y(point.price_min)}}" x2="${{cx}}" y2="${{y(point.price_max)}}" stroke="${{color}}" stroke-width="5" opacity=".75"/>${{anchorValue==null?"":`<circle cx="${{cx}}" cy="${{y(anchorValue)}}" r="3.5" fill="${{derived?"none":color}}" stroke="${{color}}"/>`}}</g>`}}}}
+  for(const row of outcomeSeries.filter(row=>row.series_kind==="bbo_candle")){{out+=pathSegments(row.points,point=>point.bid_ohlc.close,x,y,color,"5 4","observed_bbo_bid")+pathSegments(row.points,point=>point.ask_ohlc.close,x,y,color,"2 4","observed_bbo_ask");for(const point of row.points){{const cx=x(point.source_end),bid=point.bid_ohlc,ask=point.ask_ohlc,title=`${{outcome}} · ${{point.source_start}} → ${{point.source_end}} · bid O/H/L/C ${{bid.open}}/${{bid.high}}/${{bid.low}}/${{bid.close}} · ask O/H/L/C ${{ask.open}}/${{ask.high}}/${{ask.low}}/${{ask.close}} · volume ${{point.volume}} · open interest ${{point.open_interest}} · candles ${{point.candle_count}} · gap/overlap inside bucket ${{point.contains_discontinuity}} · same-source order ambiguous ${{point.source_order_ambiguous}}`;out+=`<g class="${{point.contains_discontinuity?"bbo-bucket-envelope":"candle-bbo"}}"><title>${{esc(title)}}</title><line x1="${{cx-4}}" y1="${{y(bid.high)}}" x2="${{cx-4}}" y2="${{y(bid.low)}}" stroke="${{color}}" stroke-width="3"/><line x1="${{cx+4}}" y1="${{y(ask.high)}}" x2="${{cx+4}}" y2="${{y(ask.low)}}" stroke="${{color}}" stroke-width="3" opacity=".65"/>${{bid.close==null?"":`<circle class="bbo-point" cx="${{cx}}" cy="${{y(bid.close)}}" r="3" fill="${{color}}"/>`}}${{ask.close==null?"":`<circle class="bbo-point" cx="${{cx}}" cy="${{y(ask.close)}}" r="3" fill="${{color}}" opacity=".65"/>`}}</g>`}}}}
+  if(!outcomeSeries.length)out+=`<text x="70" y="${{55+index*22}}" class="empty">${{esc(outcome)}} · coverage unavailable · no fabricated path</text>`;
+ }}
+ svg.innerHTML=out;const sourceRows=series.reduce((sum,row)=>sum+Number(row.original_observation_count||0),0),points=series.reduce((sum,row)=>sum+Number(row.display_point_count||0),0),groups=series.reduce((sum,row)=>sum+Number(row.interval_group_count||0),0);display.innerHTML=`<div><b>HtmlPresentationV1 bounded projection</b><br>active source observations ${{sourceRows.toLocaleString()}} → interval groups ${{groups.toLocaleString()}} → embedded points ${{points.toLocaleString()}}; point_limit_per_series=${{D.presentation_limits.point_limit_per_series}}. Full JSON/Parquet remains the analysis source.</div><div><b>Whole game</b><br>full observations ${{Number(D.observation_coverage.full_observation_count).toLocaleString()}} · embedded series ${{D.observation_coverage.embedded_series_count}} · embedded points ${{Number(D.observation_coverage.embedded_point_count).toLocaleString()}}</div>`;
+ const bbo=series.filter(row=>row.series_kind==="bbo_candle").flatMap(row=>row.points.map(point=>({{...point,outcome:row.outcome}}))).sort((a,b)=>parse(a.source_end)-parse(b.source_end));detail.innerHTML=bbo.length?bbo.slice(-8).map(point=>`<div><b>${{esc(point.outcome)}} · ${{esc(point.source_start)}} → ${{esc(point.source_end)}}</b><br>Bid O/H/L/C: ${{esc(Object.values(point.bid_ohlc).join(" / "))}}<br>Ask O/H/L/C: ${{esc(Object.values(point.ask_ohlc).join(" / "))}}<br>volume / open interest: ${{esc(point.volume)}} / ${{esc(point.open_interest)}}<br>candles / interval groups: ${{esc(point.candle_count)}} / ${{esc(point.interval_group_count)}}</div>`).join(""):"<div>该逻辑 market 没有 Kalshi 历史 candle OHLC；不从成交价伪造 bid/ask。</div>";contractDetail();
+}}
+const horizonSelect=document.getElementById("association-horizon"),statusSelect=document.getElementById("association-status");
+function associationRows(){{return(D.association_preview||[]).filter(row=>row.logical_market_id===active&&Number(row.delay_scenario_seconds)===activeDelay&&(horizonSelect.value==="all"||Number(row.horizon_seconds)===Number(horizonSelect.value))&&(statusSelect.value==="all"||(statusSelect.value==="eligible"&&!row.order_ambiguous&&!row.contaminated)||(statusSelect.value==="order_ambiguous"&&row.order_ambiguous)||(statusSelect.value==="contaminated"&&row.contaminated)))}}
+function renderAssociations(){{const rows=associationRows(),pages=Math.max(1,Math.ceil(rows.length/ASSOCIATION_PAGE_SIZE));associationPage=Math.min(associationPage,pages-1);const start=associationPage*ASSOCIATION_PAGE_SIZE,visible=rows.slice(start,start+ASSOCIATION_PAGE_SIZE);document.getElementById("association-body").innerHTML=visible.map(row=>`<tr><td>${{esc(row.episode_id)}}<br>${{esc(row.episode_type)}}</td><td>${{esc(row.source_time_start_utc)}} → ${{esc(row.source_time_end_utc)}}</td><td>${{esc(row.logical_market_id)}}<br>${{esc(row.outcome)}}</td><td>${{esc(row.delay_scenario_seconds)}}s / ${{esc(row.horizon_seconds)}}s</td><td>${{esc(row.pre_event_actual_trade)}} / ${{esc(row.first_post_event_trade)}} / ${{esc(row.vwap)}}</td><td>${{esc(row.signed_price_change)}} / ${{esc(row.maximum_excursion)}} / ${{esc(row.net_change_60s)}}</td><td>trades=${{esc(row.trade_count)}} · volume=${{esc(row.volume)}} · stale=${{esc(row.staleness_seconds)}}<br>overshoot_candidate=${{esc(row.overshoot_candidate)}} · reversal_candidate=${{esc(row.reversal_candidate)}} · venues=${{esc(row.two_venue_direction_consistency)}}</td><td>${{row.order_ambiguous?"order_ambiguous ":""}}${{row.contaminated?"contaminated ":""}}${{esc(row.validity_status||"eligible")}}</td></tr>`).join("")||'<tr><td colspan="8">当前 filter 没有 HTML preview association；请查 full partitioned Parquet。</td></tr>';document.getElementById("association-page-summary").textContent=`filtered preview ${{rows.length.toLocaleString()}} · page ${{associationPage+1}}/${{pages}} · DOM rows ${{visible.length}}/${{ASSOCIATION_PAGE_SIZE}}`;document.getElementById("association-prev").disabled=associationPage===0;document.getElementById("association-next").disabled=associationPage>=pages-1}}
+const associationCoverage=D.association_coverage;document.getElementById("association-coverage").innerHTML=`<div><b>presentation preview</b><br>${{Number(associationCoverage.preview_row_count).toLocaleString()}} embedded rows · selection_method=${{esc(associationCoverage.selection_method)}}</div><div><b>eligible preview pool</b><br>${{Number(associationCoverage.eligible_preview_pool_count).toLocaleString()}} rows · omitted from HTML preview ${{Number(associationCoverage.omitted_from_html_preview_count).toLocaleString()}}</div><div><b>full partitioned Parquet</b><br>${{Number(associationCoverage.full_row_count).toLocaleString()}} rows · ${{associationCoverage.full_table_partitions.length}} hash-bound partitions</div>`;
+venueSelect.addEventListener("change",()=>{{syncSelectors("family");associationPage=0;chart();renderAssociations()}});familySelect.addEventListener("change",()=>{{syncSelectors("contract");associationPage=0;chart();renderAssociations()}});contractSelect.addEventListener("change",()=>{{active=contractSelect.value;associationPage=0;chart();renderAssociations()}});delaySelect.addEventListener("change",()=>{{activeDelay=Number(delaySelect.value);associationPage=0;chart();renderAssociations()}});horizonSelect.addEventListener("change",()=>{{associationPage=0;renderAssociations()}});statusSelect.addEventListener("change",()=>{{associationPage=0;renderAssociations()}});document.getElementById("association-prev").addEventListener("click",()=>{{if(associationPage>0)associationPage--;renderAssociations()}});document.getElementById("association-next").addEventListener("click",()=>{{associationPage++;renderAssociations()}});
+syncSelectors();chart();renderAssociations();
 const cover=[["Polymarket BBO",D.market_coverage?.polymarket_historical_bbo||"unavailable"],["Kalshi BBO",D.market_coverage?.kalshi_historical_bbo||"1m only"],["Personnel",D.personnel?.coverage||"research_only"],["Canonical events",D.events.length],["Finalized episodes",D.episodes.length],["Analysis contracts",contracts.length]];
-document.getElementById("coverage").innerHTML=cover.map(([k,v])=>`<div><strong>${{esc(k)}}</strong>${{esc(v)}}</div>`).join("");document.getElementById("audit").textContent=JSON.stringify({{audit:D.audit,lineage:D.lineage,status:D.status}},null,2);
+document.getElementById("coverage").innerHTML=cover.map(([key,value])=>`<div><strong>${{esc(key)}}</strong>${{esc(value)}}</div>`).join("");document.getElementById("audit").textContent=JSON.stringify({{audit:D.audit,lineage:D.lineage,status:D.status,presentation_limits:D.presentation_limits}},null,2);
 </script>
 </body>
 </html>
