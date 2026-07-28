@@ -350,6 +350,12 @@ def test_dataset_registry_covers_canonical_secondary_and_blocked_sources() -> No
     assert by_id["DS-F1-FASTF1-TIMING"].allowed_experiments == ()
 
 
+def test_program_audit_accepts_exact_x01_through_x15_inventory() -> None:
+    assert program_audit._registered_experiment_ids(PROJECT_ROOT) == {
+        f"X-{number:02d}" for number in range(1, 16)
+    }
+
+
 def test_dataset_registry_license_reviews_are_exact_operational_foreign_keys() -> None:
     datasets = program_audit.load_dataset_registry(PROJECT_ROOT)
     reviews = {

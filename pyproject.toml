@@ -17,7 +17,7 @@ dependencies = [
     "pyarrow",
     "pydantic",
     "PyYAML",
-    "scikit-learn",
+    "scikit-learn==1.9.0",
     "websockets",
     "xgboost==3.3.0",
     "zstandard",

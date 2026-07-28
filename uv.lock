@@ -1642,7 +1642,7 @@ requires-dist = [
     { name = "pyarrow" },
     { name = "pydantic" },
     { name = "pyyaml" },
-    { name = "scikit-learn" },
+    { name = "scikit-learn", specifier = "==1.9.0" },
     { name = "websockets" },
     { name = "xgboost", specifier = "==3.3.0" },
     { name = "zstandard" },

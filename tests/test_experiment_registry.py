@@ -41,7 +41,7 @@ import prediction_market.raw_store as raw_store_module  # noqa: E402
 from prediction_market.raw_store import RawSegmentWriter  # noqa: E402
 
 
-EXPECTED_EXPERIMENT_IDS = {f"X-{number:02d}" for number in range(1, 15)}
+EXPECTED_EXPERIMENT_IDS = {f"X-{number:02d}" for number in range(1, 16)}
 EXPECTED_MEASUREMENT_EXEMPTIONS = {"X-02", "X-03", "X-07"}
 EXPECTED_NO_GOS = {
     "real_money_execution",
@@ -62,8 +62,26 @@ EXPECTED_TASK_3_PATHS = {
     "artifacts/validation/validation_standard_v0.md",
     "src/prediction_market/experiments.py",
     "tests/test_experiment_registry.py",
-    *(f"registries/experiments/X-{number:02d}.yaml" for number in range(1, 14)),
+    *(f"registries/experiments/X-{number:02d}.yaml" for number in range(1, 16)),
 }
+EXPECTED_X15_STUDY_CONTRACT = {
+    "sport": "NFL",
+    "market_data_class": "TRADES_ONLY",
+    "signal_class": "MULTI_LANDMARK_TAKER",
+    "development_game_count": 153,
+    "holdout_game_count": 81,
+    "holdout_state": "SEALED_UNREAD",
+    "holdout_reaction_accessed": False,
+    "oddpool_used": False,
+    "evidence_label": "PRELIMINARY_NON_EXECUTABLE",
+    "formal_holdout_policy_lock_id": "formal_holdout_policy",
+}
+EXPECTED_X15_DATASET_IDS = [
+    "DS-KALSHI-HISTORICAL",
+    "DS-NFL-FASTRMODELS",
+    "DS-NFLVERSE",
+    "DS-POLYMARKET-PUBLIC",
+]
 REPRODUCTION_CONTRACTS = {
     "X-11": {
         "reproduction_id": "REPRO-X11-NFL-FASTRMODELS-V1",
@@ -1425,6 +1443,78 @@ def test_all_seed_experiments_are_registered(program_root: Path) -> None:
 
     assert set(registry) == EXPECTED_EXPERIMENT_IDS
     assert {card["id"] for card in registry.values()} == EXPECTED_EXPERIMENT_IDS
+
+
+def test_x15_is_trades_only_sealed_and_non_executable(
+    program_root: Path,
+) -> None:
+    card = load_experiment_registry(program_root)["X-15"]
+
+    assert card["study_contract"] == EXPECTED_X15_STUDY_CONTRACT
+    assert card["dataset_ids"] == EXPECTED_X15_DATASET_IDS
+    assert card["source_time_only"] is True
+    assert card["causal_or_execution_claims_authorized"] is False
+    assert card["completion_required_scopes"] == ["development_preliminary"]
+    assert card["authorization_scopes"]["development_preliminary"] == {
+        "authorized": True,
+        "required_result_label": "PRELIMINARY_NON_EXECUTABLE",
+        "required_lock_ids": ["development_design"],
+        "input_binding": {
+            "result_class": "poc",
+            "dataset_ids": EXPECTED_X15_DATASET_IDS,
+            "model_ids": [],
+            "synthetic_data_sha256": None,
+        },
+    }
+    assert experiments_module._validate_result_shape(
+        _valid_result_ref(
+            scope="development_preliminary",
+            result_label="PRELIMINARY_NON_EXECUTABLE",
+            dataset_ids=EXPECTED_X15_DATASET_IDS,
+        )
+    )["result_label"] == "PRELIMINARY_NON_EXECUTABLE"
+
+
+def test_x15_formal_holdout_requires_policy_lock(
+    program_root: Path,
+) -> None:
+    card = load_experiment_registry(program_root)["X-15"]
+    formal_scope = card["authorization_scopes"]["formal_holdout"]
+    formal_policy_lock = next(
+        lock
+        for lock in card["registration_locks"]
+        if lock["id"] == "formal_holdout_policy"
+    )
+
+    assert formal_scope["authorized"] is False
+    assert formal_scope["required_result_label"] == "FORMAL"
+    assert "formal_holdout_policy" in formal_scope["required_lock_ids"]
+    assert formal_policy_lock["status"] == "unresolved"
+    with pytest.raises(
+        UnauthorizedResultScopeError,
+        match="formal_holdout is not authorized",
+    ):
+        validate_result_ref(
+            program_root,
+            "X-15",
+            _valid_result_ref(
+                scope="formal_holdout",
+                result_label="FORMAL",
+                evaluation_started_at="2026-07-29T00:00:01Z",
+                dataset_ids=EXPECTED_X15_DATASET_IDS,
+            ),
+        )
+
+
+def test_x15_study_contract_is_immutable() -> None:
+    card = _read_card(PROJECT_ROOT, "X-15")
+    card["study_contract"]["holdout_game_count"] = 80
+
+    with pytest.raises(
+        ExperimentRegistryError,
+        match="X-15: invalid study contract",
+    ):
+        experiments_module._validate_card_structure(card, "X-15")
 
 
 def test_x02_seed_preregistration_is_exact_and_does_not_resolve_input_manifest(
@@ -4005,6 +4095,8 @@ def test_phase_execution_authorization_is_exact_and_fail_closed(
         "X-11",
         "X-12",
         "X-13",
+        "X-14",
+        "X-15",
     }
     assert registry["X-04"]["authorization_scopes"]["formal_result"][
         "authorized"

@@ -17,7 +17,7 @@ import yaml
 from prediction_market.raw_store import RawStoreError, read_verified_segment
 
 
-EXPERIMENT_IDS = tuple(f"X-{number:02d}" for number in range(1, 15))
+EXPERIMENT_IDS = tuple(f"X-{number:02d}" for number in range(1, 16))
 _EXPERIMENT_ID_SET = frozenset(EXPERIMENT_IDS)
 _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _DATASET_ID_RE = re.compile(r"^DS-[A-Z0-9][A-Z0-9-]*$")
@@ -27,10 +27,29 @@ _DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 _RESULT_ACCEPTANCE_NOT_BEFORE = "2026-07-23T00:00:00Z"
 _X13_RESULT_ACCEPTANCE_NOT_BEFORE = "2026-07-25T04:40:00Z"
 _X14_RESULT_ACCEPTANCE_NOT_BEFORE = "2026-07-26T00:00:00Z"
+_X15_RESULT_ACCEPTANCE_NOT_BEFORE = "2026-07-29T00:00:00Z"
 _X13_SOURCE_DATASET_IDS = [
     "DS-KALSHI-HISTORICAL",
     "DS-NFLVERSE",
     "DS-NFLVERSE-PARTICIPATION",
+    "DS-POLYMARKET-PUBLIC",
+]
+_X15_STUDY_CONTRACT = {
+    "sport": "NFL",
+    "market_data_class": "TRADES_ONLY",
+    "signal_class": "MULTI_LANDMARK_TAKER",
+    "development_game_count": 153,
+    "holdout_game_count": 81,
+    "holdout_state": "SEALED_UNREAD",
+    "holdout_reaction_accessed": False,
+    "oddpool_used": False,
+    "evidence_label": "PRELIMINARY_NON_EXECUTABLE",
+    "formal_holdout_policy_lock_id": "formal_holdout_policy",
+}
+_X15_SOURCE_DATASET_IDS = [
+    "DS-KALSHI-HISTORICAL",
+    "DS-NFL-FASTRMODELS",
+    "DS-NFLVERSE",
     "DS-POLYMARKET-PUBLIC",
 ]
 _X08_CAPTURE_STREAMS = {
@@ -324,6 +343,7 @@ _TRUSTED_BASE_REGISTRATIONS = {
     "X-12": "sha256:f1482d5268cbcb556ae8ac8fb37f15d31586cbc2e13565cb05f0341efcabdc96",
     "X-13": "sha256:f637a647e881a048866e0dd4003b65b4397e6194cf6e58cc13c65be69920a697",
     "X-14": "sha256:b4b7fdb194de6a06ae5113c487cf7c347d5fdd41878b7060e22464ea93320a10",
+    "X-15": "sha256:3e5dc66a0878bbc4df68c09dc484f6ff4fa0c6a8b439e64ba70242c33f012604",
 }
 
 _COMMON_CARD_FIELDS = frozenset(
@@ -391,6 +411,12 @@ _OPTIONAL_CARD_FIELDS = {
         "prospective_session",
         "source_time_only",
     },
+    "X-15": {
+        "causal_or_execution_claims_authorized",
+        "dataset_ids",
+        "source_time_only",
+        "study_contract",
+    },
 }
 _EXPERIMENT_REGISTRY_FIELDS = [
     "experiment_id",
@@ -445,7 +471,7 @@ _REQUIRED_TASK3_ARTIFACTS = frozenset(
         "contracts/model-output/v1.schema.yaml",
         "registries/dataset_registry.csv",
         "registries/model_registry.csv",
-        *(f"registries/experiments/X-{number:02d}.yaml" for number in range(1, 14)),
+        *(f"registries/experiments/X-{number:02d}.yaml" for number in range(1, 16)),
     }
 )
 _RESULT_FIELDS = frozenset(
@@ -472,6 +498,7 @@ _INPUT_BOUND_EXPERIMENT_IDS = frozenset(
         "X-12",
         "X-13",
         "X-14",
+        "X-15",
     }
 )
 
@@ -669,7 +696,7 @@ def _validate_card_inventory(root: Path) -> None:
         raise ExperimentRegistryError("cannot enumerate experiment card inventory") from exc
     expected = {f"{experiment_id}.yaml" for experiment_id in EXPERIMENT_IDS}
     if names != expected:
-        raise ExperimentRegistryError("experiment card inventory must be exactly X-01 through X-14")
+        raise ExperimentRegistryError("experiment card inventory must be exactly X-01 through X-15")
 
 
 def _validate_artifact_registry(root: Path) -> None:
@@ -1205,7 +1232,10 @@ def _validate_scopes(
         scope = _exact_keys(raw_scope, allowed, f"{experiment_id} scope {scope_name}")
         if type(scope["authorized"]) is not bool:
             raise ExperimentRegistryError(f"{experiment_id}: scope authorization must be bool")
-        if scope["required_result_label"] not in {"FORMAL", "PRELIMINARY"}:
+        allowed_labels = {"FORMAL", "PRELIMINARY"}
+        if experiment_id == "X-15":
+            allowed_labels.add("PRELIMINARY_NON_EXECUTABLE")
+        if scope["required_result_label"] not in allowed_labels:
             raise ExperimentRegistryError(
                 f"{experiment_id}: scope {scope_name} has invalid required_result_label"
             )
@@ -1337,12 +1367,14 @@ def _validate_card_structure(card: dict[str, Any], experiment_id: str) -> None:
     expected_registered_at = {
         "X-13": "2026-07-24",
         "X-14": "2026-07-25",
+        "X-15": "2026-07-28",
     }.get(experiment_id, "2026-07-22")
     if card["registered_at"] != expected_registered_at:
         raise ExperimentRegistryError(f"{experiment_id}: immutable registration date changed")
     expected_acceptance_boundary = {
         "X-13": _X13_RESULT_ACCEPTANCE_NOT_BEFORE,
         "X-14": _X14_RESULT_ACCEPTANCE_NOT_BEFORE,
+        "X-15": _X15_RESULT_ACCEPTANCE_NOT_BEFORE,
     }.get(experiment_id, _RESULT_ACCEPTANCE_NOT_BEFORE)
     if card["result_acceptance_not_before"] != expected_acceptance_boundary:
         raise ExperimentRegistryError(f"{experiment_id}: immutable preregistration boundary changed")
@@ -1521,6 +1553,34 @@ def _validate_card_structure(card: dict[str, Any], experiment_id: str) -> None:
             raise ExperimentRegistryError(
                 f"{experiment_id}: causal or execution claims are unauthorized"
             )
+    if "study_contract" in card:
+        if card["study_contract"] != _X15_STUDY_CONTRACT:
+            raise ExperimentRegistryError("X-15: invalid study contract")
+        if card["dataset_ids"] != _X15_SOURCE_DATASET_IDS:
+            raise ExperimentRegistryError(
+                "X-15: trades-only study dataset binding changed"
+            )
+        development_scope = card["authorization_scopes"].get(
+            "development_preliminary"
+        )
+        formal_scope = card["authorization_scopes"].get("formal_holdout")
+        formal_policy_lock = locks.get("formal_holdout_policy")
+        if (
+            not isinstance(development_scope, dict)
+            or development_scope["authorized"] is not True
+            or development_scope["required_result_label"]
+            != "PRELIMINARY_NON_EXECUTABLE"
+            or not isinstance(formal_scope, dict)
+            or formal_scope["authorized"] is not False
+            or formal_scope["required_result_label"] != "FORMAL"
+            or "formal_holdout_policy"
+            not in formal_scope["required_lock_ids"]
+            or formal_policy_lock is None
+            or formal_policy_lock["status"] != "unresolved"
+        ):
+            raise ExperimentRegistryError(
+                "X-15: invalid formal holdout policy gate"
+            )
     if "prospective_session" in card:
         session = _exact_keys(
             card["prospective_session"],
@@ -1679,8 +1739,15 @@ def _validate_result_shape(value: Any) -> dict[str, Any]:
     )
     if not snapshot["scope"]:
         raise InvalidResultReferenceError("scope must be non-empty")
-    if snapshot["result_label"] not in {"FORMAL", "PRELIMINARY"}:
-        raise InvalidResultReferenceError("result_label must be FORMAL or PRELIMINARY")
+    if snapshot["result_label"] not in {
+        "FORMAL",
+        "PRELIMINARY",
+        "PRELIMINARY_NON_EXECUTABLE",
+    }:
+        raise InvalidResultReferenceError(
+            "result_label must be FORMAL, PRELIMINARY, or "
+            "PRELIMINARY_NON_EXECUTABLE"
+        )
     _canonical_utc(snapshot["evaluation_started_at"], "evaluation_started_at", result_error=True)
     for field_name in (
         "code_sha256",
@@ -3473,7 +3540,7 @@ def _load_registry_internal(
             raise ExperimentRegistryError(f"duplicate experiment registry row: {experiment_id}")
         row_by_id[experiment_id] = row
     if set(row_by_id) != _EXPERIMENT_ID_SET:
-        raise ExperimentRegistryError("registry must contain exactly X-01 through X-14")
+        raise ExperimentRegistryError("registry must contain exactly X-01 through X-15")
 
     catalog_gates = _catalog_gates(root)
     base_cards: dict[str, dict[str, Any]] = {}

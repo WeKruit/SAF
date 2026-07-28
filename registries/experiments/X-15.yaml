@@ -1,0 +1,95 @@
+experiment_card:
+  id: X-15
+  name: NFL trades-only multi-landmark taker signal
+  owner_team: C+D2+E+H
+  status: registered
+  hypothesis: A directionally consistent taker signal measured at multiple frozen NFL game landmarks on 153 development games may generalize to an independently sealed 81-game holdout.
+  data:
+    - source: nflverse play-by-play through the verified X-13 single-game bundles
+      version: github_release_id:58152862@2026-02-12T10:25:26Z
+      pit_basis: Game-state and event fields are inherited from immutable X-13 bundle hashes and remain source-time only.
+    - source: nflverse fastrmodels no-spread reference through the verified X-13 historical-reference manifest
+      version: archive_commit:9f2495fdb4943087ca663d96706eb5df7973aff4
+      pit_basis: The frozen retrospective reference manifest is diagnostic only and does not prove live availability.
+    - source: Kalshi official historical trades
+      version: official-rest-20260723
+      pit_basis: Exchange trade timestamps and the fixed fetch cutoff remain distinct.
+    - source: Polymarket official public trades
+      version: public-api-20260723
+      pit_basis: Exchange event timestamps and the fixed fetch cutoff remain distinct.
+  method: Join verified X-13 NFL game-state and fastrmodels reference observations to actual historical trades at the frozen landmark set, then infer residual taker direction. Develop and report the signal on exactly 153 games; keep the independently selected 81-game holdout sealed and unread. Oddpool and order-book state are excluded. The holdout may be read only after a formal evaluation policy is locked and the formal scope is authorized by amendment.
+  leakage_checks:
+    - Development and holdout game identities are disjoint and frozen before any holdout reaction access.
+    - Holdout reaction data remains sealed and unread until the formal holdout policy lock is resolved.
+    - Sports state and reference inputs are restricted to the verified X-13 manifests; the market side uses actual trades only, while order-book state and Oddpool data are excluded.
+    - Every landmark and taker-direction rule is frozen before formal holdout access.
+  split: Exactly 153 development games and 81 independently sealed unread holdout games.
+  metrics: [landmark coverage, signed taker imbalance, directional consistency by landmark, clustered game-level uncertainty]
+  pass_criteria: Development output is labeled PRELIMINARY_NON_EXECUTABLE and reports the frozen metrics without a formal holdout or execution claim.
+  fail_criteria: Any holdout access before the formal policy lock, any Oddpool or order-book input, any split-count drift, or any post-access signal or landmark change invalidates the formal evaluation.
+  cost_estimate: {compute: bounded trades-only NFL study, human_days: unresolved}
+  dependencies: []
+  registered_at: '2026-07-28'
+  result_acceptance_not_before: '2026-07-29T00:00:00Z'
+  due_gate: null
+  results_ref: []
+  promotion_decision: ''
+  execution_authorized: true
+  completion_required_scopes: [development_preliminary]
+  authorization_scopes:
+    development_preliminary:
+      authorized: true
+      required_result_label: PRELIMINARY_NON_EXECUTABLE
+      required_lock_ids: [development_design]
+      input_binding:
+        result_class: poc
+        dataset_ids: [DS-KALSHI-HISTORICAL, DS-NFL-FASTRMODELS, DS-NFLVERSE, DS-POLYMARKET-PUBLIC]
+        model_ids: []
+        synthetic_data_sha256: null
+    formal_holdout:
+      authorized: false
+      required_result_label: FORMAL
+      required_lock_ids: [formal_holdout_policy, holdout_seal]
+      input_binding:
+        result_class: formal
+        dataset_ids: [DS-KALSHI-HISTORICAL, DS-NFL-FASTRMODELS, DS-NFLVERSE, DS-POLYMARKET-PUBLIC]
+        model_ids: []
+        synthetic_data_sha256: null
+  registration_locks:
+    - {id: development_design, status: resolved, reason: 'The trades-only multi-landmark taker signal and the exact 153-game development cohort are frozen for preliminary non-executable measurement.'}
+    - {id: holdout_seal, status: resolved, reason: 'The disjoint 81-game holdout is sealed unread and holdout reaction data has not been accessed.'}
+    - {id: formal_holdout_policy, status: unresolved, reason: 'Formal metrics thresholds exclusions and decision rules must be locked before any holdout reaction access; formal_holdout remains unauthorized.'}
+  measurement_exemption: false
+  falsified_direction_is_valid_measurement: false
+  dataset_ids: [DS-KALSHI-HISTORICAL, DS-NFL-FASTRMODELS, DS-NFLVERSE, DS-POLYMARKET-PUBLIC]
+  source_time_only: true
+  causal_or_execution_claims_authorized: false
+  study_contract:
+    sport: NFL
+    market_data_class: TRADES_ONLY
+    signal_class: MULTI_LANDMARK_TAKER
+    development_game_count: 153
+    holdout_game_count: 81
+    holdout_state: SEALED_UNREAD
+    holdout_reaction_accessed: false
+    oddpool_used: false
+    evidence_label: PRELIMINARY_NON_EXECUTABLE
+    formal_holdout_policy_lock_id: formal_holdout_policy
+  linked_first_artifact_due_gates: []
+  source_lineage:
+    charter_file: charter/research_program_charter_v0.2.md
+    charter_sections: ['Team C', 'Team D2', 'Team E', 'Team H', '§9 preregistration discipline', 'NO-GO']
+    catalog_item_ids: []
+  program_no_go_restrictions:
+    - real_money_execution
+    - maker_strategy_live
+    - exact_queue_fill_claim_from_pmxt_l2
+    - multi_venue_simultaneous_execution_arbitrage
+    - live_copy_trading
+    - llm_hot_path
+    - reinforcement_learning
+    - large_scale_microservices
+    - readme_return_strategy_selection
+    - unregistered_quick_backtest
+  amendments: []
+  registration_record_sha256: sha256:3e5dc66a0878bbc4df68c09dc484f6ff4fa0c6a8b439e64ba70242c33f012604
