@@ -1,0 +1,8 @@
+/.quarto/
+**/*.quarto_ipynb
+/_freeze/
+/_rendered/
+/exact-153/research-workbench-v1/
+/exact-153/research-workbench-v2/
+/exact-153/research-workbench-v3/
+/exact-153/research-workbench-v4/

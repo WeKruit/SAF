@@ -13,6 +13,120 @@ const {
   evidenceStateClass,
 } = dashboardViewModel;
 
+test("dashboard reference parser accepts only exact governed identity and frozen windows", () => {
+  assert.deepEqual(
+    dashboardViewModel.parseDashboardReference(
+      "?game=2025_14_DAL_DET" +
+        "&episode=2025_14_DAL_DET%3Aepisode%3A17" +
+        "&market=kalshi%3A%3AKXNFLGAME-25DEC04DALDET-DET" +
+        "&delay_s=2&horizon_s=30",
+    ),
+    {
+      gameId: "2025_14_DAL_DET",
+      episodeId: "2025_14_DAL_DET:episode:17",
+      marketId: "kalshi::KXNFLGAME-25DEC04DALDET-DET",
+      delay: "2",
+      horizon: "30",
+    },
+  );
+
+  assert.deepEqual(
+    dashboardViewModel.parseDashboardReference(
+      "?game=../../etc/passwd&episode=%00bad&market=%00bad&delay_s=4&horizon_s=15",
+    ),
+    {
+      gameId: null,
+      episodeId: null,
+      marketId: null,
+      delay: "0",
+      horizon: "10",
+    },
+  );
+});
+
+test("dashboard deep-link query is deterministic and omits absent identities", () => {
+  assert.equal(
+    dashboardViewModel.buildDashboardSearch({
+      gameId: "2025_14_DAL_DET",
+      episodeId: "2025_14_DAL_DET:episode:17",
+      marketId: "polymarket::Will DET win?",
+      delay: "1",
+      horizon: "5",
+    }),
+    "?game=2025_14_DAL_DET" +
+      "&episode=2025_14_DAL_DET%3Aepisode%3A17" +
+      "&market=polymarket%3A%3AWill+DET+win%3F&delay_s=1&horizon_s=5",
+  );
+  assert.equal(
+    dashboardViewModel.buildDashboardSearch({
+      gameId: "2025_14_DAL_DET",
+      delay: "0",
+      horizon: "10",
+    }),
+    "?game=2025_14_DAL_DET&delay_s=0&horizon_s=10",
+  );
+});
+
+test("episode deep link resolves to the first exact source play in that finalized episode", () => {
+  const target =
+    "episode_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+  const core = {
+    payload: {
+      events: [
+        { play_id: "100" },
+        { play_id: "101" },
+        { play_id: "102" },
+      ],
+      episodes: [
+        { episode_id: target, play_ids: ["101", "102"] },
+      ],
+    },
+  };
+  assert.equal(
+    dashboardViewModel.resolveEpisodeEventIndex(core, target),
+    1,
+  );
+  assert.equal(
+    dashboardViewModel.resolveEpisodeEventIndex(core, `episode_${"f".repeat(64)}`),
+    null,
+  );
+  assert.equal(
+    dashboardViewModel.episodeIdAtEvent(core, 2),
+    target,
+  );
+});
+
+test("market deep link uses an exact contract identity and reports its filters", () => {
+  const contracts = [
+    {
+      logical_market_id: "kalshi::KXNFLGAME-25DEC04DALDET-DET",
+      family: "winner",
+      venue: "kalshi",
+      analysis_eligible: true,
+    },
+  ];
+  assert.deepEqual(
+    dashboardViewModel.resolveMarketReference(
+      contracts,
+      "kalshi::KXNFLGAME-25DEC04DALDET-DET",
+    ),
+    {
+      logicalMarketId: "kalshi::KXNFLGAME-25DEC04DALDET-DET",
+      family: "winner",
+      venue: "kalshi",
+      marketState: "analysis_eligible",
+    },
+  );
+  assert.equal(
+    dashboardViewModel.resolveMarketReference(
+      contracts,
+      "kalshi::KXNFLGAME-25DEC04DALDET",
+    ),
+    null,
+    "partial or guessed identities must not resolve",
+  );
+});
+
 test("market selection has one atomic state transition function", () => {
   assert.equal(
     typeof dashboardViewModel.reduceMarketSelection,

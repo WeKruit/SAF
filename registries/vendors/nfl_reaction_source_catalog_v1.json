@@ -1,0 +1,296 @@
+{
+  "schema_version": "NFLReactionSourceCatalogV1",
+  "observed_at": "2026-07-26T18:00:00Z",
+  "cards": [
+    {
+      "source_id": "SRC-BETFAIR-HISTORICAL",
+      "name": "Betfair Exchange Historical Data",
+      "source_kind": "benchmark_exchange",
+      "status": "BENCHMARK_ONLY",
+      "observed_at": "2026-07-26T18:00:00Z",
+      "urls": [
+        "https://developer.betfair.com/en/historical-data-services-api/",
+        "https://historicdata.betfair.com/files/Betfair-Historical-Data-Feed-Specification.pdf"
+      ],
+      "coverage": {"start": "2015-05", "end": null, "scope": "purchased exchange packages"},
+      "granularity": "PACKAGE_DEPENDENT_1M_1S_OR_50MS",
+      "auth": "BETFAIR_CUSTOMER_AND_PURCHASE",
+      "license_status": "PENDING",
+      "timestamps": [
+        {"field": "pt", "clock_domain": "BETFAIR_PUBLISHER_UTC_MS", "semantics": "exchange publish time"}
+      ],
+      "capabilities": {
+        "historical_l2": true,
+        "prospective_l2": false,
+        "l3_order_identity": false,
+        "exact_queue_position": false,
+        "authoritative_trade_direction": false,
+        "taker_book_walk": true,
+        "exact_maker_fill": false
+      },
+      "audit_requirements": ["package and sport coverage", "betDelay and suspension semantics", "license and purchase evidence"],
+      "claim_boundary": "Mature exchange benchmark only; it is not Polymarket or Kalshi and package frequency is not a latency SLA.",
+      "content_sha256": "sha256:75a43502a84924ecca78fbdc6fa2e3e4344020a1724e4919b310977391d1618f"
+    },
+    {
+      "source_id": "SRC-JON-BECKER-PM-ANALYSIS",
+      "name": "Jon Becker Prediction Market Analysis",
+      "source_kind": "public_dataset",
+      "status": "DATASET_ONLY",
+      "observed_at": "2026-07-26T18:00:00Z",
+      "urls": ["https://github.com/Jon-Becker/prediction-market-analysis"],
+      "coverage": {"start": null, "end": null, "scope": "market metadata and trades/fills"},
+      "granularity": "TRADE_AND_FILL_RECORDS",
+      "auth": "PUBLIC_DOWNLOAD",
+      "license_status": "PENDING",
+      "timestamps": [
+        {"field": "block_timestamp", "clock_domain": "BLOCKCHAIN_TIME", "semantics": "mapped block/fill time"}
+      ],
+      "capabilities": {
+        "historical_l2": false,
+        "prospective_l2": false,
+        "l3_order_identity": false,
+        "exact_queue_position": false,
+        "authoritative_trade_direction": true,
+        "taker_book_walk": false,
+        "exact_maker_fill": false
+      },
+      "audit_requirements": ["third-party data rights", "fill identity and chain provenance", "coverage manifest"],
+      "claim_boundary": "Useful for lifecycle and authoritative fills; it is not a tick-level order-book archive.",
+      "content_sha256": "sha256:0b0c5b2cdfa7aac88bef83b36d0b7036ea0b6fb48d0581a7d0663570ec7c79a1"
+    },
+    {
+      "source_id": "SRC-KALSHI-OFFICIAL-L2",
+      "name": "Kalshi Official Orderbook WebSocket",
+      "source_kind": "official_feed",
+      "status": "CANONICAL",
+      "observed_at": "2026-07-26T18:00:00Z",
+      "urls": [
+        "https://docs.kalshi.com/websockets/orderbook-updates",
+        "https://docs.kalshi.com/getting_started/order_direction"
+      ],
+      "coverage": {"start": "collector_start", "end": "collector_stop", "scope": "subscribed tickers"},
+      "granularity": "EVENT_DRIVEN_PRICE_LEVEL_L2",
+      "auth": "RSA_API_KEY",
+      "license_status": "RESEARCH_ONLY",
+      "timestamps": [
+        {"field": "ts_ms", "clock_domain": "KALSHI_MATCHING_ENGINE_UTC_MS", "semantics": "exchange update time"},
+        {"field": "local_receive_monotonic_ns", "clock_domain": "LOCAL_MONOTONIC_NS", "semantics": "self-captured receive boundary"}
+      ],
+      "capabilities": {
+        "historical_l2": false,
+        "prospective_l2": true,
+        "l3_order_identity": false,
+        "exact_queue_position": false,
+        "authoritative_trade_direction": true,
+        "taker_book_walk": true,
+        "exact_maker_fill": false
+      },
+      "audit_requirements": ["RSA credential reference", "snapshot then sequence-contiguous deltas", "YES-price orientation"],
+      "claim_boundary": "Canonical prospective price-level L2; no order identity, queue position, or exact maker fill.",
+      "content_sha256": "sha256:0866d538002c8da24e65f618d40681c78b0f9d04a20356478dad1b9be9a70ace"
+    },
+    {
+      "source_id": "SRC-ODDPOOL",
+      "name": "Oddpool Institutional Historical Data",
+      "source_kind": "commercial_vendor",
+      "status": "SAMPLE_REQUIRED",
+      "observed_at": "2026-07-26T18:00:00Z",
+      "urls": ["https://www.oddpool.com/institutional"],
+      "coverage": {"start": null, "end": null, "scope": "vendor-claimed Polymarket and Kalshi"},
+      "granularity": "VENDOR_CLAIMED_EVENT_DRIVEN",
+      "auth": "CONTACT_SALES",
+      "license_status": "PENDING",
+      "timestamps": [
+        {"field": "timestamp", "clock_domain": "UNRESOLVED_MILLISECONDS", "semantics": "vendor page does not resolve exchange versus receive clock"}
+      ],
+      "capabilities": {
+        "historical_l2": true,
+        "prospective_l2": false,
+        "l3_order_identity": false,
+        "exact_queue_position": false,
+        "authoritative_trade_direction": false,
+        "taker_book_walk": true,
+        "exact_maker_fill": false
+      },
+      "audit_requirements": ["exact archive start", "clock-domain evidence", "settlement and cross-venue identity", "sample reconstruction"],
+      "claim_boundary": "Vendor claims remain unverified until the common two-hour sample passes VendorSampleAuditV1.",
+      "content_sha256": "sha256:0da8467d6545ea1457f3f9d67226f65adf5917245c4ae7a02e27115ba4499da8"
+    },
+    {
+      "source_id": "SRC-PMXT-KALSHI",
+      "name": "PMXT Kalshi Archive",
+      "source_kind": "public_archive",
+      "status": "STALE_ARCHIVE",
+      "observed_at": "2026-07-26T18:00:00Z",
+      "urls": ["https://archive.pmxt.dev/Kalshi"],
+      "coverage": {"start": null, "end": "2026-06-11T03:00:00Z", "scope": "public hourly listing"},
+      "granularity": "HOURLY_PARQUET_ORDERBOOK_EVENTS",
+      "auth": "PUBLIC_HTTPS",
+      "license_status": "APPROVED",
+      "timestamps": [
+        {"field": "unverified", "clock_domain": "UNRESOLVED", "semantics": "listing lacks an equivalent governed schema review"}
+      ],
+      "capabilities": {
+        "historical_l2": true,
+        "prospective_l2": false,
+        "l3_order_identity": false,
+        "exact_queue_position": false,
+        "authoritative_trade_direction": false,
+        "taker_book_walk": true,
+        "exact_maker_fill": false
+      },
+      "audit_requirements": ["schema sample", "timestamp semantics", "gap inventory", "stale endpoint boundary"],
+      "claim_boundary": "Archive is stale and cannot replace the authenticated Kalshi prospective collector.",
+      "content_sha256": "sha256:f2cbfccc39eb9395fa5e1cc29a11ffbb4bdebe6dc3d5c28c9f90422849a5b7fd"
+    },
+    {
+      "source_id": "SRC-PMXT-POLYMARKET-V2",
+      "name": "PMXT Polymarket V2 Archive",
+      "source_kind": "public_archive",
+      "status": "APPROVED_ARCHIVE",
+      "observed_at": "2026-07-26T18:00:00Z",
+      "urls": [
+        "https://archive.pmxt.dev/docs/v2-data-overview",
+        "https://archive.pmxt.dev/Polymarket/v2"
+      ],
+      "coverage": {"start": "2026-04-13T19:00:00Z", "end": null, "scope": "all-market hourly Parquet events"},
+      "granularity": "EVENT_STREAM_IN_HOURLY_PARQUET",
+      "auth": "PUBLIC_HTTPS_OR_HOSTED_API",
+      "license_status": "APPROVED",
+      "timestamps": [
+        {"field": "timestamp", "clock_domain": "POLYMARKET_SOURCE_MS", "semantics": "venue source timestamp"},
+        {"field": "timestamp_received", "clock_domain": "PMXT_EXPORTER_UTC_MS", "semantics": "PMXT exporter ingest time, not our receive time"}
+      ],
+      "capabilities": {
+        "historical_l2": true,
+        "prospective_l2": false,
+        "l3_order_identity": false,
+        "exact_queue_position": false,
+        "authoritative_trade_direction": false,
+        "taker_book_walk": true,
+        "exact_maker_fill": false
+      },
+      "audit_requirements": ["use only mirrored S3 objects", "snapshot/delta reconstruction", "hour completeness and gap audit"],
+      "claim_boundary": "Valid for 2026-04-13+ historical price-level L2 only; it cannot backfill 2025 NFL or supply our local receive time.",
+      "content_sha256": "sha256:afcd325087ba1b2b2ca1f2b76f5d2d98a6076193356c1b21d3694ea7136f489f"
+    },
+    {
+      "source_id": "SRC-POLYMARKET-OFFICIAL-L2",
+      "name": "Polymarket Official Market Stream",
+      "source_kind": "official_feed",
+      "status": "CANONICAL",
+      "observed_at": "2026-07-26T18:00:00Z",
+      "urls": [
+        "https://docs.polymarket.com/market-data/realtime-data#market-stream",
+        "https://docs.polymarket.com/v2-migration"
+      ],
+      "coverage": {"start": "collector_start", "end": "collector_stop", "scope": "subscribed token IDs"},
+      "granularity": "EVENT_DRIVEN_PRICE_LEVEL_L2",
+      "auth": "PUBLIC_MARKET_SUBSCRIPTION",
+      "license_status": "RESEARCH_ONLY",
+      "timestamps": [
+        {"field": "timestamp", "clock_domain": "POLYMARKET_SOURCE_MS", "semantics": "venue source timestamp"},
+        {"field": "local_receive_monotonic_ns", "clock_domain": "LOCAL_MONOTONIC_NS", "semantics": "self-captured receive boundary"}
+      ],
+      "capabilities": {
+        "historical_l2": false,
+        "prospective_l2": true,
+        "l3_order_identity": false,
+        "exact_queue_position": false,
+        "authoritative_trade_direction": false,
+        "taker_book_walk": true,
+        "exact_maker_fill": false
+      },
+      "audit_requirements": ["connection epoch and per-token snapshot", "book hash and REST reconciliation", "on-chain fills for aggressor direction"],
+      "claim_boundary": "Canonical prospective price-level L2; no continuous sequence, order identity, exact queue, or authoritative aggressor side.",
+      "content_sha256": "sha256:97198b3be9229766796d2a0292e1c27b67610c77763d333dba33ffe7c6e05c2e"
+    },
+    {
+      "source_id": "SRC-POLYMARKETDATA",
+      "name": "PolymarketData Order Book Product",
+      "source_kind": "commercial_vendor",
+      "status": "SAMPLE_REQUIRED",
+      "observed_at": "2026-07-26T18:00:00Z",
+      "urls": ["https://www.polymarketdata.co/polymarket-order-book-data"],
+      "coverage": {"start": null, "end": null, "scope": "vendor-claimed Polymarket"},
+      "granularity": "ONE_MINUTE_SNAPSHOT",
+      "auth": "PAID_PLAN",
+      "license_status": "PENDING",
+      "timestamps": [
+        {"field": "snapshot_time", "clock_domain": "UNRESOLVED_MINUTE", "semantics": "fixed one-minute snapshot time"}
+      ],
+      "capabilities": {
+        "historical_l2": false,
+        "prospective_l2": false,
+        "l3_order_identity": false,
+        "exact_queue_position": false,
+        "authoritative_trade_direction": false,
+        "taker_book_walk": true,
+        "exact_maker_fill": false
+      },
+      "audit_requirements": ["snapshot clock semantics", "coverage sample", "license and retention"],
+      "claim_boundary": "One-minute ladders may screen liquidity but cannot support 1/2/5/10-second reaction timing.",
+      "content_sha256": "sha256:f18a7f65ea39bd84a92ea6a5f465ea9bf33f357d5713a6d449b566ae9f598b75"
+    },
+    {
+      "source_id": "SRC-PROBALYTICS",
+      "name": "Probalytics Orderbook Product",
+      "source_kind": "commercial_vendor",
+      "status": "SAMPLE_REQUIRED",
+      "observed_at": "2026-07-26T18:00:00Z",
+      "urls": ["https://www.probalytics.io/pricing"],
+      "coverage": {"start": null, "end": null, "scope": "vendor-claimed Polymarket and Kalshi"},
+      "granularity": "VENDOR_CLAIMED_TICK_L2",
+      "auth": "PAID_PLAN_OR_TRIAL",
+      "license_status": "PENDING",
+      "timestamps": [
+        {"field": "timestamp", "clock_domain": "UNRESOLVED_1MS_CLAIM", "semantics": "precision and completeness require sample proof"}
+      ],
+      "capabilities": {
+        "historical_l2": true,
+        "prospective_l2": false,
+        "l3_order_identity": false,
+        "exact_queue_position": false,
+        "authoritative_trade_direction": false,
+        "taker_book_walk": true,
+        "exact_maker_fill": false
+      },
+      "audit_requirements": ["Kalshi availability contradiction", "event completeness", "clock domain", "export and license terms"],
+      "claim_boundary": "Pricing-page claims are not evidence; the common sample must prove event granularity and venue coverage.",
+      "content_sha256": "sha256:07219f48053ac92c94751d6e59c6db0352cedfe5bdd2520d3d4d35b30f6e6863"
+    },
+    {
+      "source_id": "SRC-TELONEX",
+      "name": "Telonex Historical Orderbook",
+      "source_kind": "commercial_vendor",
+      "status": "SAMPLE_REQUIRED",
+      "observed_at": "2026-07-26T18:00:00Z",
+      "urls": [
+        "https://telonex.io/docs/schemas/book-snapshot",
+        "https://telonex.io/pricing"
+      ],
+      "coverage": {"start": null, "end": null, "scope": "vendor-claimed Polymarket"},
+      "granularity": "VENDOR_CLAIMED_EVENT_DRIVEN_BOOK",
+      "auth": "FREE_SAMPLE_OR_PAID_PLAN",
+      "license_status": "PENDING",
+      "timestamps": [
+        {"field": "timestamp_us", "clock_domain": "POLYMARKET_SOURCE_MS_SCALED_TO_US", "semantics": "field precision does not establish source accuracy"},
+        {"field": "local_timestamp_us", "clock_domain": "VENDOR_RECEIVE_UTC_US", "semantics": "vendor receive time"}
+      ],
+      "capabilities": {
+        "historical_l2": true,
+        "prospective_l2": false,
+        "l3_order_identity": false,
+        "exact_queue_position": false,
+        "authoritative_trade_direction": false,
+        "taker_book_walk": true,
+        "exact_maker_fill": false
+      },
+      "audit_requirements": ["free sample against official and PMXT", "gap and reconnect report", "raw-event provenance", "commercial rights"],
+      "claim_boundary": "Polymarket-only vendor claim; microsecond fields do not imply microsecond venue resolution.",
+      "content_sha256": "sha256:6fc4c05153e7762335ffc82b21365e9dd62d02f9102c60e2936105e16c738159"
+    }
+  ],
+  "catalog_sha256": "sha256:7a1585a60c03d49880237acd6ff358cd86d13bf4de55123cea83c21bc48331c3"
+}

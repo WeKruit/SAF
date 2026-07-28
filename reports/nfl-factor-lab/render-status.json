@@ -1,0 +1,109 @@
+{
+  "authority": {
+    "cross_game_bundle_sha256": "sha256:ac3af1adbc3dabe73e4b8d2a3a9d6bd19639e23108dc419453ea08e1ec38dccb",
+    "cross_game_manifest": {
+      "byte_length": 10243,
+      "path": "artifacts/market-observation/nfl/x13/factor-lab/v2/cross-game/sha256-ac3af1adbc3dabe73e4b8d2a3a9d6bd19639e23108dc419453ea08e1ec38dccb/manifest.json",
+      "sha256": "sha256:22a4f237f5eb8cfdc181af743c1979f860a2da634e412087ea680345464cfc42"
+    },
+    "notebook": {
+      "byte_length": 783895,
+      "path": "notebooks/nfl-factor-lab/NFL_Factor_Lab_Master.ipynb",
+      "sha256": "sha256:d68c4e9056e4e290baa55e24229081faf67e00c44d73bdea62fb0154e013fc25",
+      "status": "LAST_RENDERED_SOURCE"
+    },
+    "run_index": {
+      "byte_length": 206084,
+      "path": "registries/factors/nfl_factor_lab_run_index_v2.json",
+      "schema": "NFLFactorLabRunIndexV2",
+      "sha256": "sha256:6d0e8260085d6672a64b24d44e28a22fe22a9415a6d81138a44e216b024a8332"
+    },
+    "single_game_bundle_count": 20,
+    "stage_manifest_count": 345
+  },
+  "block_reason": "QUARTO_RERENDER_NOT_PERFORMED_FOR_CURRENT_NOTEBOOK",
+  "claim_boundary": "PRELIMINARY_SOURCE_TIME_ONLY",
+  "compact_clean_kernel_execution": {
+    "executed_code_cells": 10,
+    "failed_code_cells": 0,
+    "source_code_cells": 10,
+    "source_sha256": "sha256:3132f31a84360a6516d71ca1eb266fafd4feaed2cd303c2a09b881fb68a12ad7",
+    "status": "PASS"
+  },
+  "external_runtime_resources": [],
+  "holdout_reaction_accessed": false,
+  "current_notebook": {
+    "byte_length": 2429615,
+    "path": "notebooks/nfl-factor-lab/NFL_Factor_Lab_Master.ipynb",
+    "sha256": "sha256:d499bb352d976e559a922ab8b3af03cae3c7bad45e9f7db102fec4d11d9e4b1c",
+    "status": "CURRENT_SOURCE_UNRENDERED"
+  },
+  "jupyter_runtime": {
+    "ipykernel": "7.3.0",
+    "jupyterlab": "4.6.2",
+    "nbclient": "0.11.0",
+    "nbconvert": "7.17.1",
+    "nbformat": "5.10.4",
+    "papermill": "2.7.0"
+  },
+  "master_clean_kernel_execution": {
+    "executed_code_cells": 19,
+    "failed_code_cells": 0,
+    "source_code_cells": 19,
+    "source_sha256": "sha256:d68c4e9056e4e290baa55e24229081faf67e00c44d73bdea62fb0154e013fc25",
+    "status": "STALE_LAST_SUCCESSFUL_EXECUTION"
+  },
+  "quarto_freeze": {
+    "byte_length": 47635,
+    "enabled": true,
+    "path": "_freeze/factor-lab/execute-results/html.json",
+    "sha256": "sha256:c425214d224b63c87599b23adf814ae1975ba02f0338d5b4413ae2267f22ad66"
+  },
+  "quarto_archive_sha256": "sha256:47089a5020cfb41981ba0d4b46e110edfa608722aea45ef248e14efba6d6b18a",
+  "quarto_version": "1.9.38",
+  "render_parameters": {
+    "factor_id": null,
+    "game_id": "2025_14_DAL_DET",
+    "horizon": 10,
+    "market_family": "moneyline",
+    "review_status": "all",
+    "venue": "all"
+  },
+  "render_status": "STALE_BLOCKED_NOTEBOOK_CHANGED",
+  "rendered_outputs": [
+    {
+      "byte_length": 2050832,
+      "path": "_rendered/factor-lab.html",
+      "sha256": "sha256:d7f2c1b581439195548d9e7f3d1409ba2204db83876b53a1a701b9ef6b4a5870",
+      "status": "STALE_LAST_SUCCESSFUL_RENDER"
+    },
+    {
+      "byte_length": 1795334,
+      "path": "_rendered/NFL_Factor_Lab_Master.html",
+      "sha256": "sha256:79c0acb2c8833748df58654fc3f11d7ade87109bb108fbe16767b04225cdf8ea",
+      "status": "STALE_LAST_SUCCESSFUL_RENDER"
+    }
+  ],
+  "schema": "NFLFactorLabQuartoRenderStatusV2",
+  "source_files": {
+    "_quarto.yml": {
+      "byte_length": 402,
+      "sha256": "sha256:54b7e1373bc0a58d6fd2259cc483e2e086ef424f3db3b40cf6a741b99f919b50"
+    },
+    "factor-lab.qmd": {
+      "byte_length": 13912,
+      "sha256": "sha256:3132f31a84360a6516d71ca1eb266fafd4feaed2cd303c2a09b881fb68a12ad7"
+    },
+    "render-matrix.yml": {
+      "byte_length": 966,
+      "sha256": "sha256:755253ee56dcb840258cc3ba66d4a5384fc02478cb81e0ee10f73ea683871c11"
+    }
+  },
+  "source_validation": "STALE_BLOCKED_NOTEBOOK_CHANGED",
+  "verification": {
+    "full_run_index_deep_verification": "COMPLETED_UPSTREAM_BEFORE_RENDER",
+    "report_loader_mode": "SHALLOW_COMMIT_VERIFIED",
+    "selected_stage_reads": "PARQUET_READ_AFTER_COMMITTED_PATH_AND_BYTE_LENGTH_VERIFICATION",
+    "stage_descriptors_reconciled": 345
+  }
+}

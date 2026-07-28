@@ -38,6 +38,11 @@ from prediction_market.experiments import (
     ExperimentRegistryError,
     load_experiment_registry,
 )
+from prediction_market.program_audit import (
+    DatasetRegistryRow,
+    ResearchRegistryError,
+    load_dataset_registry,
+)
 from prediction_market.sports.nfl_x13_association import (
     AssociationResultV1,
     AssociationEvidenceError,
@@ -242,6 +247,122 @@ class X13PipelineError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
+class _CurrentX13DatasetAuthorityV1:
+    program_root: Path
+    authority_snapshot_sha256: str
+    component_sha256s: Mapping[str, str]
+    datasets: Mapping[str, DatasetRegistryRow]
+
+
+_X13_AUTHORITY_COMPONENT_PATHS = (
+    "charter/catalog_registry.csv",
+    "registries/data_license_register.csv",
+    "registries/dataset_registry.csv",
+    "registries/experiment_registry.csv",
+)
+
+
+def _read_x13_authority_snapshot_inputs(
+    program_root: Path,
+) -> Mapping[str, bytes]:
+    values: dict[str, bytes] = {}
+    for relative_path in _X13_AUTHORITY_COMPONENT_PATHS:
+        path = program_root.joinpath(*PurePosixPath(relative_path).parts)
+        if path.is_symlink() or not path.is_file():
+            raise X13PipelineError(
+                f"current authority component is missing or unsafe: "
+                f"{relative_path}"
+            )
+        try:
+            resolved = path.resolve(strict=True)
+            resolved.relative_to(program_root)
+            values[relative_path] = resolved.read_bytes()
+        except (OSError, ValueError) as error:
+            raise X13PipelineError(
+                f"current authority component is missing or unsafe: "
+                f"{relative_path}"
+            ) from error
+    return MappingProxyType(values)
+
+
+def _load_current_x13_dataset_authority(
+    program_root: str | Path,
+) -> _CurrentX13DatasetAuthorityV1:
+    program = Path(program_root).resolve()
+    try:
+        before = _read_x13_authority_snapshot_inputs(program)
+        rows = load_dataset_registry(program)
+        after = _read_x13_authority_snapshot_inputs(program)
+    except (OSError, ResearchRegistryError) as error:
+        raise X13PipelineError(
+            "current dataset authority is missing or invalid"
+        ) from error
+    if before != after:
+        raise X13PipelineError(
+            "current authority component changed during verification"
+        )
+    datasets = {row.dataset_id: row for row in rows}
+    if len(datasets) != len(rows):
+        raise X13PipelineError(
+            "current dataset authority contains duplicate identities"
+        )
+    component_sha256s = MappingProxyType(
+        {
+            path: "sha256:" + hashlib.sha256(before[path]).hexdigest()
+            for path in _X13_AUTHORITY_COMPONENT_PATHS
+        }
+    )
+    return _CurrentX13DatasetAuthorityV1(
+        program_root=program,
+        authority_snapshot_sha256=canonical_sha256(
+            {
+                "schema": "x13-current-dataset-authority-v2",
+                "components": [
+                    {
+                        "path": path,
+                        "sha256": component_sha256s[path],
+                    }
+                    for path in _X13_AUTHORITY_COMPONENT_PATHS
+                ],
+            }
+        ),
+        component_sha256s=component_sha256s,
+        datasets=MappingProxyType(datasets),
+    )
+
+
+def _require_current_x13_dataset_authority(
+    authority: _CurrentX13DatasetAuthorityV1,
+    *,
+    dataset_id: str,
+    license_ref: str,
+    source_version: str,
+) -> DatasetRegistryRow:
+    row = authority.datasets.get(dataset_id)
+    if row is None:
+        raise X13PipelineError("current dataset authority is missing")
+    if (
+        row.license_status not in {"approved", "research_only"}
+        or row.status != "registered"
+        or row.use_class == "blocked"
+        or X13_EXPERIMENT_ID not in row.allowed_experiments
+        or _SHA256_RE.fullmatch(row.manifest_sha256) is None
+    ):
+        raise X13PipelineError(
+            "current dataset authority is not eligible for X-13"
+        )
+    if (
+        row.dataset_id != dataset_id
+        or row.license_review_id != license_ref
+        or row.source_version != source_version
+    ):
+        raise X13PipelineError(
+            "current dataset authority does not match captured source"
+        )
+    return row
+
+
+@dataclass(frozen=True, slots=True)
 class X13PipelineAuthorizationV1:
     experiment_id: str
     scope: str
@@ -312,6 +433,12 @@ class VerifiedCaptureDocumentV1:
     dataset_id: str
     license_ref: str
     license_status: str
+    current_license_status: str
+    current_authority_snapshot_sha256: str
+    current_catalog_registry_sha256: str
+    current_data_license_registry_sha256: str
+    current_dataset_registry_sha256: str
+    current_experiment_registry_sha256: str
     payload: object
 
 
@@ -941,6 +1068,7 @@ def _verify_game_source_manifests(
         raise X13PipelineError(
             "game-state build does not bind the exact NFL source manifests"
         )
+    current_authority = _load_current_x13_dataset_authority(program_root)
     documents: list[VerifiedCaptureDocumentV1] = []
     for manifest_sha256, (
         dataset_id,
@@ -978,6 +1106,12 @@ def _verify_game_source_manifests(
             raise X13PipelineError(
                 "game-state source license, dataset, or hash is invalid"
             )
+        current = _require_current_x13_dataset_authority(
+            current_authority,
+            dataset_id=manifest.dataset_id,
+            license_ref=manifest.license_ref,
+            source_version=verified.record.version,
+        )
         documents.append(
             VerifiedCaptureDocumentV1(
                 game_id=None,
@@ -994,6 +1128,30 @@ def _verify_game_source_manifests(
                 dataset_id=manifest.dataset_id,
                 license_ref=manifest.license_ref,
                 license_status=manifest.license_status,
+                current_license_status=current.license_status,
+                current_authority_snapshot_sha256=(
+                    current_authority.authority_snapshot_sha256
+                ),
+                current_catalog_registry_sha256=(
+                    current_authority.component_sha256s[
+                        "charter/catalog_registry.csv"
+                    ]
+                ),
+                current_data_license_registry_sha256=(
+                    current_authority.component_sha256s[
+                        "registries/data_license_register.csv"
+                    ]
+                ),
+                current_dataset_registry_sha256=(
+                    current_authority.component_sha256s[
+                        "registries/dataset_registry.csv"
+                    ]
+                ),
+                current_experiment_registry_sha256=(
+                    current_authority.component_sha256s[
+                        "registries/experiment_registry.csv"
+                    ]
+                ),
                 payload=None,
             )
         )
@@ -1716,7 +1874,7 @@ def _receipt_document(
     receipt: ImmutableRequestManifest,
     *,
     game_id: str | None,
-    program_root: Path,
+    current_authority: _CurrentX13DatasetAuthorityV1,
     raw_store_root: Path,
 ) -> VerifiedCaptureDocumentV1:
     if not isinstance(receipt, ImmutableRequestManifest):
@@ -1725,7 +1883,7 @@ def _receipt_document(
         verified = read_verified_static_object(
             receipt.manifest_path,
             store_root=raw_store_root,
-            program_root=program_root,
+            program_root=current_authority.program_root,
         )
     except (StaticStoreError, OSError) as error:
         raise X13PipelineError(
@@ -1746,6 +1904,12 @@ def _receipt_document(
         or manifest.license_status in {"unknown", "blocked"}
     ):
         raise X13PipelineError("capture manifest has an unknown or blocked license")
+    current = _require_current_x13_dataset_authority(
+        current_authority,
+        dataset_id=manifest.dataset_id,
+        license_ref=manifest.license_ref,
+        source_version=verified.record.version,
+    )
     resource = _resource(manifest.source_url)
     payload = _strict_json(
         verified.object_bytes,
@@ -1765,6 +1929,30 @@ def _receipt_document(
         dataset_id=manifest.dataset_id,
         license_ref=manifest.license_ref,
         license_status=manifest.license_status,
+        current_license_status=current.license_status,
+        current_authority_snapshot_sha256=(
+            current_authority.authority_snapshot_sha256
+        ),
+        current_catalog_registry_sha256=(
+            current_authority.component_sha256s[
+                "charter/catalog_registry.csv"
+            ]
+        ),
+        current_data_license_registry_sha256=(
+            current_authority.component_sha256s[
+                "registries/data_license_register.csv"
+            ]
+        ),
+        current_dataset_registry_sha256=(
+            current_authority.component_sha256s[
+                "registries/dataset_registry.csv"
+            ]
+        ),
+        current_experiment_registry_sha256=(
+            current_authority.component_sha256s[
+                "registries/experiment_registry.csv"
+            ]
+        ),
         payload=payload,
     )
 
@@ -2075,6 +2263,7 @@ def verify_x13_capture_evidence(
         or len(capture.games) != 20
     ):
         raise X13PipelineError("capture results must cover the exact frozen 20")
+    current_authority = _load_current_x13_dataset_authority(program)
     receipt_game: dict[str, str] = {}
     for result in capture.games:
         for receipt in result.manifests:
@@ -2089,7 +2278,7 @@ def verify_x13_capture_evidence(
             _receipt_document(
                 receipt,
                 game_id=receipt_game.get(receipt.manifest_sha256),
-                program_root=program,
+                current_authority=current_authority,
                 raw_store_root=raw_root,
             )
         )
@@ -2201,6 +2390,7 @@ def _verify_universe_manifest_hashes(
             for document in capture_evidence.batch_documents
         }
     )
+    current_authority = _load_current_x13_dataset_authority(program_root)
     external: list[VerifiedCaptureDocumentV1] = []
     for digest in sorted(required):
         _require_sha256(digest, "universe metadata manifest")
@@ -2234,6 +2424,12 @@ def _verify_universe_manifest_hashes(
             raise X13PipelineError(
                 "universe metadata license or hash is invalid"
             )
+        current = _require_current_x13_dataset_authority(
+            current_authority,
+            dataset_id=manifest.dataset_id,
+            license_ref=manifest.license_ref,
+            source_version=verified.record.version,
+        )
         external.append(
             VerifiedCaptureDocumentV1(
                 game_id=None,
@@ -2248,6 +2444,30 @@ def _verify_universe_manifest_hashes(
                 dataset_id=manifest.dataset_id,
                 license_ref=manifest.license_ref,
                 license_status=manifest.license_status,
+                current_license_status=current.license_status,
+                current_authority_snapshot_sha256=(
+                    current_authority.authority_snapshot_sha256
+                ),
+                current_catalog_registry_sha256=(
+                    current_authority.component_sha256s[
+                        "charter/catalog_registry.csv"
+                    ]
+                ),
+                current_data_license_registry_sha256=(
+                    current_authority.component_sha256s[
+                        "registries/data_license_register.csv"
+                    ]
+                ),
+                current_dataset_registry_sha256=(
+                    current_authority.component_sha256s[
+                        "registries/dataset_registry.csv"
+                    ]
+                ),
+                current_experiment_registry_sha256=(
+                    current_authority.component_sha256s[
+                        "registries/experiment_registry.csv"
+                    ]
+                ),
                 payload=_strict_json(
                     verified.object_bytes,
                     context="universe metadata",

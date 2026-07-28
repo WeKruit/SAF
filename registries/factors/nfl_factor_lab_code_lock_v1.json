@@ -1,0 +1,18 @@
+{
+  "schema": "NFLFactorLabCodeLockV1",
+  "experiment_id": "X-13",
+  "code_sha256": "sha256:6706d3e7717103a6ed0393fe3e237da2049815b880e7047e4994668314b58087",
+  "bootstrap_seed": 20260725,
+  "bootstrap_samples": 10000,
+  "holdout_reaction_accessed": false,
+  "files": [
+    {"path":"src/prediction_market/sports/nfl_factor_lab.py","sha256":"sha256:a5e236379e5361a853b0a1ada0353e16be1847dfa7b6e075893b480ae97b2369"},
+    {"path":"src/prediction_market/sports/nfl_factor_lab_types.py","sha256":"sha256:b599cd3f7e9470d5122fee34277776ba77b78fba61c50e7c729258dc8979737a"},
+    {"path":"src/prediction_market/sports/nfl_factor_lab_features.py","sha256":"sha256:1aad7b11e54a5d6afc9adfd5a4c7be15ea74a618907827c9bb8ba21c6acad07a"},
+    {"path":"src/prediction_market/sports/nfl_factor_lab_analysis.py","sha256":"sha256:824f1e15234aacc91a163967c745d0e972d7dec08c56f3a307b5df91b81edee9"},
+    {"path":"src/prediction_market/sports/nfl_factor_lab_artifacts.py","sha256":"sha256:aa72092b45b53c933cd76c5feb3a4640b2c796339ce3c59b6f1dfa4c84828656"},
+    {"path":"registries/factors/nfl_factor_registry_v1.json","sha256":"sha256:112fb9cc49d973c160579befdcd1835603b75090e1f6cb1cd39df9b89560567d"},
+    {"path":"registries/methods/method_catalog_v1.json","sha256":"sha256:da0f29bc61b7448057f7428f10471cd5c973cd6864a1cf40e82769ab27909ddc"}
+  ],
+  "claim_boundary": "PRELIMINARY_SOURCE_TIME_ONLY; discovery associations only; frozen holdout reactions remain unread"
+}

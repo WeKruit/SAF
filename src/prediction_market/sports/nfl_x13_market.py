@@ -751,7 +751,6 @@ def normalize_kalshi_trade(
     native_source_time = _parse_utc(
         raw.get("created_time"), "created_time"
     )
-    start = native_source_time.replace(microsecond=0)
     yes_price = _require_decimal(
         raw.get("yes_price_dollars"),
         "yes_price_dollars",
@@ -784,8 +783,16 @@ def normalize_kalshi_trade(
         logical_market_id=logical_market_id,
         outcome=outcome,
         kind="trade",
+        # Kalshi supplies a per-trade RFC3339 timestamp with microsecond
+        # precision.  Preserve it for historical ordering instead of
+        # collapsing every trade in the same second into one fabricated
+        # one-second interval.  The one-microsecond half-open interval is
+        # merely the smallest representable positive SourceInterval; it does
+        # not claim that a trade lasts a microsecond.
         source_interval=SourceInterval(
-            start, start + timedelta(seconds=1), False
+            native_source_time,
+            native_source_time + timedelta(microseconds=1),
+            False,
         ),
         price=yes_price,
         size=size,
@@ -1104,7 +1111,7 @@ def verify_raw_manifest_receipt(
 def build_layer_g_interval(
     source_time: datetime, *, delay_seconds: Decimal
 ) -> SourceInterval:
-    """Build Layer G uncertainty interval [source, source + 1s + delay]."""
+    """Build the half-open Layer G uncertainty interval [source, end)."""
 
     source_time = _utc(source_time, "source_time")
     delay = _require_decimal(delay_seconds, "delay_seconds", minimum=_ZERO)
@@ -1115,7 +1122,7 @@ def build_layer_g_interval(
         source_time,
         source_time
         + timedelta(seconds=1, microseconds=int(microseconds)),
-        True,
+        False,
     )
 
 

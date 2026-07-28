@@ -1,0 +1,806 @@
+{
+  "schema_version": "MethodCatalogV1",
+  "generated_at": "2026-07-25T00:00:00Z",
+  "source_policy": "Primary or author-controlled sources only; published scores and conclusions are context, never SAF evidence; unknown code or data rights fail closed.",
+  "cards": [
+    {
+      "method_id": "METHOD-BDB-2025-PRESNAP",
+      "version": "v1",
+      "title": "NFL Big Data Bowl 2025 pre-snap tendency methods",
+      "sport": "NFL",
+      "category": "tracking_method_reference",
+      "status": "METHOD_REFERENCE_ONLY",
+      "source": {
+        "url": "https://www.kaggle.com/competitions/nfl-big-data-bowl-2025",
+        "source_kind": "official_competition",
+        "observed_at": "2026-07-25T00:00:00Z",
+        "precise_version": "competition:nfl-big-data-bowl-2025",
+        "primary_source": true,
+        "provenance_notes": "Official NFL/Kaggle competition surface; NFL Football Operations describes the annual contest as using Next Gen Stats to study player and team movement."
+      },
+      "licenses": {
+        "code": {
+          "status": "UNKNOWN",
+          "spdx_id": "UNKNOWN",
+          "evidence_url": "https://www.kaggle.com/competitions/nfl-big-data-bowl-2025/rules",
+          "notes": "Competition participation does not establish a reusable license for each submitted notebook."
+        },
+        "data": {
+          "status": "UNKNOWN",
+          "spdx_id": "UNKNOWN",
+          "evidence_url": "https://www.kaggle.com/competitions/nfl-big-data-bowl-2025/rules",
+          "notes": "The competition tracking-data rules were not accepted or exported into the SAF license registry; no competition bytes are used."
+        }
+      },
+      "research": {
+        "research_question": "How can pre-snap movement and structure be converted into interpretable football context and expected-versus-observed factors?",
+        "inputs": [
+          "Next Gen Stats player tracking",
+          "play and game context",
+          "pre-snap player movement"
+        ],
+        "target": "Competition-specific coaching, metric, and undergraduate-track outputs.",
+        "validation": "Method-specific validation must be read from each submission and then independently redesigned with game-grouped PIT splits.",
+        "published_claims_not_evidence": true
+      },
+      "reuse": {
+        "reusable_portion": [
+          "Expected-versus-observed factor framing",
+          "Context-conditioned play explanations",
+          "Specific-play visualization and expert review"
+        ],
+        "independently_reproduced": [
+          "No competition result reproduced; only the general method pattern is registered."
+        ],
+        "implementation_state": "NOT_INTEGRATED",
+        "local_dependencies": [],
+        "prohibited_uses": [
+          "Do not download or copy competition data or code without a verified license.",
+          "Do not treat a leaderboard rank or author conclusion as SAF evidence."
+        ]
+      },
+      "evidence_boundary": {
+        "data_gaps": [
+          "SAF does not hold licensed 2025 competition tracking data.",
+          "The current X-13 play-by-play view has no frame-level coordinates, routes, coverage, or pressure."
+        ],
+        "claim_boundary": "Design reference only; no BDB 2025 metric, score, or football conclusion is reproduced or promoted."
+      },
+      "content_sha256": "sha256:923590f3a501db6ae7dba1a4ef52df7791444ef5a483a805995930a39ef87073"
+    },
+    {
+      "method_id": "METHOD-BDB-2026-ANALYTICS",
+      "version": "v1",
+      "title": "NFL Big Data Bowl 2026 Analytics player-movement methods",
+      "sport": "NFL",
+      "category": "tracking_method_reference",
+      "status": "METHOD_REFERENCE_ONLY",
+      "source": {
+        "url": "https://www.kaggle.com/competitions/nfl-big-data-bowl-2026-analytics",
+        "source_kind": "official_competition",
+        "observed_at": "2026-07-25T00:00:00Z",
+        "precise_version": "competition:nfl-big-data-bowl-2026-analytics",
+        "primary_source": true,
+        "provenance_notes": "Official NFL/Kaggle Analytics track about understanding player movement while the ball is in the air."
+      },
+      "licenses": {
+        "code": {
+          "status": "UNKNOWN",
+          "spdx_id": "UNKNOWN",
+          "evidence_url": "https://www.kaggle.com/competitions/nfl-big-data-bowl-2026-analytics/rules",
+          "notes": "No blanket reusable code license was verified for submissions."
+        },
+        "data": {
+          "status": "UNKNOWN",
+          "spdx_id": "UNKNOWN",
+          "evidence_url": "https://www.kaggle.com/competitions/nfl-big-data-bowl-2026-analytics/rules",
+          "notes": "Competition tracking bytes and reuse rights are not registered locally."
+        }
+      },
+      "research": {
+        "research_question": "Which spatial and personnel representations explain player movement and defensive opportunity during a pass?",
+        "inputs": [
+          "Player tracking before and after the throw",
+          "player roles",
+          "ball trajectory and game context"
+        ],
+        "target": "Interpretable player-movement analytics and visual explanations.",
+        "validation": "Submission-specific; SAF requires independent game-grouped validation and cannot reuse leaderboard results.",
+        "published_claims_not_evidence": true
+      },
+      "reuse": {
+        "reusable_portion": [
+          "Separate player execution from realized play outcome",
+          "Represent a play with spatial and personnel context",
+          "Attach an explanation to a concrete play"
+        ],
+        "independently_reproduced": [
+          "No competition result reproduced; only the research decomposition is registered."
+        ],
+        "implementation_state": "NOT_INTEGRATED",
+        "local_dependencies": [],
+        "prohibited_uses": [
+          "Do not download or copy competition data or code without a verified license.",
+          "Do not infer frame-level features from play-by-play descriptions."
+        ]
+      },
+      "evidence_boundary": {
+        "data_gaps": [
+          "SAF has no licensed 2026 Analytics tracking dataset.",
+          "Current X-13 data cannot reconstruct routes, coverage, pressure, or player trajectories."
+        ],
+        "claim_boundary": "Method-reference only; tracking-dependent factors remain DATA_GAP and cannot enter X-13 inference."
+      },
+      "content_sha256": "sha256:f25a3af1a9656358b30111e290bb4871210da53b6d90df390467e864e3d992db"
+    },
+    {
+      "method_id": "METHOD-FASTRMODELS-ASSETS",
+      "version": "v1",
+      "title": "fastrmodels frozen nflfastR model assets",
+      "sport": "NFL",
+      "category": "mature_model_asset",
+      "status": "READY_FOR_LOCAL_REPRODUCTION",
+      "source": {
+        "url": "https://github.com/nflverse/fastrmodels/tree/model_archive",
+        "source_kind": "official_repository_release_tag",
+        "observed_at": "2026-07-25T00:00:00Z",
+        "precise_version": "model_archive@9f2495fdb4943087ca663d96706eb5df7973aff4",
+        "primary_source": true,
+        "provenance_notes": "The official data-only R package hosts EP, WP, spread-WP, FG, CP, XYAC, and expected-pass models; SAF has separately frozen the no-spread WP asset as DS-NFL-FASTRMODELS."
+      },
+      "licenses": {
+        "code": {
+          "status": "VERIFIED",
+          "spdx_id": "MIT",
+          "evidence_url": "https://github.com/nflverse/fastrmodels/blob/9f2495fdb4943087ca663d96706eb5df7973aff4/LICENSE.md",
+          "notes": "The tagged repository declares MIT + LICENSE."
+        },
+        "data": {
+          "status": "NOT_APPLICABLE",
+          "spdx_id": "NONE",
+          "evidence_url": "https://github.com/nflverse/fastrmodels/tree/model_archive",
+          "notes": "This card addresses the released model artifact, not an additional source dataset; model and code rights are recorded above."
+        }
+      },
+      "research": {
+        "research_question": "Can the official no-spread nflfastR win-probability model provide a diagnostic football-value baseline without a market-derived spread input?",
+        "inputs": [
+          "Frozen DS-NFLVERSE play state",
+          "frozen DS-NFL-FASTRMODELS no-spread WP booster"
+        ],
+        "target": "Home-team regulation win probability at a play state.",
+        "validation": "Existing X-11 reproductions compare the local booster against source home_wp as a diagnostic and record feature/training protocol hashes.",
+        "published_claims_not_evidence": true
+      },
+      "reuse": {
+        "reusable_portion": [
+          "Load the frozen no-spread WP booster offline",
+          "Compute diagnostic play-state win probability",
+          "Orient the output to the X-13 focal team"
+        ],
+        "independently_reproduced": [
+          "REPRO-X11-NFL-FASTRMODELS-V1 and V2 are registered locally with frozen protocols.",
+          "The asset hash is governed as DS-NFL-FASTRMODELS."
+        ],
+        "implementation_state": "INTEGRATED_FROZEN_OUTPUTS",
+        "local_dependencies": [
+          "DS-NFL-FASTRMODELS",
+          "DS-NFLVERSE",
+          "MODEL-NFL-FASTRMODELS-NO-SPREAD-CLOCK-V1"
+        ],
+        "prohibited_uses": [
+          "Do not call the diagnostic WP output market fair value.",
+          "Do not use event-end or future-revised fields as pre-event inputs."
+        ]
+      },
+      "evidence_boundary": {
+        "data_gaps": [
+          "The released training sample and event-time availability are not re-established by this method card.",
+          "The model is spread-agnostic and excludes prediction-market state."
+        ],
+        "claim_boundary": "Diagnostic football-value comparator only; not market truth, live latency evidence, or executable alpha."
+      },
+      "content_sha256": "sha256:c7a5116dfe3ecffcbbff3fc4df800dbd9f995470736115fad1d84d997cc012c2"
+    },
+    {
+      "method_id": "METHOD-KAGGLE-HQIO",
+      "version": "v1",
+      "title": "High Quality Interception Opportunity",
+      "sport": "NFL",
+      "category": "expected_vs_observed_method_reference",
+      "status": "DATA_GAP",
+      "source": {
+        "url": "https://www.kaggle.com/competitions/nfl-big-data-bowl-2026-analytics/writeups/HQIOs",
+        "source_kind": "author_submission_on_official_competition",
+        "observed_at": "2026-07-25T00:00:00Z",
+        "precise_version": "kaggle_writeup_id:63159",
+        "primary_source": true,
+        "provenance_notes": "The author submission is titled 'Swiper, No Swiping: Measuring High Quality Interception Opportunity Creation' and states that it measures defender-created interception opportunity at ball arrival rather than only recorded turnovers."
+      },
+      "licenses": {
+        "code": {
+          "status": "UNKNOWN",
+          "spdx_id": "UNKNOWN",
+          "evidence_url": "https://www.kaggle.com/competitions/nfl-big-data-bowl-2026-analytics/writeups/HQIOs",
+          "notes": "No independently verified code artifact and code license were captured."
+        },
+        "data": {
+          "status": "UNKNOWN",
+          "spdx_id": "UNKNOWN",
+          "evidence_url": "https://www.kaggle.com/competitions/nfl-big-data-bowl-2026-analytics/rules",
+          "notes": "The tracking-data license has not been approved for SAF."
+        }
+      },
+      "research": {
+        "research_question": "How often does a defender create a high-quality interception opportunity even when no interception is recorded?",
+        "inputs": [
+          "Player and ball tracking at ball arrival",
+          "defender spatial control",
+          "pass and game context"
+        ],
+        "target": "Interception-opportunity quality rather than the observed interception label alone.",
+        "validation": "Not independently verified from an executable source; any SAF adaptation would require a new registered target and game-grouped validation.",
+        "published_claims_not_evidence": true
+      },
+      "reuse": {
+        "reusable_portion": [
+          "Do not collapse opportunity quality into realized turnover outcome",
+          "Use expected-versus-observed decomposition for rare events"
+        ],
+        "independently_reproduced": [
+          "No HQIO result or model reproduced."
+        ],
+        "implementation_state": "NOT_INTEGRATED",
+        "local_dependencies": [],
+        "prohibited_uses": [
+          "Do not download or copy the writeup code or tracking data until licenses are verified.",
+          "Do not create turnover-over-expected from X-13 observed turnover taxonomy."
+        ]
+      },
+      "evidence_boundary": {
+        "data_gaps": [
+          "X-13 lacks licensed frame-level player and ball tracking.",
+          "No PIT interception-opportunity probability exists in the frozen feature view.",
+          "Exact implementation and validation details were not independently verified."
+        ],
+        "claim_boundary": "Conceptual warning against outcome-only turnover factors; no HQIO metric enters the current factor universe."
+      },
+      "content_sha256": "sha256:c99b52310a60c43b941a534febe5e74ff0ba6d5a57221b7694c933836bad13f3"
+    },
+    {
+      "method_id": "METHOD-KAGGLE-POP",
+      "version": "v1",
+      "title": "Pressures Over Predicted",
+      "sport": "NFL",
+      "category": "expected_vs_observed_method_reference",
+      "status": "DATA_GAP",
+      "source": {
+        "url": "https://www.kaggle.com/code/stevenpatton97/pressures-over-predicted-pop",
+        "source_kind": "author_notebook_on_official_competition",
+        "observed_at": "2026-07-25T00:00:00Z",
+        "precise_version": "kaggle_script_version_id:115938242",
+        "primary_source": true,
+        "provenance_notes": "The pulled public notebook metadata identifies Steven Patton, R, version 10, and the NFL Big Data Bowl 2023 data source."
+      },
+      "licenses": {
+        "code": {
+          "status": "UNKNOWN",
+          "spdx_id": "UNKNOWN",
+          "evidence_url": "https://www.kaggle.com/code/stevenpatton97/pressures-over-predicted-pop",
+          "notes": "The public notebook page and author GitHub did not yield a verified reusable code license."
+        },
+        "data": {
+          "status": "UNKNOWN",
+          "spdx_id": "UNKNOWN",
+          "evidence_url": "https://www.kaggle.com/competitions/nfl-big-data-bowl-2023/rules",
+          "notes": "The submission uses competition tracking and an additional author dataset; neither is approved for SAF."
+        }
+      },
+      "research": {
+        "research_question": "How much pressure did a pass rusher produce relative to a context-conditioned expected pressure probability?",
+        "inputs": [
+          "Quarterback and pass-rusher tracking",
+          "blocker leverage and pocket geometry",
+          "down and distance",
+          "observed pressure"
+        ],
+        "target": "Binary pressure probability and observed-minus-predicted pressure residual.",
+        "validation": "The notebook reports ten-fold cross-validation and F1 for an imbalanced pressure label; SAF has not reproduced the split or result.",
+        "published_claims_not_evidence": true
+      },
+      "reuse": {
+        "reusable_portion": [
+          "Fit expected outcome from PIT context",
+          "Separate expected event probability from realized result",
+          "Use a residual only after out-of-game prediction"
+        ],
+        "independently_reproduced": [
+          "No POP model, score, or player ranking reproduced."
+        ],
+        "implementation_state": "NOT_INTEGRATED",
+        "local_dependencies": [],
+        "prohibited_uses": [
+          "Do not download or copy notebook code or competition data without verified licenses.",
+          "Do not call sacks or observed pressure a pressure-over-expected factor without a PIT probability model."
+        ]
+      },
+      "evidence_boundary": {
+        "data_gaps": [
+          "X-13 has no frame-level tracking, pocket geometry, blocker leverage, or complete pressure labels.",
+          "The reported cross-validation was not verified as game-grouped or leakage-safe."
+        ],
+        "claim_boundary": "Only the residual design pattern is portable; no POP statistic or pressure conclusion is used."
+      },
+      "content_sha256": "sha256:793804e02b5f206fa952fafedc5014cc15a0439824f99c4f23fe2c4f6f3f7a32"
+    },
+    {
+      "method_id": "METHOD-KAGGLE-SAFETY-ENTROPY",
+      "version": "v1",
+      "title": "Safety Entropy",
+      "sport": "NFL",
+      "category": "defensive_structure_method_reference",
+      "status": "DATA_GAP",
+      "source": {
+        "url": "https://www.kaggle.com/code/colejacobson/safety-entropy",
+        "source_kind": "author_notebook_on_official_competition",
+        "observed_at": "2026-07-25T00:00:00Z",
+        "precise_version": "kaggle_script_version_id:216371603",
+        "primary_source": true,
+        "provenance_notes": "The public notebook metadata identifies Cole Jacobson, R, version 32, and NFL Big Data Bowl 2025; author-controlled code is linked from the notebook but has no verified license."
+      },
+      "licenses": {
+        "code": {
+          "status": "UNKNOWN",
+          "spdx_id": "UNKNOWN",
+          "evidence_url": "https://www.kaggle.com/code/colejacobson/safety-entropy",
+          "notes": "Neither the notebook surface nor linked GitHub repository provided a verified reusable code license."
+        },
+        "data": {
+          "status": "UNKNOWN",
+          "spdx_id": "UNKNOWN",
+          "evidence_url": "https://www.kaggle.com/competitions/nfl-big-data-bowl-2025/rules",
+          "notes": "The tracking-data rights are not registered for SAF."
+        }
+      },
+      "research": {
+        "research_question": "How predictable is post-snap middle-of-field coverage from safeties' pre-snap position and motion?",
+        "inputs": [
+          "Pre-snap safety tracking",
+          "number and geometry of safeties",
+          "post-snap MOFO or MOFC label"
+        ],
+        "target": "MOFO probability and entropy of that probability.",
+        "validation": "The notebook reports separate neural networks for one- and two-safety plays, ten-fold cross-validation against logistic baselines, and bootstrap intervals; SAF has not reproduced them.",
+        "published_claims_not_evidence": true
+      },
+      "reuse": {
+        "reusable_portion": [
+          "Condition game-state factors on defensive structure",
+          "Use predictive uncertainty as a descriptive factor",
+          "Review concrete plays alongside aggregate metrics"
+        ],
+        "independently_reproduced": [
+          "No MOFO model, entropy ranking, or defensive-performance relation reproduced."
+        ],
+        "implementation_state": "NOT_INTEGRATED",
+        "local_dependencies": [],
+        "prohibited_uses": [
+          "Do not download or copy notebook code or tracking data without verified licenses.",
+          "Do not infer coverage or safety motion from final play descriptions."
+        ]
+      },
+      "evidence_boundary": {
+        "data_gaps": [
+          "X-13 lacks frame-level pre-snap safety tracking and MOFO or MOFC labels.",
+          "The published folds are not established as game-grouped PIT validation."
+        ],
+        "claim_boundary": "Defensive-structure design reference only; no Safety Entropy value or coverage claim enters X-13."
+      },
+      "content_sha256": "sha256:1eca65d8b251f442ca5796e8c8a9f37aa1bac16fe7ba069c89aea2daabf897ea"
+    },
+    {
+      "method_id": "METHOD-KAGGLE-XFP-PUNTS",
+      "version": "v1",
+      "title": "Expected Field Position on Punts",
+      "sport": "NFL",
+      "category": "expected_vs_observed_method_reference",
+      "status": "DATA_GAP",
+      "source": {
+        "url": "https://www.kaggle.com/code/jacklichtenstein/expected-field-position-on-punts",
+        "source_kind": "author_notebook_on_official_competition",
+        "observed_at": "2026-07-25T00:00:00Z",
+        "precise_version": "kaggle_script_version_id:84061270",
+        "primary_source": true,
+        "provenance_notes": "The pulled public notebook metadata identifies Jack Lichtenstein, R, version 10, and NFL Big Data Bowl 2022."
+      },
+      "licenses": {
+        "code": {
+          "status": "UNKNOWN",
+          "spdx_id": "UNKNOWN",
+          "evidence_url": "https://www.kaggle.com/code/jacklichtenstein/expected-field-position-on-punts",
+          "notes": "The notebook and linked author repository did not provide a verified reusable code license."
+        },
+        "data": {
+          "status": "UNKNOWN",
+          "spdx_id": "UNKNOWN",
+          "evidence_url": "https://www.kaggle.com/competitions/nfl-big-data-bowl-2022/rules",
+          "notes": "The method uses competition tracking plus charted PFF fields; SAF has neither approved for this reproduction."
+        }
+      },
+      "research": {
+        "research_question": "What field position should a punt produce given the return decision, ball, players, and context known before landing?",
+        "inputs": [
+          "Punt and returner tracking",
+          "ball location and motion",
+          "PFF charting",
+          "field and weather context",
+          "pre-snap win probability"
+        ],
+        "target": "Five-class punt outcome and expected field position, with expected-versus-observed field position or EPA.",
+        "validation": "The notebook holds out the 2020 season and uses 2018-2019 five-fold outcome-stratified cross-validation selected by multiclass log loss.",
+        "published_claims_not_evidence": true
+      },
+      "reuse": {
+        "reusable_portion": [
+          "Keep punt sub-outcomes separate",
+          "Model expected post-punt field position before comparing realized outcome",
+          "Use a chronological held-out season"
+        ],
+        "independently_reproduced": [
+          "No xFP model, score, or returner ranking reproduced."
+        ],
+        "implementation_state": "NOT_INTEGRATED",
+        "local_dependencies": [],
+        "prohibited_uses": [
+          "Do not download or copy notebook code, competition tracking, or PFF charting without verified licenses.",
+          "Do not claim expected punt value from observed PBP outcome alone."
+        ]
+      },
+      "evidence_boundary": {
+        "data_gaps": [
+          "X-13 lacks frame-level punt, ball, returner, and coverage tracking.",
+          "PFF hang time, miss-kick, rusher, and vise charting are not licensed inputs.",
+          "The published model has not been independently run on frozen SAF data."
+        ],
+        "claim_boundary": "The factor lab may separate punt outcomes now; expected field-position residual remains unavailable."
+      },
+      "content_sha256": "sha256:ba6893aede85307050f023a2ca01b162997b59b45878c98a1b0ffba1cc3a97a6"
+    },
+    {
+      "method_id": "METHOD-NFL4TH-DECISION-WP",
+      "version": "v1",
+      "title": "nfl4th fourth-down decision win probability",
+      "sport": "NFL",
+      "category": "mature_decision_model",
+      "status": "READY_FOR_LOCAL_REPRODUCTION",
+      "source": {
+        "url": "https://github.com/nflverse/nfl4th/tree/v1.0.7",
+        "source_kind": "official_repository_release_tag",
+        "observed_at": "2026-07-25T00:00:00Z",
+        "precise_version": "v1.0.7@886c61a329be47f3bb294e1a5ab65806cf4db39f",
+        "primary_source": true,
+        "provenance_notes": "Official package provides go, punt, and field-goal decision models and documents limitations for returns, players, penalties, weather, and blocks."
+      },
+      "licenses": {
+        "code": {
+          "status": "VERIFIED",
+          "spdx_id": "MIT",
+          "evidence_url": "https://github.com/nflverse/nfl4th/blob/886c61a329be47f3bb294e1a5ab65806cf4db39f/LICENSE.md",
+          "notes": "The release tag declares MIT + LICENSE."
+        },
+        "data": {
+          "status": "VERIFIED",
+          "spdx_id": "CC-BY-4.0",
+          "evidence_url": "https://github.com/nflverse/nflverse-data/blob/master/LICENSE",
+          "notes": "SAF will supply only frozen DS-NFLVERSE state; no Notebook network download is permitted."
+        }
+      },
+      "research": {
+        "research_question": "On fourth down, how does the chosen go, field-goal, or punt action compare with the action having the highest modeled win probability?",
+        "inputs": [
+          "Frozen pre-play game state",
+          "fourth-down distance and field position",
+          "official nfl4th offline models"
+        ],
+        "target": "go_wp, fg_wp, punt_wp, best action, go_boost, and chosen-minus-best decision regret.",
+        "validation": "Run once in a pinned R environment, preserve input and package hashes, convert output to hashed Parquet, and compare fixed fourth-down fixtures before joining markets.",
+        "published_claims_not_evidence": true
+      },
+      "reuse": {
+        "reusable_portion": [
+          "Offline action-conditional win probabilities",
+          "Chosen action versus best action comparison",
+          "Documented edge-case limitations"
+        ],
+        "independently_reproduced": [
+          "Not yet reproduced in this worktree because the isolated R build step is not installed; the method and version are frozen for that build."
+        ],
+        "implementation_state": "PINNED_OFFLINE_BUILD_PENDING",
+        "local_dependencies": [
+          "DS-NFLVERSE"
+        ],
+        "prohibited_uses": [
+          "Do not call regret a coaching error without checking documented edge cases.",
+          "Do not compute with post-play state or market reaction."
+        ]
+      },
+      "evidence_boundary": {
+        "data_gaps": [
+          "Pinned R runtime and hashed nfl4th output Parquet are not yet present.",
+          "Model limitations include player, penalty, weather, return, and blocked-kick cases."
+        ],
+        "claim_boundary": "Registered diagnostic decision factor pending the isolated build; no fourth-down result exists until hashed output passes fixtures."
+      },
+      "content_sha256": "sha256:8383e16d0fea675d8f0fc3ef38209c4318d92a4e306a81293a5294c85d68abb5"
+    },
+    {
+      "method_id": "METHOD-NFLFASTR-MODEL-OUTPUTS",
+      "version": "v1",
+      "title": "nflfastR EP, EPA, WP, WPA, CP, XYAC model outputs",
+      "sport": "NFL",
+      "category": "mature_feature_framework",
+      "status": "READY_FOR_LOCAL_REPRODUCTION",
+      "source": {
+        "url": "https://github.com/nflverse/nflfastR/tree/v5.2.0",
+        "source_kind": "official_repository_release_tag",
+        "observed_at": "2026-07-25T00:00:00Z",
+        "precise_version": "v5.2.0@675a817a1563d9c4f18cbb127caecf6e9a33be25",
+        "primary_source": true,
+        "provenance_notes": "Official nflverse package cleans play-by-play and applies expected-points and win-probability modeling; the frozen DS-NFLVERSE Parquet already contains computed model fields."
+      },
+      "licenses": {
+        "code": {
+          "status": "VERIFIED",
+          "spdx_id": "MIT",
+          "evidence_url": "https://github.com/nflverse/nflfastR/blob/675a817a1563d9c4f18cbb127caecf6e9a33be25/LICENSE.md",
+          "notes": "The v5.2.0 source declares MIT + LICENSE."
+        },
+        "data": {
+          "status": "VERIFIED",
+          "spdx_id": "CC-BY-4.0",
+          "evidence_url": "https://github.com/nflverse/nflverse-data/blob/master/LICENSE",
+          "notes": "The local DS-NFLVERSE registry records CC-BY-4.0 and immutable partition hashes."
+        }
+      },
+      "research": {
+        "research_question": "What was the football-state value and outcome expectation at each play without using prediction-market reaction?",
+        "inputs": [
+          "Frozen DS-NFLVERSE play-by-play",
+          "pre-play state and model output columns"
+        ],
+        "target": "EP, EPA, WP, WPA, CP, CPOE, XYAC, and related diagnostic values.",
+        "validation": "Use only frozen columns, verify field orientation and pre/post semantics with fixtures, and keep source-computed outputs separate from independently fitted SAF models.",
+        "published_claims_not_evidence": true
+      },
+      "reuse": {
+        "reusable_portion": [
+          "Read precomputed EP, EPA, WP, WPA, CP, CPOE, and XYAC fields from immutable Parquet",
+          "Orient team-valued fields to the focal team",
+          "Use values as diagnostic football context and residual baselines"
+        ],
+        "independently_reproduced": [
+          "Local schema inspection confirms the required fields in frozen 2015-2025 DS-NFLVERSE partitions.",
+          "The X-11 fastrmodels reproduction separately checks a frozen no-spread WP asset."
+        ],
+        "implementation_state": "INTEGRATED_FROZEN_OUTPUTS",
+        "local_dependencies": [
+          "DS-NFLVERSE"
+        ],
+        "prohibited_uses": [
+          "Do not treat source-computed WP as prediction-market fair value.",
+          "Do not use final revised outcome fields as pre-event features.",
+          "Do not cite package or README performance as SAF validation."
+        ]
+      },
+      "evidence_boundary": {
+        "data_gaps": [
+          "Source model training coverage and exact event-time availability are not re-proven by frozen output columns.",
+          "Historical source timestamps do not establish local receive latency."
+        ],
+        "claim_boundary": "Diagnostic football-value features only; every market relationship still requires X-13 time, orientation, ambiguity, and contamination gates."
+      },
+      "content_sha256": "sha256:eb531dbb1825e389373d873f2459cfea573ed70c3163542c7d6aaeaf71dffa0f"
+    },
+    {
+      "method_id": "METHOD-NFLREADPY-LOADER-INTERFACE",
+      "version": "v1",
+      "title": "nflreadpy Polars and cache loader interface",
+      "sport": "NFL",
+      "category": "data_access_interface_reference",
+      "status": "METHOD_REFERENCE_ONLY",
+      "source": {
+        "url": "https://github.com/nflverse/nflreadpy/tree/v0.1.5",
+        "source_kind": "official_repository_release_tag",
+        "observed_at": "2026-07-25T00:00:00Z",
+        "precise_version": "v0.1.5@95b6cb50852523d043b8bf3abc62e801a3654b7d",
+        "primary_source": true,
+        "provenance_notes": "Official Python loader uses Polars and supports memory, filesystem, or disabled caching; SAF reuses the interface idea, not its network path."
+      },
+      "licenses": {
+        "code": {
+          "status": "VERIFIED",
+          "spdx_id": "MIT",
+          "evidence_url": "https://github.com/nflverse/nflreadpy/blob/95b6cb50852523d043b8bf3abc62e801a3654b7d/LICENSE.md",
+          "notes": "The v0.1.5 project declares MIT."
+        },
+        "data": {
+          "status": "NOT_APPLICABLE",
+          "spdx_id": "NONE",
+          "evidence_url": "https://github.com/nflverse/nflreadpy/tree/v0.1.5",
+          "notes": "No data is fetched through nflreadpy in this plan; governed local data keeps its own registry license."
+        }
+      },
+      "research": {
+        "research_question": "How should a Python research workbench expose typed, cached NFL datasets without mixing network access into notebooks?",
+        "inputs": [
+          "Dataset identifier",
+          "season or partition selection",
+          "cache policy"
+        ],
+        "target": "A consistent Polars-oriented loader result.",
+        "validation": "SAF independently tests immutable manifest verification, schema selection, and cache determinism against local objects.",
+        "published_claims_not_evidence": true
+      },
+      "reuse": {
+        "reusable_portion": [
+          "Small uniform loader API",
+          "Polars-oriented return type",
+          "Explicit cache modes"
+        ],
+        "independently_reproduced": [
+          "No nflreadpy runtime is integrated; SAF uses its own verified local manifest loader."
+        ],
+        "implementation_state": "REFERENCE_PATTERN_ONLY",
+        "local_dependencies": [
+          "DS-NFLVERSE"
+        ],
+        "prohibited_uses": [
+          "Do not call nflreadpy network loaders from a Notebook.",
+          "Do not let a cache replace raw object or manifest verification."
+        ]
+      },
+      "evidence_boundary": {
+        "data_gaps": [
+          "nflreadpy cache correctness is not evidence for SAF raw-object integrity.",
+          "The package is not a source of event receive timestamps."
+        ],
+        "claim_boundary": "Interface reference only; SAF's immutable local loader remains authoritative."
+      },
+      "content_sha256": "sha256:e6aad1af1b721eda26f3f005f6bedd3033677c4c2888c7c0a124f0eb0d951040"
+    },
+    {
+      "method_id": "METHOD-QUARTO-PARAMETERIZED-JUPYTER",
+      "version": "v1",
+      "title": "Quarto parameterized Jupyter reports",
+      "sport": "multi_sport",
+      "category": "research_reporting_framework",
+      "status": "READY_FOR_LOCAL_REPRODUCTION",
+      "source": {
+        "url": "https://quarto.org/docs/computations/parameters.html",
+        "source_kind": "official_documentation_and_release",
+        "observed_at": "2026-07-25T00:00:00Z",
+        "precise_version": "v1.9.38@6ebb5db80eb542ac76189c3d7c33ae6f654b93d2",
+        "primary_source": true,
+        "provenance_notes": "Official documentation defines Jupyter parameter cells and command-line rendering; pinned macOS archive sha256 is 47089a5020cfb41981ba0d4b46e110edfa608722aea45ef248e14efba6d6b18a."
+      },
+      "licenses": {
+        "code": {
+          "status": "VERIFIED",
+          "spdx_id": "MIT",
+          "evidence_url": "https://github.com/quarto-dev/quarto-cli/blob/v1.9.38/COPYING.md",
+          "notes": "Quarto CLI v1.9.38 COPYING.md is the MIT license."
+        },
+        "data": {
+          "status": "NOT_APPLICABLE",
+          "spdx_id": "NONE",
+          "evidence_url": "https://quarto.org/docs/computations/parameters.html",
+          "notes": "The renderer supplies no research data."
+        }
+      },
+      "research": {
+        "research_question": "How can one frozen analysis interface render repeatable reports by game, factor, market family, venue, horizon, and review status?",
+        "inputs": [
+          "Thin Jupyter notebook",
+          "explicit parameter values",
+          "frozen factor pipeline outputs"
+        ],
+        "target": "Offline parameterized HTML reports.",
+        "validation": "Render from a clean kernel, block network access, verify no CDN references, and bind outputs to source and factor hashes.",
+        "published_claims_not_evidence": true
+      },
+      "reuse": {
+        "reusable_portion": [
+          "Papermill-style Jupyter parameter cell",
+          "Command-line parameter overrides",
+          "One report definition rendered for multiple cases"
+        ],
+        "independently_reproduced": [
+          "Version and official archive checksum are frozen; report rendering is validated by the workbench test line."
+        ],
+        "implementation_state": "PINNED_REPORT_RUNTIME",
+        "local_dependencies": [],
+        "prohibited_uses": [
+          "Do not calculate formal statistics in a report cell.",
+          "Do not embed CDN or remote runtime dependencies.",
+          "Do not let a Notebook override a registered factor definition."
+        ]
+      },
+      "evidence_boundary": {
+        "data_gaps": [
+          "The renderer version does not validate research semantics.",
+          "A rendered HTML is not evidence unless its referenced inputs and hashes pass the formal pipeline."
+        ],
+        "claim_boundary": "Reporting and review transport only; no factor definition or statistical result originates in Quarto."
+      },
+      "content_sha256": "sha256:b430bb7389bfd679642de086dd8e57a58eddc46acbb0d636daaaca418d3dafff"
+    },
+    {
+      "method_id": "METHOD-XPASS-PASS-OE",
+      "version": "v1",
+      "title": "nflfastR expected pass and pass over expected",
+      "sport": "NFL",
+      "category": "mature_play_choice_model",
+      "status": "READY_FOR_LOCAL_REPRODUCTION",
+      "source": {
+        "url": "https://github.com/nflverse/nflfastR/blob/675a817a1563d9c4f18cbb127caecf6e9a33be25/man/add_xpass.Rd",
+        "source_kind": "official_function_documentation",
+        "observed_at": "2026-07-25T00:00:00Z",
+        "precise_version": "nflfastR-v5.2.0@675a817a1563d9c4f18cbb127caecf6e9a33be25",
+        "primary_source": true,
+        "provenance_notes": "Official add_xpass documentation defines xpass as dropback probability in [0,1] and pass_oe as dropback percent over expected scaled to 100; frozen DS-NFLVERSE already contains both."
+      },
+      "licenses": {
+        "code": {
+          "status": "VERIFIED",
+          "spdx_id": "MIT",
+          "evidence_url": "https://github.com/nflverse/nflfastR/blob/675a817a1563d9c4f18cbb127caecf6e9a33be25/LICENSE.md",
+          "notes": "The containing nflfastR v5.2.0 source is MIT."
+        },
+        "data": {
+          "status": "VERIFIED",
+          "spdx_id": "CC-BY-4.0",
+          "evidence_url": "https://github.com/nflverse/nflverse-data/blob/master/LICENSE",
+          "notes": "The local xpass and pass_oe fields are read from frozen DS-NFLVERSE."
+        }
+      },
+      "research": {
+        "research_question": "Was a dropback surprising given the pre-play game state, distinct from whether the realized pass succeeded?",
+        "inputs": [
+          "Frozen pre-play state",
+          "source-computed xpass",
+          "observed dropback indicator"
+        ],
+        "target": "xpass and pass_oe play-choice surprise.",
+        "validation": "Verify xpass range, pass_oe scaling, missingness before 2006, and focal-team orientation; never validate it against realized yards.",
+        "published_claims_not_evidence": true
+      },
+      "reuse": {
+        "reusable_portion": [
+          "Use xpass as expected play-call probability",
+          "Use pass_oe as play-choice surprise",
+          "Keep choice surprise separate from realized EPA, yards, and turnover"
+        ],
+        "independently_reproduced": [
+          "Frozen 2025 DS-NFLVERSE contains xpass and pass_oe; the factor pipeline validates their range and uses source values without refitting."
+        ],
+        "implementation_state": "INTEGRATED_FROZEN_OUTPUTS",
+        "local_dependencies": [
+          "DS-NFLVERSE"
+        ],
+        "prohibited_uses": [
+          "Do not call pass_oe pass quality, yards surprise, or turnover surprise.",
+          "Do not use post-play outcome when forming the pre-play choice feature."
+        ]
+      },
+      "evidence_boundary": {
+        "data_gaps": [
+          "The expected-pass model is not independently retrained in SAF.",
+          "Source training coverage and exact event-time model availability are not re-proven."
+        ],
+        "claim_boundary": "Diagnostic play-choice surprise only; market residual and alpha claims require separate registered tests."
+      },
+      "content_sha256": "sha256:e2803c16986be24101b028a85e89f540cbcb443cdec6979ca64b8ff07f20b6dc"
+    }
+  ],
+  "catalog_sha256": "sha256:b06a83ce21f30f15298649a54842bbbae705fd9f24f522af9b49e60b3e4015e5"
+}

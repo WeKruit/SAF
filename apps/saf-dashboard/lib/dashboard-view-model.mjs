@@ -1,3 +1,101 @@
+const GAME_ID_PATTERN = /^\d{4}_\d{2}_[A-Z0-9]{2,4}_[A-Z0-9]{2,4}$/;
+const DELAY_SCENARIOS = new Set(["0", "1", "2", "3", "5", "10"]);
+const HORIZONS = new Set(["1", "2", "5", "10", "30", "60"]);
+
+function safeIdentity(value, pattern) {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > 512 ||
+    /[\u0000-\u001f\u007f]/.test(value)
+  ) {
+    return null;
+  }
+  return pattern && !pattern.test(value) ? null : value;
+}
+
+export function parseDashboardReference(search) {
+  const parameters =
+    search instanceof URLSearchParams
+      ? search
+      : new URLSearchParams(typeof search === "string" ? search : "");
+  const delay = parameters.get("delay_s");
+  const horizon = parameters.get("horizon_s");
+  return {
+    gameId: safeIdentity(parameters.get("game"), GAME_ID_PATTERN),
+    episodeId: safeIdentity(parameters.get("episode"), null),
+    marketId: safeIdentity(parameters.get("market"), null),
+    delay: DELAY_SCENARIOS.has(delay) ? delay : "0",
+    horizon: HORIZONS.has(horizon) ? horizon : "10",
+  };
+}
+
+export function buildDashboardSearch(reference) {
+  const parameters = new URLSearchParams();
+  const gameId = safeIdentity(reference?.gameId, GAME_ID_PATTERN);
+  const episodeId = safeIdentity(reference?.episodeId, null);
+  const marketId = safeIdentity(reference?.marketId, null);
+  const delay = String(reference?.delay ?? "0");
+  const horizon = String(reference?.horizon ?? "10");
+  if (gameId) parameters.set("game", gameId);
+  if (episodeId) parameters.set("episode", episodeId);
+  if (marketId) parameters.set("market", marketId);
+  parameters.set("delay_s", DELAY_SCENARIOS.has(delay) ? delay : "0");
+  parameters.set("horizon_s", HORIZONS.has(horizon) ? horizon : "10");
+  const query = parameters.toString();
+  return query ? `?${query}` : "";
+}
+
+export function resolveEpisodeEventIndex(core, episodeId) {
+  const safeEpisodeId = safeIdentity(episodeId, null);
+  if (!safeEpisodeId) return null;
+  const events = core?.payload?.events ?? [];
+  const directIndex = events.findIndex(
+    (event) => event.episode_id === safeEpisodeId,
+  );
+  if (directIndex >= 0) return directIndex;
+  const episode = (core?.payload?.episodes ?? []).find(
+    (row) => row.episode_id === safeEpisodeId,
+  );
+  if (!episode || !Array.isArray(episode.play_ids)) return null;
+  const playIds = new Set(episode.play_ids.map(String));
+  const eventIndex = events.findIndex((event) =>
+    playIds.has(String(event.play_id)),
+  );
+  return eventIndex >= 0 ? eventIndex : null;
+}
+
+export function episodeIdAtEvent(core, eventIndex) {
+  const events = core?.payload?.events ?? [];
+  const event = events[eventIndex];
+  if (!event) return null;
+  const direct = safeIdentity(event.episode_id, null);
+  if (direct) return direct;
+  const playId = String(event.play_id);
+  const episode = (core?.payload?.episodes ?? []).find(
+    (row) =>
+      Array.isArray(row.play_ids) &&
+      row.play_ids.some((value) => String(value) === playId),
+  );
+  return safeIdentity(episode?.episode_id, null);
+}
+
+export function resolveMarketReference(contracts, marketId) {
+  const safeMarketId = safeIdentity(marketId, null);
+  if (!safeMarketId) return null;
+  const contract = (contracts ?? []).find(
+    (row) => row.logical_market_id === safeMarketId,
+  );
+  if (!contract) return null;
+  return {
+    logicalMarketId: contract.logical_market_id,
+    family: contract.family,
+    venue: contract.venue,
+    marketState:
+      contract.analysis_eligible === true ? "analysis_eligible" : "excluded",
+  };
+}
+
 export function buildGameIndexRows(catalog) {
   return (catalog?.payload?.games ?? []).map((game) => ({
     gameId: game.game_id,

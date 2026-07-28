@@ -125,6 +125,25 @@ def test_static_dataset_manifest_validates_byte_exact_original() -> None:
     ) == manifest
 
 
+def test_static_manifest_intrinsic_validation_preserves_captured_license() -> None:
+    manifest = _static_manifest()
+    manifest["license_status"] = "pending"
+    manifest["manifest_sha256"] = contracts.static_dataset_manifest_sha256(
+        manifest
+    )
+
+    validated = contracts.validate_static_dataset_manifest_intrinsic_v0(
+        manifest
+    )
+
+    assert validated.license_status == "pending"
+    with pytest.raises(
+        contracts.ContractValidationError,
+        match="license_status",
+    ):
+        contracts.validate_static_dataset_manifest_v0(PROJECT_ROOT, manifest)
+
+
 def test_static_dataset_manifest_requires_derived_lineage() -> None:
     derived = _static_manifest(object_kind="source_derived_extract")
 

@@ -4,6 +4,11 @@
 __pycache__/
 .pytest_cache/
 .ruff_cache/
+.playwright-cli/
+output/
+**/.ipynb_checkpoints/
+apps/saf-dashboard/node_modules/
+apps/saf-dashboard/.next/
 *.py[cod]
 var/*
 !var/raw/
@@ -12,3 +17,7 @@ var/raw/*
 !var/raw/manifests/**
 data/raw/*
 !data/raw/README.md
+
+# Large immutable research outputs live in the configured S3 object store.
+# Publish selected manifests explicitly; do not place Parquet/raw payloads in Git.
+artifacts/

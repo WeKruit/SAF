@@ -283,10 +283,11 @@ def test_dimension_extraction_skips_large_association_payload(
     assert contracts[0]["contract_subject"] == "2025_01_BAL_BUF"
 
 
-def test_materialization_retains_all_cell_validity_and_is_deterministic(
+def test_materialization_filters_to_verified_observed_cells_and_is_deterministic(
     tmp_path: Path,
 ) -> None:
     from prediction_market.sports.nfl_x13_correlation_cache import (
+        X13CorrelationCacheError,
         _materialize_verified_cache,
     )
 
@@ -339,7 +340,7 @@ def test_materialization_retains_all_cell_validity_and_is_deterministic(
         [str(cache)],
     ).fetchone()
     assert rows[:2] == (
-        5,
+        2,
         2,
     )
     assert rows[2:] == (
@@ -353,7 +354,7 @@ def test_materialization_retains_all_cell_validity_and_is_deterministic(
         4,
         34,
         True,
-        "NOT_APPLICABLE_INVALID_CELL",
+        "RECONSTRUCTED_FROM_FROZEN_NORMALIZED_OBSERVATIONS",
         9.0,
         True,
         True,
@@ -371,10 +372,7 @@ def test_materialization_retains_all_cell_validity_and_is_deterministic(
         [str(cache)],
     ).fetchall()
     assert validity == [
-        ("NO_POST_TRADE", False, False, 1),
         ("OBSERVED", False, False, 2),
-        ("OBSERVED", False, True, 1),
-        ("OBSERVED", True, False, 1),
     ]
     names = {field.name for field in pq.read_schema(cache)}
     assert not names & {
@@ -384,6 +382,18 @@ def test_materialization_retains_all_cell_validity_and_is_deterministic(
         "effect_estimate",
         "execution_price",
     }
+
+    rejected = tmp_path / "rejected"
+    rejected.mkdir()
+    with pytest.raises(
+        X13CorrelationCacheError,
+        match="2 != 3",
+    ):
+        _materialize_verified_cache(
+            batch,
+            rejected,
+            expected_observed_rows=3,
+        )
 
 
 def test_referential_integrity_failure_is_closed(tmp_path: Path) -> None:
@@ -407,6 +417,36 @@ def test_referential_integrity_failure_is_closed(tmp_path: Path) -> None:
 
     with pytest.raises(X13CorrelationCacheError, match="referential integrity"):
         _materialize_verified_cache(batch, target, expected_observed_rows=2)
+
+
+def test_invalid_cells_are_filtered_before_referential_join(tmp_path: Path) -> None:
+    from prediction_market.sports.nfl_x13_correlation_cache import (
+        _materialize_verified_cache,
+    )
+
+    batch, _ = _fixture_batch(tmp_path)
+    table_path = batch / "data/associations/part-00000.parquet"
+    values = pq.read_table(table_path).to_pylist()
+    invalid = next(
+        row for row in values if row["validity_status"] != "OBSERVED"
+    )
+    invalid["episode_id"] = "missing-invalid-episode"
+    pq.write_table(
+        pa.Table.from_pylist(values, schema=association_arrow_schema()),
+        table_path,
+        compression="zstd",
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+
+    result = _materialize_verified_cache(
+        batch,
+        target,
+        expected_observed_rows=2,
+    )
+
+    assert result["observed_row_count"] == 2
+    assert result["published_cell_row_count"] == 2
 
 
 def test_coverage_reports_parameter_repetition_without_inference(
@@ -435,8 +475,8 @@ def test_coverage_reports_parameter_repetition_without_inference(
     matrix = pq.read_table(
         target / "x13_reaction_coverage_matrix_v1.parquet"
     ).to_pylist()
-    assert len(matrix) == 4
-    assert sum(row["row_count"] for row in matrix) == 5
+    assert len(matrix) == 1
+    assert sum(row["row_count"] for row in matrix) == 2
     assert {
         (
             row["validity_status"],
@@ -446,10 +486,7 @@ def test_coverage_reports_parameter_repetition_without_inference(
         )
         for row in matrix
     } == {
-        ("NO_POST_TRADE", False, False, 1),
         ("OBSERVED", False, False, 2),
-        ("OBSERVED", False, True, 1),
-        ("OBSERVED", True, False, 1),
     }
 
 

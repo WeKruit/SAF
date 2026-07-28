@@ -310,6 +310,29 @@ def test_layer_m_does_not_double_count_derived_lines_as_actual_trades() -> None:
     assert audit.derived_count == 1
 
 
+def test_layer_m_rejects_conflicting_economics_for_stable_native_id() -> None:
+    from prediction_market.sports.nfl_x13_association import audit_layer_m
+
+    trade = _poly(12, "0.60", native_id="0xstable")
+    conflict = replace(
+        trade,
+        observation_id="sha256:" + "e" * 64,
+        price=Decimal("0.61"),
+    )
+
+    audit = audit_layer_m(
+        (_contract(),),
+        (trade, conflict),
+        game_id=GAME_ID,
+    )
+
+    assert audit.status == "FAIL"
+    assert audit.errors == (
+        "observation_deduplication_failed:"
+        "conflicting economics for stable observation identity",
+    )
+
+
 def test_layer_m_revalidates_normalized_price_size_and_bbo_bounds() -> None:
     from prediction_market.sports.nfl_x13_association import audit_layer_m
 
@@ -442,6 +465,219 @@ def test_source_timeline_and_layer_a_keep_ambiguity_and_never_forward_fill() -> 
     assert by_horizon[60].contaminated is True
     assert by_horizon[60].status == "CONTAMINATED"
     assert _metrics(by_horizon[60])["candle_bbo_point_metrics_prohibited"] is True
+
+
+def test_persistable_interval_builders_preserve_widths_ambiguity_and_no_fill() -> None:
+    from prediction_market.sports.nfl_x13_association import (
+        build_game_time_intervals_v1,
+        build_market_time_intervals_v1,
+        build_source_timeline_v1,
+        build_timeline_audit_rows_v1,
+    )
+
+    candle = normalize_kalshi_candle_bbo(
+        {
+            "end_period_ts": int(_at(60).timestamp()),
+            "yes_bid": {
+                "open": "0.54",
+                "high": "0.56",
+                "low": "0.53",
+                "close": "0.55",
+            },
+            "yes_ask": {
+                "open": "0.57",
+                "high": "0.59",
+                "low": "0.56",
+                "close": "0.58",
+            },
+            "volume": "10",
+            "open_interest": "25",
+        },
+        ticker="KXNFLGAME-DET",
+        outcome="yes",
+        logical_market_id="kalshi:det-winner",
+    )
+    observed = _poly(10, "0.55")
+    derived = derive_complement(observed, outcome="DAL")
+    contracts = (
+        _contract(),
+        _contract(
+            venue="kalshi",
+            native_id="KXNFLGAME-DET",
+            logical_market_id="kalshi:det-winner",
+            outcomes=("yes", "no"),
+        ),
+    )
+
+    game = build_game_time_intervals_v1(_ledger())
+    market = build_market_time_intervals_v1(
+        contracts,
+        (observed, _poly(10, "0.57", native_id="0xsecond"), derived, candle),
+        game_id=GAME_ID,
+    )
+    timeline = build_source_timeline_v1(game, market)
+    audit = build_timeline_audit_rows_v1(timeline)
+
+    first_episode = _ledger().episodes[0].episode_id
+    zero = next(
+        row
+        for row in game.rows
+        if row.episode_id == first_episode and row.delay_seconds == 0
+    )
+    ten = next(
+        row
+        for row in game.rows
+        if row.episode_id == first_episode and row.delay_seconds == 10
+    )
+    assert (zero.interval_start_utc, zero.interval_end_utc) == (
+        _at(10).isoformat(timespec="microseconds").replace("+00:00", "Z"),
+        _at(11).isoformat(timespec="microseconds").replace("+00:00", "Z"),
+    )
+    assert zero.end_inclusive is True
+    assert ten.interval_end_utc == _at(21).isoformat(
+        timespec="microseconds"
+    ).replace("+00:00", "Z")
+    assert game.to_records() == [row.to_dict() for row in game.rows]
+
+    actual = next(
+        row
+        for row in market.rows
+        if row.observation_id == observed.observation_id
+    )
+    candle_row = next(
+        row
+        for row in market.rows
+        if row.observation_id == candle.observation_id
+    )
+    derived_row = next(
+        row
+        for row in market.rows
+        if row.observation_id == derived.observation_id
+    )
+    assert actual.observation_kind == "actual_trade"
+    assert actual.interval_end_utc == _at(11).isoformat(
+        timespec="microseconds"
+    ).replace("+00:00", "Z")
+    assert actual.end_inclusive is False
+    assert actual.bbo_available is False
+    assert candle_row.observation_kind == "kalshi_1m_candle"
+    assert candle_row.interval_start_utc == _at(0).isoformat(
+        timespec="microseconds"
+    ).replace("+00:00", "Z")
+    assert candle_row.interval_end_utc == _at(60).isoformat(
+        timespec="microseconds"
+    ).replace("+00:00", "Z")
+    assert candle_row.actual_trade is False
+    assert candle_row.bbo_tick is False
+    assert derived_row.observation_kind == "derived_complement"
+    assert derived_row.actual_observation is False
+    assert derived_row.executable is False
+    assert market.to_records() == [row.to_dict() for row in market.rows]
+
+    records = timeline.to_records()
+    required = {
+        "timeline_id",
+        "game_id",
+        "layer",
+        "identity",
+        "interval_start_utc",
+        "interval_end_utc",
+        "delay_seconds",
+        "provenance",
+        "order_ambiguous",
+        "forward_filled",
+    }
+    assert records
+    assert all(required <= record.keys() for record in records)
+    assert all(record["forward_filled"] is False for record in records)
+    zero_rows = [row for row in timeline.rows if row.delay_seconds == 0]
+    same_second = [
+        row
+        for row in zero_rows
+        if row.identity
+        in {
+            observed.observation_id,
+            next(
+                item.observation_id
+                for item in market.rows
+                if item.observation_id not in {
+                    observed.observation_id,
+                    candle.observation_id,
+                    derived.observation_id,
+                }
+            ),
+        }
+    ]
+    assert len(same_second) == 2
+    assert all(row.order_ambiguous for row in same_second)
+    assert any(
+        row.layer == "G"
+        and row.identity == first_episode
+        and row.order_ambiguous
+        for row in zero_rows
+    )
+    assert audit.rows
+    assert all(row.order_ambiguous for row in audit.rows)
+    ambiguous_timeline_rows = [
+        row for row in timeline.rows if row.order_ambiguous
+    ]
+    assert len(audit.rows) == len(ambiguous_timeline_rows)
+    audit_by_timeline_id = {row.timeline_id: row for row in audit.rows}
+    for row in same_second:
+        audited = audit_by_timeline_id[row.timeline_id]
+        assert audited.identity == row.identity
+        assert "same_source_second" in audited.reason_codes
+        assert "overlapping_source_intervals" in audited.reason_codes
+        assert audited.overlap_count >= 2
+    same_second_event = next(
+        row
+        for row in zero_rows
+        if row.layer == "G" and row.identity == first_episode
+    )
+    assert "same_source_second" in audit_by_timeline_id[
+        same_second_event.timeline_id
+    ].reason_codes
+    assert all(row.overlap_count > 0 for row in audit.rows)
+    assert audit.to_records() == [row.to_dict() for row in audit.rows]
+    assert [row.timeline_id for row in timeline.rows] == [
+        row.timeline_id
+        for row in build_source_timeline_v1(game, market).rows
+    ]
+
+
+def test_timeline_respects_half_open_trade_and_inclusive_game_boundaries() -> None:
+    from prediction_market.sports.nfl_x13_association import (
+        build_game_time_intervals_v1,
+        build_market_time_intervals_v1,
+        build_source_timeline_v1,
+        build_timeline_audit_rows_v1,
+    )
+
+    ledger = build_x13_game_ledger([_play(10, 1, 10)])
+    before = _poly(9, "0.50")
+    boundary_after = _poly(11, "0.60")
+    game = build_game_time_intervals_v1(ledger)
+    market = build_market_time_intervals_v1(
+        (_contract(),),
+        (before, boundary_after),
+        game_id=GAME_ID,
+    )
+    timeline = build_source_timeline_v1(game, market)
+    zero = {
+        row.identity: row
+        for row in timeline.rows
+        if row.delay_seconds == 0
+    }
+
+    assert zero[before.observation_id].order_ambiguous is False
+    assert zero[boundary_after.observation_id].order_ambiguous is True
+    episode_id = ledger.episodes[0].episode_id
+    assert zero[episode_id].order_ambiguous is True
+    audit = build_timeline_audit_rows_v1(timeline)
+    audited_ids = {row.timeline_id for row in audit.rows}
+    assert zero[before.observation_id].timeline_id not in audited_ids
+    assert zero[boundary_after.observation_id].timeline_id in audited_ids
+    assert zero[episode_id].timeline_id in audited_ids
 
 
 def test_horizons_start_after_the_layer_g_upper_bound() -> None:
@@ -675,6 +911,126 @@ def test_derived_complement_never_becomes_actual_or_executable() -> None:
     assert _metrics(dal)["trade_count"] == 0
     assert _metrics(dal)["derived_observation_count"] == 1
     assert _metrics(dal)["executable_price_claim_permitted"] is False
+
+
+def test_association_attrition_rows_expose_all_fail_closed_reasons() -> None:
+    from prediction_market.sports.nfl_x13_association import (
+        build_association_attrition_rows_v1,
+        run_x13_association,
+    )
+
+    observed = _poly(12, "0.60")
+    contracts = (_contract(),)
+    run = run_x13_association(
+        _ledger(),
+        contracts,
+        (
+            _poly(9, "0.50"),
+            observed,
+            derive_complement(observed, outcome="DAL"),
+        ),
+    )
+    episode_id = _ledger().episodes[0].episode_id
+    selected = [
+        row
+        for row in run.associations
+        if row.episode_id == episode_id
+        and row.delay_scenario_seconds == 0
+        and row.horizon_seconds == 2
+    ]
+    attrition = build_association_attrition_rows_v1(
+        selected,
+        contracts,
+        game_id=GAME_ID,
+        allowed_families=("moneyline",),
+    )
+    by_outcome = {row.outcome: row for row in attrition.rows}
+
+    assert by_outcome["DET"].status == "OBSERVED"
+    assert by_outcome["DET"].eligible is True
+    assert by_outcome["DET"].exclusion_reasons == ()
+    assert by_outcome["DAL"].status == "MISSING_OBSERVATION"
+    assert by_outcome["DAL"].eligible is False
+    assert by_outcome["DAL"].exclusion_reasons == (
+        "missing",
+        "derived_only",
+        "no_actual_trade",
+    )
+
+    det = next(row for row in selected if row.outcome == "DET")
+    stale_metrics = dict(det.candidate.metrics)
+    stale_metrics["pre_trade_age_seconds"] = Decimal(61)
+    stale = replace(
+        det,
+        candidate=replace(
+            det.candidate,
+            metrics=tuple(sorted(stale_metrics.items())),
+        ),
+    )
+    invalid_orientation = replace(det, outcome="UNKNOWN")
+    stale_and_invalid = build_association_attrition_rows_v1(
+        (stale, invalid_orientation),
+        contracts,
+        game_id=GAME_ID,
+        allowed_families=("spread",),
+    )
+    assert stale_and_invalid.rows[0].exclusion_reasons == (
+        "stale",
+        "wrong_family",
+    )
+    assert stale_and_invalid.rows[1].exclusion_reasons == (
+        "wrong_family",
+        "invalid_orientation",
+    )
+
+    ambiguous_run = run_x13_association(
+        _ledger(),
+        contracts,
+        (
+            _poly(9, "0.50"),
+            _poly(12, "0.60", native_id="0xa"),
+            _poly(12, "0.62", native_id="0xb"),
+        ),
+    )
+    ambiguous = next(
+        row
+        for row in ambiguous_run.associations
+        if row.episode_id == episode_id
+        and row.outcome == "DET"
+        and row.delay_scenario_seconds == 0
+        and row.horizon_seconds == 2
+    )
+    contaminated = next(
+        row
+        for row in run.associations
+        if row.episode_id == episode_id
+        and row.outcome == "DET"
+        and row.delay_scenario_seconds == 0
+        and row.horizon_seconds == 60
+    )
+    flagged = build_association_attrition_rows_v1(
+        (ambiguous, contaminated),
+        contracts,
+        game_id=GAME_ID,
+        allowed_families=("moneyline",),
+    )
+    assert "ambiguous" in flagged.rows[0].exclusion_reasons
+    assert "contaminated" in flagged.rows[1].exclusion_reasons
+    assert attrition.to_records() == [row.to_dict() for row in attrition.rows]
+    assert attrition.to_dict()["reason_counts"] == {
+        "derived_only": 1,
+        "missing": 1,
+        "no_actual_trade": 1,
+    }
+    assert [row.association_id for row in attrition.rows] == [
+        row.association_id
+        for row in build_association_attrition_rows_v1(
+            selected,
+            contracts,
+            game_id=GAME_ID,
+            allowed_families=("moneyline",),
+        ).rows
+    ]
 
 
 def test_two_venue_direction_is_compared_only_after_semantic_orientation() -> None:

@@ -1,0 +1,26 @@
+project:
+  type: default
+  output-dir: _rendered
+  render:
+    - factor-lab.qmd
+
+jupyter: python3
+
+execute:
+  freeze: true
+  cache: false
+  error: false
+  warning: false
+
+format:
+  html:
+    embed-resources: true
+    self-contained-math: true
+    toc: true
+    code-fold: true
+    theme: cosmo
+
+metadata:
+  experiment-id: X-13
+  claim-boundary: PRELIMINARY_SOURCE_TIME_ONLY
+  network-access: forbidden

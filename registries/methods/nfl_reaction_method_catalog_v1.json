@@ -1,0 +1,55 @@
+{
+  "schema_version": "NFLReactionMethodCatalogV1",
+  "observed_at": "2026-07-26T18:00:00Z",
+  "cards": [
+    {
+      "method_id": "METHOD-BBE-SYNTHETIC-EXCHANGE",
+      "title": "Bristol Betting Exchange agent-based simulator",
+      "source_url": "https://arxiv.org/abs/2108.02419",
+      "source_version": "arXiv:2108.02419v1",
+      "use_status": "SYNTHETIC_STRESS_TEST_ONLY",
+      "data_requirement": "SYNTHETIC_AGENT_ASSUMPTIONS",
+      "authoritative_trade_direction_required": false,
+      "published_result_is_project_evidence": false,
+      "reusable_method": "Stress-test replay and fill assumptions against a synthetic exchange.",
+      "prohibited_claims": [
+        "Synthetic agents do not prove a real NFL alpha.",
+        "Synthetic fills do not validate Polymarket or Kalshi queue position."
+      ],
+      "content_sha256": "sha256:cbfd7e5811bca4fe41e3e8d9976a8f9e566e47383233641e2994a04e0adb23d4"
+    },
+    {
+      "method_id": "METHOD-CONT-ORDER-FLOW-IMBALANCE",
+      "title": "Order-flow imbalance and short-horizon price impact",
+      "source_url": "https://arxiv.org/abs/1011.6402",
+      "source_version": "arXiv:1011.6402",
+      "use_status": "PROSPECTIVE_L2_METHOD",
+      "data_requirement": "CONTINUOUS_L2",
+      "authoritative_trade_direction_required": false,
+      "published_result_is_project_evidence": false,
+      "reusable_method": "Compute price-level OFI and depth-conditioned response only on gap-free prospective L2.",
+      "prohibited_claims": [
+        "Historical trades cannot be converted into OFI.",
+        "OFI does not identify exact queue position or maker fill."
+      ],
+      "content_sha256": "sha256:608be3531aeb619e731bff2d191167f18bf6f2950dd4c2415521079763749708"
+    },
+    {
+      "method_id": "METHOD-POLYMARKET-MICROSTRUCTURE-2026",
+      "title": "Polymarket public-book microstructure joined to on-chain fills",
+      "source_url": "https://arxiv.org/abs/2604.24366",
+      "source_version": "arXiv:2604.24366v2",
+      "use_status": "METHOD_REFERENCE_ONLY",
+      "data_requirement": "PUBLIC_L2_PLUS_AUTHORITATIVE_ONCHAIN_FILLS",
+      "authoritative_trade_direction_required": true,
+      "published_result_is_project_evidence": false,
+      "reusable_method": "Join public order-book events to authoritative OrderFilled records before direction-dependent analysis.",
+      "prohibited_claims": [
+        "The reported 59 percent agreement is not assumed for every NFL market.",
+        "Book-feed side or quote inference is not authoritative aggressor direction."
+      ],
+      "content_sha256": "sha256:35f17fb9e9f4ac1c738ac2d051bae1e57ba42b5c591ab960f6e00871e973328a"
+    }
+  ],
+  "catalog_sha256": "sha256:61a3426c0a2155370730974addee210fd34030dcd694e06d048755fdb25e6a43"
+}

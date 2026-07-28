@@ -4,14 +4,18 @@ import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { DashboardDataClient } from "@/lib/dashboard-client.mjs";
 import {
   buildGameIndexRows,
+  episodeIdAtEvent,
   evidenceStateClass,
   filterAssociationRows,
   filterContracts,
   lineageEntries,
   marketSeriesView,
+  parseDashboardReference,
   reconcileMarketSelection,
   reduceMarketSelection,
   replayEvidenceAt,
+  resolveEpisodeEventIndex,
+  resolveMarketReference,
 } from "@/lib/dashboard-view-model.mjs";
 
 const frozenGames = [
@@ -415,6 +419,9 @@ export function DashboardWorkspace() {
   const marketRequestGeneration = useRef(0);
   const associationRequestGeneration = useRef(0);
   const contractRequestGeneration = useRef(0);
+  const deepLinkReference = useRef<ReturnType<
+    typeof parseDashboardReference
+  > | null>(null);
   const gameAbortController = useRef<AbortController | null>(null);
   const marketAbortController = useRef<AbortController | null>(null);
   const associationAbortController = useRef<AbortController | null>(null);
@@ -451,13 +458,17 @@ export function DashboardWorkspace() {
 
   useEffect(() => {
     let active = true;
+    const reference = parseDashboardReference(window.location.search);
+    deepLinkReference.current = reference;
     client.current
       .loadCatalog()
       .then((value: JsonRecord) => {
         if (!active) return;
         setCatalog(value);
+        setDelay(reference.delay);
+        setHorizon(reference.horizon);
         setBusy("");
-        return openGame(selectedGameId, value);
+        return openGame(reference.gameId ?? selectedGameId, value);
       })
       .catch((caught: Error) => {
         if (!active) return;
@@ -509,6 +520,50 @@ export function DashboardWorkspace() {
         return;
       }
       setCore(value);
+      const reference = deepLinkReference.current;
+      if (reference?.gameId === gameId || (!reference?.gameId && generation === 1)) {
+        if (reference.episodeId) {
+          const referencedEventIndex = resolveEpisodeEventIndex(
+            value,
+            reference.episodeId,
+          );
+          if (referencedEventIndex === null) {
+            setError(
+              `Deep-link episode is not present in the verified game projection: ${reference.episodeId}`,
+            );
+          } else {
+            setEventIndex(referencedEventIndex);
+          }
+        }
+        if (reference.marketId) {
+          const contractValue = await client.current.loadContracts({
+            signal: controller.signal,
+          });
+          if (
+            controller.signal.aborted ||
+            generation !== gameRequestGeneration.current
+          ) {
+            return;
+          }
+          const contractRows = contractValue.payload.contracts ?? [];
+          setContracts(contractRows);
+          const marketReference = resolveMarketReference(
+            contractRows,
+            reference.marketId,
+          );
+          if (!marketReference) {
+            setError(
+              `Deep-link market is not present in the verified game projection: ${reference.marketId}`,
+            );
+          } else {
+            setFamily(marketReference.family);
+            setVenue(marketReference.venue);
+            setMarketState(marketReference.marketState);
+            await openMarket(marketReference.logicalMarketId);
+          }
+        }
+        deepLinkReference.current = null;
+      }
     } catch (caught) {
       if (
         !controller.signal.aborted &&
@@ -675,6 +730,7 @@ export function DashboardWorkspace() {
   const events: JsonRecord[] = core?.payload?.events ?? [];
   const replayEvidence = replayEvidenceAt(core, eventIndex);
   const currentEvent = replayEvidence.event;
+  const currentEpisodeId = episodeIdAtEvent(core, eventIndex);
   const families = [...new Set(contracts.map((item) => item.family))].sort();
   const venues = [...new Set(contracts.map((item) => item.venue))].sort();
   const associationStatuses = [
@@ -1117,6 +1173,7 @@ export function DashboardWorkspace() {
                 ))}
                 <StableId label="Batch ID" value={catalog?.batch_id} />
                 <StableId label="Game ID" value={selectedGameId} />
+                <StableId label="Episode ID" value={currentEpisodeId ?? undefined} />
                 <StableId label="Play ID" value={currentEvent?.play_id} />
                 <StableId label="Market ID" value={selectedMarketId} />
               </div>

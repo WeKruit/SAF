@@ -842,7 +842,6 @@ def _inspect_static_object(
     manifest_path: str | Path,
     *,
     store_root: str | Path,
-    program_root: str | Path,
     collect_bytes: bool,
 ) -> tuple[StaticObjectRecord, bytes | None]:
     lexical_root = _lexical_absolute_path(store_root, "store root")
@@ -911,14 +910,16 @@ def _inspect_static_object(
             raise StaticStoreError("static manifest is not canonical JSON")
 
         validator = getattr(
-            contracts, "validate_static_dataset_manifest_v0", None
+            contracts,
+            "validate_static_dataset_manifest_intrinsic_v0",
+            None,
         )
         if validator is None:
             raise StaticStoreError(
-                "normative static dataset manifest validator is unavailable"
+                "intrinsic static dataset manifest validator is unavailable"
             )
         try:
-            manifest = validator(program_root, document)
+            manifest = validator(document)
         except (TypeError, ValueError) as error:
             raise StaticStoreError(
                 "static dataset manifest is invalid"
@@ -1082,12 +1083,11 @@ def verify_static_object(
     store_root: str | Path,
     program_root: str | Path,
 ) -> StaticObjectRecord:
-    """Fail closed unless one canonical manifest proves its exact object."""
+    """Verify immutable manifest, path, object bytes, and content hashes."""
 
     record, _ = _inspect_static_object(
         manifest_path,
         store_root=store_root,
-        program_root=program_root,
         collect_bytes=False,
     )
     return record
@@ -1099,12 +1099,11 @@ def read_verified_static_object(
     store_root: str | Path,
     program_root: str | Path,
 ) -> VerifiedStaticObject:
-    """Return exact bytes hashed and validated from one no-follow file handle."""
+    """Return intrinsically verified bytes from one no-follow file handle."""
 
     record, object_bytes = _inspect_static_object(
         manifest_path,
         store_root=store_root,
-        program_root=program_root,
         collect_bytes=True,
     )
     if object_bytes is None:

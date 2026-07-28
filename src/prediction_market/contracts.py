@@ -1247,15 +1247,23 @@ class StaticDatasetManifestV0(_ContractModel):
         return self
 
 
+def validate_static_dataset_manifest_intrinsic_v0(
+    instance: Any,
+) -> StaticDatasetManifestV0:
+    """Validate only immutable manifest facts, including its self-hash."""
+
+    return StaticDatasetManifestV0.model_validate(
+        _untrusted_round_trip_input(instance)
+    )
+
+
 def validate_static_dataset_manifest_v0(
     program_root: str | Path,
     instance: Any,
 ) -> StaticDatasetManifestV0:
-    """Validate a static manifest and its dataset/license registry bindings."""
+    """Validate a static manifest and its current registry bindings."""
 
-    validated = StaticDatasetManifestV0.model_validate(
-        _untrusted_round_trip_input(instance)
-    )
+    validated = validate_static_dataset_manifest_intrinsic_v0(instance)
     from prediction_market.program_audit import (
         ResearchRegistryError,
         load_dataset_registry,
@@ -2066,6 +2074,7 @@ __all__ = [
     "payload_sha256",
     "replay_order_key",
     "static_dataset_manifest_sha256",
+    "validate_static_dataset_manifest_intrinsic_v0",
     "validate_static_dataset_manifest_v0",
     "thaw_contract_v0",
     "validate_contract_v0",

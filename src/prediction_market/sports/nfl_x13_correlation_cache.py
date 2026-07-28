@@ -1384,7 +1384,17 @@ def _materialize_verified_cache(
     try:
         connection.from_parquet(
             [str(path) for path in paths]
-        ).create_view("associations")
+        ).create_view("association_candidates")
+        connection.execute(
+            """
+            CREATE TEMP VIEW associations AS
+            SELECT *
+            FROM association_candidates
+            WHERE validity_status = 'OBSERVED'
+              AND contaminated = false
+              AND order_ambiguous = false
+            """
+        )
         connection.from_parquet(str(episode_path)).create_view("episodes")
         connection.from_parquet(str(contract_path)).create_view("contracts")
         connection.from_parquet(str(moneyline_trade_path)).create_view(
@@ -1394,9 +1404,6 @@ def _materialize_verified_cache(
             """
             SELECT count(*)
             FROM associations
-            WHERE validity_status = 'OBSERVED'
-              AND contaminated = false
-              AND order_ambiguous = false
             """
         ).fetchone()[0]
         if observed_count != expected_observed_rows:
@@ -1571,28 +1578,18 @@ def _materialize_verified_cache(
                   ELSE NULL
                 END AS pre_trade_age_seconds,
                 CASE
-                  WHEN a.validity_status != 'OBSERVED'
-                    OR a.contaminated
-                    OR a.order_ambiguous
-                  THEN 'NOT_APPLICABLE_INVALID_CELL'
                   WHEN a.family = 'moneyline' AND p.contract_id IS NOT NULL
                   THEN 'RECONSTRUCTED_FROM_FROZEN_NORMALIZED_OBSERVATIONS'
                   ELSE 'UNKNOWN_NOT_PERSISTED_IN_FROZEN_ASSOCIATION'
                 END AS pre_trade_age_status,
                 CASE
-                  WHEN a.validity_status = 'OBSERVED'
-                    AND NOT a.contaminated
-                    AND NOT a.order_ambiguous
-                    AND a.family = 'moneyline'
+                  WHEN a.family = 'moneyline'
                     AND p.contract_id IS NOT NULL
                   THEN p.pre_trade_age_microseconds <= 60000000
                   ELSE NULL
                 END AS pre_trade_fresh_le_60s,
                 COALESCE((
-                  a.validity_status = 'OBSERVED'
-                  AND NOT a.contaminated
-                  AND NOT a.order_ambiguous
-                  AND e.signal_event_eligible
+                  e.signal_event_eligible
                   AND a.family = 'moneyline'
                   AND p.pre_trade_age_microseconds <= 60000000
                 ), false) AS signal_candidate_eligible

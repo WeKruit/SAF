@@ -303,4 +303,86 @@ experiment_card:
           dataset_ids: [DS-KALSHI-HISTORICAL, DS-NFLVERSE, DS-NFLVERSE-PARTICIPATION, DS-POLYMARKET-PUBLIC]
           model_ids: []
       amendment_sha256: sha256:500db0eb1199487593f6c4a7298d160fc9ab600c502e17586a1465d1824a3cd9
+    - sequence: 15
+      amended_at: '2026-07-26T02:53:18Z'
+      prior_sha256: sha256:500db0eb1199487593f6c4a7298d160fc9ab600c502e17586a1465d1824a3cd9
+      approved_by: H
+      reason: Preregister the NFL Sports Factor Lab V1 code, factor universe, method catalog, fixed bootstrap, and unchanged reaction-blind holdout before the new 20-game discovery run. This amendment does not access holdout reactions or authorize causal, latency, execution, tradeability, or alpha claims.
+      changes:
+        preregistered_inputs:
+          - scope: preliminary_source_time_only
+            code_sha256: sha256:dfa08a73daf1f6c9dbfe18e01add19760cd1fe830bae4ca325db5300f8afe6ca
+            data_sha256: sha256:aa273e66d8cbfda757cd0e63e4dc00d7087035d0c4bbd723506f7c8958e8f19e
+            dataset_ids: [DS-KALSHI-HISTORICAL, DS-NFLVERSE, DS-NFLVERSE-PARTICIPATION, DS-POLYMARKET-PUBLIC]
+            model_ids: []
+      amendment_sha256: sha256:6017fbbb0bbf6d32dfd59efc6d386e55305f576503ea99a3368c5ce477b215ac
+    - sequence: 16
+      amended_at: '2026-07-26T03:14:20Z'
+      prior_sha256: sha256:6017fbbb0bbf6d32dfd59efc6d386e55305f576503ea99a3368c5ce477b215ac
+      approved_by: H
+      reason: Pre-evaluation code-only supersession after factor-lab audit corrected the PAT source enum, expanded only legally supported structured events, removed factor-membership weighting from the leave-one-game-out diagnostic baseline, materialized explicit data-gap rows, and prohibited binary conditional means from entering shortlist inference. Data, frozen discovery games, horizons, support gates, and unread holdout reactions are unchanged.
+      changes:
+        preregistered_inputs:
+          - scope: preliminary_source_time_only
+            code_sha256: sha256:d1bb7c21565788678d0e2e0e42161aca55b82e30dc501c6a5b11f9799eded955
+            data_sha256: sha256:aa273e66d8cbfda757cd0e63e4dc00d7087035d0c4bbd723506f7c8958e8f19e
+            dataset_ids: [DS-KALSHI-HISTORICAL, DS-NFLVERSE, DS-NFLVERSE-PARTICIPATION, DS-POLYMARKET-PUBLIC]
+            model_ids: []
+      amendment_sha256: sha256:887674d1fb9b83163ff4c44de3304eb1865bb5810e9a2071bb4081b2e143dc14
+    - sequence: 17
+      amended_at: '2026-07-26T03:20:09Z'
+      prior_sha256: sha256:887674d1fb9b83163ff4c44de3304eb1865bb5810e9a2071bb4081b2e143dc14
+      approved_by: H
+      reason: Pre-evaluation code-only supersession after the first locked feature build failed closed before publication on administrative timeout rows without possession scores. Use the already-frozen canonical episode pre_state for those rows, orient explicit timeout or penalty teams, and keep nullified scoring consequences excluded while preserving legitimate administrative events. Data, factor definitions, games, horizons, support gates, and unread holdout reactions are unchanged.
+      changes:
+        preregistered_inputs:
+          - scope: preliminary_source_time_only
+            code_sha256: sha256:00adda4c30a2d8a55ec6dbc982721a543b3725414a7986bc5ff5c4b2dc794ad3
+            data_sha256: sha256:aa273e66d8cbfda757cd0e63e4dc00d7087035d0c4bbd723506f7c8958e8f19e
+            dataset_ids: [DS-KALSHI-HISTORICAL, DS-NFLVERSE, DS-NFLVERSE-PARTICIPATION, DS-POLYMARKET-PUBLIC]
+            model_ids: []
+      amendment_sha256: sha256:24aef25f4bf984f6aaaab71e222981f907eb8b8d3f0697a665db83f91d9183ed
+    - sequence: 18
+      amended_at: '2026-07-26T03:30:35Z'
+      prior_sha256: sha256:24aef25f4bf984f6aaaab71e222981f907eb8b8d3f0697a665db83f91d9183ed
+      approved_by: H
+      reason: Append the checksum-verified NFL Sports Factor Lab twenty-game discovery bundle. Three results are only AWAITING_EXPERT_REVIEW; binary moderators remain descriptive, explicit data gaps remain visible, and the frozen holdout reactions remain unread. No causal, latency, execution, tradeability, or alpha claim is authorized.
+      changes:
+        results_ref:
+          scope: preliminary_source_time_only
+          result_label: PRELIMINARY
+          evaluation_started_at: '2026-07-26T03:23:00Z'
+          code_sha256: sha256:00adda4c30a2d8a55ec6dbc982721a543b3725414a7986bc5ff5c4b2dc794ad3
+          data_sha256: sha256:aa273e66d8cbfda757cd0e63e4dc00d7087035d0c4bbd723506f7c8958e8f19e
+          result_sha256: sha256:33a11366f28823ea9e36274db82c82d2ad6976b489cf246d862b05fe9a8d1a55
+          registration_head_sha256: sha256:24aef25f4bf984f6aaaab71e222981f907eb8b8d3f0697a665db83f91d9183ed
+          dataset_ids: [DS-KALSHI-HISTORICAL, DS-NFLVERSE, DS-NFLVERSE-PARTICIPATION, DS-POLYMARKET-PUBLIC]
+          model_ids: []
+      amendment_sha256: sha256:fbe6932b45e1c87e3bd102fcdfb02c5cb29d8730801f499021652951aef5b42a
+    - sequence: 19
+      amended_at: '2026-07-26T09:53:17Z'
+      prior_sha256: sha256:fbe6932b45e1c87e3bd102fcdfb02c5cb29d8730801f499021652951aef5b42a
+      approved_by: H
+      reason: Pre-evaluation code-only supersession after the formal V2 audit replaced legacy market-cache numerics with exact recomputation from verified primary-path actual trades, added direct raw lineage, rejected derived/candle/non-primary observations, preserved explicit reconstruction gaps, and enforced current code-lock equality. Data, frozen 20 discovery games, factor definitions, horizons, support gates, and unread holdout reactions are unchanged.
+      changes:
+        preregistered_inputs:
+          - scope: preliminary_source_time_only
+            code_sha256: sha256:b0d1e43adf88c6a295df5626b0849fd99c4ca81220df80b0052ac80e3f82edc7
+            data_sha256: sha256:aa273e66d8cbfda757cd0e63e4dc00d7087035d0c4bbd723506f7c8958e8f19e
+            dataset_ids: [DS-KALSHI-HISTORICAL, DS-NFLVERSE, DS-NFLVERSE-PARTICIPATION, DS-POLYMARKET-PUBLIC]
+            model_ids: []
+      amendment_sha256: sha256:36a934af4c0922e839a3a4f6ead918183877e39437b4db4c28245b5c49f5cec5
+    - sequence: 20
+      amended_at: '2026-07-26T10:38:43Z'
+      prior_sha256: sha256:36a934af4c0922e839a3a4f6ead918183877e39437b4db4c28245b5c49f5cec5
+      approved_by: H
+      reason: Pre-evaluation code-only supersession after the sequence 19 runner failed closed before cross-game publication because the factor adapter rejected finite Decimal-valued market metrics emitted by the formal V2 reaction stage. Accept finite Decimal values in eligibility and deterministic semantic hashing while continuing to reject booleans and non-finite values. Data, frozen 20 discovery games, factor definitions, horizons, support gates, and unread holdout reactions are unchanged.
+      changes:
+        preregistered_inputs:
+          - scope: preliminary_source_time_only
+            code_sha256: sha256:755838977a9e31d1d70efbd160c4e7964eb468977fd5b23b137b604962934a14
+            data_sha256: sha256:aa273e66d8cbfda757cd0e63e4dc00d7087035d0c4bbd723506f7c8958e8f19e
+            dataset_ids: [DS-KALSHI-HISTORICAL, DS-NFLVERSE, DS-NFLVERSE-PARTICIPATION, DS-POLYMARKET-PUBLIC]
+            model_ids: []
+      amendment_sha256: sha256:acb13e11fd3cd3e7409c685cd1bf870fdeb924945a539c2acd7fe86f99809ee3
   registration_record_sha256: sha256:f637a647e881a048866e0dd4003b65b4397e6194cf6e58cc13c65be69920a697

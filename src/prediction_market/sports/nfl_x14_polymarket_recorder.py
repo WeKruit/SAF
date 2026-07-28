@@ -1,4 +1,4 @@
-"""Targeted prospective Polymarket capture for X-14 CAR at ARI."""
+"""Registry-driven prospective Polymarket capture for NFL X-14."""
 
 from __future__ import annotations
 
@@ -26,8 +26,9 @@ from prediction_market.recorder_supervisor import (
     SupervisorResult,
     build_polymarket_health_report,
 )
-from prediction_market.sports.nfl_x14_prospective import (
-    ProspectiveSessionSpec,
+from prediction_market.sports.nfl_x14_reaction import (
+    ProspectiveGameBindingV1,
+    load_prospective_game_binding,
 )
 from prediction_market.static_store import (
     StaticObjectRecord,
@@ -37,21 +38,9 @@ from prediction_market.static_store import (
 )
 
 
-TARGET_EVENT_ID = "684046"
-TARGET_EVENT_SLUG = "nfl-car-ari-2026-08-07"
-GAMMA_EVENT_URL = (
+_GAMMA_EVENT_URL_PREFIX = (
     "https://gamma-api.polymarket.com/events/slug/"
-    f"{TARGET_EVENT_SLUG}"
 )
-TARGET_NATIVE_GAME_ID = "19453"
-TARGET_START_UTC = "2026-08-07T00:00:00Z"
-TARGET_AWAY_TEAM = "CAR"
-TARGET_HOME_TEAM = "ARI"
-TARGET_MONEYLINE_MARKET_ID = "2858750"
-TARGET_MONEYLINE_CONDITION_ID = (
-    "0xd0733676277270d804b2c93701d476d85d62e1d0444369e62e9e38687fc8864f"
-)
-_ALLOWED_MARKET_TYPES = frozenset({"moneyline", "spreads", "totals"})
 _CONDITION_RE = re.compile(r"^0x[0-9a-f]{64}$")
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _DEPENDENCY_FIELDS = frozenset(
@@ -89,6 +78,7 @@ class TargetMarket:
 
 @dataclass(frozen=True, slots=True)
 class TargetUniverse:
+    binding: ProspectiveGameBindingV1
     event_id: str
     event_slug: str
     native_game_id: str
@@ -123,29 +113,6 @@ class TargetUniverse:
                 for token in market.token_ids
             )
         )
-
-    @property
-    def session_spec(self) -> ProspectiveSessionSpec:
-        conditions = tuple(sorted(self.condition_ids))
-        tokens = self.token_ids
-        return ProspectiveSessionSpec.freeze(
-            session_id="nfl-2026-car-ari",
-            game_id="nfl-2026-08-07-car-ari",
-            scheduled_start_utc=self.start_utc,
-            away_team=self.away_team,
-            home_team=self.home_team,
-            polymarket_event_id=self.event_id,
-            polymarket_event_slug=self.event_slug,
-            polymarket_native_game_id=self.native_game_id,
-            kalshi_event_id="KXNFLGAME-26AUG06CARARI",
-            polymarket_condition_ids=conditions,
-            discovered_single_game_condition_ids=conditions,
-            polymarket_token_ids=tokens,
-            discovered_single_game_token_ids=tokens,
-            kalshi_credentials_available=False,
-            kalshi_market_ids=(),
-        )
-
 
 @dataclass(frozen=True, slots=True)
 class SessionReportRecord:
@@ -292,6 +259,7 @@ def _json_pair(value: object, field: str) -> tuple[str, str]:
 def fetch_target_event(
     *,
     client: httpx.Client,
+    binding: ProspectiveGameBindingV1,
     fetched_at: Callable[[], str] = _now_utc,
     max_bytes: int = 8 * 1024 * 1024,
 ) -> GammaHttpResponse:
@@ -300,10 +268,13 @@ def fetch_target_event(
     if type(max_bytes) is not int or max_bytes <= 0:
         raise ValueError("max_bytes must be a positive integer")
     params: dict[str, str] = {}
+    source_url = (
+        _GAMMA_EVENT_URL_PREFIX + binding.polymarket_event_slug
+    )
     try:
         with client.stream(
             "GET",
-            GAMMA_EVENT_URL,
+            source_url,
             headers={
                 "Accept": "application/json",
                 "Accept-Encoding": "identity",
@@ -339,23 +310,27 @@ def fetch_target_event(
     return GammaHttpResponse(
         payload=payload,
         fetched_at=received_at,
-        source_url=GAMMA_EVENT_URL,
+        source_url=source_url,
         request_params=params,
         headers=headers,
     )
 
 
-def _event_teams(event: Mapping[str, Any]) -> tuple[str, str]:
+def _event_teams(
+    event: Mapping[str, Any],
+    *,
+    binding: ProspectiveGameBindingV1,
+) -> tuple[str, str]:
     teams = event.get("teams")
     if type(teams) is not list or len(teams) != 2:
         raise X14PolymarketRecorderError(
-            "Gamma teams do not prove CAR/ARI"
+            "Gamma teams do not prove the bound game identity"
         )
     by_order: dict[str, str] = {}
     for team in teams:
         if type(team) is not dict:
             raise X14PolymarketRecorderError(
-                "Gamma teams do not prove CAR/ARI"
+                "Gamma teams do not prove the bound game identity"
             )
         order = team.get("ordering")
         abbreviation = team.get("abbreviation")
@@ -365,21 +340,23 @@ def _event_teams(event: Mapping[str, Any]) -> tuple[str, str]:
             or order in by_order
         ):
             raise X14PolymarketRecorderError(
-                "Gamma teams do not prove CAR/ARI"
+                "Gamma teams do not prove the bound game identity"
             )
         by_order[order] = abbreviation.upper()
     if by_order != {
-        "away": TARGET_AWAY_TEAM,
-        "home": TARGET_HOME_TEAM,
+        "away": binding.away_team,
+        "home": binding.home_team,
     }:
         raise X14PolymarketRecorderError(
-            "Gamma teams do not prove CAR/ARI"
+            "Gamma teams do not prove the bound game identity"
         )
     return by_order["away"], by_order["home"]
 
 
 def _market_dependency_is_single_game(
     market: Mapping[str, Any],
+    *,
+    binding: ProspectiveGameBindingV1,
 ) -> None:
     has_dependency = any(
         market.get(field) is not None
@@ -392,13 +369,15 @@ def _market_dependency_is_single_game(
             "Gamma market has MVE or composite dependency"
         )
     market_type = market.get("sportsMarketType")
-    if market_type not in _ALLOWED_MARKET_TYPES:
+    if type(market_type) is not str or not market_type:
         raise X14PolymarketRecorderError(
             "Gamma market has unknown settlement dependency"
         )
     if _iso_instant(
         market.get("gameStartTime"), "market.gameStartTime"
-    ) != _utc_instant(TARGET_START_UTC, "target start"):
+    ) != _utc_instant(
+        binding.scheduled_start_utc, "bound scheduled start"
+    ):
         raise X14PolymarketRecorderError(
             "Gamma market has cross-game start dependency"
         )
@@ -406,11 +385,14 @@ def _market_dependency_is_single_game(
 
 def parse_target_universe(
     response: GammaHttpResponse,
+    *,
+    binding: ProspectiveGameBindingV1,
 ) -> TargetUniverse:
     """Validate exact identity and select every embedded single-game market."""
 
     if (
-        response.source_url != GAMMA_EVENT_URL
+        response.source_url
+        != _GAMMA_EVENT_URL_PREFIX + binding.polymarket_event_slug
         or dict(response.request_params) != {}
     ):
         raise X14PolymarketRecorderError(
@@ -422,34 +404,35 @@ def parse_target_universe(
             "Gamma exact slug endpoint must return a single event object"
         )
     event = value
-    if event.get("id") != TARGET_EVENT_ID:
+    if event.get("id") != binding.polymarket_event_id:
         raise X14PolymarketRecorderError(
-            "Gamma event.id does not match 684046"
+            "Gamma event.id does not match the binding"
         )
-    if event.get("slug") != TARGET_EVENT_SLUG:
+    if event.get("slug") != binding.polymarket_event_slug:
         raise X14PolymarketRecorderError(
             "Gamma event slug is not exact"
         )
     if (
         type(event.get("gameId")) is not int
-        or event["gameId"] != int(TARGET_NATIVE_GAME_ID)
+        or str(event["gameId"]) != binding.polymarket_native_game_id
     ):
         raise X14PolymarketRecorderError(
-            "Gamma gameId does not match 19453"
+            "Gamma gameId does not match the binding"
         )
-    if event.get("startTime") != TARGET_START_UTC:
+    if event.get("startTime") != binding.scheduled_start_utc:
         raise X14PolymarketRecorderError(
-            "Gamma UTC start does not match CAR/ARI"
+            "Gamma UTC start does not match the binding"
         )
     if (
-        event.get("seriesSlug") != "nfl-2026"
+        type(event.get("seriesSlug")) is not str
+        or not event["seriesSlug"].startswith("nfl-")
         or type(event.get("sport")) is not dict
         or event["sport"].get("sport") != "nfl"
     ):
         raise X14PolymarketRecorderError(
-            "Gamma event is not structurally NFL 2026"
+            "Gamma event is not structurally NFL"
         )
-    away, home = _event_teams(event)
+    away, home = _event_teams(event, binding=binding)
     creation_at = _utc_text(event.get("createdAt"), "event.createdAt")
     raw_markets = event.get("markets")
     if type(raw_markets) is not list or not raw_markets:
@@ -476,7 +459,9 @@ def parse_target_universe(
                 "Gamma discovered market identity is invalid"
             )
         discovered_ids.append(market_id)
-        _market_dependency_is_single_game(raw_market)
+        _market_dependency_is_single_game(
+            raw_market, binding=binding
+        )
         condition_id = raw_market.get("conditionId")
         if (
             type(condition_id) is not str
@@ -494,6 +479,14 @@ def parse_target_universe(
             raw_market.get("clobTokenIds"),
             f"market {market_id} token IDs",
         )
+        for token, outcome in zip(tokens, outcomes):
+            bound_outcome = binding.polymarket_token_outcomes.get(
+                token
+            )
+            if bound_outcome is not None and bound_outcome != outcome:
+                raise X14PolymarketRecorderError(
+                    "Gamma token/outcome orientation does not match binding"
+                )
         if any(token in seen_tokens for token in tokens):
             raise X14PolymarketRecorderError(
                 "Gamma token identity is duplicated"
@@ -515,19 +508,27 @@ def parse_target_universe(
             )
         )
 
-    moneyline = [
-        market
-        for market in selected
-        if market.market_type == "moneyline"
-    ]
-    if (
-        len(moneyline) != 1
-        or moneyline[0].market_id != TARGET_MONEYLINE_MARKET_ID
-        or moneyline[0].condition_id
-        != TARGET_MONEYLINE_CONDITION_ID
+    discovered_conditions = tuple(
+        sorted(market.condition_id for market in selected)
+    )
+    discovered_tokens = tuple(
+        sorted(
+            token
+            for market in selected
+            for token in market.token_ids
+        )
+    )
+    if not set(binding.polymarket_condition_ids).issubset(
+        discovered_conditions
     ):
         raise X14PolymarketRecorderError(
-            "Gamma primary moneyline identity changed"
+            "Gamma response is missing a bound condition"
+        )
+    if not set(binding.polymarket_token_outcomes).issubset(
+        discovered_tokens
+    ):
+        raise X14PolymarketRecorderError(
+            "Gamma response is missing a bound token"
         )
     selected_ids = tuple(market.market_id for market in selected)
     discovered = tuple(discovered_ids)
@@ -536,10 +537,11 @@ def parse_target_universe(
             "selected universe is not exactly the discovered universe"
         )
     universe = TargetUniverse(
-        event_id=TARGET_EVENT_ID,
-        event_slug=TARGET_EVENT_SLUG,
-        native_game_id=TARGET_NATIVE_GAME_ID,
-        start_utc=TARGET_START_UTC,
+        binding=binding,
+        event_id=binding.polymarket_event_id,
+        event_slug=binding.polymarket_event_slug,
+        native_game_id=binding.polymarket_native_game_id,
+        start_utc=binding.scheduled_start_utc,
         creation_at=creation_at,
         away_team=away,
         home_team=home,
@@ -547,7 +549,6 @@ def parse_target_universe(
         discovered_market_ids=discovered,
         selected_universe_equals_discovered=True,
     )
-    _ = universe.session_spec
     return universe
 
 
@@ -606,6 +607,7 @@ def _schema_fingerprint(value: Any) -> str:
 def preserve_target_metadata(
     response: GammaHttpResponse,
     *,
+    binding: ProspectiveGameBindingV1,
     raw_root: str | Path,
     program_root: str | Path,
 ) -> StaticObjectRecord:
@@ -618,8 +620,8 @@ def preserve_target_metadata(
         program_root=program_root,
         source="polymarket",
         dataset="DS-POLYMARKET-PUBLIC",
-        version="gamma-x14-v0",
-        partition="event-684046",
+        version="gamma-x14-v1",
+        partition=f"event-{binding.polymarket_event_id}",
         extension="json",
         source_url=response.source_url,
         source_request={
@@ -634,7 +636,7 @@ def preserve_target_metadata(
         fetched_at=_utc_text(response.fetched_at, "fetched_at"),
         coverage=(
             "byte-exact response from Gamma event slug endpoint "
-            f"{TARGET_EVENT_SLUG}; identity and market-universe "
+            f"{binding.polymarket_event_slug}; identity and market-universe "
             "validation is a downstream fail-closed gate"
         ),
         etag=response.headers.get("etag"),
@@ -645,7 +647,7 @@ def preserve_target_metadata(
         schema_fingerprint=_schema_fingerprint(parsed),
         license_ref="O-001",
         license_status="research_only",
-        upstream_partition="event-684046",
+        upstream_partition=f"event-{binding.polymarket_event_id}",
         object_kind="byte_exact_original",
         lineage={
             "source_object_refs": [],
@@ -820,7 +822,9 @@ def _build_report(
     report: dict[str, Any] = {
         "report_version": "nfl-x14-polymarket-session/v0",
         "experiment_id": "X-14",
-        "session_id": "nfl-2026-car-ari",
+        "session_id": universe.binding.capture_session_id,
+        "binding_id": universe.binding.binding_id,
+        "game_id": universe.binding.game_id,
         "game_identity": {
             "identity_key": universe.game_identity_key,
             "scheduled_start_utc": universe.start_utc,
@@ -999,6 +1003,7 @@ def verify_session_report(path: str | Path) -> dict[str, Any]:
 
 async def run_targeted_capture(
     *,
+    binding: ProspectiveGameBindingV1,
     gamma_response: GammaHttpResponse,
     raw_root: str | Path,
     report_root: str | Path,
@@ -1016,10 +1021,13 @@ async def run_targeted_capture(
     raw_path = Path(raw_root)
     metadata_record = preserve_target_metadata(
         gamma_response,
+        binding=binding,
         raw_root=raw_path,
         program_root=program_root,
     )
-    universe = parse_target_universe(gamma_response)
+    universe = parse_target_universe(
+        gamma_response, binding=binding
+    )
     if capture is None:
         from prediction_market.cli.record_markets import (
             capture_public_polymarket,
@@ -1027,7 +1035,7 @@ async def run_targeted_capture(
 
         capture = capture_public_polymarket
     supervisor_result = await capture(
-        universe.session_spec.polymarket_token_ids,
+        universe.token_ids,
         raw_path,
         run_seconds=run_seconds,
         max_frames=max_frames,
@@ -1097,9 +1105,10 @@ def build_parser() -> argparse.ArgumentParser:
         prog="python -m prediction_market.sports."
         "nfl_x14_polymarket_recorder",
         description=(
-            "Run a bounded public CAR-at-ARI Polymarket recorder."
+            "Run a bounded registry-bound NFL Polymarket recorder."
         ),
     )
+    parser.add_argument("--binding", type=Path, required=True)
     parser.add_argument("--raw-root", type=Path, required=True)
     parser.add_argument("--report-root", type=Path, required=True)
     parser.add_argument(
@@ -1127,8 +1136,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 async def _run_cli(args: argparse.Namespace) -> TargetedCaptureResult:
+    binding = load_prospective_game_binding(args.binding)
     with httpx.Client(timeout=args.http_timeout_seconds) as client:
-        response = fetch_target_event(client=client)
+        response = fetch_target_event(
+            client=client, binding=binding
+        )
     try:
         object_store, prefix = configured_object_store(
             env_file=args.env_file
@@ -1141,6 +1153,7 @@ async def _run_cli(args: argparse.Namespace) -> TargetedCaptureResult:
         object_store = None
         prefix = None
     return await run_targeted_capture(
+        binding=binding,
         gamma_response=response,
         raw_root=args.raw_root,
         report_root=args.report_root,

@@ -375,6 +375,71 @@ def _json_response(value: object) -> CaptureHttpResponse:
     )
 
 
+def _pending_polymarket_receipt(raw_root: Path):
+    from prediction_market import contracts
+    from prediction_market.sports.nfl_x13_capture import (
+        ImmutableRequestManifest,
+    )
+    from prediction_market.static_store import preserve_static_object
+
+    body = b"[]"
+    stored = preserve_static_object(
+        raw_root,
+        body,
+        program_root=PROJECT_ROOT,
+        source="polymarket",
+        dataset="DS-POLYMARKET-PUBLIC",
+        version="public-api-20260723",
+        partition="x13-dual-time-test",
+        extension="json",
+        source_url="https://data-api.polymarket.com/trades",
+        source_request={
+            "method": "GET",
+            "headers": {"Accept": "application/json"},
+            "params": {
+                "end": 2,
+                "limit": 10_000,
+                "market": "condition",
+                "offset": 0,
+                "start": 1,
+            },
+        },
+        source_cursor="offset=0",
+        fetched_at="2026-07-25T12:00:00.000000Z",
+        coverage="condition=condition;start=1;end=2",
+        etag=None,
+        last_modified=None,
+        media_type="application/json",
+        schema_fingerprint=SHA_A,
+        license_ref="O-001",
+        license_status="research_only",
+        upstream_partition="x13-dual-time-test",
+        object_kind="byte_exact_original",
+        lineage={"source_object_refs": [], "query_sha256": None},
+    )
+    manifest = json.loads(stored.manifest_path.read_bytes())
+    manifest["license_status"] = "pending"
+    manifest["manifest_sha256"] = (
+        contracts.static_dataset_manifest_sha256(manifest)
+    )
+    captured_manifest = stored.manifest_path.with_name(
+        manifest["manifest_sha256"].removeprefix("sha256:")
+        + ".manifest.json"
+    )
+    captured_manifest.write_bytes(
+        contracts.canonical_json_bytes(manifest) + b"\n"
+    )
+    return ImmutableRequestManifest(
+        request_sha256=SHA_B,
+        object_sha256=stored.manifest.object_sha256,
+        manifest_sha256=manifest["manifest_sha256"],
+        byte_length=len(body),
+        object_path=stored.object_path,
+        manifest_path=captured_manifest,
+        response_received_at_utc=NOW,
+    )
+
+
 def _capture_fixture(
     universe: X13UniverseBatchV1,
     raw_root: Path,
@@ -1905,6 +1970,156 @@ def test_pipeline_rejects_tampered_capture_receipt(
             universe=universe,
             program_root=PROJECT_ROOT,
             raw_store_root=tmp_path / "raw",
+        )
+
+
+def test_capture_document_binds_pending_capture_to_current_registry(
+    tmp_path: Path,
+) -> None:
+    from prediction_market.sports.nfl_x13_pipeline import (
+        _load_current_x13_dataset_authority,
+        _receipt_document,
+    )
+
+    authority = _load_current_x13_dataset_authority(PROJECT_ROOT)
+    document = _receipt_document(
+        _pending_polymarket_receipt(tmp_path),
+        game_id=X13_GAME_IDS[0],
+        current_authority=authority,
+        raw_store_root=tmp_path,
+    )
+
+    paths = (
+        "charter/catalog_registry.csv",
+        "registries/data_license_register.csv",
+        "registries/dataset_registry.csv",
+        "registries/experiment_registry.csv",
+    )
+    expected_components = {
+        path: (
+            "sha256:"
+            + hashlib.sha256((PROJECT_ROOT / path).read_bytes()).hexdigest()
+        )
+        for path in paths
+    }
+    assert document.license_status == "pending"
+    assert document.current_license_status == "research_only"
+    assert document.current_authority_snapshot_sha256 == canonical_sha256(
+        {
+            "schema": "x13-current-dataset-authority-v2",
+            "components": [
+                {"path": path, "sha256": expected_components[path]}
+                for path in paths
+            ],
+        }
+    )
+    assert document.current_catalog_registry_sha256 == expected_components[
+        "charter/catalog_registry.csv"
+    ]
+    assert document.current_data_license_registry_sha256 == (
+        expected_components["registries/data_license_register.csv"]
+    )
+    assert document.current_dataset_registry_sha256 == (
+        expected_components["registries/dataset_registry.csv"]
+    )
+    assert document.current_experiment_registry_sha256 == (
+        expected_components["registries/experiment_registry.csv"]
+    )
+
+
+def test_current_x13_authority_binds_every_consulted_registry_component() -> None:
+    from prediction_market.sports.nfl_x13_pipeline import (
+        _load_current_x13_dataset_authority,
+    )
+
+    authority = _load_current_x13_dataset_authority(PROJECT_ROOT)
+    paths = (
+        "charter/catalog_registry.csv",
+        "registries/data_license_register.csv",
+        "registries/dataset_registry.csv",
+        "registries/experiment_registry.csv",
+    )
+    expected_components = {
+        path: (
+            "sha256:"
+            + hashlib.sha256((PROJECT_ROOT / path).read_bytes()).hexdigest()
+        )
+        for path in paths
+    }
+
+    assert dict(authority.component_sha256s) == expected_components
+    assert authority.authority_snapshot_sha256 == canonical_sha256(
+        {
+            "schema": "x13-current-dataset-authority-v2",
+            "components": [
+                {"path": path, "sha256": expected_components[path]}
+                for path in paths
+            ],
+        }
+    )
+
+
+def test_current_x13_authority_fails_if_any_component_changes_during_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prediction_market.sports.nfl_x13_pipeline as pipeline
+
+    original = pipeline._read_x13_authority_snapshot_inputs
+    reads = 0
+
+    def changed(program_root: Path):
+        nonlocal reads
+        reads += 1
+        values = dict(original(program_root))
+        if reads == 2:
+            path = "charter/catalog_registry.csv"
+            values[path] = values[path] + b"\n"
+        return MappingProxyType(values)
+
+    monkeypatch.setattr(
+        pipeline,
+        "_read_x13_authority_snapshot_inputs",
+        changed,
+    )
+
+    with pytest.raises(
+        pipeline.X13PipelineError,
+        match="changed during",
+    ):
+        pipeline._load_current_x13_dataset_authority(PROJECT_ROOT)
+
+
+@pytest.mark.parametrize("status", ["pending", "unknown", "blocked"])
+def test_current_x13_dataset_authority_rejects_ineligible_status(
+    status: str,
+) -> None:
+    from prediction_market.sports.nfl_x13_pipeline import (
+        _CurrentX13DatasetAuthorityV1,
+        _load_current_x13_dataset_authority,
+        _require_current_x13_dataset_authority,
+        X13PipelineError,
+    )
+
+    current = _load_current_x13_dataset_authority(PROJECT_ROOT)
+    row = current.datasets["DS-POLYMARKET-PUBLIC"]
+    authority = _CurrentX13DatasetAuthorityV1(
+        program_root=current.program_root,
+        authority_snapshot_sha256=current.authority_snapshot_sha256,
+        component_sha256s=current.component_sha256s,
+        datasets=MappingProxyType(
+            {
+                **current.datasets,
+                row.dataset_id: replace(row, license_status=status),
+            }
+        ),
+    )
+
+    with pytest.raises(X13PipelineError, match="current.*eligible"):
+        _require_current_x13_dataset_authority(
+            authority,
+            dataset_id=row.dataset_id,
+            license_ref=row.license_review_id,
+            source_version=row.source_version,
         )
 
 

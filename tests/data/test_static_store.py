@@ -69,6 +69,40 @@ def _preserve(
     return preserve_static_object(store_root, object_bytes, **values)
 
 
+def _pending_polymarket_capture(
+    store_root: Path,
+    object_bytes: bytes = b'{"captured":"pending"}',
+):
+    from prediction_market import contracts as governed_contracts
+
+    stored = _preserve(
+        store_root,
+        object_bytes,
+        source="polymarket",
+        dataset="DS-POLYMARKET-PUBLIC",
+        version="public-api-20260723",
+        extension="json",
+        source_url=(
+            "https://docs.polymarket.com/developers/CLOB/"
+            "websocket/market-channel"
+        ),
+        media_type="application/json",
+        license_ref="O-001",
+        license_status="research_only",
+    )
+    document = json.loads(stored.manifest_path.read_bytes())
+    document["license_status"] = "pending"
+    document["manifest_sha256"] = (
+        governed_contracts.static_dataset_manifest_sha256(document)
+    )
+    captured_manifest = stored.manifest_path.with_name(
+        document["manifest_sha256"].removeprefix("sha256:")
+        + ".manifest.json"
+    )
+    captured_manifest.write_bytes(canonical_json_bytes(document) + b"\n")
+    return stored, captured_manifest
+
+
 def test_preserves_exact_external_bytes_at_canonical_content_address(
     tmp_path: Path,
 ) -> None:
@@ -223,6 +257,36 @@ def test_verified_read_returns_exact_bytes_from_one_safe_object_handle(
     assert object_open_count == 1
     with pytest.raises(FrozenInstanceError):
         verified.object_bytes = b"corrected"  # type: ignore[misc]
+
+
+def test_verified_read_preserves_pending_capture_under_current_authority(
+    tmp_path: Path,
+) -> None:
+    stored, captured_manifest = _pending_polymarket_capture(tmp_path)
+
+    verified = read_verified_static_object(
+        captured_manifest,
+        store_root=tmp_path,
+        program_root=PROJECT_ROOT,
+    )
+
+    assert verified.object_bytes == stored.object_path.read_bytes()
+    assert verified.record.manifest.license_status == "pending"
+
+
+def test_pending_capture_intrinsic_read_still_rejects_object_hash_failure(
+    tmp_path: Path,
+) -> None:
+    stored, captured_manifest = _pending_polymarket_capture(tmp_path)
+    stored.object_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    stored.object_path.write_bytes(b'{"captured":"tampered"}')
+
+    with pytest.raises(StaticStoreError, match="SHA-256"):
+        read_verified_static_object(
+            captured_manifest,
+            store_root=tmp_path,
+            program_root=PROJECT_ROOT,
+        )
 
 
 def test_object_tampering_fails_closed_and_retry_does_not_correct_it(

@@ -20,10 +20,12 @@ from typing import Literal
 from prediction_market.sports.nfl_x13_market import (
     MarketObservation,
     SourceInterval,
-    X13MarketError,
     associate_intervals,
     build_layer_g_interval,
-    deduplicate_observations,
+)
+from prediction_market.sports.nfl_x13_market_cleaning import (
+    MarketCleaningError,
+    deduplicate_cleaned_observations_v1,
 )
 from prediction_market.sports.nfl_x13_replay import (
     CanonicalGameEventV1,
@@ -507,8 +509,8 @@ def audit_layer_m(
         )
     )
     try:
-        deduplicated = deduplicate_observations(observations)
-    except X13MarketError as error:
+        deduplicated = deduplicate_cleaned_observations_v1(observations)
+    except (MarketCleaningError, TypeError) as error:
         return LayerMAuditV1(
             status="FAIL",
             game_id=game_id,
@@ -629,6 +631,23 @@ class SourceTimelineItemV1:
     provenance: str
     within_overlap_order_permitted: Literal[False] = False
 
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "layer": self.layer,
+            "identity": self.identity,
+            "kind": self.kind,
+            "venue": self.venue,
+            "interval_start_utc": _rfc3339(self.source_interval.start),
+            "interval_end_utc": _rfc3339(self.source_interval.end),
+            "end_inclusive": self.source_interval.end_inclusive,
+            "interval_width_seconds": str(self.interval_width_seconds),
+            "order_ambiguous": self.order_ambiguous,
+            "provenance": self.provenance,
+            "within_overlap_order_permitted": (
+                self.within_overlap_order_permitted
+            ),
+        }
+
 
 @dataclass(frozen=True, slots=True)
 class SourceTimelineV1:
@@ -637,6 +656,62 @@ class SourceTimelineV1:
     ordering_semantics: str = (
         "sorted_for_render_only; overlapping_intervals_have_no_asserted_order"
     )
+
+    def to_records(self) -> list[dict[str, object]]:
+        return [
+            {
+                **item.to_dict(),
+                "delay_seconds": self.delay_scenario_seconds,
+            }
+            for item in self.items
+        ]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "delay_scenario_seconds": self.delay_scenario_seconds,
+            "ordering_semantics": self.ordering_semantics,
+            "rows": self.to_records(),
+        }
+
+
+def _rfc3339(value: datetime) -> str:
+    return value.isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def _overlap_counts(
+    intervals: Sequence[SourceInterval],
+) -> tuple[int, ...]:
+    starts = tuple(sorted(interval.start for interval in intervals))
+    ends = tuple(
+        sorted(
+            (interval.end, interval.end_inclusive)
+            for interval in intervals
+        )
+    )
+    counts: list[int] = []
+    for interval in intervals:
+        started_by_end = (
+            bisect_right(starts, interval.end)
+            if interval.end_inclusive
+            else bisect_left(starts, interval.end)
+        )
+        ended_before_start = bisect_right(
+            ends,
+            (interval.start, False),
+        )
+        count = started_by_end - ended_before_start - 1
+        if count < 0:
+            raise AssociationEvidenceError(
+                "interval overlap count became negative"
+            )
+        counts.append(count)
+    return tuple(counts)
+
+
+def _overlap_flags(
+    intervals: Sequence[SourceInterval],
+) -> tuple[bool, ...]:
+    return tuple(count > 0 for count in _overlap_counts(intervals))
 
 
 def _timeline(
@@ -684,27 +759,9 @@ def _timeline(
             item.identity,
         )
     )
-    ambiguous = [False] * len(raw)
-    furthest_index: int | None = None
-    for index, item in enumerate(raw):
-        if furthest_index is not None:
-            relation = associate_intervals(
-                raw[furthest_index].source_interval,
-                item.source_interval,
-            )
-            if relation.overlap:
-                ambiguous[index] = True
-                ambiguous[furthest_index] = True
-            elif relation.order_relation == "market_after_event":
-                furthest_index = None
-        if furthest_index is None or (
-            item.source_interval.end,
-            item.source_interval.end_inclusive,
-        ) > (
-            raw[furthest_index].source_interval.end,
-            raw[furthest_index].source_interval.end_inclusive,
-        ):
-            furthest_index = index
+    ambiguous = _overlap_flags(
+        tuple(item.source_interval for item in raw)
+    )
     return SourceTimelineV1(
         delay_scenario_seconds=delay,
         items=tuple(
@@ -712,6 +769,579 @@ def _timeline(
             for index, item in enumerate(raw)
         ),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class GameTimeIntervalRowV1:
+    interval_id: str
+    game_id: str
+    episode_id: str
+    source_play_id: str
+    delay_seconds: int
+    interval_start_utc: str
+    interval_end_utc: str
+    end_inclusive: Literal[True]
+    provenance: str
+    order_ambiguous: bool = False
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "interval_id": self.interval_id,
+            "game_id": self.game_id,
+            "episode_id": self.episode_id,
+            "source_play_id": self.source_play_id,
+            "delay_seconds": self.delay_seconds,
+            "interval_start_utc": self.interval_start_utc,
+            "interval_end_utc": self.interval_end_utc,
+            "end_inclusive": self.end_inclusive,
+            "provenance": self.provenance,
+            "order_ambiguous": self.order_ambiguous,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class GameTimeIntervalsV1:
+    game_id: str
+    rows: tuple[GameTimeIntervalRowV1, ...]
+    status: Literal["PASS"] = "PASS"
+    schema_version: str = "game_time_intervals_v1"
+
+    def to_records(self) -> list[dict[str, object]]:
+        return [row.to_dict() for row in self.rows]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "status": self.status,
+            "game_id": self.game_id,
+            "row_count": len(self.rows),
+            "rows": self.to_records(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class MarketTimeIntervalRowV1:
+    interval_id: str
+    game_id: str
+    contract_id: str
+    observation_id: str
+    logical_market_id: str | None
+    venue: str
+    outcome: str
+    observation_kind: Literal[
+        "actual_trade",
+        "kalshi_1m_candle",
+        "derived_complement",
+    ]
+    interval_start_utc: str
+    interval_end_utc: str
+    end_inclusive: Literal[False]
+    provenance: str
+    actual_observation: bool
+    actual_trade: bool
+    bbo_available: bool
+    bbo_tick: Literal[False]
+    executable: Literal[False]
+    order_ambiguous: bool
+    forward_filled: Literal[False] = False
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "interval_id": self.interval_id,
+            "game_id": self.game_id,
+            "contract_id": self.contract_id,
+            "observation_id": self.observation_id,
+            "logical_market_id": self.logical_market_id,
+            "venue": self.venue,
+            "outcome": self.outcome,
+            "observation_kind": self.observation_kind,
+            "interval_start_utc": self.interval_start_utc,
+            "interval_end_utc": self.interval_end_utc,
+            "end_inclusive": self.end_inclusive,
+            "provenance": self.provenance,
+            "actual_observation": self.actual_observation,
+            "actual_trade": self.actual_trade,
+            "bbo_available": self.bbo_available,
+            "bbo_tick": self.bbo_tick,
+            "executable": self.executable,
+            "order_ambiguous": self.order_ambiguous,
+            "forward_filled": self.forward_filled,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class MarketTimeIntervalsV1:
+    game_id: str
+    rows: tuple[MarketTimeIntervalRowV1, ...]
+    status: Literal["PASS"] = "PASS"
+    schema_version: str = "market_time_intervals_v1"
+
+    def to_records(self) -> list[dict[str, object]]:
+        return [row.to_dict() for row in self.rows]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "status": self.status,
+            "game_id": self.game_id,
+            "row_count": len(self.rows),
+            "rows": self.to_records(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class SourceTimelineRowV1:
+    timeline_id: str
+    game_id: str
+    layer: Literal["G", "M"]
+    identity: str
+    interval_id: str
+    interval_start_utc: str
+    interval_end_utc: str
+    end_inclusive: bool
+    delay_seconds: int
+    kind: str
+    venue: str | None
+    provenance: str
+    order_ambiguous: bool
+    forward_filled: Literal[False] = False
+    asserted_order: None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "timeline_id": self.timeline_id,
+            "game_id": self.game_id,
+            "layer": self.layer,
+            "identity": self.identity,
+            "interval_id": self.interval_id,
+            "interval_start_utc": self.interval_start_utc,
+            "interval_end_utc": self.interval_end_utc,
+            "end_inclusive": self.end_inclusive,
+            "delay_seconds": self.delay_seconds,
+            "kind": self.kind,
+            "venue": self.venue,
+            "provenance": self.provenance,
+            "order_ambiguous": self.order_ambiguous,
+            "forward_filled": self.forward_filled,
+            "asserted_order": self.asserted_order,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class SourceTimelineTableV1:
+    game_id: str
+    rows: tuple[SourceTimelineRowV1, ...]
+    schema_version: str = "source_timeline_v1"
+    ordering_semantics: str = (
+        "render_sort_only; overlap_and_same_second_have_no_asserted_order"
+    )
+
+    def to_records(self) -> list[dict[str, object]]:
+        return [row.to_dict() for row in self.rows]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "game_id": self.game_id,
+            "row_count": len(self.rows),
+            "ordering_semantics": self.ordering_semantics,
+            "rows": self.to_records(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class TimelineAuditRowV1:
+    timeline_audit_id: str
+    timeline_id: str
+    game_id: str
+    delay_seconds: int
+    layer: Literal["G", "M"]
+    identity: str
+    reason_codes: tuple[
+        Literal["same_source_second", "overlapping_source_intervals"],
+        ...,
+    ]
+    overlap_count: int
+    order_ambiguous: Literal[True] = True
+    asserted_order: None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "timeline_audit_id": self.timeline_audit_id,
+            "timeline_id": self.timeline_id,
+            "game_id": self.game_id,
+            "delay_seconds": self.delay_seconds,
+            "layer": self.layer,
+            "identity": self.identity,
+            "reason_codes": list(self.reason_codes),
+            "overlap_count": self.overlap_count,
+            "order_ambiguous": self.order_ambiguous,
+            "asserted_order": self.asserted_order,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class TimelineAuditV1:
+    game_id: str
+    rows: tuple[TimelineAuditRowV1, ...]
+    status: Literal["PASS"] = "PASS"
+    schema_version: str = "timeline_audit_v1"
+
+    def to_records(self) -> list[dict[str, object]]:
+        return [row.to_dict() for row in self.rows]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "status": self.status,
+            "game_id": self.game_id,
+            "row_count": len(self.rows),
+            "rows": self.to_records(),
+        }
+
+
+def _persisted_interval(
+    *,
+    start: str,
+    end: str,
+    end_inclusive: bool,
+) -> SourceInterval:
+    return SourceInterval(
+        _utc_timestamp(start, field="interval_start_utc"),
+        _utc_timestamp(end, field="interval_end_utc"),
+        end_inclusive,
+    )
+
+
+def build_game_time_intervals_v1(
+    ledger: X13GameLedgerV1,
+) -> GameTimeIntervalsV1:
+    """Build persistable Layer G rows from the audited frozen delay grid."""
+
+    audit = audit_layer_g(ledger)
+    if audit.status != "PASS" or audit.game_id is None:
+        raise AssociationEvidenceError(
+            "Layer G audit failed: " + ",".join(audit.errors)
+        )
+    rows: list[GameTimeIntervalRowV1] = []
+    for item in audit.episode_intervals:
+        start = _rfc3339(item.source_interval.start)
+        end = _rfc3339(item.source_interval.end)
+        interval_id = canonical_sha256(
+            {
+                "delay_seconds": item.delay_scenario_seconds,
+                "end_inclusive": item.source_interval.end_inclusive,
+                "episode_id": item.episode_id,
+                "game_id": item.game_id,
+                "interval_end_utc": end,
+                "interval_start_utc": start,
+                "schema_version": "game_time_intervals_v1",
+                "source_play_id": item.source_play_id,
+            }
+        )
+        rows.append(
+            GameTimeIntervalRowV1(
+                interval_id=interval_id,
+                game_id=item.game_id,
+                episode_id=item.episode_id,
+                source_play_id=item.source_play_id,
+                delay_seconds=item.delay_scenario_seconds,
+                interval_start_utc=start,
+                interval_end_utc=end,
+                end_inclusive=True,
+                provenance="observed_game_source_time_plus_delay_scenario",
+            )
+        )
+    indexes_by_delay: dict[int, list[int]] = defaultdict(list)
+    for index, row in enumerate(rows):
+        indexes_by_delay[row.delay_seconds].append(index)
+    for indexes in indexes_by_delay.values():
+        flags = _overlap_flags(
+            tuple(
+                audit.episode_intervals[index].source_interval
+                for index in indexes
+            )
+        )
+        for index, ambiguous in zip(indexes, flags, strict=True):
+            rows[index] = replace(
+                rows[index],
+                order_ambiguous=ambiguous,
+            )
+    return GameTimeIntervalsV1(game_id=audit.game_id, rows=tuple(rows))
+
+
+def _persisted_market_kind(
+    observation: MarketObservation,
+) -> Literal[
+    "actual_trade",
+    "kalshi_1m_candle",
+    "derived_complement",
+]:
+    if observation.provenance == "derived_complement":
+        return "derived_complement"
+    if observation.kind == "trade" and observation.provenance == "observed":
+        return "actual_trade"
+    if (
+        observation.kind == "kalshi_1m_candle_bbo"
+        and observation.venue == "kalshi"
+        and observation.provenance == "observed"
+    ):
+        return "kalshi_1m_candle"
+    raise AssociationEvidenceError("market observation kind is not persistable")
+
+
+def build_market_time_intervals_v1(
+    contracts: Sequence[MarketContractV1],
+    observations: Sequence[MarketObservation],
+    *,
+    game_id: str,
+) -> MarketTimeIntervalsV1:
+    """Build persistable Layer M rows without manufacturing point evidence."""
+
+    audit = audit_layer_m(contracts, observations, game_id=game_id)
+    if audit.status != "PASS":
+        raise AssociationEvidenceError(
+            "Layer M audit failed: " + ",".join(audit.errors)
+        )
+    deduplicated = deduplicate_cleaned_observations_v1(observations)
+    binding_map = dict(audit.observation_contract_bindings)
+    intervals = tuple(item.source_interval for item in deduplicated)
+    ambiguity = _overlap_flags(intervals)
+    rows: list[MarketTimeIntervalRowV1] = []
+    for index, observation in enumerate(deduplicated):
+        contract_id = binding_map.get(observation.observation_id)
+        if contract_id is None:
+            raise AssociationEvidenceError(
+                "market observation contract binding disappeared"
+            )
+        kind = _persisted_market_kind(observation)
+        start = _rfc3339(observation.source_interval.start)
+        end = _rfc3339(observation.source_interval.end)
+        interval_id = canonical_sha256(
+            {
+                "contract_id": contract_id,
+                "end_inclusive": observation.source_interval.end_inclusive,
+                "game_id": game_id,
+                "interval_end_utc": end,
+                "interval_start_utc": start,
+                "observation_id": observation.observation_id,
+                "schema_version": "market_time_intervals_v1",
+            }
+        )
+        rows.append(
+            MarketTimeIntervalRowV1(
+                interval_id=interval_id,
+                game_id=game_id,
+                contract_id=contract_id,
+                observation_id=observation.observation_id,
+                logical_market_id=observation.logical_market_id,
+                venue=observation.venue,
+                outcome=observation.outcome,
+                observation_kind=kind,
+                interval_start_utc=start,
+                interval_end_utc=end,
+                end_inclusive=False,
+                provenance=observation.provenance,
+                actual_observation=observation.provenance == "observed",
+                actual_trade=kind == "actual_trade",
+                bbo_available=kind == "kalshi_1m_candle"
+                and observation.bid is not None
+                and observation.ask is not None,
+                bbo_tick=False,
+                executable=False,
+                order_ambiguous=ambiguity[index],
+            )
+        )
+    return MarketTimeIntervalsV1(
+        game_id=game_id,
+        rows=tuple(
+            sorted(
+                rows,
+                key=lambda row: (
+                    row.interval_start_utc,
+                    row.interval_end_utc,
+                    row.contract_id,
+                    row.observation_id,
+                ),
+            )
+        ),
+    )
+
+
+def build_source_timeline_v1(
+    game_intervals: GameTimeIntervalsV1,
+    market_intervals: MarketTimeIntervalsV1,
+) -> SourceTimelineTableV1:
+    """Join G/M interval rows for audit only; never forward-fill or order overlap."""
+
+    if not isinstance(game_intervals, GameTimeIntervalsV1):
+        raise TypeError("game_intervals must be GameTimeIntervalsV1")
+    if not isinstance(market_intervals, MarketTimeIntervalsV1):
+        raise TypeError("market_intervals must be MarketTimeIntervalsV1")
+    if game_intervals.game_id != market_intervals.game_id:
+        raise AssociationEvidenceError("game and market interval game_id differ")
+    delays = tuple(sorted({row.delay_seconds for row in game_intervals.rows}))
+    rows: list[SourceTimelineRowV1] = []
+    for delay in delays:
+        layer_rows: list[
+            tuple[
+                Literal["G", "M"],
+                str,
+                str,
+                str,
+                str,
+                bool,
+                str,
+                str | None,
+                str,
+            ]
+        ] = []
+        layer_rows.extend(
+            (
+                "G",
+                row.episode_id,
+                row.interval_id,
+                row.interval_start_utc,
+                row.interval_end_utc,
+                row.end_inclusive,
+                "game_event",
+                None,
+                row.provenance,
+            )
+            for row in game_intervals.rows
+            if row.delay_seconds == delay
+        )
+        layer_rows.extend(
+            (
+                "M",
+                row.observation_id,
+                row.interval_id,
+                row.interval_start_utc,
+                row.interval_end_utc,
+                row.end_inclusive,
+                row.observation_kind,
+                row.venue,
+                row.provenance,
+            )
+            for row in market_intervals.rows
+        )
+        layer_rows.sort(
+            key=lambda row: (
+                row[3],
+                row[4],
+                row[0],
+                row[1],
+            )
+        )
+        local_intervals = tuple(
+            _persisted_interval(
+                start=row[3],
+                end=row[4],
+                end_inclusive=row[5],
+            )
+            for row in layer_rows
+        )
+        flags = _overlap_flags(local_intervals)
+        for index, (
+            layer,
+            identity,
+            interval_id,
+            start,
+            end,
+            end_inclusive,
+            kind,
+            venue,
+            provenance,
+        ) in enumerate(layer_rows):
+            timeline_id = canonical_sha256(
+                {
+                    "delay_seconds": delay,
+                    "game_id": game_intervals.game_id,
+                    "identity": identity,
+                    "interval_id": interval_id,
+                    "layer": layer,
+                    "schema_version": "source_timeline_v1",
+                }
+            )
+            rows.append(
+                SourceTimelineRowV1(
+                    timeline_id=timeline_id,
+                    game_id=game_intervals.game_id,
+                    layer=layer,
+                    identity=identity,
+                    interval_id=interval_id,
+                    interval_start_utc=start,
+                    interval_end_utc=end,
+                    end_inclusive=end_inclusive,
+                    delay_seconds=delay,
+                    kind=kind,
+                    venue=venue,
+                    provenance=provenance,
+                    order_ambiguous=flags[index],
+                )
+            )
+    return SourceTimelineTableV1(
+        game_id=game_intervals.game_id,
+        rows=tuple(rows),
+    )
+
+
+def build_timeline_audit_rows_v1(
+    timeline: SourceTimelineTableV1,
+) -> TimelineAuditV1:
+    """Persist every overlap pair that prevents a source-time order claim."""
+
+    if not isinstance(timeline, SourceTimelineTableV1):
+        raise TypeError("timeline must be SourceTimelineTableV1")
+    result: list[TimelineAuditRowV1] = []
+    by_delay: dict[int, list[SourceTimelineRowV1]] = defaultdict(list)
+    for row in timeline.rows:
+        by_delay[row.delay_seconds].append(row)
+    for delay, rows in sorted(by_delay.items()):
+        intervals = tuple(
+            _persisted_interval(
+                start=row.interval_start_utc,
+                end=row.interval_end_utc,
+                end_inclusive=row.end_inclusive,
+            )
+            for row in rows
+        )
+        overlap_counts = _overlap_counts(intervals)
+        flags = tuple(count > 0 for count in overlap_counts)
+        if tuple(row.order_ambiguous for row in rows) != flags:
+            raise AssociationEvidenceError(
+                "timeline ambiguity flags do not match interval evidence"
+            )
+        start_counts = Counter(row.interval_start_utc for row in rows)
+        for row, overlap_count in zip(
+            rows,
+            overlap_counts,
+            strict=True,
+        ):
+            if overlap_count == 0:
+                continue
+            reason_codes: list[str] = []
+            if start_counts[row.interval_start_utc] > 1:
+                reason_codes.append("same_source_second")
+            reason_codes.append("overlapping_source_intervals")
+            result.append(
+                TimelineAuditRowV1(
+                    timeline_audit_id=canonical_sha256(
+                        {
+                            "schema_version": "timeline_audit_v1",
+                            "timeline_id": row.timeline_id,
+                        }
+                    ),
+                    timeline_id=row.timeline_id,
+                    game_id=timeline.game_id,
+                    delay_seconds=delay,
+                    layer=row.layer,
+                    identity=row.identity,
+                    reason_codes=tuple(reason_codes),  # type: ignore[arg-type]
+                    overlap_count=overlap_count,
+                )
+            )
+    return TimelineAuditV1(game_id=timeline.game_id, rows=tuple(result))
 
 
 def _direction(delta: Decimal | None) -> str:
@@ -1317,7 +1947,7 @@ def prepare_x13_association_stream(
         raise AssociationEvidenceError(
             "Layer M audit failed: " + ",".join(layer_m.errors)
         )
-    deduplicated = deduplicate_observations(observations)
+    deduplicated = deduplicate_cleaned_observations_v1(observations)
     timelines = tuple(
         _timeline(
             delay=delay,
@@ -1474,6 +2104,213 @@ def run_x13_association(
         timelines=stream.timelines,
         associations=tuple(iter_x13_associations(stream)),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class AssociationAttritionRowV1:
+    association_id: str
+    game_id: str
+    episode_id: str
+    contract_id: str
+    logical_market_id: str
+    venue: str
+    family: str
+    outcome: str
+    delay_seconds: int
+    horizon_seconds: int
+    status: str
+    eligible: bool
+    exclusion_reasons: tuple[
+        Literal[
+            "missing",
+            "contaminated",
+            "ambiguous",
+            "stale",
+            "wrong_family",
+            "derived_only",
+            "invalid_orientation",
+            "no_actual_trade",
+        ],
+        ...,
+    ]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "association_id": self.association_id,
+            "game_id": self.game_id,
+            "episode_id": self.episode_id,
+            "contract_id": self.contract_id,
+            "logical_market_id": self.logical_market_id,
+            "venue": self.venue,
+            "family": self.family,
+            "outcome": self.outcome,
+            "delay_seconds": self.delay_seconds,
+            "horizon_seconds": self.horizon_seconds,
+            "status": self.status,
+            "eligible": self.eligible,
+            "exclusion_reasons": list(self.exclusion_reasons),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class AssociationAttritionV1:
+    game_id: str
+    rows: tuple[AssociationAttritionRowV1, ...]
+    schema_version: str = "association_attrition_v1"
+
+    def to_records(self) -> list[dict[str, object]]:
+        return [row.to_dict() for row in self.rows]
+
+    def to_dict(self) -> dict[str, object]:
+        counts = Counter(
+            reason for row in self.rows for reason in row.exclusion_reasons
+        )
+        return {
+            "schema_version": self.schema_version,
+            "game_id": self.game_id,
+            "row_count": len(self.rows),
+            "eligible_row_count": sum(row.eligible for row in self.rows),
+            "reason_counts": dict(sorted(counts.items())),
+            "rows": self.to_records(),
+        }
+
+
+def _metric_decimal(
+    metrics: Mapping[str, object],
+    field: str,
+) -> Decimal | None:
+    value = metrics.get(field)
+    if value is None:
+        return None
+    if type(value) is not Decimal or not value.is_finite():
+        raise AssociationEvidenceError(
+            f"association metric {field} is not a finite Decimal"
+        )
+    return value
+
+
+def build_association_attrition_rows_v1(
+    associations: Sequence[AssociationResultV1],
+    contracts: Sequence[MarketContractV1],
+    *,
+    game_id: str,
+    allowed_families: Sequence[str],
+    max_staleness_seconds: Decimal = Decimal(60),
+) -> AssociationAttritionV1:
+    """Classify existing association results without rescanning market history."""
+
+    if not isinstance(associations, Sequence) or isinstance(
+        associations, (str, bytes)
+    ):
+        raise TypeError("associations must be a sequence")
+    if any(not isinstance(row, AssociationResultV1) for row in associations):
+        raise TypeError("associations must contain AssociationResultV1")
+    if not isinstance(contracts, Sequence) or isinstance(contracts, (str, bytes)):
+        raise TypeError("contracts must be a sequence")
+    if any(not isinstance(contract, MarketContractV1) for contract in contracts):
+        raise TypeError("contracts must contain MarketContractV1")
+    if type(game_id) is not str or not game_id:
+        raise TypeError("game_id must be nonempty text")
+    if (
+        not isinstance(allowed_families, Sequence)
+        or isinstance(allowed_families, (str, bytes))
+        or not allowed_families
+        or any(type(family) is not str or not family for family in allowed_families)
+        or len(set(allowed_families)) != len(allowed_families)
+    ):
+        raise TypeError("allowed_families must be unique nonempty text")
+    if (
+        type(max_staleness_seconds) is not Decimal
+        or not max_staleness_seconds.is_finite()
+        or max_staleness_seconds < 0
+    ):
+        raise TypeError("max_staleness_seconds must be a nonnegative Decimal")
+
+    contract_by_id = {contract.contract_id: contract for contract in contracts}
+    if len(contract_by_id) != len(contracts):
+        raise AssociationEvidenceError("duplicate contract_id")
+    allowed = set(allowed_families)
+    result: list[AssociationAttritionRowV1] = []
+    for association in associations:
+        contract = contract_by_id.get(association.contract_id)
+        if contract is None:
+            raise AssociationEvidenceError(
+                "association contract_id is not in the supplied contract map"
+            )
+        metrics = dict(association.candidate.metrics)
+        trade_count = metrics.get("trade_count")
+        if type(trade_count) is not int or trade_count < 0:
+            raise AssociationEvidenceError(
+                "association trade_count is not a nonnegative integer"
+            )
+        derived_count = metrics.get("derived_observation_count")
+        if type(derived_count) is not int or derived_count < 0:
+            raise AssociationEvidenceError(
+                "association derived_observation_count is invalid"
+            )
+        pre_trade = metrics.get("pre_event_actual_trade")
+        first_trade = metrics.get("first_post_event_trade")
+        pre_age = _metric_decimal(metrics, "pre_trade_age_seconds")
+        post_staleness = _metric_decimal(metrics, "staleness_seconds")
+        reasons: list[str] = []
+        if (
+            association.status == "MISSING_OBSERVATION"
+            or pre_trade is None
+            or first_trade is None
+        ):
+            reasons.append("missing")
+        if association.contaminated:
+            reasons.append("contaminated")
+        if association.order_ambiguous:
+            reasons.append("ambiguous")
+        if (
+            pre_age is not None and pre_age > max_staleness_seconds
+        ) or (
+            post_staleness is not None
+            and post_staleness > max_staleness_seconds
+        ):
+            reasons.append("stale")
+        if contract.family not in allowed:
+            reasons.append("wrong_family")
+        if trade_count == 0 and derived_count > 0:
+            reasons.append("derived_only")
+        if association.outcome not in contract.outcomes:
+            reasons.append("invalid_orientation")
+        if trade_count == 0:
+            reasons.append("no_actual_trade")
+        typed_reasons = tuple(reasons)
+        association_id = canonical_sha256(
+            {
+                "contract_id": association.contract_id,
+                "delay_seconds": association.delay_scenario_seconds,
+                "episode_id": association.episode_id,
+                "game_id": game_id,
+                "horizon_seconds": association.horizon_seconds,
+                "outcome": association.outcome,
+                "schema_version": "association_attrition_v1",
+            }
+        )
+        result.append(
+            AssociationAttritionRowV1(
+                association_id=association_id,
+                game_id=game_id,
+                episode_id=association.episode_id,
+                contract_id=association.contract_id,
+                logical_market_id=contract.logical_market_id,
+                venue=association.venue,
+                family=contract.family,
+                outcome=association.outcome,
+                delay_seconds=association.delay_scenario_seconds,
+                horizon_seconds=association.horizon_seconds,
+                status=association.status,
+                eligible=association.status == "OBSERVED" and not typed_reasons,
+                exclusion_reasons=typed_reasons,  # type: ignore[arg-type]
+            )
+        )
+    ids = [row.association_id for row in result]
+    if len(ids) != len(set(ids)):
+        raise AssociationEvidenceError("duplicate association attrition grain")
+    return AssociationAttritionV1(game_id=game_id, rows=tuple(result))
 
 
 @dataclass(frozen=True, slots=True)
@@ -2268,6 +3105,8 @@ __all__ = [
     "X13_REGISTERED_ANALYSIS_LOCK_V1",
     "AggregatedEpisodeEffectV1",
     "AssociationEvidenceError",
+    "AssociationAttritionRowV1",
+    "AssociationAttritionV1",
     "AssociationResultV1",
     "DirectionalAnomalyAuditV1",
     "ExplorationGateReportV1",
@@ -2276,18 +3115,31 @@ __all__ = [
     "InferenceEstimateV1",
     "InferenceInputV1",
     "InferenceReportV1",
+    "GameTimeIntervalRowV1",
+    "GameTimeIntervalsV1",
     "LayerGAuditV1",
     "LayerGEpisodeIntervalV1",
     "LayerMAuditV1",
     "LogoEffectV1",
     "RegisteredAnalysisLockV1",
     "RegisteredHypothesisV1",
+    "MarketTimeIntervalRowV1",
+    "MarketTimeIntervalsV1",
     "SourceTimelineItemV1",
+    "SourceTimelineRowV1",
+    "SourceTimelineTableV1",
     "SourceTimelineV1",
+    "TimelineAuditRowV1",
+    "TimelineAuditV1",
     "X13AssociationRunV1",
     "X13AssociationStreamV1",
     "audit_layer_g",
     "audit_layer_m",
+    "build_association_attrition_rows_v1",
+    "build_game_time_intervals_v1",
+    "build_market_time_intervals_v1",
+    "build_source_timeline_v1",
+    "build_timeline_audit_rows_v1",
     "evaluate_exploration_gate",
     "iter_x13_associations",
     "prepare_x13_association_stream",

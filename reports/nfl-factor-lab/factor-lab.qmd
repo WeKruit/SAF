@@ -1,0 +1,493 @@
+---
+title: "NFL Factor Lab：20 场正式 V2 研究报告"
+subtitle: "X-13 · Game State × Historical Prediction Market"
+format:
+  html:
+    embed-resources: true
+    self-contained-math: true
+    toc: true
+execute:
+  echo: false
+---
+
+```{python}
+#| tags: [parameters]
+game_id = "2025_14_DAL_DET"
+factor_id = None
+market_family = "moneyline"
+venue = "all"
+horizon = 10
+review_status = "all"
+```
+
+```{python}
+from __future__ import annotations
+
+import hashlib
+from pathlib import Path
+
+import pandas as pd
+from IPython.display import Markdown, display
+
+from prediction_market.workbench.factor_lab_master import (
+    find_project_root,
+    load_v2_batch_attrition_summary,
+    read_bundle_stage,
+    verify_factor_lab_notebook_run,
+)
+
+
+REGISTERED_HORIZONS = {1, 2, 5, 10, 30, 60}
+REGISTERED_VENUES = {"all", "kalshi", "polymarket"}
+REGISTERED_REVIEW_STATUSES = {
+    "all",
+    "PENDING",
+    "ACCEPT",
+    "REDEFINE",
+    "DATA_GAP",
+    "REJECT",
+}
+
+if type(horizon) is not int or horizon not in REGISTERED_HORIZONS:
+    raise ValueError("horizon 不在 X-13 冻结集合中")
+if venue not in REGISTERED_VENUES:
+    raise ValueError("venue 不在登记集合中")
+if review_status not in REGISTERED_REVIEW_STATUSES:
+    raise ValueError("review_status 不在专家审核枚举中")
+
+project_root = find_project_root()
+run_index_path = (
+    project_root / "registries/factors/nfl_factor_lab_run_index_v2.json"
+)
+master_notebook_path = (
+    project_root
+    / "notebooks"
+    / "nfl-factor-lab"
+    / "NFL_Factor_Lab_Master.ipynb"
+)
+if not master_notebook_path.is_file():
+    raise FileNotFoundError("单一 Master Notebook 不存在")
+
+notebook_run = verify_factor_lab_notebook_run(
+    run_index_path,
+    project_root=project_root,
+    deep_verify=False,
+)
+if game_id not in notebook_run.run_index.game_ids:
+    raise ValueError("game_id 不在冻结的 20 场 discovery sample 中")
+
+single_bundle = notebook_run.single_game_bundle(game_id)
+cross_bundle = notebook_run.cross_game_bundle
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+selection = {
+    "game_id": game_id,
+    "factor_id": factor_id,
+    "market_family": market_family,
+    "venue": venue,
+    "horizon": horizon,
+    "review_status": review_status,
+}
+```
+
+## 结论边界
+
+::: {.callout-warning}
+本报告严格标记为 **PRELIMINARY_SOURCE_TIME_ONLY**。它展示历史 source-time
+关联、数据清理、逐场观察与跨场 discovery；不证明因果，不代表真实 feed latency，
+不代表历史 L2/BBO、可执行价格或可交易 alpha。Holdout reaction 仍保持 sealed，
+没有训练模型，也没有真实资金、maker 或下单动作。
+:::
+
+```{python}
+display(
+    pd.DataFrame(
+        [
+            {
+                "experiment": "X-13",
+                "run_index_schema": "NFLFactorLabRunIndexV2",
+                "claim_boundary": "PRELIMINARY_SOURCE_TIME_ONLY",
+                "holdout_reaction_accessed": False,
+                "discovery_games": len(notebook_run.run_index.game_ids),
+                "single_game_bundles": len(notebook_run.single_game_bundles),
+                "cross_game_bundle": cross_bundle.bundle_sha256,
+                "verification_mode": notebook_run.verification_mode,
+            }
+        ]
+    )
+)
+```
+
+## 权威输入与可复现身份
+
+这不是旧的 13-page drilldown 集合。正式交互入口只有一个 Master Notebook；
+分享报告与它使用相同的只读 workbench loader，并直接读取已发布 V2 bundles。
+
+```{python}
+authority_df = pd.DataFrame(
+    [
+        {
+            "input": "Master Notebook",
+            "path": str(master_notebook_path.relative_to(project_root)),
+            "sha256": sha256_file(master_notebook_path),
+        },
+        {
+            "input": "V2 run index",
+            "path": str(run_index_path.relative_to(project_root)),
+            "sha256": notebook_run.run_index.run_index_sha256,
+        },
+        {
+            "input": "V2 cross-game manifest",
+            "path": str(cross_bundle.manifest_path.relative_to(project_root)),
+            "sha256": cross_bundle.manifest_sha256,
+        },
+        {
+            "input": "V2 cross-game bundle",
+            "path": "content-addressed bundle identity",
+            "sha256": cross_bundle.bundle_sha256,
+        },
+    ]
+)
+display(authority_df)
+display(
+    Markdown(
+        f"**Cross bundle identity**：`{cross_bundle.bundle_sha256}`"
+    )
+)
+display(
+    pd.DataFrame(
+        [
+            {
+                "parameter": key,
+                "value": value,
+            }
+            for key, value in selection.items()
+        ]
+    )
+)
+```
+
+## 20 场发布完整度
+
+下面的矩阵来自 V2 run index 的 345-stage manifest：20 场分别发布 17 张单场表，
+再发布 5 张跨场表。报告不重新抓数据，也不重跑 48.6m association universe。
+
+```{python}
+stage_manifest_df = pd.DataFrame(
+    [row.to_dict() for row in notebook_run.run_index.stage_manifest]
+)
+single_stage_df = stage_manifest_df.loc[
+    stage_manifest_df["scope"].eq("single_game")
+].copy()
+coverage_df = (
+    single_stage_df.groupby("game_id", as_index=False)
+    .agg(
+        published_stages=("stage", "nunique"),
+        published_rows=("row_count", "sum"),
+        all_verified=("status", lambda values: (values == "PUBLISHED_VERIFIED").all()),
+    )
+    .sort_values("game_id")
+)
+display(coverage_df)
+display(
+    pd.DataFrame(
+        [
+            {
+                "expected_games": 20,
+                "observed_games": coverage_df["game_id"].nunique(),
+                "expected_single_stages_per_game": 17,
+                "all_games_complete": bool(
+                    coverage_df["published_stages"].eq(17).all()
+                    and coverage_df["all_verified"].all()
+                ),
+                "cross_game_stages": int(
+                    stage_manifest_df["scope"].eq("cross_game").sum()
+                ),
+            }
+        ]
+    )
+)
+```
+
+## 选择比赛的数据清理与时间层
+
+这是当前选择比赛的正式单场 bundle 账本。`sports_row_disposition` 保留每条原始
+体育行的裁决；`source_timeline` 是纯时间轴；`reaction_paths` 才是事件与市场的
+关联层。三者没有混成一张不可审计的表。单场清理表之后的漏斗与原因表固定覆盖
+全部 20 场 V2 bundles，不随当前 `game_id` 参数缩成单场样本。
+
+```{python}
+selected_stage_df = single_stage_df.loc[
+    single_stage_df["game_id"].eq(game_id),
+    [
+        "stage",
+        "grain",
+        "row_count",
+        "semantic_rows_sha256",
+        "artifact_sha256",
+        "status",
+    ],
+].sort_values("stage")
+display(selected_stage_df)
+
+sports_disposition_df = read_bundle_stage(
+    single_bundle,
+    "sports_row_disposition",
+)
+disposition_summary_df = (
+    sports_disposition_df.groupby("disposition", dropna=False)
+    .size()
+    .rename("rows")
+    .reset_index()
+    .sort_values("rows", ascending=False)
+)
+display(disposition_summary_df)
+
+batch_attrition = load_v2_batch_attrition_summary(notebook_run)
+display(batch_attrition.funnel)
+display(batch_attrition.reasons)
+```
+
+## 单场 Factor × Market 观察
+
+每行仍然是正式粒度：
+`factor × game × episode × logical market × outcome × venue × horizon`。
+这里只过滤和展示已经发布的 row-level observations；报告不在页面里重新定义 factor。
+
+```{python}
+factor_observations_df = read_bundle_stage(
+    single_bundle,
+    "factor_observations",
+    filters={"horizon_seconds": horizon},
+)
+selected_factor_observations_df = factor_observations_df.loc[
+    factor_observations_df["market_family"].eq(market_family)
+].copy()
+if venue != "all":
+    selected_factor_observations_df = selected_factor_observations_df.loc[
+        selected_factor_observations_df["venue"].eq(venue)
+    ]
+if factor_id is not None:
+    selected_factor_observations_df = selected_factor_observations_df.loc[
+        selected_factor_observations_df["factor_id"].eq(factor_id)
+    ]
+
+case_columns = [
+    name
+    for name in (
+        "factor_id",
+        "episode_id",
+        "play_id",
+        "description",
+        "quarter",
+        "game_seconds_remaining",
+        "score_margin_focal",
+        "event_flags",
+        "venue",
+        "logical_market_id",
+        "outcome",
+        "pre_event_actual_trade",
+        "first_post_event_trade",
+        "signed_price_change",
+        "maximum_excursion",
+        "trade_count",
+        "staleness_seconds",
+        "order_ambiguous",
+        "contaminated",
+        "analysis_eligible",
+        "analysis_exclusion_reason",
+    )
+    if name in selected_factor_observations_df.columns
+]
+display(
+    pd.DataFrame(
+        [
+            {
+                "candidate_rows": len(factor_observations_df),
+                "selected_rows": len(selected_factor_observations_df),
+                "selected_games": selected_factor_observations_df["game_id"].nunique(),
+                "selected_factors": selected_factor_observations_df["factor_id"].nunique(),
+                "selected_markets": selected_factor_observations_df[
+                    "logical_market_id"
+                ].nunique(),
+            }
+        ]
+    )
+)
+display(
+    selected_factor_observations_df.loc[:, case_columns]
+    .sort_values(
+        ["factor_id", "game_seconds_remaining", "venue"],
+        ascending=[True, False, True],
+    )
+    .head(100)
+)
+```
+
+## 20 场跨场 Discovery
+
+先展示逐场，再展示跨场。跨场结果包含 support gate、cluster bootstrap、LOO、
+BH q-value、最大单场贡献与跨 venue 一致性；这些仍只是候选筛选证据。
+
+```{python}
+cross_results_df = read_bundle_stage(
+    cross_bundle,
+    "cross_game_factor_results",
+    filters={
+        "market_family": market_family,
+        "horizon_seconds": horizon,
+    },
+)
+if factor_id is not None:
+    cross_results_df = cross_results_df.loc[
+        cross_results_df["factor_id"].eq(factor_id)
+    ]
+
+game_contribution_df = read_bundle_stage(
+    cross_bundle,
+    "game_contribution",
+    filters={
+        "market_family": market_family,
+        "horizon_seconds": horizon,
+    },
+)
+if factor_id is not None:
+    game_contribution_df = game_contribution_df.loc[
+        game_contribution_df["factor_id"].eq(factor_id)
+    ]
+
+result_columns = [
+    "factor_id",
+    "support_status",
+    "episode_count",
+    "game_count",
+    "observation_count",
+    "point_estimate",
+    "ci_low",
+    "ci_high",
+    "bh_q_value",
+    "loo_sign_stability_rate",
+    "maximum_single_game_contribution",
+    "venue_sign_consistent",
+    "discovery_status",
+]
+display(
+    cross_results_df.loc[:, result_columns]
+    .sort_values(
+        ["support_status", "episode_count", "factor_id"],
+        ascending=[True, False, True],
+    )
+    .head(100)
+)
+display(
+    game_contribution_df.sort_values(
+        ["factor_id", "contribution"],
+        ascending=[True, False],
+    ).head(100)
+)
+```
+
+## Venue 与专家审核
+
+历史比赛没有完整 L2，因此这里不能研究 OFI、depth、bid/ask 谁先动或可执行
+spread。Kalshi minute candle 也不冒充逐秒 BBO；Polymarket 无历史 BBO 时保持
+unavailable。
+
+```{python}
+venue_consistency_df = read_bundle_stage(
+    cross_bundle,
+    "venue_consistency",
+    filters={
+        "market_family": market_family,
+        "horizon_seconds": horizon,
+    },
+)
+if factor_id is not None:
+    venue_consistency_df = venue_consistency_df.loc[
+        venue_consistency_df["factor_id"].eq(factor_id)
+    ]
+display(venue_consistency_df.head(100))
+
+expert_review_df = read_bundle_stage(
+    cross_bundle,
+    "expert_review_queue",
+    filters={
+        "market_family": market_family,
+        "horizon_seconds": horizon,
+    },
+)
+if factor_id is not None:
+    expert_review_df = expert_review_df.loc[
+        expert_review_df["factor_id"].eq(factor_id)
+    ]
+if review_status != "all":
+    expert_review_df = expert_review_df.loc[
+        expert_review_df["review_decision"].eq(review_status)
+    ]
+display(
+    expert_review_df.loc[
+        :,
+        [
+            "factor_id",
+            "sports_meaning",
+            "episode_count",
+            "game_count",
+            "point_estimate",
+            "ci_low",
+            "ci_high",
+            "bh_q_value",
+            "support_status",
+            "venue_sign_consistent",
+            "review_decision",
+        ],
+    ].head(100)
+)
+```
+
+## 当前研究结论
+
+1. 20 场已经分别发布完整 V2 单场数据账本，再由 cross bundle 汇总；不是把
+   20 场先揉成 pooled average。
+2. 页面展示的是 formal factor observations 与 formal cross-game outputs；
+   不使用旧 V1 discovery 结果替代新计算。
+3. 任一 factor 在成为候选前仍需体育专家对定义、具体正反例、support、
+   单场贡献和数据缺口逐项审核。
+4. `shortlist_lock_path` 仍为空，holdout reaction 没有读取。因此本报告不会把
+   discovery 相关性升级成 `SIGNAL_CANDIDATE`。
+5. 下一步顺序保持不变：专家审核 → 冻结 shortlist → 扩大样本/独立 holdout；
+   最后才考虑训练模型。
+
+```{python}
+display(
+    pd.DataFrame(
+        [
+            {
+                "gate": "20-game V2 publication",
+                "status": "PASS",
+            },
+            {
+                "gate": "expert review complete",
+                "status": "OPEN",
+            },
+            {
+                "gate": "shortlist frozen",
+                "status": "OPEN",
+            },
+            {
+                "gate": "holdout reaction accessed",
+                "status": "SEALED_FALSE",
+            },
+            {
+                "gate": "model training",
+                "status": "NOT_STARTED_BY_DESIGN",
+            },
+        ]
+    )
+)
+```

@@ -1,0 +1,789 @@
+{
+  "audit_kind": "pmxt_s3_verify_v1",
+  "generated_at": "2026-07-28T02:39:02.864Z",
+  "objects": [
+    {
+      "actual_sha256": "sha256:080c2ab709499850a1c944039879c09481fa645b916afb6d269ee8af780d1938",
+      "byte_size": 526956839,
+      "key": "prediction-market/raw/pmxt-v2/sha256/08/080c2ab709499850a1c944039879c09481fa645b916afb6d269ee8af780d1938.parquet",
+      "listed_byte_size": 526956839,
+      "sha256": "sha256:080c2ab709499850a1c944039879c09481fa645b916afb6d269ee8af780d1938",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:0ea149361316fe88d1cd1954a6095dcc254c47f3310816b8c4612fe67a7f2d75",
+      "byte_size": 460010899,
+      "key": "prediction-market/raw/pmxt-v2/sha256/0e/0ea149361316fe88d1cd1954a6095dcc254c47f3310816b8c4612fe67a7f2d75.parquet",
+      "listed_byte_size": 460010899,
+      "sha256": "sha256:0ea149361316fe88d1cd1954a6095dcc254c47f3310816b8c4612fe67a7f2d75",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:1174b7c5ddd3d485a8db0f29558427cf34f166e58f4d8b648e796abf26014164",
+      "byte_size": 201302676,
+      "key": "prediction-market/raw/pmxt-v2/sha256/11/1174b7c5ddd3d485a8db0f29558427cf34f166e58f4d8b648e796abf26014164.parquet",
+      "listed_byte_size": 201302676,
+      "sha256": "sha256:1174b7c5ddd3d485a8db0f29558427cf34f166e58f4d8b648e796abf26014164",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:11dce8c6efe67d686d15fb8bc996e9ee2a740decc59bbd9742f0725e7f0057a3",
+      "byte_size": 417830562,
+      "key": "prediction-market/raw/pmxt-v2/sha256/11/11dce8c6efe67d686d15fb8bc996e9ee2a740decc59bbd9742f0725e7f0057a3.parquet",
+      "listed_byte_size": 417830562,
+      "sha256": "sha256:11dce8c6efe67d686d15fb8bc996e9ee2a740decc59bbd9742f0725e7f0057a3",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:17539a1f3d73221f633a82a9e4264e849e75e4923cba29b5d515b754b4d0c5ca",
+      "byte_size": 288451489,
+      "key": "prediction-market/raw/pmxt-v2/sha256/17/17539a1f3d73221f633a82a9e4264e849e75e4923cba29b5d515b754b4d0c5ca.parquet",
+      "listed_byte_size": 288451489,
+      "sha256": "sha256:17539a1f3d73221f633a82a9e4264e849e75e4923cba29b5d515b754b4d0c5ca",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:17962c3a01d256eedc67b5e6e1913d44a74b8a9e90ed4af4d251078603fd0360",
+      "byte_size": 542277621,
+      "key": "prediction-market/raw/pmxt-v2/sha256/17/17962c3a01d256eedc67b5e6e1913d44a74b8a9e90ed4af4d251078603fd0360.parquet",
+      "listed_byte_size": 542277621,
+      "sha256": "sha256:17962c3a01d256eedc67b5e6e1913d44a74b8a9e90ed4af4d251078603fd0360",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:180b964b13ed6c050fad0754ab03a7c12c3fbbd8b4c28ae8196b4a0537920a81",
+      "byte_size": 432076044,
+      "key": "prediction-market/raw/pmxt-v2/sha256/18/180b964b13ed6c050fad0754ab03a7c12c3fbbd8b4c28ae8196b4a0537920a81.parquet",
+      "listed_byte_size": 432076044,
+      "sha256": "sha256:180b964b13ed6c050fad0754ab03a7c12c3fbbd8b4c28ae8196b4a0537920a81",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:189fabd70b1ac947c48c8ed991ba8f7c95c3299a5b2d13d268fa8ecb94607894",
+      "byte_size": 527762909,
+      "key": "prediction-market/raw/pmxt-v2/sha256/18/189fabd70b1ac947c48c8ed991ba8f7c95c3299a5b2d13d268fa8ecb94607894.parquet",
+      "listed_byte_size": 527762909,
+      "sha256": "sha256:189fabd70b1ac947c48c8ed991ba8f7c95c3299a5b2d13d268fa8ecb94607894",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:196a31afb5531a29052d540277dc5232b8a07f073ee5680cdbb19cbae0992f47",
+      "byte_size": 468507063,
+      "key": "prediction-market/raw/pmxt-v2/sha256/19/196a31afb5531a29052d540277dc5232b8a07f073ee5680cdbb19cbae0992f47.parquet",
+      "listed_byte_size": 468507063,
+      "sha256": "sha256:196a31afb5531a29052d540277dc5232b8a07f073ee5680cdbb19cbae0992f47",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:19b8cbe560b06fa2319aeff439d953c35e4a6f5d03a1bd2bfa5cb7935c4a2e8b",
+      "byte_size": 423325249,
+      "key": "prediction-market/raw/pmxt-v2/sha256/19/19b8cbe560b06fa2319aeff439d953c35e4a6f5d03a1bd2bfa5cb7935c4a2e8b.parquet",
+      "listed_byte_size": 423325249,
+      "sha256": "sha256:19b8cbe560b06fa2319aeff439d953c35e4a6f5d03a1bd2bfa5cb7935c4a2e8b",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:1ec49a5e167aab3f6bc8a199fffb73b5e3b211a49e555badf32a6e1fc958cdb9",
+      "byte_size": 451098084,
+      "key": "prediction-market/raw/pmxt-v2/sha256/1e/1ec49a5e167aab3f6bc8a199fffb73b5e3b211a49e555badf32a6e1fc958cdb9.parquet",
+      "listed_byte_size": 451098084,
+      "sha256": "sha256:1ec49a5e167aab3f6bc8a199fffb73b5e3b211a49e555badf32a6e1fc958cdb9",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:209408787990ab03db843f4c5b33ece67f70b421a84cccf0464ee1ebe306726f",
+      "byte_size": 217908917,
+      "key": "prediction-market/raw/pmxt-v2/sha256/20/209408787990ab03db843f4c5b33ece67f70b421a84cccf0464ee1ebe306726f.parquet",
+      "listed_byte_size": 217908917,
+      "sha256": "sha256:209408787990ab03db843f4c5b33ece67f70b421a84cccf0464ee1ebe306726f",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:27cc00a0a5899d74f7150ed17a30fbbbf5151e99c36080765d21aa73ba714a9c",
+      "byte_size": 185850030,
+      "key": "prediction-market/raw/pmxt-v2/sha256/27/27cc00a0a5899d74f7150ed17a30fbbbf5151e99c36080765d21aa73ba714a9c.parquet",
+      "listed_byte_size": 185850030,
+      "sha256": "sha256:27cc00a0a5899d74f7150ed17a30fbbbf5151e99c36080765d21aa73ba714a9c",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:2bbb337599f2dd363fa65b26320da1173db95363f841e70e5c5912642891f26a",
+      "byte_size": 459759600,
+      "key": "prediction-market/raw/pmxt-v2/sha256/2b/2bbb337599f2dd363fa65b26320da1173db95363f841e70e5c5912642891f26a.parquet",
+      "listed_byte_size": 459759600,
+      "sha256": "sha256:2bbb337599f2dd363fa65b26320da1173db95363f841e70e5c5912642891f26a",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:2c5abf2f89874c6ae8970a555015d07ab9cca15089d38757143c638d5a7d3495",
+      "byte_size": 440456863,
+      "key": "prediction-market/raw/pmxt-v2/sha256/2c/2c5abf2f89874c6ae8970a555015d07ab9cca15089d38757143c638d5a7d3495.parquet",
+      "listed_byte_size": 440456863,
+      "sha256": "sha256:2c5abf2f89874c6ae8970a555015d07ab9cca15089d38757143c638d5a7d3495",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:2d1d783765719466e4548f1ccc1077a103cb2344a2671075f49c4ef49328e15f",
+      "byte_size": 450956790,
+      "key": "prediction-market/raw/pmxt-v2/sha256/2d/2d1d783765719466e4548f1ccc1077a103cb2344a2671075f49c4ef49328e15f.parquet",
+      "listed_byte_size": 450956790,
+      "sha256": "sha256:2d1d783765719466e4548f1ccc1077a103cb2344a2671075f49c4ef49328e15f",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:2f1cdabe90997738f959ea9704d88889d19b4f4524b62faafdde87bb6978cd5e",
+      "byte_size": 477849356,
+      "key": "prediction-market/raw/pmxt-v2/sha256/2f/2f1cdabe90997738f959ea9704d88889d19b4f4524b62faafdde87bb6978cd5e.parquet",
+      "listed_byte_size": 477849356,
+      "sha256": "sha256:2f1cdabe90997738f959ea9704d88889d19b4f4524b62faafdde87bb6978cd5e",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:3021f18adfbe47ca824960b58b93388b8f2babf5ff3e70318f0f64b8eddead50",
+      "byte_size": 462376079,
+      "key": "prediction-market/raw/pmxt-v2/sha256/30/3021f18adfbe47ca824960b58b93388b8f2babf5ff3e70318f0f64b8eddead50.parquet",
+      "listed_byte_size": 462376079,
+      "sha256": "sha256:3021f18adfbe47ca824960b58b93388b8f2babf5ff3e70318f0f64b8eddead50",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:32cb8c3508c0b5f0dfd00ebeccf69ba62fcd1b56ba476e6984e564703c230016",
+      "byte_size": 476271237,
+      "key": "prediction-market/raw/pmxt-v2/sha256/32/32cb8c3508c0b5f0dfd00ebeccf69ba62fcd1b56ba476e6984e564703c230016.parquet",
+      "listed_byte_size": 476271237,
+      "sha256": "sha256:32cb8c3508c0b5f0dfd00ebeccf69ba62fcd1b56ba476e6984e564703c230016",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:32cea70f416e1ad6839342754e6d0fc7638bfbe71e7f2158733a8745b3c73807",
+      "byte_size": 339727798,
+      "key": "prediction-market/raw/pmxt-v2/sha256/32/32cea70f416e1ad6839342754e6d0fc7638bfbe71e7f2158733a8745b3c73807.parquet",
+      "listed_byte_size": 339727798,
+      "sha256": "sha256:32cea70f416e1ad6839342754e6d0fc7638bfbe71e7f2158733a8745b3c73807",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:388aa5d43eca449e48bd6fd00f1a5e9036ab425b1c5fffce06bb41757b6ec94b",
+      "byte_size": 433747070,
+      "key": "prediction-market/raw/pmxt-v2/sha256/38/388aa5d43eca449e48bd6fd00f1a5e9036ab425b1c5fffce06bb41757b6ec94b.parquet",
+      "listed_byte_size": 433747070,
+      "sha256": "sha256:388aa5d43eca449e48bd6fd00f1a5e9036ab425b1c5fffce06bb41757b6ec94b",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:39db8ece6ab48cbc06a81f9a761c11f55e0f954cedee3eb286e140c400ee7c56",
+      "byte_size": 247322538,
+      "key": "prediction-market/raw/pmxt-v2/sha256/39/39db8ece6ab48cbc06a81f9a761c11f55e0f954cedee3eb286e140c400ee7c56.parquet",
+      "listed_byte_size": 247322538,
+      "sha256": "sha256:39db8ece6ab48cbc06a81f9a761c11f55e0f954cedee3eb286e140c400ee7c56",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:409d421c77e2db5f3a60cbaa49b8094e5b1d94c0786d704e7b71dbdca4da3305",
+      "byte_size": 450775768,
+      "key": "prediction-market/raw/pmxt-v2/sha256/40/409d421c77e2db5f3a60cbaa49b8094e5b1d94c0786d704e7b71dbdca4da3305.parquet",
+      "listed_byte_size": 450775768,
+      "sha256": "sha256:409d421c77e2db5f3a60cbaa49b8094e5b1d94c0786d704e7b71dbdca4da3305",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:427995074a3df1b7ddf1c96676e4d11eb332a68d16959553f2c671d052f8809c",
+      "byte_size": 427321853,
+      "key": "prediction-market/raw/pmxt-v2/sha256/42/427995074a3df1b7ddf1c96676e4d11eb332a68d16959553f2c671d052f8809c.parquet",
+      "listed_byte_size": 427321853,
+      "sha256": "sha256:427995074a3df1b7ddf1c96676e4d11eb332a68d16959553f2c671d052f8809c",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:43082fbf2d9857a7078f7c597251d170ac588cf7e45772a33e449fdb589447bf",
+      "byte_size": 466314296,
+      "key": "prediction-market/raw/pmxt-v2/sha256/43/43082fbf2d9857a7078f7c597251d170ac588cf7e45772a33e449fdb589447bf.parquet",
+      "listed_byte_size": 466314296,
+      "sha256": "sha256:43082fbf2d9857a7078f7c597251d170ac588cf7e45772a33e449fdb589447bf",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:44c9284bd9453429f7a3de4b19eed109c192e0d87f7fcd1547a4c004301167c5",
+      "byte_size": 408202023,
+      "key": "prediction-market/raw/pmxt-v2/sha256/44/44c9284bd9453429f7a3de4b19eed109c192e0d87f7fcd1547a4c004301167c5.parquet",
+      "listed_byte_size": 408202023,
+      "sha256": "sha256:44c9284bd9453429f7a3de4b19eed109c192e0d87f7fcd1547a4c004301167c5",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:4997b5b0bb8c58fb1bd11e569c0f4d553d854eb7106be44a9d6a8e283ff46cb7",
+      "byte_size": 476435449,
+      "key": "prediction-market/raw/pmxt-v2/sha256/49/4997b5b0bb8c58fb1bd11e569c0f4d553d854eb7106be44a9d6a8e283ff46cb7.parquet",
+      "listed_byte_size": 476435449,
+      "sha256": "sha256:4997b5b0bb8c58fb1bd11e569c0f4d553d854eb7106be44a9d6a8e283ff46cb7",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:4ea6465d5e1f0892851e0bd50b6a2c30164b6b874f03497e5d31a77c4d84ea04",
+      "byte_size": 243497409,
+      "key": "prediction-market/raw/pmxt-v2/sha256/4e/4ea6465d5e1f0892851e0bd50b6a2c30164b6b874f03497e5d31a77c4d84ea04.parquet",
+      "listed_byte_size": 243497409,
+      "sha256": "sha256:4ea6465d5e1f0892851e0bd50b6a2c30164b6b874f03497e5d31a77c4d84ea04",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:50a97585f2de6db09fd2b58b0b4df3bbdf4279ee99e22766e7343ab972f9a684",
+      "byte_size": 206267302,
+      "key": "prediction-market/raw/pmxt-v2/sha256/50/50a97585f2de6db09fd2b58b0b4df3bbdf4279ee99e22766e7343ab972f9a684.parquet",
+      "listed_byte_size": 206267302,
+      "sha256": "sha256:50a97585f2de6db09fd2b58b0b4df3bbdf4279ee99e22766e7343ab972f9a684",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:52fd640e5624d2c41351a97975b436f41398361d03e92a2e7e4c7172925ddec0",
+      "byte_size": 426420410,
+      "key": "prediction-market/raw/pmxt-v2/sha256/52/52fd640e5624d2c41351a97975b436f41398361d03e92a2e7e4c7172925ddec0.parquet",
+      "listed_byte_size": 426420410,
+      "sha256": "sha256:52fd640e5624d2c41351a97975b436f41398361d03e92a2e7e4c7172925ddec0",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:56ef23afff4c77b075ea9f11ea45f5567bbc0b767e3b145a2bb7dd2bb9686fae",
+      "byte_size": 221602303,
+      "key": "prediction-market/raw/pmxt-v2/sha256/56/56ef23afff4c77b075ea9f11ea45f5567bbc0b767e3b145a2bb7dd2bb9686fae.parquet",
+      "listed_byte_size": 221602303,
+      "sha256": "sha256:56ef23afff4c77b075ea9f11ea45f5567bbc0b767e3b145a2bb7dd2bb9686fae",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:590216674e38f820fa011362967124603d3aa28959d05fb9b54b6ca4d3bcf399",
+      "byte_size": 436334049,
+      "key": "prediction-market/raw/pmxt-v2/sha256/59/590216674e38f820fa011362967124603d3aa28959d05fb9b54b6ca4d3bcf399.parquet",
+      "listed_byte_size": 436334049,
+      "sha256": "sha256:590216674e38f820fa011362967124603d3aa28959d05fb9b54b6ca4d3bcf399",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:5978d75438413608b22ca9dbb8f15b5cc5c6f99e097e0afc1617e313a6921778",
+      "byte_size": 312939651,
+      "key": "prediction-market/raw/pmxt-v2/sha256/59/5978d75438413608b22ca9dbb8f15b5cc5c6f99e097e0afc1617e313a6921778.parquet",
+      "listed_byte_size": 312939651,
+      "sha256": "sha256:5978d75438413608b22ca9dbb8f15b5cc5c6f99e097e0afc1617e313a6921778",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:5abd50b0ca5d0d4242eacf7d5818aee422f231201c577b021d03facd9fc15892",
+      "byte_size": 451787097,
+      "key": "prediction-market/raw/pmxt-v2/sha256/5a/5abd50b0ca5d0d4242eacf7d5818aee422f231201c577b021d03facd9fc15892.parquet",
+      "listed_byte_size": 451787097,
+      "sha256": "sha256:5abd50b0ca5d0d4242eacf7d5818aee422f231201c577b021d03facd9fc15892",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:5d8157b1ed5312dc72c6abe8c85e5775fd176ca78786b1d5b4ff047486b71b50",
+      "byte_size": 453280695,
+      "key": "prediction-market/raw/pmxt-v2/sha256/5d/5d8157b1ed5312dc72c6abe8c85e5775fd176ca78786b1d5b4ff047486b71b50.parquet",
+      "listed_byte_size": 453280695,
+      "sha256": "sha256:5d8157b1ed5312dc72c6abe8c85e5775fd176ca78786b1d5b4ff047486b71b50",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:623917f2fa2a54a9b0ed07c7b01ccd8d7b0eff8a50df342000b12a45a3adc63c",
+      "byte_size": 200782045,
+      "key": "prediction-market/raw/pmxt-v2/sha256/62/623917f2fa2a54a9b0ed07c7b01ccd8d7b0eff8a50df342000b12a45a3adc63c.parquet",
+      "listed_byte_size": 200782045,
+      "sha256": "sha256:623917f2fa2a54a9b0ed07c7b01ccd8d7b0eff8a50df342000b12a45a3adc63c",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:644f9b319843f1cb1b13b9f90813de3a9a92f5e4c17751980d7e61a622ce6de1",
+      "byte_size": 454335905,
+      "key": "prediction-market/raw/pmxt-v2/sha256/64/644f9b319843f1cb1b13b9f90813de3a9a92f5e4c17751980d7e61a622ce6de1.parquet",
+      "listed_byte_size": 454335905,
+      "sha256": "sha256:644f9b319843f1cb1b13b9f90813de3a9a92f5e4c17751980d7e61a622ce6de1",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:65eccd3a66d0d79b097c7783dbb36f465326bff42a2b4d478256c451d64e398b",
+      "byte_size": 516504393,
+      "key": "prediction-market/raw/pmxt-v2/sha256/65/65eccd3a66d0d79b097c7783dbb36f465326bff42a2b4d478256c451d64e398b.parquet",
+      "listed_byte_size": 516504393,
+      "sha256": "sha256:65eccd3a66d0d79b097c7783dbb36f465326bff42a2b4d478256c451d64e398b",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:69128f95d1a6a27b3edd3f4e2c78ccbcb0078b7a7bfd646a720a6a01b91930a8",
+      "byte_size": 508644568,
+      "key": "prediction-market/raw/pmxt-v2/sha256/69/69128f95d1a6a27b3edd3f4e2c78ccbcb0078b7a7bfd646a720a6a01b91930a8.parquet",
+      "listed_byte_size": 508644568,
+      "sha256": "sha256:69128f95d1a6a27b3edd3f4e2c78ccbcb0078b7a7bfd646a720a6a01b91930a8",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:6e72fc8dd907654e71b00a48bd7c64b77edeccdc241aacb3ed4fd5516817a6ae",
+      "byte_size": 438537200,
+      "key": "prediction-market/raw/pmxt-v2/sha256/6e/6e72fc8dd907654e71b00a48bd7c64b77edeccdc241aacb3ed4fd5516817a6ae.parquet",
+      "listed_byte_size": 438537200,
+      "sha256": "sha256:6e72fc8dd907654e71b00a48bd7c64b77edeccdc241aacb3ed4fd5516817a6ae",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:719b0b263b4c75dbfde4895a2e41d51e264125eb7989307b6c491b6871b47f30",
+      "byte_size": 413588788,
+      "key": "prediction-market/raw/pmxt-v2/sha256/71/719b0b263b4c75dbfde4895a2e41d51e264125eb7989307b6c491b6871b47f30.parquet",
+      "listed_byte_size": 413588788,
+      "sha256": "sha256:719b0b263b4c75dbfde4895a2e41d51e264125eb7989307b6c491b6871b47f30",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:73c464413365111a019d8c4f13b7608594b597449f6be7413c4fee4a4972d258",
+      "byte_size": 432493395,
+      "key": "prediction-market/raw/pmxt-v2/sha256/73/73c464413365111a019d8c4f13b7608594b597449f6be7413c4fee4a4972d258.parquet",
+      "listed_byte_size": 432493395,
+      "sha256": "sha256:73c464413365111a019d8c4f13b7608594b597449f6be7413c4fee4a4972d258",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:77515cee6df33e4fa9411bc906cd3a83bff95751bab247039a9fc499fd5331ea",
+      "byte_size": 396931551,
+      "key": "prediction-market/raw/pmxt-v2/sha256/77/77515cee6df33e4fa9411bc906cd3a83bff95751bab247039a9fc499fd5331ea.parquet",
+      "listed_byte_size": 396931551,
+      "sha256": "sha256:77515cee6df33e4fa9411bc906cd3a83bff95751bab247039a9fc499fd5331ea",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:786fb001e617957b1fe891b49a03f3fbe1e522e80b20dc67f344b0e92b1c1db4",
+      "byte_size": 187463875,
+      "key": "prediction-market/raw/pmxt-v2/sha256/78/786fb001e617957b1fe891b49a03f3fbe1e522e80b20dc67f344b0e92b1c1db4.parquet",
+      "listed_byte_size": 187463875,
+      "sha256": "sha256:786fb001e617957b1fe891b49a03f3fbe1e522e80b20dc67f344b0e92b1c1db4",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:78ae5deb3876bcef06b0965714e489dfd556548adcd6264e4ed8eacc565faf91",
+      "byte_size": 510811413,
+      "key": "prediction-market/raw/pmxt-v2/sha256/78/78ae5deb3876bcef06b0965714e489dfd556548adcd6264e4ed8eacc565faf91.parquet",
+      "listed_byte_size": 510811413,
+      "sha256": "sha256:78ae5deb3876bcef06b0965714e489dfd556548adcd6264e4ed8eacc565faf91",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:7a7919bdb87e8381fd63d07d6bf93344d8621215126b7f54413824e24e918988",
+      "byte_size": 248129787,
+      "key": "prediction-market/raw/pmxt-v2/sha256/7a/7a7919bdb87e8381fd63d07d6bf93344d8621215126b7f54413824e24e918988.parquet",
+      "listed_byte_size": 248129787,
+      "sha256": "sha256:7a7919bdb87e8381fd63d07d6bf93344d8621215126b7f54413824e24e918988",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:7c839b7cd6f0675d7194da70bcd404c784d293d368a17a7cd0004414006f9c37",
+      "byte_size": 412565235,
+      "key": "prediction-market/raw/pmxt-v2/sha256/7c/7c839b7cd6f0675d7194da70bcd404c784d293d368a17a7cd0004414006f9c37.parquet",
+      "listed_byte_size": 412565235,
+      "sha256": "sha256:7c839b7cd6f0675d7194da70bcd404c784d293d368a17a7cd0004414006f9c37",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:7cb4439ef7da38fbb553948ffc4245ca6d9b1d0c13eaf120813f739477193a7e",
+      "byte_size": 539123678,
+      "key": "prediction-market/raw/pmxt-v2/sha256/7c/7cb4439ef7da38fbb553948ffc4245ca6d9b1d0c13eaf120813f739477193a7e.parquet",
+      "listed_byte_size": 539123678,
+      "sha256": "sha256:7cb4439ef7da38fbb553948ffc4245ca6d9b1d0c13eaf120813f739477193a7e",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:7fc03de59ffd08b7d7a313ccff08331194d3b3654950b00dc189e9b51e5921ae",
+      "byte_size": 441668893,
+      "key": "prediction-market/raw/pmxt-v2/sha256/7f/7fc03de59ffd08b7d7a313ccff08331194d3b3654950b00dc189e9b51e5921ae.parquet",
+      "listed_byte_size": 441668893,
+      "sha256": "sha256:7fc03de59ffd08b7d7a313ccff08331194d3b3654950b00dc189e9b51e5921ae",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:843e3833e56da0e9a2dca171e05320f56969af88cb61e2aedd34fcaf338b68f9",
+      "byte_size": 263779204,
+      "key": "prediction-market/raw/pmxt-v2/sha256/84/843e3833e56da0e9a2dca171e05320f56969af88cb61e2aedd34fcaf338b68f9.parquet",
+      "listed_byte_size": 263779204,
+      "sha256": "sha256:843e3833e56da0e9a2dca171e05320f56969af88cb61e2aedd34fcaf338b68f9",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:84787de4779c7344138a69119ecbad4d8ca7188bd78736064966ce0de5968081",
+      "byte_size": 549266920,
+      "key": "prediction-market/raw/pmxt-v2/sha256/84/84787de4779c7344138a69119ecbad4d8ca7188bd78736064966ce0de5968081.parquet",
+      "listed_byte_size": 549266920,
+      "sha256": "sha256:84787de4779c7344138a69119ecbad4d8ca7188bd78736064966ce0de5968081",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:854e2233603583a17807f9d4caa427a8c43e40b1582c6bdf23c1d61537c0730b",
+      "byte_size": 237078665,
+      "key": "prediction-market/raw/pmxt-v2/sha256/85/854e2233603583a17807f9d4caa427a8c43e40b1582c6bdf23c1d61537c0730b.parquet",
+      "listed_byte_size": 237078665,
+      "sha256": "sha256:854e2233603583a17807f9d4caa427a8c43e40b1582c6bdf23c1d61537c0730b",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:85ff01d6c63ba2f35c5c3d8ef36eddb35244840026a6192f3a884d273da3db58",
+      "byte_size": 232474585,
+      "key": "prediction-market/raw/pmxt-v2/sha256/85/85ff01d6c63ba2f35c5c3d8ef36eddb35244840026a6192f3a884d273da3db58.parquet",
+      "listed_byte_size": 232474585,
+      "sha256": "sha256:85ff01d6c63ba2f35c5c3d8ef36eddb35244840026a6192f3a884d273da3db58",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:86d1b41d285ca77e697bbd8e5ee4c206796ad5e8bbda695de2e44c990d0db52b",
+      "byte_size": 447613843,
+      "key": "prediction-market/raw/pmxt-v2/sha256/86/86d1b41d285ca77e697bbd8e5ee4c206796ad5e8bbda695de2e44c990d0db52b.parquet",
+      "listed_byte_size": 447613843,
+      "sha256": "sha256:86d1b41d285ca77e697bbd8e5ee4c206796ad5e8bbda695de2e44c990d0db52b",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:8aee0659e85a002386d0f616a0e77a0938fa0216c8c40ad4716cb7ec9343855e",
+      "byte_size": 390080256,
+      "key": "prediction-market/raw/pmxt-v2/sha256/8a/8aee0659e85a002386d0f616a0e77a0938fa0216c8c40ad4716cb7ec9343855e.parquet",
+      "listed_byte_size": 390080256,
+      "sha256": "sha256:8aee0659e85a002386d0f616a0e77a0938fa0216c8c40ad4716cb7ec9343855e",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:8b717d61ed8c8e9dcb42d8ae36d316af55861412575ecbd3ee32bd95b03856ca",
+      "byte_size": 340000868,
+      "key": "prediction-market/raw/pmxt-v2/sha256/8b/8b717d61ed8c8e9dcb42d8ae36d316af55861412575ecbd3ee32bd95b03856ca.parquet",
+      "listed_byte_size": 340000868,
+      "sha256": "sha256:8b717d61ed8c8e9dcb42d8ae36d316af55861412575ecbd3ee32bd95b03856ca",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:8e2cbe3041ae9721840c4c67f6f1ed0239f4fd2cd0f7e196ecdbd18e00e4fd8c",
+      "byte_size": 455188329,
+      "key": "prediction-market/raw/pmxt-v2/sha256/8e/8e2cbe3041ae9721840c4c67f6f1ed0239f4fd2cd0f7e196ecdbd18e00e4fd8c.parquet",
+      "listed_byte_size": 455188329,
+      "sha256": "sha256:8e2cbe3041ae9721840c4c67f6f1ed0239f4fd2cd0f7e196ecdbd18e00e4fd8c",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:917c70ee705d0797c23d1999aa252c6dcb8d875a6dbfbbbb8c4ff95ddf2a0bf6",
+      "byte_size": 200128239,
+      "key": "prediction-market/raw/pmxt-v2/sha256/91/917c70ee705d0797c23d1999aa252c6dcb8d875a6dbfbbbb8c4ff95ddf2a0bf6.parquet",
+      "listed_byte_size": 200128239,
+      "sha256": "sha256:917c70ee705d0797c23d1999aa252c6dcb8d875a6dbfbbbb8c4ff95ddf2a0bf6",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:94732a8c69584589c596e8a9f63cebd102735a48831b9f1d5145440f3560b6b2",
+      "byte_size": 271088937,
+      "key": "prediction-market/raw/pmxt-v2/sha256/94/94732a8c69584589c596e8a9f63cebd102735a48831b9f1d5145440f3560b6b2.parquet",
+      "listed_byte_size": 271088937,
+      "sha256": "sha256:94732a8c69584589c596e8a9f63cebd102735a48831b9f1d5145440f3560b6b2",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:95ae2ef44538d402fd393f403fdb528dbabbd06ceededfb325ba51ab1d0bde06",
+      "byte_size": 440504009,
+      "key": "prediction-market/raw/pmxt-v2/sha256/95/95ae2ef44538d402fd393f403fdb528dbabbd06ceededfb325ba51ab1d0bde06.parquet",
+      "listed_byte_size": 440504009,
+      "sha256": "sha256:95ae2ef44538d402fd393f403fdb528dbabbd06ceededfb325ba51ab1d0bde06",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:98da9bb87557cf1f2aaac7529ed7f695defa69a4af0e31283cb5ec6dfd8028b5",
+      "byte_size": 439841229,
+      "key": "prediction-market/raw/pmxt-v2/sha256/98/98da9bb87557cf1f2aaac7529ed7f695defa69a4af0e31283cb5ec6dfd8028b5.parquet",
+      "listed_byte_size": 439841229,
+      "sha256": "sha256:98da9bb87557cf1f2aaac7529ed7f695defa69a4af0e31283cb5ec6dfd8028b5",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:9b24e38f17fdbbe9e2e82d0ac78b687a9359d3970ae5229559ce08e977eb31b8",
+      "byte_size": 452480119,
+      "key": "prediction-market/raw/pmxt-v2/sha256/9b/9b24e38f17fdbbe9e2e82d0ac78b687a9359d3970ae5229559ce08e977eb31b8.parquet",
+      "listed_byte_size": 452480119,
+      "sha256": "sha256:9b24e38f17fdbbe9e2e82d0ac78b687a9359d3970ae5229559ce08e977eb31b8",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:9bcb193c8b54ad8f6cbcf68b2862b83e58d37faf057bdc38b55de1a6de0bfc87",
+      "byte_size": 210898741,
+      "key": "prediction-market/raw/pmxt-v2/sha256/9b/9bcb193c8b54ad8f6cbcf68b2862b83e58d37faf057bdc38b55de1a6de0bfc87.parquet",
+      "listed_byte_size": 210898741,
+      "sha256": "sha256:9bcb193c8b54ad8f6cbcf68b2862b83e58d37faf057bdc38b55de1a6de0bfc87",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:9cd7f1f03eecf7094fcb138b546b3c7fd1571ffa864259e53fd1e135dc79c87d",
+      "byte_size": 219300720,
+      "key": "prediction-market/raw/pmxt-v2/sha256/9c/9cd7f1f03eecf7094fcb138b546b3c7fd1571ffa864259e53fd1e135dc79c87d.parquet",
+      "listed_byte_size": 219300720,
+      "sha256": "sha256:9cd7f1f03eecf7094fcb138b546b3c7fd1571ffa864259e53fd1e135dc79c87d",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:9d21d357691377e2dcd714ebfdcf418b4519de2e4f40c71642cffa53d01e0867",
+      "byte_size": 468280272,
+      "key": "prediction-market/raw/pmxt-v2/sha256/9d/9d21d357691377e2dcd714ebfdcf418b4519de2e4f40c71642cffa53d01e0867.parquet",
+      "listed_byte_size": 468280272,
+      "sha256": "sha256:9d21d357691377e2dcd714ebfdcf418b4519de2e4f40c71642cffa53d01e0867",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:9e71dc4f45be7f3e16ba5c5acf10108b7b24fbadc125db81a0e1844c4e52fd22",
+      "byte_size": 484570316,
+      "key": "prediction-market/raw/pmxt-v2/sha256/9e/9e71dc4f45be7f3e16ba5c5acf10108b7b24fbadc125db81a0e1844c4e52fd22.parquet",
+      "listed_byte_size": 484570316,
+      "sha256": "sha256:9e71dc4f45be7f3e16ba5c5acf10108b7b24fbadc125db81a0e1844c4e52fd22",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:a32d0cdd4e6b39a4e24e42ca3e2a93fc2d243968873d4811abd48a56faea2516",
+      "byte_size": 437118602,
+      "key": "prediction-market/raw/pmxt-v2/sha256/a3/a32d0cdd4e6b39a4e24e42ca3e2a93fc2d243968873d4811abd48a56faea2516.parquet",
+      "listed_byte_size": 437118602,
+      "sha256": "sha256:a32d0cdd4e6b39a4e24e42ca3e2a93fc2d243968873d4811abd48a56faea2516",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:a4c0f28c6b521335819f69e4f0e795645cb289a7e99fc638957f8c85b84b8fe1",
+      "byte_size": 455401404,
+      "key": "prediction-market/raw/pmxt-v2/sha256/a4/a4c0f28c6b521335819f69e4f0e795645cb289a7e99fc638957f8c85b84b8fe1.parquet",
+      "listed_byte_size": 455401404,
+      "sha256": "sha256:a4c0f28c6b521335819f69e4f0e795645cb289a7e99fc638957f8c85b84b8fe1",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:abcf4bb7ab5175c5f85089aff3c8b2f036f746907250513fd34a5fe26ff5a3e2",
+      "byte_size": 231822550,
+      "key": "prediction-market/raw/pmxt-v2/sha256/ab/abcf4bb7ab5175c5f85089aff3c8b2f036f746907250513fd34a5fe26ff5a3e2.parquet",
+      "listed_byte_size": 231822550,
+      "sha256": "sha256:abcf4bb7ab5175c5f85089aff3c8b2f036f746907250513fd34a5fe26ff5a3e2",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:ad31fb578f1f11ea99b051af039399006c84c9c7acc06da3a0e08722de30feda",
+      "byte_size": 422301113,
+      "key": "prediction-market/raw/pmxt-v2/sha256/ad/ad31fb578f1f11ea99b051af039399006c84c9c7acc06da3a0e08722de30feda.parquet",
+      "listed_byte_size": 422301113,
+      "sha256": "sha256:ad31fb578f1f11ea99b051af039399006c84c9c7acc06da3a0e08722de30feda",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:b14013f8cfb4addf4865667e7ec2d15a27b299e744d3cb6cdf1fed195ca670f5",
+      "byte_size": 214846227,
+      "key": "prediction-market/raw/pmxt-v2/sha256/b1/b14013f8cfb4addf4865667e7ec2d15a27b299e744d3cb6cdf1fed195ca670f5.parquet",
+      "listed_byte_size": 214846227,
+      "sha256": "sha256:b14013f8cfb4addf4865667e7ec2d15a27b299e744d3cb6cdf1fed195ca670f5",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:b14975874f66b9010dedb7a1263d10dd0db9599303bd214070bce2f332b89e3f",
+      "byte_size": 454237543,
+      "key": "prediction-market/raw/pmxt-v2/sha256/b1/b14975874f66b9010dedb7a1263d10dd0db9599303bd214070bce2f332b89e3f.parquet",
+      "listed_byte_size": 454237543,
+      "sha256": "sha256:b14975874f66b9010dedb7a1263d10dd0db9599303bd214070bce2f332b89e3f",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:b223c3b336f45bd2d416d37d45bb0d3f54e723a61e0e72b9eaba659b059d0cc1",
+      "byte_size": 394399795,
+      "key": "prediction-market/raw/pmxt-v2/sha256/b2/b223c3b336f45bd2d416d37d45bb0d3f54e723a61e0e72b9eaba659b059d0cc1.parquet",
+      "listed_byte_size": 394399795,
+      "sha256": "sha256:b223c3b336f45bd2d416d37d45bb0d3f54e723a61e0e72b9eaba659b059d0cc1",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:bfc175ca4938543a103a16fd1143527ad61cceee5381265d452d6ed889fe8562",
+      "byte_size": 520972717,
+      "key": "prediction-market/raw/pmxt-v2/sha256/bf/bfc175ca4938543a103a16fd1143527ad61cceee5381265d452d6ed889fe8562.parquet",
+      "listed_byte_size": 520972717,
+      "sha256": "sha256:bfc175ca4938543a103a16fd1143527ad61cceee5381265d452d6ed889fe8562",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:c0e5cb4b01d10bc03e848b01499acecd0e86119a2888ca1d4986acb150aebca2",
+      "byte_size": 398843749,
+      "key": "prediction-market/raw/pmxt-v2/sha256/c0/c0e5cb4b01d10bc03e848b01499acecd0e86119a2888ca1d4986acb150aebca2.parquet",
+      "listed_byte_size": 398843749,
+      "sha256": "sha256:c0e5cb4b01d10bc03e848b01499acecd0e86119a2888ca1d4986acb150aebca2",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:c21dd589feed89e70acc0de5a129c9634fd76ee57b84639112dc097e6c7fc150",
+      "byte_size": 289272301,
+      "key": "prediction-market/raw/pmxt-v2/sha256/c2/c21dd589feed89e70acc0de5a129c9634fd76ee57b84639112dc097e6c7fc150.parquet",
+      "listed_byte_size": 289272301,
+      "sha256": "sha256:c21dd589feed89e70acc0de5a129c9634fd76ee57b84639112dc097e6c7fc150",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:c321e737a99db198ca7545b7a331343edd7c0bafdd880629979f8ea5a6ea3219",
+      "byte_size": 435112357,
+      "key": "prediction-market/raw/pmxt-v2/sha256/c3/c321e737a99db198ca7545b7a331343edd7c0bafdd880629979f8ea5a6ea3219.parquet",
+      "listed_byte_size": 435112357,
+      "sha256": "sha256:c321e737a99db198ca7545b7a331343edd7c0bafdd880629979f8ea5a6ea3219",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:c7d0a49fb21cb11ac5ff4d09b23a119e67fd8b10ad0636958882413823b48370",
+      "byte_size": 485450942,
+      "key": "prediction-market/raw/pmxt-v2/sha256/c7/c7d0a49fb21cb11ac5ff4d09b23a119e67fd8b10ad0636958882413823b48370.parquet",
+      "listed_byte_size": 485450942,
+      "sha256": "sha256:c7d0a49fb21cb11ac5ff4d09b23a119e67fd8b10ad0636958882413823b48370",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:cc4ded4fd15caf28ff01256c0c34d2d242fa2bd76b28d635c50a344c8e2cf446",
+      "byte_size": 475022954,
+      "key": "prediction-market/raw/pmxt-v2/sha256/cc/cc4ded4fd15caf28ff01256c0c34d2d242fa2bd76b28d635c50a344c8e2cf446.parquet",
+      "listed_byte_size": 475022954,
+      "sha256": "sha256:cc4ded4fd15caf28ff01256c0c34d2d242fa2bd76b28d635c50a344c8e2cf446",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:cc52fc1a6d6c82c92840a55a0da0a9ab0e25837842e9e321f1d4fcf01618f958",
+      "byte_size": 409175923,
+      "key": "prediction-market/raw/pmxt-v2/sha256/cc/cc52fc1a6d6c82c92840a55a0da0a9ab0e25837842e9e321f1d4fcf01618f958.parquet",
+      "listed_byte_size": 409175923,
+      "sha256": "sha256:cc52fc1a6d6c82c92840a55a0da0a9ab0e25837842e9e321f1d4fcf01618f958",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:cd68fa2337773c9b9410f09f9c99540938532005dc38bb5de0e8472baeffd2b8",
+      "byte_size": 476801681,
+      "key": "prediction-market/raw/pmxt-v2/sha256/cd/cd68fa2337773c9b9410f09f9c99540938532005dc38bb5de0e8472baeffd2b8.parquet",
+      "listed_byte_size": 476801681,
+      "sha256": "sha256:cd68fa2337773c9b9410f09f9c99540938532005dc38bb5de0e8472baeffd2b8",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:cf402e78dfb0c48091e9d022ff63f686b31e2ace731c1228958d868fe9943a4b",
+      "byte_size": 209874094,
+      "key": "prediction-market/raw/pmxt-v2/sha256/cf/cf402e78dfb0c48091e9d022ff63f686b31e2ace731c1228958d868fe9943a4b.parquet",
+      "listed_byte_size": 209874094,
+      "sha256": "sha256:cf402e78dfb0c48091e9d022ff63f686b31e2ace731c1228958d868fe9943a4b",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:d239b9a3ad1e29d4f1b521c142055111ccfb45ef6a40a8af7007a169100c27f3",
+      "byte_size": 492264402,
+      "key": "prediction-market/raw/pmxt-v2/sha256/d2/d239b9a3ad1e29d4f1b521c142055111ccfb45ef6a40a8af7007a169100c27f3.parquet",
+      "listed_byte_size": 492264402,
+      "sha256": "sha256:d239b9a3ad1e29d4f1b521c142055111ccfb45ef6a40a8af7007a169100c27f3",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:d282d9444af122fd596789a26c976223cd301f8068b433c9f633ed2ff4160f97",
+      "byte_size": 439914951,
+      "key": "prediction-market/raw/pmxt-v2/sha256/d2/d282d9444af122fd596789a26c976223cd301f8068b433c9f633ed2ff4160f97.parquet",
+      "listed_byte_size": 439914951,
+      "sha256": "sha256:d282d9444af122fd596789a26c976223cd301f8068b433c9f633ed2ff4160f97",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:e05bdbbada9ec870b8f2deceaa9bc2ba32492e9d7d7363f44a753792e1d8c278",
+      "byte_size": 377984826,
+      "key": "prediction-market/raw/pmxt-v2/sha256/e0/e05bdbbada9ec870b8f2deceaa9bc2ba32492e9d7d7363f44a753792e1d8c278.parquet",
+      "listed_byte_size": 377984826,
+      "sha256": "sha256:e05bdbbada9ec870b8f2deceaa9bc2ba32492e9d7d7363f44a753792e1d8c278",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:e6504e4ad0aad51fc0c9233e5c594c839d95dd4728f42839ce9b42f48069a3e3",
+      "byte_size": 403073741,
+      "key": "prediction-market/raw/pmxt-v2/sha256/e6/e6504e4ad0aad51fc0c9233e5c594c839d95dd4728f42839ce9b42f48069a3e3.parquet",
+      "listed_byte_size": 403073741,
+      "sha256": "sha256:e6504e4ad0aad51fc0c9233e5c594c839d95dd4728f42839ce9b42f48069a3e3",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:e6ced269ec15b89da9dd257ea64f6a26228f6e5ce61dae1ecd9a3e9da6777de0",
+      "byte_size": 429961455,
+      "key": "prediction-market/raw/pmxt-v2/sha256/e6/e6ced269ec15b89da9dd257ea64f6a26228f6e5ce61dae1ecd9a3e9da6777de0.parquet",
+      "listed_byte_size": 429961455,
+      "sha256": "sha256:e6ced269ec15b89da9dd257ea64f6a26228f6e5ce61dae1ecd9a3e9da6777de0",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:e76039c39abf846b74610c832bcedbe1555a5f3dcfebd93c6bc11ccce7528354",
+      "byte_size": 213833954,
+      "key": "prediction-market/raw/pmxt-v2/sha256/e7/e76039c39abf846b74610c832bcedbe1555a5f3dcfebd93c6bc11ccce7528354.parquet",
+      "listed_byte_size": 213833954,
+      "sha256": "sha256:e76039c39abf846b74610c832bcedbe1555a5f3dcfebd93c6bc11ccce7528354",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:ea2c36dcc25bc7da3890d389af219947ce576b8738864ba6768ba537c85b05db",
+      "byte_size": 469784849,
+      "key": "prediction-market/raw/pmxt-v2/sha256/ea/ea2c36dcc25bc7da3890d389af219947ce576b8738864ba6768ba537c85b05db.parquet",
+      "listed_byte_size": 469784849,
+      "sha256": "sha256:ea2c36dcc25bc7da3890d389af219947ce576b8738864ba6768ba537c85b05db",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:eb6d6f3476abbfb607e406e0f62c1177778d981780f3e991b9b5b7e681a2a5c1",
+      "byte_size": 450475457,
+      "key": "prediction-market/raw/pmxt-v2/sha256/eb/eb6d6f3476abbfb607e406e0f62c1177778d981780f3e991b9b5b7e681a2a5c1.parquet",
+      "listed_byte_size": 450475457,
+      "sha256": "sha256:eb6d6f3476abbfb607e406e0f62c1177778d981780f3e991b9b5b7e681a2a5c1",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:ec77f8edb347f6660f56f6168cb6593c704452e314adbfa54db708972a43c3c5",
+      "byte_size": 451452797,
+      "key": "prediction-market/raw/pmxt-v2/sha256/ec/ec77f8edb347f6660f56f6168cb6593c704452e314adbfa54db708972a43c3c5.parquet",
+      "listed_byte_size": 451452797,
+      "sha256": "sha256:ec77f8edb347f6660f56f6168cb6593c704452e314adbfa54db708972a43c3c5",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:f2c10f0efc2ee20d7da1c087647a670b527a14a78898953f8821a929831eaf37",
+      "byte_size": 364534397,
+      "key": "prediction-market/raw/pmxt-v2/sha256/f2/f2c10f0efc2ee20d7da1c087647a670b527a14a78898953f8821a929831eaf37.parquet",
+      "listed_byte_size": 364534397,
+      "sha256": "sha256:f2c10f0efc2ee20d7da1c087647a670b527a14a78898953f8821a929831eaf37",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:f7e71296c6163760c94389a40458ec3d9e9769f92975c5f68c1c44b313ff7661",
+      "byte_size": 1611563,
+      "key": "prediction-market/raw/pmxt-v2/sha256/f7/f7e71296c6163760c94389a40458ec3d9e9769f92975c5f68c1c44b313ff7661.parquet",
+      "listed_byte_size": 1611563,
+      "sha256": "sha256:f7e71296c6163760c94389a40458ec3d9e9769f92975c5f68c1c44b313ff7661",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:f86337ffb24ecfa8abd32d9967ec8b9e0e549013c2c78ff5f4ccc2cb08cdf53a",
+      "byte_size": 434310612,
+      "key": "prediction-market/raw/pmxt-v2/sha256/f8/f86337ffb24ecfa8abd32d9967ec8b9e0e549013c2c78ff5f4ccc2cb08cdf53a.parquet",
+      "listed_byte_size": 434310612,
+      "sha256": "sha256:f86337ffb24ecfa8abd32d9967ec8b9e0e549013c2c78ff5f4ccc2cb08cdf53a",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:fad5d1d4bad98829a75e049f8f99c13aba3eb8f0286b59b511e9369a97dfb242",
+      "byte_size": 464837106,
+      "key": "prediction-market/raw/pmxt-v2/sha256/fa/fad5d1d4bad98829a75e049f8f99c13aba3eb8f0286b59b511e9369a97dfb242.parquet",
+      "listed_byte_size": 464837106,
+      "sha256": "sha256:fad5d1d4bad98829a75e049f8f99c13aba3eb8f0286b59b511e9369a97dfb242",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:fb37af2d9be3637bf0565b385cf877c6a0eaa025f47d7e55ff20bd64dc453e5d",
+      "byte_size": 395281035,
+      "key": "prediction-market/raw/pmxt-v2/sha256/fb/fb37af2d9be3637bf0565b385cf877c6a0eaa025f47d7e55ff20bd64dc453e5d.parquet",
+      "listed_byte_size": 395281035,
+      "sha256": "sha256:fb37af2d9be3637bf0565b385cf877c6a0eaa025f47d7e55ff20bd64dc453e5d",
+      "status": "verified"
+    },
+    {
+      "actual_sha256": "sha256:fea1fe998deae2b3f6e07b9380e52f39712b1ec8812cb0f274bc09277ff2b111",
+      "byte_size": 216106763,
+      "key": "prediction-market/raw/pmxt-v2/sha256/fe/fea1fe998deae2b3f6e07b9380e52f39712b1ec8812cb0f274bc09277ff2b111.parquet",
+      "listed_byte_size": 216106763,
+      "sha256": "sha256:fea1fe998deae2b3f6e07b9380e52f39712b1ec8812cb0f274bc09277ff2b111",
+      "status": "verified"
+    }
+  ],
+  "prefix": "prediction-market",
+  "summary": {
+    "failure_count": 0,
+    "remote_object_count": 97,
+    "total_verified_bytes": 37633241856,
+    "verified_count": 97
+  }
+}

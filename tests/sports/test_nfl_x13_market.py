@@ -341,8 +341,8 @@ def test_kalshi_trade_and_one_minute_candle_bbo_remain_separate() -> None:
     assert trade.kind == "trade"
     assert trade.price == Decimal("0.61")
     assert trade.bid is None and trade.ask is None
-    assert trade.source_interval.start == _at(10)
-    assert trade.source_interval.end == _at(11)
+    assert trade.source_interval.start == _at(10, microsecond=123456)
+    assert trade.source_interval.end == _at(10, microsecond=123457)
     assert trade.native_source_time == _at(10, microsecond=123456)
     assert trade.is_block_trade is False
     assert trade.taker_side == "yes"
@@ -374,7 +374,7 @@ def test_kalshi_trade_and_one_minute_candle_bbo_remain_separate() -> None:
     assert candle.open_interest == Decimal("125.00")
 
 
-def test_kalshi_trade_microseconds_are_provenance_not_ordering_evidence() -> None:
+def test_kalshi_trade_preserves_native_microsecond_ordering() -> None:
     common = {
         "is_block_trade": False,
         "taker_side": "no",
@@ -406,9 +406,11 @@ def test_kalshi_trade_microseconds_are_provenance_not_ordering_evidence() -> Non
 
     assert early_native.native_source_time == _at(10, microsecond=1)
     assert late_native.native_source_time == _at(10, microsecond=999999)
-    assert early_native.source_interval == late_native.source_interval
     assert early_native.source_interval == SourceInterval(
-        _at(10), _at(11), False
+        _at(10, microsecond=1), _at(10, microsecond=2), False
+    )
+    assert late_native.source_interval == SourceInterval(
+        _at(10, microsecond=999999), _at(11), False
     )
 
 
@@ -644,10 +646,49 @@ def test_layer_g_and_m_same_second_overlap_is_order_ambiguous() -> None:
 
     assert event.start == _at(10)
     assert event.end == _at(11)
-    assert event.end_inclusive is True
+    assert event.end_inclusive is False
     assert association.overlap is True
     assert association.order_ambiguous is True
     assert association.order_relation is None
+
+
+def test_kalshi_trade_after_one_second_game_uncertainty_is_post_event() -> None:
+    event = build_layer_g_interval(_at(10), delay_seconds=Decimal("0"))
+    before_close = normalize_kalshi_trade(
+        {
+            "trade_id": "inside-game-second",
+            "created_time": "2025-12-05T01:00:10.999999Z",
+            "is_block_trade": False,
+            "taker_side": "yes",
+            "taker_outcome_side": "yes",
+            "yes_price_dollars": "0.61",
+            "no_price_dollars": "0.39",
+            "count_fp": "1",
+        },
+        ticker="KXNFLGAME-25DEC04DALDET-DET",
+        outcome="DET",
+        logical_market_id=GAME_ID,
+    )
+    after_close = normalize_kalshi_trade(
+        {
+            "trade_id": "after-game-second",
+            "created_time": "2025-12-05T01:00:11.000001Z",
+            "is_block_trade": False,
+            "taker_side": "yes",
+            "taker_outcome_side": "yes",
+            "yes_price_dollars": "0.61",
+            "no_price_dollars": "0.39",
+            "count_fp": "1",
+        },
+        ticker="KXNFLGAME-25DEC04DALDET-DET",
+        outcome="DET",
+        logical_market_id=GAME_ID,
+    )
+
+    assert associate_intervals(event, before_close.source_interval).order_ambiguous
+    assert associate_intervals(
+        event, after_close.source_interval
+    ).order_relation == "market_after_event"
 
 
 def test_delay_expands_uncertainty_without_manufacturing_order() -> None:
