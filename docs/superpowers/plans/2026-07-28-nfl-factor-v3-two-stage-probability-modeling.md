@@ -1,656 +1,594 @@
-# NFL Factor V3 Two-Stage Probability Modeling Implementation Plan
+# NFL Factor V3 — C1.1 Exact-153 Two-Stage Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> Status: approved unanimously on 2026-07-29 by Sports Scientist, Quant Analyst,
+> and Adversarial Reviewer. Execute with `superpowers:subagent-driven-development`.
 
-**Goal:** Re-extract exhaustive, auditable NFL facts for the frozen 153-game development sample and use them in a two-stage model that separates football reference value from the subsequent Polymarket/Kalshi winner-market probability path.
+## 1. Goal
 
-**Architecture:** Stage A produces a version-pinned football win-probability reference before and after each finalized information episode. Stage B consumes the episode facts, reference change, and decision-time market state to predict the conditional distribution of future actual-trade price changes at multiple landmarks and horizons. All model selection uses game-grouped chronological out-of-fold predictions; the 81-game final holdout remains unread until factor, feature, target, and model locks are frozen.
+Reuse the verified 153-game development corpus to build two distinct models:
 
-**Tech Stack:** Python 3.12, pandas, PyArrow, DuckDB, scikit-learn 1.9, XGBoost 3.3, frozen nflverse/fastrmodels assets, Jupyter, immutable content-addressed artifacts.
+1. **Stage A — football reference value**
+   - Apply the frozen no-spread fastrmodels XGBoost model.
+   - Produce auditable home-win probabilities before and after eligible atomic
+     information episodes.
+   - Do not retrain or recalibrate the football model on these 153 games.
 
----
+2. **Stage B — observed market reaction**
+   - Predict whether a clean future endpoint remains observable.
+   - Conditional on a fresh actual trade, predict direction and magnitude of the
+     home-outcome price change from decision landmark `L` to endpoint `H`.
+   - Train and evaluate Polymarket and Kalshi separately, then run exact-pair and
+     temporal transport diagnostics.
 
-## 1. Current State and Non-Negotiable Boundaries
+The 81-game final cohort remains unread until every fact, feature, target,
+threshold, model, calibrator, exclusion, and metric is frozen in
+`ShortlistLockV1`.
 
-The implementation must reuse, not rebuild, the following published inputs:
+## 2. Inputs That Must Be Reused
 
 - 153 verified X-13 development game bundles.
 - 4,773,299 historical actual-trade observations.
 - 610,932 historical reaction paths.
 - Frozen nflverse play-by-play and participation objects.
-- Frozen fastrmodels no-spread XGBoost asset.
-- Existing X-15 landmark, walk-forward, policy, and publication machinery.
-- Existing S3 hydrate and SHA-256 verification path.
+- Frozen no-spread fastrmodels XGBoost asset and SHA-256.
+- Existing X-15 landmark, walk-forward, publication, and S3 hydrate machinery.
+- Existing content-addressed manifests and hashes.
 
-The following old outputs remain immutable evidence but are not training authority for V3:
+Do not:
 
-- X-13 factor registry V2 and its 101-factor distributions.
-- X-15 coarse primary-event results.
-- Any old report that grouped heterogeneous events such as ordinary `PASS`.
+- redownload or recapture the 153 games;
+- replay upstream market APIs;
+- edit old immutable artifacts or manifests;
+- read holdout reaction data before the lock;
+- forward-fill missing trades;
+- infer historical L2, bid/ask, OFI, depth, queue, or fill;
+- train on derived home complements as if they were actual home trades;
+- count multiple factor tags as multiple training observations.
 
-The implementation must not:
+DAL–DET remains a semantic audit fixture. Its validated schema is expanded to the
+frozen 153-game development cohort; it is not silently inserted into that cohort.
 
-- read the 81-game final holdout before `ShortlistLockV1`;
-- use random row splits;
-- count multiple plays or venues from one game as independent games;
-- forward-fill missing historical trades;
-- use endpoint information in a decision-time feature;
-- call historical actual trades executable bid/ask prices;
-- infer injury, substitution, route, coverage, or pressure facts not present in an approved source;
-- calculate OFI, depth, queue, or fill metrics from trades-only history.
+## 3. Resource Budget
 
-## 2. First-Principles Research Decomposition
+The host has 16 GiB RAM and showed 13.22 GiB of swap already in use. Current
+memory pressure is healthy, but the implementation must avoid a second spike.
 
-The target is not one probability. It is two linked but distinct questions:
+- Default heavy batch workers: `1`.
+- Process one game at a time.
+- Write per-game Parquet/JSON artifacts before releasing DataFrames.
+- Do not hold the full 153-game sports and market panels in pandas simultaneously.
+- Aggregate through DuckDB/Arrow scans of published per-game objects.
+- Model training must set explicit thread limits.
+- Increase worker count only after measured peak RSS leaves at least 4 GiB headroom.
 
-### Stage A — Football reference value
+## 4. Canonical Data Model
 
-Given finalized game state and episode facts:
+### 4.1 Sports fact grain
 
-```text
-p_ref_before = P(home wins | state before episode)
-p_ref_after  = P(home wins | state after finalized episode)
-reference_delta = p_ref_after - p_ref_before
-```
-
-This answers how much the football state changed according to a reproducible open model. It is a diagnostic reference, not ground truth.
-
-### Stage B — Market reaction
-
-At a decision landmark `L` after the episode, predict the actual-trade price change through endpoint `H`:
+`EpisodeFactV3` grain:
 
 ```text
-target_delta(L,H) = focal_trade_price(H) - focal_trade_price(L)
-remaining_reference_gap(L) = p_ref_after_focal - focal_trade_price(L)
+game_id × atomic_information_episode_id
 ```
 
-This answers:
-
-- whether the next observed move is up, flat, or down;
-- the expected range, not only the mean;
-- how much of the reference change is completed by each horizon;
-- whether the path continues, stalls, overshoots, or reverses.
-
-The models must never collapse these two questions into one opaque “alpha model.”
-
-## 3. What Mature Practice Contributes
-
-The implementation adopts the following established ideas:
-
-1. **State-value modeling.** Football win probability is conditioned on score, clock, possession, down, distance, field position, timeouts, and pregame strength. The official nflfastR interface exposes `wp` and `vegas_wp`, and published sports-analytics reviews treat state value and win probability as the standard starting point.
-   - https://nflfastr.com/reference/calculate_win_probability.html
-   - https://arxiv.org/abs/2301.04001
-
-2. **Event surprise, not event name alone.** In-play market research commonly distinguishes an event from how surprising or valuable it was in the pre-event state. An interception in Q1 and one in a Q4 close game therefore share an event subtype but not a predicted impact.
-   - https://www.sciencedirect.com/science/article/pii/S0167268114000481
-
-3. **Time-conditional calibration.** A market price cannot be treated as a universally calibrated probability without conditioning on time and product. Recent Kalshi sports evidence reports materially different calibration close to expiry, so game time and pre-event price remain continuous model inputs.
-   - https://arxiv.org/abs/2607.14430
-
-4. **Probability calibration on disjoint data.** A classifier’s raw `predict_proba` is not automatically calibrated. Calibration must use predictions from data disjoint from model fitting.
-   - https://scikit-learn.org/stable/modules/calibration.html
-
-5. **Distributional prediction.** Signed price changes are not Beta distributed. Quantile regression produces conditional ranges without imposing a symmetric Gaussian shape. XGBoost supports `reg:quantileerror` with histogram trees; quantile crossing must be audited.
-   - https://xgboost.readthedocs.io/en/release_3.2.0/python/examples/quantile_regression.html
-
-6. **Chronological validation.** Sports states and venue liquidity change through a season. All tuning, calibration, and evaluation must preserve complete games and time order.
-
-The implementation explicitly does not adopt L2-only methods such as OFI, microprice, DeepLOB, or queue models for the 2025 historical study. Those belong to X-14 prospective L2 data.
-
-## 4. Canonical Fact and Factor Design
-
-### 4.1 Separate facts from research predicates
-
-`CanonicalEpisodeFactV3` is the model input. `FactorDefinitionV3` is a human-readable predicate over those facts.
-
-```python
-@dataclass(frozen=True)
-class CanonicalEpisodeFactV3:
-    game_id: str
-    episode_id: str
-    event_anchor_utc: datetime
-    primary_action: str
-    outcome_tags: tuple[str, ...]
-    beneficiary_team: str | None
-    quarter: int
-    game_seconds_remaining: int
-    score_margin_beneficiary: int
-    down: int | None
-    distance: int | None
-    yardline_100: float | None
-    yards_gained: float | None
-    air_yards: float | None
-    yards_after_catch: float | None
-    return_yards: float | None
-    kick_distance: float | None
-    possession_changed: bool
-    score_delta_beneficiary: int
-    confirmed_injury: bool
-    source_hashes: tuple[str, ...]
-```
-
-`FactorDefinitionV3` remains deterministic:
-
-```python
-@dataclass(frozen=True)
-class FactorDefinitionV3:
-    factor_id: str
-    version: str
-    family: str
-    meaning_en: str
-    meaning_zh: str
-    predicate: Mapping[str, object]
-    exclusions: tuple[str, ...]
-    status: Literal["ACTIVE", "DATA_GAP", "REJECT"]
-```
-
-The model receives continuous state. It must not create separate sparse model columns for every manually named combination.
-
-### 4.2 Exhaustive episode facts
-
-The 153-game extraction must cover:
-
-- action: pass, run, scramble, sack, punt, kickoff, field goal, try, kneel, spike;
-- pass: complete/incomplete, depth, location, air yards, YAC, passer/receiver;
-- run: designed run/scramble, location, gap, rusher, yards;
-- turnover: interception, lost fumble, turnover on downs, muff, recovery team, return yards, return touchdown;
-- score: passing/rushing/defensive/return TD, FG, PAT, 2PT, defensive 2PT, safety;
-- special teams: punt/kickoff/FG outcome, touchback, fair catch, inside-20, onside, blocked kick, return;
-- administration: accepted/declined/no-play penalty, review, reversal, timeout, deleted/admin rows;
-- state: exact remaining seconds, score, margin, possession, down/distance, field coordinate, red zone, timeouts;
-- player evidence: stable IDs, explicit roles, approved participation, explicit in-play injury/return evidence.
-
-Pregame injury timelines and exact substitution timestamps remain `DATA_GAP`.
-
-### 4.3 Episode finalization
-
-The feature builder must use the first state before and the final state after the full information episode:
-
-- TD absorbs PAT/2PT, directly related penalty/retry, and review.
-- Pick-six retains both turnover and score tags.
-- No-play and reversed outcomes do not create live outcome facts.
-- Review rows attach to the affected live episode.
-- The next salient episode defines contamination, not a future feature.
-
-## 5. Stage A Model Design
-
-### 5.1 Canonical model
-
-The canonical Stage A model is the already-pinned official fastrmodels no-spread XGBoost booster:
+Required identity and timing:
 
 ```text
-model asset: wp_model.ubj
-runtime: xgboost==3.3.0
-input orientation: possession probability converted to home/focal
-formal support: regulation only
-OT: MODEL_SUPPORT_UNPROVEN
+game_id
+raw_play_id
+atomic_information_episode_id
+score_sequence_id
+adjudication_sequence_id
+source_interval_start
+source_interval_end
+source_resolution
+information_status       PROVISIONAL | FINAL | REVERSED
+stage_b_information_event_eligible
+final_sports_outcome_eligible
+known_at
+source_hashes
 ```
 
-No new football model is trained in V3. This prevents the 153 market-covered games from being misused as a small football-model training set.
-
-### 5.2 Comparators
-
-Publish three Stage A references without blending them:
-
-1. `no_spread_open_model`: canonical reproducible fastrmodels inference.
-2. `upstream_vegas_wp_diagnostic`: nflverse-provided value when its lineage is present.
-3. `pre_event_market_probability`: actual venue trade, used only as a market baseline.
-
-The system must not average these into a consensus in V3.
-
-### 5.3 Stage A evaluation
-
-For each supported regulation state, compare predicted home probability with final game outcome, but aggregate uncertainty by game.
-
-Report:
-
-- Brier score;
-- log loss;
-- calibration slope/intercept;
-- reliability curve by 10-point probability bins;
-- performance by quarter and remaining-time band;
-- disagreement between no-spread reference, upstream Vegas diagnostic, and venue prices.
-
-Do not treat the many states within one game as independent observations. Use equal-game weighting and game-cluster bootstrap intervals.
-
-## 6. Stage B Dataset and Targets
-
-### 6.1 Grain
-
-The training panel grain is:
+Required orientation:
 
 ```text
-game
-× finalized episode
+home_team
+away_team
+actor_team
+beneficiary_team
+actor_is_home
+beneficiary_is_home
+possession_is_home
+beneficiary_resolution_status
+```
+
+`beneficiary_team` may only be derived from finalized sports rules. It may not be
+derived from market movement, reference sign, or final game result. Unresolvable
+beneficiary remains null/`UNRESOLVED`.
+
+Required state and transition facts include:
+
+- period, exact game seconds remaining, score, signed home margin;
+- possession, offense, defense, down, distance, yardline, red zone, goal-to-go;
+- timeouts and drive identity;
+- pass, run, scramble, sack, punt, kickoff, FG, try, kneel, spike;
+- completion, pass depth/location, air yards, YAC;
+- run location/gap, yards, return yards, kick distance;
+- first down, third/fourth conversion/failure;
+- INT, fumble, lost fumble, recovery, turnover on downs, muff;
+- passing/rushing/defensive/return TD, FG, PAT, 2PT, defensive 2PT, safety;
+- touchback, fair catch, inside-20, onside, blocked kick;
+- penalty disposition, review, reversal, timeout, no-play, deleted/admin;
+- stable player IDs and explicit source-supported roles;
+- participation quality and explicit source-supported injury/return evidence.
+
+Pregame injury timeline, official substitution timestamp, routes, coverage,
+tracking, pressure assignment, public betting percentage, and PFF grade remain
+`DATA_GAP`.
+
+### 4.2 Market reaction grain
+
+`VenueReactionPanelV3` grain:
+
+```text
+game_id
+× atomic_information_episode_id
 × venue
-× beneficiary winner market
-× decision landmark
-× future endpoint
-```
-
-Decision landmarks:
-
-```text
-1, 2, 3, 5, 10 seconds
-```
-
-Endpoints:
-
-```text
-5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60 seconds
-```
-
-Only endpoints later than the decision landmark are emitted.
-
-### 6.2 Observed marks
-
-Each landmark and endpoint uses an actual focal-outcome trade no more than three seconds old. A missing mark remains missing.
-
-```python
-decision_eligible = (
-    landmark_trade_observed
-    and landmark_orientation_valid
-    and not contaminated_before_landmark
-    and not censored_before_landmark
-)
-
-target_eligible = (
-    decision_eligible
-    and endpoint_trade_observed
-    and endpoint_orientation_valid
-    and not contaminated_before_endpoint
-    and not censored_before_endpoint
-)
-```
-
-`decision_eligible` may not depend on endpoint observability.
-
-### 6.3 Targets
-
-Continuous target:
-
-```text
-target_delta = endpoint_price - landmark_price
-```
-
-Direction target:
-
-```text
-DOWN     if target_delta < -noise_threshold
-NO_MOVE  if abs(target_delta) <= noise_threshold
-UP       if target_delta > noise_threshold
-```
-
-`noise_threshold` is trained separately by venue and outer fold:
-
-```text
-max(1 percentage point, matched-control P95 absolute change)
-```
-
-Auxiliary targets:
-
-- `abs_move_ge_1pp`, `abs_move_ge_2pp`, `abs_move_ge_5pp`;
-- continuation versus reversal from the 10-second direction to the endpoint;
-- completion fraction only when `abs(reference_delta) >= 1pp`.
-
-## 7. Stage B Feature Lock
-
-### 7.1 Categorical features
-
-- primary action;
-- atomic outcome tags;
-- score method;
-- turnover subtype;
-- possession beneficiary;
-- venue;
-- landmark and endpoint;
-- quarter only as an interpretable companion to continuous time.
-
-### 7.2 Numeric/boolean features
-
-- exact game seconds remaining;
-- score margin in beneficiary orientation;
-- down, distance, yardline, red-zone and goal-to-go;
-- yards gained, air yards, YAC, return yards, kick distance;
-- possession change, score change, lead-change type;
-- timeouts remaining;
-- reference probability before/after and `reference_delta`;
-- decision-time actual trade price;
-- `remaining_reference_gap`;
-- decision-time staleness;
-- prior 30/60-second actual trade count and size;
-- both-venues-active status.
-
-### 7.3 Excluded features
-
-- endpoint price or endpoint activity;
-- post-landmark future trade counts;
-- final game result;
-- future revisions;
-- inferred injury or substitution;
-- player/team season aggregates in V3;
-- formation/personnel strategy in V3;
-- historical L2 fields that do not exist.
-
-## 8. Stage B Model Suite
-
-All models train separately by venue. Polymarket and Kalshi may only be pooled in an explicit later experiment with venue interactions.
-
-### B0 — Intercept and matched empirical baselines
-
-Publish:
-
-- unconditional venue/landmark/endpoint base rates;
-- nearest matched historical episode distribution;
-- factor-level empirical-Bayes shrinkage toward its parent event family.
-
-The matched state uses pre-event probability, remaining time, score margin, field position, staleness, and activity. This is the transparent baseline against which ML must improve.
-
-### B1 — Calibrated multinomial logistic direction model
-
-Predict:
-
-```text
-P(DOWN), P(NO_MOVE), P(UP)
-```
-
-Use regularized multinomial logistic regression with one-hot categorical and standardized numeric inputs.
-
-For each outer fold:
-
-1. fit the base classifier on the earlier portion of its training weeks;
-2. calibrate on the latest training week, never on outer validation;
-3. use sigmoid calibration as the primary method;
-4. publish uncalibrated and calibrated probabilities for audit.
-
-The current X-15 label `CALIBRATED_CLASS_PROBABILITY` must be replaced unless an actual disjoint calibrator was fitted.
-
-### B2 — XGBoost quantile distribution model
-
-Train `reg:quantileerror` with histogram trees for:
-
-```text
-q05, q10, q25, q50, q75, q90, q95
-```
-
-Use:
-
-```python
-quantile_alpha = np.array([0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95])
-tree_method = "hist"
-```
-
-Audit and monotonically project crossed quantiles before publication. Preserve both raw and projected outputs.
-
-### B3 — XGBoost mean-regression comparator
-
-Retain the existing shallow `reg:squarederror` model as a point-estimate comparator. It cannot be presented as a probability distribution.
-
-### B4 — Threshold probability models
-
-Fit calibrated binary logistic models for:
-
-- `P(abs(delta) >= 1pp)`;
-- `P(abs(delta) >= 2pp)`;
-- `P(abs(delta) >= 5pp)`;
-- `P(reversal by H)`.
-
-If an outer training fold lacks both classes, that target/fold is `INSUFFICIENT_SUPPORT`; it is not silently collapsed to a constant prediction.
-
-## 9. Chronological Validation
-
-Use the existing five outer expanding folds:
-
-```text
-weeks 1–2  → validate 3–4
-weeks 1–4  → validate 5–6
-weeks 1–6  → validate 7–8
-weeks 1–8  → validate 9–10
-weeks 1–10 → validate 11–12
+× actual_home_outcome_contract
+× decision_landmark_L
+× endpoint_H
 ```
 
 Rules:
 
-- complete games stay in one fold;
-- the two venues for one game stay in the same fold;
-- preprocessing is fitted inside each training fold;
-- calibration uses only training weeks;
-- noise thresholds use only training matched controls;
-- tuning uses training/calibration data, never outer validation;
-- final reported development metrics use only out-of-fold rows.
+- Factor and event tags are multi-hot columns on this row.
+- `factor_id` is never part of the training primary key.
+- H-missing rows remain in the availability panel.
+- Actual home trades and away-derived home complements are separate records.
+- Only actual home-outcome trades enter primary training targets.
+- Derived complements remain non-observed and non-executable diagnostics.
 
-The 81-game holdout is not an additional tuning fold. It is read once after all locks.
+## 5. Atomic Event and Adjudication Rules
 
-## 10. Model Evaluation
+- TD, PAT, and 2PT are separate atomic information episodes.
+- `score_sequence_id` connects TD to its try sequence.
+- Pick-six is one atomic event with both turnover and defensive-TD tags.
+- A retried snap is a new atomic action.
+- A timestamped provisional ruling, review initiation, review decision, and
+  reversal can each be a Stage B information event.
+- `adjudication_sequence_id` connects those information events.
+- The next independent information event censors the previous reaction window.
+- Only a final effective sports result enters the stat ledger and Stage A state
+  transition.
+- Nullified/reversed results do not enter final score, turnover, or player stats.
+- If the historical source lacks an independent revision timestamp, do not invent
+  a provisional/reversal sequence; retain only provable finalized information.
+- Atomic-event and sequence-level aggregates may both be published, but they may
+  not both count as independent samples in one estimate.
 
-### 10.1 Direction probabilities
+## 6. Stage A — Frozen Football Reference
 
-Primary:
+### 6.1 Model
 
-- multiclass log loss;
-- multiclass Brier score;
-- class-wise Brier score;
-- reliability diagram;
-- expected calibration error;
-- calibration slope/intercept.
-
-Secondary:
-
-- macro F1;
-- balanced accuracy;
-- per-class precision/recall;
-- confusion matrix.
-
-Raw accuracy is not a primary metric because `NO_MOVE` is common.
-
-### 10.2 Conditional distribution
-
-- pinball loss at every quantile;
-- central 50%, 80%, and 90% interval coverage;
-- interval width;
-- median absolute error;
-- approximate CRPS from the quantile grid;
-- quantile-crossing rate before projection.
-
-### 10.3 Research stability
-
-- game-cluster bootstrap confidence intervals;
-- per-game metric distribution;
-- leave-one-game-out direction stability;
-- maximum single-game contribution;
-- performance by venue, event family, quarter, continuous time, score band, pre-price band, and reference-delta magnitude.
-
-### 10.4 Required ablations
-
-Run the same folds for:
+Use the existing version-pinned no-spread fastrmodels XGBoost model:
 
 ```text
-A: market state only
-B: A + game state
-C: B + atomic event facts
-D: C + reference_delta / remaining_reference_gap
-E: D + activity and staleness
+model asset SHA-256: frozen existing registry value
+runtime: xgboost 3.3
+orientation: home-win probability
+training in this phase: none
+recalibration in this phase: none
+formal support: regulation
+OT: MODEL_SUPPORT_UNPROVEN
 ```
 
-The contribution of a feature block is the paired per-game out-of-fold metric difference. A block is useful only if its game-cluster 95% interval excludes no improvement on the primary metric.
+Every model input must publish:
 
-## 11. Promotion and Holdout Rules
-
-### 11.1 Model promotion
-
-A Stage B model may become the frozen development model only when:
-
-- log loss and Brier improve over B0 using paired game-cluster intervals;
-- calibration is not worse than the uncalibrated baseline;
-- improvement occurs in at least four of five outer folds;
-- the result is not driven by one game;
-- required event/state features pass PIT and provenance checks;
-- venue-specific support is adequate.
-
-Quantile publication additionally requires:
-
-- central interval coverage within five percentage points of nominal;
-- projected quantiles are monotone;
-- median pinball loss improves over the empirical median baseline.
-
-### 11.2 Factor shortlist
-
-A named factor is eligible for expert review only when:
-
-- its sports definition is `ACCEPT`;
-- it spans at least 30 games per claimed venue;
-- OOF direction and magnitude are stable;
-- its effect is not a residual heterogeneous bucket;
-- factor-family BH correction and leave-one-game-out gates pass.
-
-No cross-venue requirement is imposed on a venue-specific model. A cross-venue claim requires both venues independently to pass and agree in sign.
-
-### 11.3 Final holdout
-
-`ShortlistLockV1` freezes:
-
-- factor registry hash;
-- episode finalization rules;
-- feature list;
-- landmarks/endpoints;
-- targets/noise thresholds;
-- model hyperparameters;
-- calibration method;
-- exclusions;
-- metric and promotion gates.
-
-The 81-game holdout is then evaluated exactly once. A claim replicates only when its holdout effect is in the same direction, its 95% interval excludes zero/no improvement, and its magnitude is at least 50% of development.
-
-## 12. Public Interfaces and Artifacts
-
-### Task 1: Publish exact-153 V3 facts
-
-**Files:**
-- Modify: `src/prediction_market/sports/nfl_x16_fact_extraction.py`
-- Create: `src/prediction_market/sports/nfl_x16_exact153.py`
-- Test: `tests/sports/test_nfl_x16_exact153.py`
-
-- [ ] Add an episode-level V3 fact schema without changing the frozen raw inputs.
-- [ ] Run the single-game extractor over four deterministic game shards.
-- [ ] Reconcile every raw row and every finalized episode.
-- [ ] Publish one content-addressed game bundle per game and one batch index.
-- [ ] Verify two runs produce identical semantic hashes.
-
-Public entry point:
-
-```python
-def build_exact153_fact_bundle_v3(
-    *,
-    batch_index: Path,
-    factor_registry: Path,
-    output_root: Path,
-    workers: int = 4,
-) -> Exact153FactPublication:
-    ...
+```text
+feature_name
+feature_value
+feature_known_at
+source_row_id
+source_hash
+PIT_status
 ```
 
-### Task 2: Build Stage A reference observations
+`receive_2h_ko` is fail-closed:
 
-**Files:**
-- Modify: `src/prediction_market/sports/nfl_reference_value.py`
-- Create: `src/prediction_market/research/nfl_stage_a_reference.py`
-- Test: `tests/research/test_nfl_stage_a_reference.py`
+- use only evidence known before the decision state;
+- never fill first-half states by looking at the Q3 receiving team;
+- if no auditable as-of source exists, the reference row is unsupported.
 
-- [ ] Load the pinned fastrmodels asset by hash.
-- [ ] Calculate pre/post reference probability for supported regulation episodes.
-- [ ] Orient all values to the beneficiary and home outcomes.
-- [ ] Publish unsupported/excluded reason rows.
-- [ ] Publish game-weighted calibration and comparison tables.
+### 6.2 Pre/post purity
 
-### Task 3: Build the V3 landmark training panel
+```text
+p_before_home = P(home wins | pure state before episode)
+p_after_home  = P(home wins | pure state after episode)
+reference_delta_home = p_after_home - p_before_home
+```
 
-**Files:**
-- Replace: `src/prediction_market/research/nfl_x15_landmarks.py`
-- Test: `tests/research/test_nfl_x15_landmarks.py`
+An atomic reference delta is eligible only when no independent PAT, 2PT, kickoff,
+return, review decision, or next snap lies between the pre/post model states.
 
-- [ ] Join episode facts, reference observations, and actual winner trades.
-- [ ] Preserve decision eligibility independently from future target availability.
-- [ ] Emit all approved landmark/endpoint pairs.
-- [ ] Prove no endpoint field enters the feature view.
-- [ ] Publish attrition by venue, landmark, endpoint, and exclusion reason.
+Otherwise publish:
 
-### Task 4: Implement calibrated direction models
+```text
+reference_status = COMPOSITE_TRANSITION
+intervening_episode_ids
+bridge_delta_home       optional diagnostic only
+```
 
-**Files:**
-- Replace: `src/prediction_market/research/nfl_x15_models.py`
-- Create: `src/prediction_market/research/nfl_x15_calibration.py`
-- Test: `tests/research/test_nfl_x15_models.py`
-- Test: `tests/research/test_nfl_x15_calibration.py`
+Composite bridge deltas must not be presented as the atomic event effect.
 
-- [ ] Implement outer week folds and inner chronological calibration.
-- [ ] Publish raw and calibrated class probabilities.
-- [ ] Calculate log loss, Brier, ECE, slope/intercept, and macro F1.
-- [ ] Reject training folds without all required classes.
-- [ ] Remove the false calibrated-probability label from old behavior.
+### 6.3 Output and evaluation
 
-### Task 5: Implement conditional distribution models
+`ReferenceValueObservationV1` contains:
 
-**Files:**
-- Create: `src/prediction_market/research/nfl_x15_distribution.py`
-- Test: `tests/research/test_nfl_x15_distribution.py`
+```text
+game_id
+episode_id
+p_before_home
+p_after_home
+reference_delta_home
+reference_status
+pre/post source rows and timestamps
+model/input hashes
+claim_boundary = RETROSPECTIVE_DIAGNOSTIC
+```
 
-- [ ] Train the seven-quantile XGBoost model.
-- [ ] Preserve raw quantiles and publish monotone projected quantiles.
-- [ ] Implement threshold-probability classifiers.
-- [ ] Calculate pinball, coverage, width, median MAE, and approximate CRPS.
-- [ ] Publish `INSUFFICIENT_SUPPORT` instead of constant-label models.
+Evaluate supported regulation states against final game outcome with:
 
-### Task 6: Run ablations and model selection
+- equal total weight per game;
+- Brier score and log loss;
+- calibration slope/intercept and reliability table;
+- quarter/time/probability breakdown;
+- game-cluster bootstrap confidence intervals.
 
-**Files:**
-- Create: `src/prediction_market/research/nfl_x15_model_selection.py`
-- Test: `tests/research/test_nfl_x15_model_selection.py`
+Tied final games are excluded from binary scoring. These metrics evaluate overall
+state-probability calibration; they do not make each event delta ground truth.
 
-- [ ] Run the A–E feature-block ablation matrix.
-- [ ] Compare per-game OOF losses with cluster bootstrap intervals.
-- [ ] Apply the fixed promotion rules.
-- [ ] Publish selected and rejected models with exact reasons.
-- [ ] Prove no holdout path is opened.
+## 7. Stage B — Observability, Direction, and Distribution
 
-### Task 7: Publish the single research workbench
+### 7.1 Time grid
 
-**Files:**
-- Modify: `notebooks/nfl-factor-lab/NFL_Factor_Lab_Master.ipynb`
-- Modify: `src/prediction_market/workbench/factor_lab_master.py`
-- Create: `src/prediction_market/reports/nfl_x16_probability_workbench.py`
-- Test: `tests/workbench/test_nfl_x16_probability_workbench.py`
+Event anchors use `[source_interval_start, source_interval_end)`.
 
-- [ ] Add V3 fact coverage and V2→V3 comparison.
-- [ ] Add Stage A reference calibration.
-- [ ] Add Stage B direction probabilities and quantile bands.
-- [ ] Add landmark/endpoint selection and state breakdowns.
-- [ ] Add per-game cases, exclusions, model cards, and lineage.
-- [ ] Render one offline content-addressed HTML without external assets.
+```text
+L = 1, 2, 3, 5, 10 seconds after source_interval_end
+H = 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60 seconds
+H > L
+```
 
-### Task 8: Freeze shortlist and run the holdout once
+- Same-second or overlapping event/market intervals are `order_ambiguous`.
+- Historical source time is not local receive time.
+- All conclusions remain `SOURCE_TIME_ASSOCIATION`.
 
-**Files:**
-- Create: `src/prediction_market/research/nfl_x15_shortlist.py`
-- Create: `src/prediction_market/research/nfl_x15_holdout.py`
-- Test: `tests/research/test_nfl_x15_holdout.py`
+### 7.2 Three-stage target
 
-- [ ] Materialize expert review decisions.
-- [ ] Generate `ShortlistLockV1` and its semantic hash.
-- [ ] Verify the holdout access counter is zero before the lock.
-- [ ] Evaluate the sealed holdout once with the frozen model.
-- [ ] Publish replicated, not-replicated, and insufficient-support outcomes.
+For each decision-eligible row:
 
-## 13. Acceptance Criteria
+1. `S_H`: no next salient event, suspension, game end, or continuity censor before H.
+2. `O_H | S_H`: H has an actual home-outcome trade no more than three seconds stale.
+3. Conditional on `S_H & O_H`, model price direction and magnitude.
 
-The implementation is complete when:
+```text
+delta_L_H = actual_home_price_H - actual_home_price_L
+tick = venue tick from the applicable rule snapshot
 
-1. All 153 games have V3 fact and episode bundles with zero silent row loss.
-2. The V3 factor registry is frozen after coverage and expert review.
-3. Stage A publishes reproducible pre/post reference probabilities with explicit unsupported rows.
-4. Stage B publishes OOF direction probabilities and conditional quantiles for both venues separately.
-5. Every prediction is traceable to sports, market, factor, model, and fold hashes.
-6. The workbench can explain one prediction from raw event through final distribution.
-7. Calibration, distribution coverage, ablation, and per-game stability are visible.
-8. Old V2/X-15 artifacts remain unchanged.
-9. Holdout access remains zero until the shortlist lock, then occurs once.
-10. All conclusions retain the boundary: historical actual-trade probability-path research, not executable alpha.
+UP       delta_L_H >= tick
+DOWN     delta_L_H <= -tick
+NO_MOVE  abs(delta_L_H) < tick
+```
+
+Matched-control P95 noise is not the direction threshold. It may only create an
+auxiliary `ABNORMAL_MOVE` label.
+
+The conditional distribution is:
+
+```text
+P(NO_MOVE)
++ P(UP)   × F(abs(delta) | UP)
++ P(DOWN) × F(abs(delta) | DOWN)
+```
+
+No trade remains missing. Do not forward-fill or convert it to `NO_MOVE`.
+
+### 7.3 Locked feature blocks
+
+Feature blocks enter in this fixed order:
+
+```text
+B0  outer-training empirical/hazard baseline
+B1  market time/state/activity
+B2  B1 + football game state
+B3  B2 + atomic event facts
+B4  B3 + Stage A reference/reference gap
+```
+
+Decision features may include:
+
+- venue, L, H, pre-event actual home price;
+- landmark price and staleness;
+- prior 30/60-second actual trade count and size;
+- exact game time, home margin, possession, down/distance, field position;
+- atomic action/outcome tags, yards, return yards, lead/possession change;
+- supported Stage A probability and remaining reference gap.
+
+Exclude endpoint price/activity, future event/revision, final result, unsupported
+injury/substitution, and all unavailable historical L2 fields.
+
+## 8. Minimal Model Suite
+
+1. **B0 empirical baseline**
+   - Outer-training-only constant/stratified hazard, direction rates, and median
+     conditional magnitude.
+
+2. **Regularized logistic**
+   - Discrete-time clean-window survival.
+   - Conditional fresh-trade observation.
+   - Multinomial `DOWN/NO_MOVE/UP`.
+
+3. **Shallow XGBoost challenger**
+   - Same survival, observation, and direction heads.
+   - Captures nonlinear state/event interactions.
+
+4. **Direction-conditional quantile XGBoost**
+   - Separate UP and DOWN magnitude models.
+   - Primary quantiles: q10, q25, q50, q75, q90.
+   - q05/q95 only when the frozen support gate passes.
+
+Do not add GAM, EBM, Cox, neural sequence models, or an unconditional signed
+quantile model as a promotion candidate in this phase.
+
+## 9. Chronological OOF, Calibration, and Weighting
+
+Use complete-game expanding folds:
+
+```text
+weeks 1–2  -> validate 3–4
+weeks 1–4  -> validate 5–6
+weeks 1–6  -> validate 7–8
+weeks 1–8  -> validate 9–10
+weeks 1–10 -> validate 11–12
+```
+
+- Both venues for one game remain in the same fold.
+- All preprocessing is trained inside the outer training fold.
+- Calibration uses only prequential predictions from training games.
+- Direction uses multinomial temperature scaling when supported.
+- Survival/observation uses training-only logistic/Platt recalibration.
+- Unsupported calibration publishes `RAW_UNCALIBRATED`; it never borrows future weeks.
+- Final holdout calibrators are frozen from development OOF only.
+
+Weights:
+
+```text
+each game has equal total weight
+-> episodes divide that game weight equally
+-> valid L/H rows divide episode weight equally
+-> multiple tags do not increase weight
+```
+
+## 10. Metrics and Promotion
+
+### 10.1 Submodel metrics
+
+- Survival/observation: discrete-time NLL, Brier, calibration, coverage/attrition.
+- Direction: multiclass log loss primary, multiclass/classwise Brier co-gate.
+- Magnitude: pinball and approximate CRPS primary; interval coverage/width secondary.
+- All metrics first aggregate per game, then use game-cluster intervals.
+
+### 10.2 Dual confirmatory gate
+
+A model is promotable only if both gates pass:
+
+1. A pre-locked integrated multi-horizon, equal-game loss improves over B0 and
+   its paired game-cluster confidence interval excludes no improvement.
+2. The clean `L=3 -> H=30` anchor does not reverse sign and is not worse than B0.
+
+Integrated weights, normalization, missingness handling, and per-game aggregation
+must be frozen before any OOF run. The dual gate is intersection-union: failure
+of either gate rejects promotion.
+
+If source clock quality cannot support a three-second anchor, all model/factor
+claims are descriptive and cannot be promoted.
+
+### 10.3 Named factor claims
+
+- Promotion headline is only the clean `L=3 -> H=30` estimate.
+- Full L/H paths are secondary trajectories; do not select the best second.
+- Apply BH inside the frozen factor family.
+- Report distinct games, unique episodes, UP/DOWN counts, maximum game
+  contribution, and leave-one-game-out stability.
+- A subtype with inadequate support is `INSUFFICIENT_SUPPORT`; this does not
+  invalidate its parent event family.
+
+Matched controls are non-promotional diagnostics only. They require fold-local
+construction, SMD <= 0.10, overlap, effective sample size, and concentration
+reporting. They cannot define labels, models, or reference truth.
+
+## 11. Kalshi Validation Matrix
+
+Current development evidence includes both venues. Treat validation levels
+precisely:
+
+1. Polymarket venue-specific OOF.
+2. Kalshi venue-specific OOF.
+3. Exact same `game/episode/L/H` paired comparison, clustered by game.
+4. Development-only temporal venue transport with a frozen source-venue model and
+   no target-venue recalibration.
+
+None of these is an independent game holdout.
+
+Before final validation publish:
+
+```text
+153 development IDs, weeks, kickoff times, and batch hashes
+81 candidate holdout IDs, weeks, kickoff times, and batch hashes
+set intersection
+overlap with every old review/holdout/reaction cohort
+prior exposure/read audit
+holdout reaction access counter = 0
+```
+
+After `ShortlistLockV1`, run the eligible pristine holdout once:
+
+- Kalshi-development model -> Kalshi holdout;
+- Polymarket-development model -> Polymarket holdout;
+- frozen Polymarket-development model -> Kalshi holdout.
+
+If a game was previously used to select a factor, horizon, threshold, or claim,
+it cannot be called pristine. After the first holdout read, any model or rule
+change must be validated on a future cohort, never by retrying these games.
+
+## 12. Implementation Tasks
+
+### Task 1 — Freeze contracts and publish exact-153 facts
+
+**Files**
+
+- Modify `src/prediction_market/sports/nfl_x16_fact_extraction.py`
+- Create `src/prediction_market/sports/nfl_x16_exact153.py`
+- Create/modify the focused tests under `tests/sports/`
+
+**Work**
+
+- Implement `EpisodeFactV3`, eligibility fields, orientations, and sequence IDs.
+- Replace the old TD/try and adjudication semantics directly; no compatibility wrapper.
+- Build a deterministic `game/play -> atomic episode` mapping.
+- Publish reconciliation and orphan/duplicate audit.
+- Stream one game at a time with default `workers=1`.
+- Publish per-game content-addressed objects and a verified batch index.
+- Re-run a bounded fixture and compare semantic hashes.
+
+### Task 2 — Publish Stage A reference observations
+
+**Files**
+
+- Modify `src/prediction_market/sports/nfl_reference_value.py`
+- Create `src/prediction_market/research/nfl_stage_a_reference.py`
+- Create/modify focused tests under `tests/research/`
+
+**Work**
+
+- Verify the model asset SHA before inference.
+- Publish every feature's `known_at` and provenance.
+- Fail closed on future-derived `receive_2h_ko`.
+- Enforce pure pre/post transition and composite exclusions.
+- Publish supported and unsupported rows.
+- Publish equal-game calibration metrics.
+
+### Task 3 — Replace the V3 reaction panel
+
+**Files**
+
+- Replace `src/prediction_market/research/nfl_x15_landmarks.py`
+- Update its focused tests
+
+**Work**
+
+- Join facts, Stage A observations, and actual home-outcome trades.
+- Preserve H-missing rows for availability.
+- Emit `S_H`, `O_H`, direction, and conditional magnitude targets.
+- Apply interval, ambiguity, contamination, and staleness rules.
+- Prove endpoint data is absent from decision features.
+- Publish attrition by venue/L/H/reason.
+
+### Task 4 — Implement OOF models and calibration
+
+**Files**
+
+- Replace `src/prediction_market/research/nfl_x15_models.py`
+- Create `src/prediction_market/research/nfl_x15_calibration.py`
+- Create `src/prediction_market/research/nfl_x15_distribution.py`
+- Update focused tests
+
+**Work**
+
+- Implement B0, logistic, shallow XGBoost, and conditional quantile XGBoost.
+- Implement game-grouped chronological OOF and training-only calibration.
+- Publish raw/calibrated probabilities and conditional quantiles.
+- Publish explicit support failures instead of constant-label models.
+
+### Task 5 — Model selection and Kalshi validation
+
+**Files**
+
+- Create `src/prediction_market/research/nfl_x15_model_selection.py`
+- Create `src/prediction_market/research/nfl_x16_kalshi_validation.py`
+- Update focused tests
+
+**Work**
+
+- Run locked B0->B4 ablations.
+- Apply equal-game integrated and L3/H30 dual gates.
+- Publish Poly/Kalshi venue OOF, exact pairs, and transport diagnostics.
+- Publish factor-family BH, LOO, and support audit.
+- Prove the holdout access path remains unopened.
+
+### Task 6 — Workbench, expert review, and shortlist
+
+**Files**
+
+- Modify `notebooks/nfl-factor-lab/NFL_Factor_Lab_Master.ipynb`
+- Modify `src/prediction_market/workbench/factor_lab_master.py`
+- Create/replace the V3 offline report builder
+- Create `src/prediction_market/research/nfl_x15_shortlist.py`
+
+**Work**
+
+- Show 153-game fact coverage and reconciliation.
+- Show Stage A support/calibration and composite exclusions.
+- Show Stage B availability, direction, distribution, and full time paths.
+- Show Poly/Kalshi paired and transport diagnostics.
+- Show exact positive, negative, reversal, disagreement, and excluded cases.
+- Materialize expert decisions and `ShortlistLockV1`.
+- Render one offline content-addressed Chinese/English report.
+
+### Task 7 — One-time final holdout
+
+**Files**
+
+- Create/replace `src/prediction_market/research/nfl_x15_holdout.py`
+- Update focused tests
+
+**Work**
+
+- Publish cohort and prior-exposure audit without reading reaction data.
+- Verify lock hash and access counter zero.
+- Read the eligible pristine reaction cohort once.
+- Run the three frozen validation paths.
+- Publish replicated, not-replicated, and insufficient-support outcomes.
+- Record the irreversible access event and forbid reuse for tuning.
+
+## 13. Focused Verification
+
+Do not run unrelated legacy test suites. Required checks are:
+
+1. DAL–DET bounded raw-to-`EpisodeFactV3` fixture.
+2. TD/PAT/2PT, pick-six, retry, review/reversal, no-play, safety, and OT fixtures.
+3. Actor/beneficiary/home orientation and actual-home-leg invariants.
+4. Exact-153 zero orphan/duplicate/silent-loss mapping audit.
+5. Stage A feature-known-at and pure-transition audit.
+6. H-missing preservation and no endpoint leakage.
+7. Same-second ambiguity and next-event censoring.
+8. One-tick direction boundary.
+9. Game-grouped OOF and training-only calibration.
+10. Equal-game weights and no multi-tag sample explosion.
+11. Kalshi exact-pair referential integrity.
+12. Holdout access counter remains zero before lock.
+13. Master Notebook/report loads only published content-addressed artifacts.
+
+## 14. Completion
+
+The phase is complete only when:
+
+- all 153 games have verified `EpisodeFactV3` bundles;
+- Stage A publishes reproducible supported/unsupported reference rows;
+- Stage B publishes OOF availability, direction, and distribution for both venues;
+- the dual promotion gate and named-factor audits are published;
+- Kalshi venue-specific, paired, and transport results are complete;
+- the expert shortlist is locked;
+- the eligible pristine holdout is read once and reported;
+- every row and conclusion traces back to source, model, fold, and lock hashes;
+- historical results remain explicitly non-executable source-time research.
