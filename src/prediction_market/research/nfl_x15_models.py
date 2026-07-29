@@ -13,6 +13,7 @@ import json
 import math
 import re
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Final, Iterable, Mapping, Sequence
 
 import numpy as np
@@ -135,6 +136,51 @@ FEATURE_BLOCKS: Final[Mapping[str, tuple[str, ...]]] = {
         "reference_gap_at_landmark",
     ),
 }
+DIAGNOSTIC_SCHEMA_VERSION: Final[str] = (
+    "HistoricalTradesOnlyProbabilityPanelV1"
+)
+DIAGNOSTIC_TARGET_CONTRACT: Final[str] = (
+    "HISTORICAL_TRADES_ONLY_HOME_PROBABILITY"
+)
+DIAGNOSTIC_CLAIM_BOUNDARY: Final[str] = (
+    "HISTORICAL_TRADES_ONLY_SOURCE_TIME_PROBABILITY_DIAGNOSTIC"
+)
+DIAGNOSTIC_ANALYSIS_SCOPE: Final[str] = (
+    "HISTORICAL_TRADES_ONLY_SOURCE_TIME_DIAGNOSTIC"
+)
+DIAGNOSTIC_DIRECTION_THRESHOLD_PROBABILITY: Final[float] = 0.01
+DIAGNOSTIC_DIRECTION_THRESHOLD_SEMANTICS: Final[str] = (
+    "FIXED_CROSS_VENUE_RESEARCH_MATERIALITY_NOT_TICK"
+)
+DIAGNOSTIC_VENUE_TICK_SUPPORT: Final[str] = "UNSUPPORTED"
+DIAGNOSTIC_MARKET_CONTINUITY_SUPPORT: Final[str] = "UNKNOWN"
+DIAGNOSTIC_FEATURE_BLOCKS: Final[Mapping[str, tuple[str, ...]]] = (
+    MappingProxyType(
+        {
+            "D0": FEATURE_BLOCKS["B0"],
+            "D1": tuple(
+                feature
+                for feature in FEATURE_BLOCKS["B1"]
+                if feature != "tick_size"
+            ),
+            "D2": tuple(
+                feature
+                for feature in FEATURE_BLOCKS["B2"]
+                if feature != "tick_size"
+            ),
+            "D3": tuple(
+                feature
+                for feature in FEATURE_BLOCKS["B3"]
+                if feature != "tick_size"
+            ),
+            "D4": tuple(
+                feature
+                for feature in FEATURE_BLOCKS["B4"]
+                if feature != "tick_size"
+            ),
+        }
+    )
+)
 
 _FOLD_WEEK_WINDOWS: Final[
     tuple[tuple[tuple[int, ...], tuple[int, ...]], ...]
@@ -164,6 +210,33 @@ _PANEL_REQUIRED: Final[set[str]] = {
     "decision_features_json",
     "decision_feature_sha256",
 }
+DIAGNOSTIC_MODEL_INPUT_COLUMNS: Final[tuple[str, ...]] = (
+    "schema_version",
+    "target_contract",
+    "claim_boundary",
+    "cohort_authority_sha256",
+    "game_id",
+    "nfl_week",
+    "atomic_information_episode_id",
+    "venue",
+    "actual_home_contract_id",
+    "landmark_seconds",
+    "endpoint_seconds",
+    "decision_eligible",
+    "target_eligible",
+    "sports_clean_h",
+    "sports_clean_reason",
+    "actual_trade_observed_h",
+    "delta_l_h",
+    "direction",
+    "conditional_magnitude",
+    "direction_threshold_probability",
+    "direction_threshold_semantics",
+    "venue_tick_support",
+    "market_continuity_support",
+    "decision_features_json",
+    "decision_feature_sha256",
+)
 _PANEL_GRAIN: Final[tuple[str, ...]] = (
     "game_id",
     "atomic_information_episode_id",
@@ -174,6 +247,11 @@ _PANEL_GRAIN: Final[tuple[str, ...]] = (
 )
 _DECISION_LEAKAGE_KEYS: Final[set[str]] = {
     "mark_h_trade_id",
+    "mark_h_trade_ids_json",
+    "mark_h_trade_id_set_sha256",
+    "mark_h_observation_count",
+    "mark_h_observed_size",
+    "mark_h_semantics",
     "mark_h_source_time_utc",
     "mark_h_price",
     "mark_h_staleness_seconds",
@@ -227,6 +305,7 @@ class X15ModelRun:
     support_audit: pd.DataFrame
     weight_audit: pd.DataFrame
     run_config_sha256: str
+    run_config: Mapping[str, object] | None = None
 
 
 @dataclass(slots=True)
@@ -296,24 +375,40 @@ def build_x15_week_folds(landmarks: pd.DataFrame) -> tuple[X15WeekFold, ...]:
         raise X15ModelInputError(f"fold input missing columns: {sorted(missing)}")
     if landmarks.empty:
         raise X15ModelInputError("fold input must be nonempty")
-    games = landmarks["game_id"].astype(str)
-    if games.str.strip().eq("").any():
+    if landmarks["game_id"].isna().any():
         raise X15ModelInputError("game_id must be nonempty")
-    numeric = pd.to_numeric(landmarks["nfl_week"], errors="coerce")
-    if numeric.isna().any() or not np.equal(numeric, np.floor(numeric)).all():
+    unique_games = landmarks["game_id"].drop_duplicates()
+    if any(
+        type(value) is not str or not value.strip()
+        for value in unique_games
+    ):
+        raise X15ModelInputError("game_id must be nonempty")
+    if landmarks["nfl_week"].isna().any():
         raise X15ModelInputError("nfl_week must contain integer weeks")
-    weeks = numeric.astype(int)
-    if not weeks.between(1, 12).all():
+    unique_weeks = pd.to_numeric(
+        landmarks["nfl_week"].drop_duplicates(), errors="coerce"
+    )
+    if (
+        unique_weeks.isna().any()
+        or not np.equal(unique_weeks, np.floor(unique_weeks)).all()
+    ):
+        raise X15ModelInputError("nfl_week must contain integer weeks")
+    if not unique_weeks.astype(int).between(1, 12).all():
         raise X15ModelInputError(
             "development folds accept only NFL weeks 1 through 12"
         )
     game_weeks = (
-        pd.DataFrame({"game_id": games, "nfl_week": weeks})
+        landmarks.loc[:, ["game_id", "nfl_week"]]
         .drop_duplicates()
-        .sort_values(["nfl_week", "game_id"], kind="mergesort")
     )
+    game_weeks["nfl_week"] = pd.to_numeric(
+        game_weeks["nfl_week"], errors="raise"
+    ).astype(int)
     if game_weeks.groupby("game_id")["nfl_week"].nunique().gt(1).any():
         raise X15ModelInputError("each game_id must map to one NFL week")
+    game_weeks = game_weeks.sort_values(
+        ["nfl_week", "game_id"], kind="mergesort"
+    )
     result: list[X15WeekFold] = []
     for index, (train_weeks, validation_weeks) in enumerate(
         _FOLD_WEEK_WINDOWS, start=1
@@ -384,26 +479,30 @@ def _walk_keys(value: object) -> Iterable[str]:
 
 def _strict_bool(frame: pd.DataFrame, column: str) -> pd.Series:
     values = frame[column]
-    if values.isna().any() or not values.map(
-        lambda value: isinstance(value, (bool, np.bool_))
-    ).all():
+    if values.isna().any():
+        raise X15ModelInputError(f"{column} must contain nonmissing booleans")
+    if pd.api.types.is_bool_dtype(values.dtype):
+        return values
+    unique = values.drop_duplicates()
+    if not all(isinstance(value, (bool, np.bool_)) for value in unique):
         raise X15ModelInputError(f"{column} must contain nonmissing booleans")
     return values.astype(bool)
 
 
 def _nullable_bool(frame: pd.DataFrame, column: str) -> pd.Series:
     values = frame[column]
+    if pd.api.types.is_bool_dtype(values.dtype) and not values.isna().any():
+        return values
     supplied = values.notna()
-    if not values.loc[supplied].map(
-        lambda value: isinstance(value, (bool, np.bool_))
-    ).all():
+    unique = values.loc[supplied].drop_duplicates()
+    if not all(isinstance(value, (bool, np.bool_)) for value in unique):
         raise X15ModelInputError(f"{column} must contain booleans or null")
     return values.astype("boolean")
 
 
-def _panel_frame(panel: object) -> pd.DataFrame:
+def _panel_frame(panel: object, *, copy_input: bool = True) -> pd.DataFrame:
     if isinstance(panel, pd.DataFrame):
-        frame = panel.copy(deep=True)
+        frame = panel.copy(deep=True) if copy_input else panel
     elif hasattr(panel, "panel") and isinstance(panel.panel, pd.DataFrame):
         frame = panel.panel.copy(deep=True)
     else:
@@ -418,10 +517,11 @@ def _panel_frame(panel: object) -> pd.DataFrame:
     if not frame["schema_version"].eq("VenueReactionPanelV3").all():
         raise X15ModelInputError("schema_version must be VenueReactionPanelV3")
     authorities = frame["cohort_authority_sha256"]
-    if authorities.isna().any() or not authorities.map(
-        lambda value: type(value) is str
-        and _SHA256_RE.fullmatch(value) is not None
-    ).all():
+    unique_authorities = authorities.drop_duplicates()
+    if authorities.isna().any() or not all(
+        type(value) is str and _SHA256_RE.fullmatch(value) is not None
+        for value in unique_authorities
+    ):
         raise X15ModelInputError(
             "cohort_authority_sha256 must contain sha256 digests"
         )
@@ -437,11 +537,13 @@ def _panel_frame(panel: object) -> pd.DataFrame:
         "venue",
         "actual_home_contract_id",
     ):
-        if frame[column].isna().any() or frame[column].astype(str).str.strip().eq(
-            ""
-        ).any():
+        values = frame[column]
+        unique_values = values.drop_duplicates()
+        if values.isna().any() or any(
+            type(value) is not str or not value.strip()
+            for value in unique_values
+        ):
             raise X15ModelInputError(f"{column} must be nonempty")
-        frame[column] = frame[column].astype(str)
     frame["decision_eligible"] = _strict_bool(frame, "decision_eligible")
     frame["target_eligible"] = _strict_bool(frame, "target_eligible")
     frame["s_h"] = _nullable_bool(frame, "s_h")
@@ -473,13 +575,25 @@ def _panel_frame(panel: object) -> pd.DataFrame:
     return frame
 
 
-def _decision_feature_frame(frame: pd.DataFrame) -> pd.DataFrame:
-    records: list[dict[str, object]] = []
-    all_multi_hot: set[str] = set()
-    parsed_rows: list[dict[str, object]] = []
-    for row in frame.itertuples(index=False):
+def _parse_unique_decision_features(
+    frame: pd.DataFrame,
+    *,
+    diagnostic_contract: bool = False,
+) -> dict[str, dict[str, object]]:
+    pairs = frame.loc[
+        :, ["decision_feature_sha256", "decision_features_json"]
+    ].drop_duplicates()
+    if pairs["decision_feature_sha256"].duplicated().any():
+        raise X15ModelInputError(
+            "one decision feature sha256 maps to multiple JSON payloads"
+        )
+    parsed_by_sha256: dict[str, dict[str, object]] = {}
+    for digest, decision_json in pairs.itertuples(index=False, name=None):
+        actual_hash = _sha256_text_exact(decision_json)
+        if digest != actual_hash:
+            raise X15ModelInputError("decision feature sha256 mismatch")
         try:
-            parsed = json.loads(row.decision_features_json)
+            parsed = json.loads(decision_json)
         except (TypeError, json.JSONDecodeError) as exc:
             raise X15ModelInputError(
                 "decision_features_json must be valid JSON objects"
@@ -488,9 +602,6 @@ def _decision_feature_frame(frame: pd.DataFrame) -> pd.DataFrame:
             raise X15ModelInputError(
                 "decision_features_json must contain an object"
             )
-        actual_hash = _sha256_text_exact(row.decision_features_json)
-        if row.decision_feature_sha256 != actual_hash:
-            raise X15ModelInputError("decision feature sha256 mismatch")
         leaked = sorted(set(_walk_keys(parsed)) & _DECISION_LEAKAGE_KEYS)
         if leaked:
             raise X15ModelInputError(
@@ -502,26 +613,157 @@ def _decision_feature_frame(frame: pd.DataFrame) -> pd.DataFrame:
             raise X15ModelInputError(
                 "decision feature fact/multi-hot blocks must be objects"
             )
-        all_multi_hot.update(f"multi_hot__{key}" for key in multi_hot)
-        parsed_rows.append(parsed)
-    for parsed in parsed_rows:
-        record: dict[str, object] = {}
-        facts = parsed.get("fact_features", {})
-        multi_hot = parsed.get("multi_hot_features", {})
-        for feature in FEATURE_BLOCKS["B4"]:
-            if feature == "multi_hot__*":
-                continue
-            if feature.startswith("fact__"):
-                record[feature] = facts.get(feature.removeprefix("fact__"))
-            else:
-                record[feature] = parsed.get(feature)
-        for column in sorted(all_multi_hot):
-            raw_key = column.removeprefix("multi_hot__")
-            record[column] = (
-                bool(multi_hot[raw_key]) if raw_key in multi_hot else pd.NA
+        if not all(
+            isinstance(value, (bool, np.bool_))
+            for value in multi_hot.values()
+        ):
+            raise X15ModelInputError(
+                "decision feature multi-hot values must be booleans"
             )
-        records.append(record)
-    return pd.DataFrame(records, index=frame.index)
+        if diagnostic_contract:
+            _validate_diagnostic_decision_payload(parsed)
+        parsed_by_sha256[str(digest)] = parsed
+    return parsed_by_sha256
+
+
+def _categorical_from_unique(
+    unique_values: Sequence[object], row_codes: np.ndarray
+) -> pd.Categorical:
+    categories = tuple(
+        sorted(
+            {
+                str(value)
+                for value in unique_values
+                if value is not None and not bool(pd.isna(value))
+            }
+        )
+    )
+    category_codes = {value: index for index, value in enumerate(categories)}
+    unique_codes = np.array(
+        [
+            category_codes.get(str(value), -1)
+            if value is not None and not bool(pd.isna(value))
+            else -1
+            for value in unique_values
+        ],
+        dtype=np.int32,
+    )
+    return pd.Categorical.from_codes(
+        unique_codes[row_codes], categories=categories
+    )
+
+
+def _decision_feature_frame(
+    frame: pd.DataFrame,
+    *,
+    feature_blocks: Mapping[str, tuple[str, ...]],
+    feature_block_ids: Sequence[str],
+    parsed_by_sha256: Mapping[str, Mapping[str, object]] | None = None,
+) -> pd.DataFrame:
+    governed_features = tuple(
+        dict.fromkeys(
+            feature
+            for block_id in feature_block_ids
+            for feature in feature_blocks[block_id]
+        )
+    )
+    parsed = (
+        _parse_unique_decision_features(frame)
+        if parsed_by_sha256 is None
+        else parsed_by_sha256
+    )
+    row_codes, unique_digests = pd.factorize(
+        frame["decision_feature_sha256"], sort=False
+    )
+    if (row_codes < 0).any():
+        raise X15ModelInputError("decision feature sha256 must be nonmissing")
+    unique_payloads: list[Mapping[str, object]] = []
+    for digest in unique_digests:
+        payload = parsed.get(str(digest))
+        if payload is None:
+            raise X15ModelInputError(
+                "decision feature sha256 missing from parsed cache"
+            )
+        unique_payloads.append(payload)
+
+    feature_data: dict[str, object] = {}
+    categorical_features = {
+        "fact__source_resolution",
+        "fact__primary_action",
+        "stage_a_status",
+    }
+    for feature in governed_features:
+        if feature == "multi_hot__*":
+            continue
+        if feature in {"landmark_seconds", "endpoint_seconds"}:
+            panel_values = pd.to_numeric(
+                frame[feature], errors="coerce"
+            ).to_numpy(dtype=float)
+            provided = np.array(
+                [feature in payload for payload in unique_payloads],
+                dtype=bool,
+            )
+            if provided.any():
+                unique_values = np.array(
+                    [
+                        float(payload[feature])
+                        if feature in payload
+                        else math.nan
+                        for payload in unique_payloads
+                    ],
+                    dtype=float,
+                )
+                row_provided = provided[row_codes]
+                if not np.equal(
+                    unique_values[row_codes][row_provided],
+                    panel_values[row_provided],
+                ).all():
+                    raise X15ModelInputError(
+                        f"decision {feature} does not match panel"
+                    )
+            feature_data[feature] = panel_values
+            continue
+        unique_values = [
+            (
+                payload.get("fact_features", {}).get(
+                    feature.removeprefix("fact__")
+                )
+                if feature.startswith("fact__")
+                else payload.get(feature)
+            )
+            for payload in unique_payloads
+        ]
+        if feature in categorical_features:
+            feature_data[feature] = _categorical_from_unique(
+                unique_values, row_codes
+            )
+        else:
+            numeric = pd.to_numeric(
+                pd.Series(unique_values, dtype=object), errors="coerce"
+            ).to_numpy(dtype=float)
+            feature_data[feature] = numeric[row_codes]
+
+    if "multi_hot__*" in governed_features:
+        all_multi_hot = sorted(
+            {
+                str(key)
+                for payload in unique_payloads
+                for key in payload.get("multi_hot_features", {})
+            }
+        )
+        for raw_key in all_multi_hot:
+            unique_states = np.full(
+                len(unique_payloads), -1, dtype=np.int8
+            )
+            for index, payload in enumerate(unique_payloads):
+                multi_hot = payload.get("multi_hot_features", {})
+                if raw_key in multi_hot:
+                    unique_states[index] = int(bool(multi_hot[raw_key]))
+            row_states = unique_states[row_codes]
+            feature_data[f"multi_hot__{raw_key}"] = pd.arrays.BooleanArray(
+                row_states == 1, row_states < 0
+            )
+    return pd.DataFrame(feature_data, index=frame.index)
 
 
 def _sha256_text_exact(value: object) -> str:
@@ -535,8 +777,9 @@ def _resolved_columns(
     block_id: str,
     *,
     vocabulary_indexes: pd.Index,
+    feature_blocks: Mapping[str, tuple[str, ...]],
 ) -> tuple[str, ...]:
-    requested = FEATURE_BLOCKS[block_id]
+    requested = feature_blocks[block_id]
     resolved: list[str] = []
     for column in requested:
         if column == "multi_hot__*":
@@ -567,9 +810,13 @@ def _feature_bundle(
     *,
     block_id: str,
     train_frame: pd.DataFrame,
+    feature_blocks: Mapping[str, tuple[str, ...]],
 ) -> _FeatureBundle:
     columns = _resolved_columns(
-        feature_frame, block_id, vocabulary_indexes=train_indexes
+        feature_frame,
+        block_id,
+        vocabulary_indexes=train_indexes,
+        feature_blocks=feature_blocks,
     )
     train = feature_frame.loc[train_indexes, list(columns)].copy()
     validation = feature_frame.loc[validation_indexes, list(columns)].copy()
@@ -586,10 +833,15 @@ def _feature_bundle(
     numeric = [column for column in columns if column not in categorical]
     for column in numeric:
         if column.startswith("multi_hot__"):
-            train[column] = train[column].fillna(False)
-            validation[column] = validation[column].fillna(False)
-        train[column] = pd.to_numeric(train[column], errors="coerce")
-        validation[column] = pd.to_numeric(validation[column], errors="coerce")
+            train[column] = train[column].fillna(False).astype(np.uint8)
+            validation[column] = (
+                validation[column].fillna(False).astype(np.uint8)
+            )
+        else:
+            train[column] = pd.to_numeric(train[column], errors="coerce")
+            validation[column] = pd.to_numeric(
+                validation[column], errors="coerce"
+            )
     for column in categorical:
         train[column] = train[column].where(train[column].notna(), np.nan)
         validation[column] = validation[column].where(
@@ -953,6 +1205,7 @@ def _prequential_calibrator(
     block_id: str,
     head: str,
     random_state: int,
+    feature_blocks: Mapping[str, tuple[str, ...]],
 ) -> BinaryPlattCalibrator | DirectionTemperatureCalibrator:
     raw_parts: list[np.ndarray] = []
     label_parts: list[np.ndarray] = []
@@ -971,6 +1224,7 @@ def _prequential_calibrator(
             inner_validation.index,
             block_id=block_id,
             train_frame=inner_train,
+            feature_blocks=feature_blocks,
         )
         fitted, _ = _fit_head(
             inner_train,
@@ -1740,11 +1994,14 @@ def _magnitude_metric_rows(
     return rows
 
 
-def run_x15_walk_forward(
-    panel: object,
+def _run_x15_walk_forward_engine(
+    frame: pd.DataFrame,
     *,
+    feature_blocks: Mapping[str, tuple[str, ...]],
+    baseline_block_id: str,
+    parsed_by_sha256: dict[str, dict[str, object]] | None = None,
     model_ids: Sequence[str] = MODEL_IDS,
-    feature_block_ids: Sequence[str] = tuple(FEATURE_BLOCKS),
+    feature_block_ids: Sequence[str],
     fold_ids: Sequence[str] | None = None,
     transport_pairs: Sequence[tuple[str, str]] = (),
     include_magnitude: bool = True,
@@ -1757,16 +2014,8 @@ def run_x15_walk_forward(
     confirmatory run uses all defaults.
     """
 
-    frame = _panel_frame(panel)
-    decision = frame.loc[frame["decision_eligible"]].copy()
-    if decision.empty:
-        raise X15ModelInputError("panel has no decision-eligible rows")
-    feature_frame = _decision_feature_frame(decision)
-    cohort_authority_sha256 = str(
-        decision["cohort_authority_sha256"].iloc[0]
-    )
     unknown_models = sorted(set(model_ids) - set(MODEL_IDS))
-    unknown_blocks = sorted(set(feature_block_ids) - set(FEATURE_BLOCKS))
+    unknown_blocks = sorted(set(feature_block_ids) - set(feature_blocks))
     if unknown_models:
         raise X15ModelInputError(f"unknown model_ids: {unknown_models}")
     if unknown_blocks:
@@ -1775,6 +2024,15 @@ def run_x15_walk_forward(
         raise X15ModelInputError("model_ids must be unique")
     if len(set(feature_block_ids)) != len(tuple(feature_block_ids)):
         raise X15ModelInputError("feature_block_ids must be unique")
+    decision_mask = frame["decision_eligible"]
+    decision = (
+        frame if bool(decision_mask.all()) else frame.loc[decision_mask]
+    )
+    if decision.empty:
+        raise X15ModelInputError("panel has no decision-eligible rows")
+    cohort_authority_sha256 = str(
+        decision["cohort_authority_sha256"].iloc[0]
+    )
     venues = tuple(sorted(decision["venue"].unique()))
     normalized_transport_pairs: list[tuple[str, str]] = []
     for pair in transport_pairs:
@@ -1812,6 +2070,22 @@ def run_x15_walk_forward(
     selected_folds = tuple(
         fold for fold in folds if fold.fold_id in selected_fold_ids
     )
+    selected_game_ids = {
+        game_id
+        for fold in selected_folds
+        for game_id in (*fold.train_game_ids, *fold.validation_game_ids)
+    }
+    selected_game_mask = decision["game_id"].isin(selected_game_ids)
+    if not bool(selected_game_mask.all()):
+        decision = decision.loc[selected_game_mask]
+    feature_frame = _decision_feature_frame(
+        decision,
+        feature_blocks=feature_blocks,
+        feature_block_ids=feature_block_ids,
+        parsed_by_sha256=parsed_by_sha256,
+    )
+    if parsed_by_sha256 is not None:
+        parsed_by_sha256.clear()
     run_config = {
         "model_ids": tuple(model_ids),
         "feature_block_ids": tuple(feature_block_ids),
@@ -1819,7 +2093,7 @@ def run_x15_walk_forward(
         "transport_pairs": tuple(normalized_transport_pairs),
         "include_magnitude": bool(include_magnitude),
         "random_state": int(random_state),
-        "feature_blocks": FEATURE_BLOCKS,
+        "feature_blocks": feature_blocks,
         "xgb_params": _XGB_PARAMS,
         "quantile_support_contract": quantile_support_contract,
         "cohort_authority_sha256": cohort_authority_sha256,
@@ -1896,7 +2170,7 @@ def run_x15_walk_forward(
                 feature_block_hash = _sha256(
                     {
                         "feature_block_id": block_id,
-                        "features": FEATURE_BLOCKS[block_id],
+                        "features": feature_blocks[block_id],
                     }
                 )
                 bundle = _feature_bundle(
@@ -1905,9 +2179,13 @@ def run_x15_walk_forward(
                     validation.index,
                     block_id=block_id,
                     train_frame=train,
+                    feature_blocks=feature_blocks,
                 )
                 for model_index, model_id in enumerate(model_ids):
-                    if model_id == "b0_empirical_v1" and block_id != "B0":
+                    if (
+                        model_id == "b0_empirical_v1"
+                        and block_id != baseline_block_id
+                    ):
                         continue
                     seed = (
                         int(random_state)
@@ -1972,6 +2250,7 @@ def run_x15_walk_forward(
                             block_id=block_id,
                             head=head,
                             random_state=seed,
+                            feature_blocks=feature_blocks,
                         )
                         calibrators[head] = calibrator
                         calibrated[head] = (
@@ -2110,10 +2389,326 @@ def run_x15_walk_forward(
         support_audit=support,
         weight_audit=weights,
         run_config_sha256=run_hash,
+        run_config=run_config,
     )
 
 
+def run_x15_walk_forward(
+    panel: object,
+    *,
+    model_ids: Sequence[str] = MODEL_IDS,
+    feature_block_ids: Sequence[str] = tuple(FEATURE_BLOCKS),
+    fold_ids: Sequence[str] | None = None,
+    transport_pairs: Sequence[tuple[str, str]] = (),
+    include_magnitude: bool = True,
+    quantile_support_contract: QuantileSupportContract = QuantileSupportContract(),
+    random_state: int = RANDOM_STATE,
+) -> X15ModelRun:
+    """Run the confirmatory VenueReactionPanelV3 B0--B4 OOF contract."""
+
+    return _run_x15_walk_forward_engine(
+        _panel_frame(panel),
+        feature_blocks=FEATURE_BLOCKS,
+        baseline_block_id="B0",
+        model_ids=model_ids,
+        feature_block_ids=feature_block_ids,
+        fold_ids=fold_ids,
+        transport_pairs=transport_pairs,
+        include_magnitude=include_magnitude,
+        quantile_support_contract=quantile_support_contract,
+        random_state=random_state,
+    )
+
+
+def _validate_diagnostic_decision_payload(
+    decoded: Mapping[str, object],
+) -> None:
+    if decoded.get("schema_version") != DIAGNOSTIC_SCHEMA_VERSION:
+        raise X15ModelInputError(
+            "diagnostic decision schema_version must be "
+            f"{DIAGNOSTIC_SCHEMA_VERSION}"
+        )
+    if decoded.get("target_contract") != DIAGNOSTIC_TARGET_CONTRACT:
+        raise X15ModelInputError(
+            "diagnostic decision target_contract must be "
+            f"{DIAGNOSTIC_TARGET_CONTRACT}"
+        )
+    decision_threshold = decoded.get("direction_threshold_probability")
+    if (
+        isinstance(decision_threshold, bool)
+        or not isinstance(decision_threshold, (int, float))
+        or not math.isfinite(float(decision_threshold))
+        or float(decision_threshold)
+        != DIAGNOSTIC_DIRECTION_THRESHOLD_PROBABILITY
+    ):
+        raise X15ModelInputError(
+            "diagnostic decision direction threshold is frozen at 0.01"
+        )
+    if decoded.get("direction_threshold_semantics") != (
+        DIAGNOSTIC_DIRECTION_THRESHOLD_SEMANTICS
+    ):
+        raise X15ModelInputError(
+            "diagnostic decision direction threshold must remain fixed "
+            "cross-venue research materiality, not a tick"
+        )
+    forbidden_tick_keys = {"tick_size", "tick_rule_id"} & set(
+        _walk_keys(decoded)
+    )
+    if forbidden_tick_keys:
+        raise X15ModelInputError(
+            "diagnostic decision features cannot contain tick_size or "
+            "tick_rule_id"
+        )
+
+
+def _diagnostic_panel_frame(
+    panel: object,
+) -> tuple[pd.DataFrame, dict[str, dict[str, object]]]:
+    if isinstance(panel, pd.DataFrame):
+        source = panel
+    elif hasattr(panel, "panel") and isinstance(panel.panel, pd.DataFrame):
+        source = panel.panel
+    else:
+        raise X15ModelInputError(
+            "diagnostic input must be HistoricalTradesOnlyProbabilityPanelV1 "
+            "or its panel DataFrame"
+        )
+    required = set(DIAGNOSTIC_MODEL_INPUT_COLUMNS)
+    missing = required - set(source.columns)
+    if missing:
+        raise X15ModelInputError(
+            f"{DIAGNOSTIC_SCHEMA_VERSION} missing: {sorted(missing)}"
+        )
+    frame = source.loc[:, list(DIAGNOSTIC_MODEL_INPUT_COLUMNS)].copy(
+        deep=True
+    )
+    if not frame["schema_version"].eq(DIAGNOSTIC_SCHEMA_VERSION).all():
+        raise X15ModelInputError(
+            f"diagnostic schema_version must be {DIAGNOSTIC_SCHEMA_VERSION}"
+        )
+    if not frame["target_contract"].eq(DIAGNOSTIC_TARGET_CONTRACT).all():
+        raise X15ModelInputError(
+            "diagnostic target_contract must be "
+            f"{DIAGNOSTIC_TARGET_CONTRACT}"
+        )
+    if not frame["claim_boundary"].eq(DIAGNOSTIC_CLAIM_BOUNDARY).all():
+        raise X15ModelInputError(
+            f"diagnostic claim_boundary must be {DIAGNOSTIC_CLAIM_BOUNDARY}"
+        )
+    threshold = pd.to_numeric(
+        frame["direction_threshold_probability"].drop_duplicates(),
+        errors="coerce",
+    )
+    if (
+        threshold.isna().any()
+        or not np.isfinite(threshold.to_numpy(dtype=float)).all()
+        or not threshold.eq(
+            DIAGNOSTIC_DIRECTION_THRESHOLD_PROBABILITY
+        ).all()
+    ):
+        raise X15ModelInputError(
+            "diagnostic direction threshold is frozen at 0.01"
+        )
+    if not frame["direction_threshold_semantics"].eq(
+        DIAGNOSTIC_DIRECTION_THRESHOLD_SEMANTICS
+    ).all():
+        raise X15ModelInputError(
+            "diagnostic direction threshold must remain fixed cross-venue "
+            "research materiality, not a tick"
+        )
+    if not frame["venue_tick_support"].eq(
+        DIAGNOSTIC_VENUE_TICK_SUPPORT
+    ).all():
+        raise X15ModelInputError(
+            "diagnostic venue_tick_support must be UNSUPPORTED"
+        )
+    if not frame["market_continuity_support"].eq(
+        DIAGNOSTIC_MARKET_CONTINUITY_SUPPORT
+    ).all():
+        raise X15ModelInputError(
+            "diagnostic market_continuity_support must be UNKNOWN"
+        )
+    frame["decision_eligible"] = _strict_bool(frame, "decision_eligible")
+    frame["target_eligible"] = _strict_bool(frame, "target_eligible")
+    frame["sports_clean_h"] = _strict_bool(frame, "sports_clean_h")
+    frame["actual_trade_observed_h"] = _strict_bool(
+        frame, "actual_trade_observed_h"
+    )
+    reasons = frame["sports_clean_reason"]
+    if reasons.isna().any() or any(
+        type(value) is not str or not value.strip()
+        for value in reasons.drop_duplicates()
+    ):
+        raise X15ModelInputError("sports_clean_reason must be nonempty")
+    expected_target = (
+        frame["decision_eligible"]
+        & frame["sports_clean_h"]
+        & frame["actual_trade_observed_h"]
+    )
+    if not frame["target_eligible"].eq(expected_target).all():
+        raise X15ModelInputError(
+            "diagnostic target_eligible must equal decision_eligible AND "
+            "sports_clean_h AND actual_trade_observed_h"
+        )
+    delta = pd.to_numeric(frame["delta_l_h"], errors="coerce")
+    if (
+        delta.loc[expected_target].isna().any()
+        or not np.isfinite(
+            delta.loc[expected_target].to_numpy(dtype=float)
+        ).all()
+        or delta.loc[~expected_target].notna().any()
+    ):
+        raise X15ModelInputError(
+            "diagnostic delta_l_h must be finite exactly when target_eligible"
+        )
+    up = expected_target & delta.ge(
+        DIAGNOSTIC_DIRECTION_THRESHOLD_PROBABILITY
+    )
+    down = expected_target & delta.le(
+        -DIAGNOSTIC_DIRECTION_THRESHOLD_PROBABILITY
+    )
+    no_move = expected_target & ~up & ~down
+    if (
+        not frame.loc[up, "direction"].eq("UP").all()
+        or not frame.loc[down, "direction"].eq("DOWN").all()
+        or not frame.loc[no_move, "direction"].eq("NO_MOVE").all()
+        or not frame.loc[~expected_target, "direction"]
+        .eq("UNOBSERVED")
+        .all()
+    ):
+        raise X15ModelInputError(
+            "diagnostic direction must follow fixed 0.01 materiality"
+        )
+    magnitude = pd.to_numeric(
+        frame["conditional_magnitude"], errors="coerce"
+    )
+    moving = up | down
+    if (
+        magnitude.loc[moving].isna().any()
+        or not np.isclose(
+            magnitude.loc[moving].to_numpy(dtype=float),
+            delta.loc[moving].abs().to_numpy(dtype=float),
+            rtol=0,
+            atol=1e-12,
+        ).all()
+        or magnitude.loc[~moving].notna().any()
+    ):
+        raise X15ModelInputError(
+            "diagnostic conditional_magnitude must equal abs(delta_l_h) "
+            "only for UP/DOWN"
+        )
+    frame["s_h"] = frame["sports_clean_h"]
+    frame["o_h_given_s"] = frame["actual_trade_observed_h"]
+    frame["schema_version"] = "VenueReactionPanelV3"
+    frame.drop(
+        columns=sorted(set(frame.columns) - _PANEL_REQUIRED), inplace=True
+    )
+    for column in (
+        "schema_version",
+        "cohort_authority_sha256",
+        "game_id",
+        "atomic_information_episode_id",
+        "venue",
+        "actual_home_contract_id",
+        "direction",
+        "decision_features_json",
+        "decision_feature_sha256",
+    ):
+        if not isinstance(frame[column].dtype, pd.CategoricalDtype):
+            frame[column] = frame[column].astype("category")
+    frame = _panel_frame(frame, copy_input=False)
+    parsed_by_sha256 = _parse_unique_decision_features(
+        frame, diagnostic_contract=True
+    )
+    return frame, parsed_by_sha256
+
+
+def _diagnostic_metadata() -> dict[str, object]:
+    return {
+        "schema_version": DIAGNOSTIC_SCHEMA_VERSION,
+        "target_contract": DIAGNOSTIC_TARGET_CONTRACT,
+        "claim_boundary": DIAGNOSTIC_CLAIM_BOUNDARY,
+        "analysis_scope": DIAGNOSTIC_ANALYSIS_SCOPE,
+        "direction_threshold_probability": (
+            DIAGNOSTIC_DIRECTION_THRESHOLD_PROBABILITY
+        ),
+        "direction_threshold_semantics": (
+            DIAGNOSTIC_DIRECTION_THRESHOLD_SEMANTICS
+        ),
+        "venue_tick_support": DIAGNOSTIC_VENUE_TICK_SUPPORT,
+        "market_continuity_support": (
+            DIAGNOSTIC_MARKET_CONTINUITY_SUPPORT
+        ),
+        "claim_eligible": False,
+    }
+
+
+def _stamp_diagnostic_run(result: X15ModelRun) -> X15ModelRun:
+    metadata = _diagnostic_metadata()
+    run_config = dict(result.run_config or {})
+    run_config.update(metadata)
+    run_config["feature_blocks"] = DIAGNOSTIC_FEATURE_BLOCKS
+    run_config_sha256 = _sha256(run_config)
+    lineage = {**metadata, "run_config_sha256": run_config_sha256}
+
+    def stamp(frame: pd.DataFrame) -> pd.DataFrame:
+        stamped = frame.copy(deep=True)
+        for column, value in lineage.items():
+            stamped[column] = value
+        return stamped
+
+    return X15ModelRun(
+        oof_predictions=stamp(result.oof_predictions),
+        conditional_quantiles=stamp(result.conditional_quantiles),
+        fold_metrics=stamp(result.fold_metrics),
+        support_audit=stamp(result.support_audit),
+        weight_audit=stamp(result.weight_audit),
+        run_config_sha256=run_config_sha256,
+        run_config=MappingProxyType(run_config),
+    )
+
+
+def run_x15_historical_trades_diagnostic_walk_forward(
+    panel: object,
+    *,
+    model_ids: Sequence[str] = MODEL_IDS,
+    feature_block_ids: Sequence[str] = tuple(DIAGNOSTIC_FEATURE_BLOCKS),
+    fold_ids: Sequence[str] | None = None,
+    transport_pairs: Sequence[tuple[str, str]] = (),
+    include_magnitude: bool = True,
+    quantile_support_contract: QuantileSupportContract = QuantileSupportContract(),
+    random_state: int = RANDOM_STATE,
+) -> X15ModelRun:
+    """Run an explicitly non-confirmatory historical-trades-only OOF study."""
+
+    adapted, parsed_by_sha256 = _diagnostic_panel_frame(panel)
+    result = _run_x15_walk_forward_engine(
+        adapted,
+        feature_blocks=DIAGNOSTIC_FEATURE_BLOCKS,
+        baseline_block_id="D0",
+        parsed_by_sha256=parsed_by_sha256,
+        model_ids=model_ids,
+        feature_block_ids=feature_block_ids,
+        fold_ids=fold_ids,
+        transport_pairs=transport_pairs,
+        include_magnitude=include_magnitude,
+        quantile_support_contract=quantile_support_contract,
+        random_state=random_state,
+    )
+    return _stamp_diagnostic_run(result)
+
+
 __all__ = [
+    "DIAGNOSTIC_ANALYSIS_SCOPE",
+    "DIAGNOSTIC_CLAIM_BOUNDARY",
+    "DIAGNOSTIC_DIRECTION_THRESHOLD_PROBABILITY",
+    "DIAGNOSTIC_DIRECTION_THRESHOLD_SEMANTICS",
+    "DIAGNOSTIC_FEATURE_BLOCKS",
+    "DIAGNOSTIC_MARKET_CONTINUITY_SUPPORT",
+    "DIAGNOSTIC_MODEL_INPUT_COLUMNS",
+    "DIAGNOSTIC_SCHEMA_VERSION",
+    "DIAGNOSTIC_TARGET_CONTRACT",
+    "DIAGNOSTIC_VENUE_TICK_SUPPORT",
     "FEATURE_BLOCKS",
     "MODEL_IDS",
     "QUANTILE_MODEL_ID",
@@ -2123,5 +2718,6 @@ __all__ = [
     "X15WeekFold",
     "build_x15_week_folds",
     "hierarchical_sample_weights",
+    "run_x15_historical_trades_diagnostic_walk_forward",
     "run_x15_walk_forward",
 ]

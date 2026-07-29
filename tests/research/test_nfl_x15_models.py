@@ -7,7 +7,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from prediction_market.research import nfl_x15_models as models_module
 from prediction_market.research.nfl_x15_models import (
+    DIAGNOSTIC_ANALYSIS_SCOPE,
+    DIAGNOSTIC_CLAIM_BOUNDARY,
+    DIAGNOSTIC_DIRECTION_THRESHOLD_SEMANTICS,
+    DIAGNOSTIC_FEATURE_BLOCKS,
+    DIAGNOSTIC_MODEL_INPUT_COLUMNS,
+    DIAGNOSTIC_SCHEMA_VERSION,
+    DIAGNOSTIC_TARGET_CONTRACT,
     FEATURE_BLOCKS,
     MODEL_IDS,
     X15ModelInputError,
@@ -15,6 +23,7 @@ from prediction_market.research.nfl_x15_models import (
     _magnitude_metric_rows,
     build_x15_week_folds,
     hierarchical_sample_weights,
+    run_x15_historical_trades_diagnostic_walk_forward,
     run_x15_walk_forward,
 )
 from prediction_market.research.nfl_x15_distribution import (
@@ -155,6 +164,45 @@ def _fold_frame() -> pd.DataFrame:
     return _panel().loc[:, ["game_id", "nfl_week", "venue"]]
 
 
+def _diagnostic_panel() -> pd.DataFrame:
+    panel = _panel()
+    panel["schema_version"] = DIAGNOSTIC_SCHEMA_VERSION
+    panel["target_contract"] = DIAGNOSTIC_TARGET_CONTRACT
+    panel["claim_boundary"] = DIAGNOSTIC_CLAIM_BOUNDARY
+    panel["sports_clean_h"] = panel["s_h"]
+    panel["sports_clean_reason"] = np.where(
+        panel["s_h"].astype(bool), "CLEAN", "NEXT_SALIENT_EVENT"
+    )
+    panel["actual_trade_observed_h"] = (
+        panel["o_h_given_s"].fillna(False).astype(bool)
+    )
+    panel["direction_threshold_probability"] = 0.01
+    panel["direction_threshold_semantics"] = (
+        DIAGNOSTIC_DIRECTION_THRESHOLD_SEMANTICS
+    )
+    panel["venue_tick_support"] = "UNSUPPORTED"
+    panel["market_continuity_support"] = "UNKNOWN"
+    for index in panel.index:
+        decoded = json.loads(panel.loc[index, "decision_features_json"])
+        decoded["schema_version"] = DIAGNOSTIC_SCHEMA_VERSION
+        decoded["target_contract"] = DIAGNOSTIC_TARGET_CONTRACT
+        decoded.pop("endpoint_seconds", None)
+        decoded.pop("tick_rule_id", None)
+        decoded.pop("tick_size", None)
+        decoded["direction_threshold_probability"] = 0.01
+        decoded["direction_threshold_semantics"] = (
+            DIAGNOSTIC_DIRECTION_THRESHOLD_SEMANTICS
+        )
+        decision_json = json.dumps(
+            decoded, sort_keys=True, separators=(",", ":")
+        )
+        panel.loc[index, "decision_features_json"] = decision_json
+        panel.loc[index, "decision_feature_sha256"] = _sha256_text(
+            decision_json
+        )
+    return panel.drop(columns=["s_h", "o_h_given_s"])
+
+
 def test_builds_five_complete_game_folds_shared_by_both_venues() -> None:
     folds = build_x15_week_folds(_fold_frame())
 
@@ -210,6 +258,310 @@ def test_feature_blocks_are_fixed_and_strictly_incremental() -> None:
     assert "reference_status" not in {
         feature for block in FEATURE_BLOCKS.values() for feature in block
     }
+
+
+def test_diagnostic_feature_blocks_are_independent_and_never_use_tick_or_continuity() -> None:
+    assert tuple(DIAGNOSTIC_FEATURE_BLOCKS) == (
+        "D0",
+        "D1",
+        "D2",
+        "D3",
+        "D4",
+    )
+    forbidden = {
+        "tick_size",
+        "tick_rule_id",
+        "market_continuity_support",
+        "venue_tick_support",
+    }
+    assert forbidden.isdisjoint(
+        {
+            feature
+            for block in DIAGNOSTIC_FEATURE_BLOCKS.values()
+            for feature in block
+        }
+    )
+    for earlier, later in zip(
+        DIAGNOSTIC_FEATURE_BLOCKS.values(),
+        tuple(DIAGNOSTIC_FEATURE_BLOCKS.values())[1:],
+        strict=False,
+    ):
+        assert set(earlier).issubset(later)
+
+
+def test_diagnostic_model_input_projection_is_public_minimal_and_immutable() -> None:
+    assert isinstance(DIAGNOSTIC_MODEL_INPUT_COLUMNS, tuple)
+    assert {
+        "schema_version",
+        "target_contract",
+        "claim_boundary",
+        "cohort_authority_sha256",
+        "sports_clean_h",
+        "sports_clean_reason",
+        "actual_trade_observed_h",
+        "target_eligible",
+        "direction",
+        "conditional_magnitude",
+        "decision_features_json",
+        "decision_feature_sha256",
+        "venue_tick_support",
+        "market_continuity_support",
+    }.issubset(DIAGNOSTIC_MODEL_INPUT_COLUMNS)
+    assert {
+        "mark_l_trade_ids_json",
+        "mark_l_trade_id_set_sha256",
+        "mark_h_trade_ids_json",
+        "mark_h_trade_id_set_sha256",
+        "mark_h_price",
+        "mark_h_semantics",
+        "attrition_reason",
+    }.isdisjoint(DIAGNOSTIC_MODEL_INPUT_COLUMNS)
+
+
+def test_explicit_diagnostic_entry_stamps_nonconfirmatory_target_contract_everywhere() -> None:
+    result = run_x15_historical_trades_diagnostic_walk_forward(
+        _diagnostic_panel(),
+        model_ids=("b0_empirical_v1", "regularized_logistic_v1"),
+        feature_block_ids=tuple(DIAGNOSTIC_FEATURE_BLOCKS),
+        fold_ids=("fold_01",),
+        include_magnitude=False,
+    )
+
+    assert result.run_config is not None
+    assert result.run_config["schema_version"] == DIAGNOSTIC_SCHEMA_VERSION
+    assert result.run_config["target_contract"] == DIAGNOSTIC_TARGET_CONTRACT
+    assert result.run_config["claim_boundary"] == DIAGNOSTIC_CLAIM_BOUNDARY
+    assert result.run_config["analysis_scope"] == DIAGNOSTIC_ANALYSIS_SCOPE
+    assert (
+        result.run_config["analysis_scope"]
+        == "HISTORICAL_TRADES_ONLY_SOURCE_TIME_DIAGNOSTIC"
+    )
+    assert set(result.oof_predictions["feature_block_id"]) == {
+        "D0",
+        "D1",
+        "D2",
+        "D3",
+        "D4",
+    }
+    for output in (
+        result.oof_predictions,
+        result.conditional_quantiles,
+        result.fold_metrics,
+        result.support_audit,
+        result.weight_audit,
+    ):
+        assert output["schema_version"].eq(DIAGNOSTIC_SCHEMA_VERSION).all()
+        assert output["target_contract"].eq(DIAGNOSTIC_TARGET_CONTRACT).all()
+        assert output["claim_boundary"].eq(DIAGNOSTIC_CLAIM_BOUNDARY).all()
+        assert output["analysis_scope"].eq(DIAGNOSTIC_ANALYSIS_SCOPE).all()
+        assert output["direction_threshold_probability"].eq(0.01).all()
+        assert output["direction_threshold_semantics"].eq(
+            DIAGNOSTIC_DIRECTION_THRESHOLD_SEMANTICS
+        ).all()
+        assert output["venue_tick_support"].eq("UNSUPPORTED").all()
+        assert output["market_continuity_support"].eq("UNKNOWN").all()
+        assert output["claim_eligible"].eq(False).all()
+    assert set(result.oof_predictions["s_h_truth"].dropna().unique()) == {
+        False,
+        True,
+    }
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "message"),
+    [
+        (
+            "schema_version",
+            "VenueReactionPanelV3",
+            "HistoricalTradesOnlyProbabilityPanelV1",
+        ),
+        ("target_contract", "WRONG_TARGET", "target_contract"),
+        ("claim_boundary", "WRONG_CLAIM", "claim_boundary"),
+        ("direction_threshold_probability", 0.02, "frozen at 0.01"),
+        (
+            "direction_threshold_semantics",
+            "VENUE_TICK",
+            "research materiality",
+        ),
+        ("venue_tick_support", "SUPPORTED", "UNSUPPORTED"),
+        ("market_continuity_support", "SUPPORTED", "UNKNOWN"),
+    ],
+)
+def test_diagnostic_entry_rejects_contract_drift(
+    column: str, value: object, message: str
+) -> None:
+    panel = _diagnostic_panel()
+    panel[column] = value
+
+    with pytest.raises(X15ModelInputError, match=message):
+        run_x15_historical_trades_diagnostic_walk_forward(
+            panel,
+            model_ids=("b0_empirical_v1",),
+            feature_block_ids=("D0",),
+            fold_ids=("fold_01",),
+            include_magnitude=False,
+        )
+
+
+def test_confirmatory_entry_still_rejects_diagnostic_schema() -> None:
+    with pytest.raises(X15ModelInputError, match="VenueReactionPanelV3"):
+        run_x15_walk_forward(
+            _diagnostic_panel(),
+            model_ids=("b0_empirical_v1",),
+            feature_block_ids=("B0",),
+            fold_ids=("fold_01",),
+            include_magnitude=False,
+        )
+
+
+def test_diagnostic_entry_rejects_direction_inconsistent_with_fixed_materiality() -> None:
+    panel = _diagnostic_panel()
+    row = panel.index[panel["target_eligible"]].tolist()[0]
+    panel.loc[row, "delta_l_h"] = 0.009
+    panel.loc[row, "direction"] = "UP"
+    panel.loc[row, "conditional_magnitude"] = 0.009
+
+    with pytest.raises(X15ModelInputError, match="fixed 0.01 materiality"):
+        run_x15_historical_trades_diagnostic_walk_forward(
+            panel,
+            model_ids=("b0_empirical_v1",),
+            feature_block_ids=("D0",),
+            fold_ids=("fold_01",),
+            include_magnitude=False,
+        )
+
+
+def test_diagnostic_entry_rejects_target_eligibility_not_derived_from_sources() -> None:
+    panel = _diagnostic_panel()
+    row = panel.index[panel["target_eligible"]].tolist()[0]
+    panel.loc[row, "target_eligible"] = False
+
+    with pytest.raises(X15ModelInputError, match="target_eligible"):
+        run_x15_historical_trades_diagnostic_walk_forward(
+            panel,
+            model_ids=("b0_empirical_v1",),
+            feature_block_ids=("D0",),
+            fold_ids=("fold_01",),
+            include_magnitude=False,
+        )
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "message"),
+    [
+        ("target_contract", "WRONG_TARGET", "decision target_contract"),
+        ("tick_size", 0.01, "cannot contain tick_size"),
+    ],
+)
+def test_diagnostic_entry_rejects_decision_json_contract_drift(
+    key: str, value: object, message: str
+) -> None:
+    panel = _diagnostic_panel()
+    decoded = json.loads(panel.loc[0, "decision_features_json"])
+    decoded[key] = value
+    decision_json = json.dumps(decoded, sort_keys=True, separators=(",", ":"))
+    panel.loc[0, "decision_features_json"] = decision_json
+    panel.loc[0, "decision_feature_sha256"] = _sha256_text(decision_json)
+
+    with pytest.raises(X15ModelInputError, match=message):
+        run_x15_historical_trades_diagnostic_walk_forward(
+            panel,
+            model_ids=("b0_empirical_v1",),
+            feature_block_ids=("D0",),
+            fold_ids=("fold_01",),
+            include_magnitude=False,
+        )
+
+
+def test_diagnostic_adapter_projects_to_core_columns_and_preserves_categories() -> None:
+    panel = _diagnostic_panel()
+    panel["publication_only_blob"] = "x" * 10_000
+
+    adapted, _ = models_module._diagnostic_panel_frame(panel)
+
+    assert "publication_only_blob" not in adapted
+    assert "sports_clean_reason" not in adapted
+    assert "direction_threshold_semantics" not in adapted
+    assert set(adapted).issubset(
+        models_module._PANEL_REQUIRED
+        | {"_direction_truth", "_conditional_magnitude", "_source_row_id"}
+    )
+    for column in (
+        "game_id",
+        "atomic_information_episode_id",
+        "venue",
+        "decision_features_json",
+        "decision_feature_sha256",
+    ):
+        assert isinstance(adapted[column].dtype, pd.CategoricalDtype)
+
+
+def test_diagnostic_d0_expands_only_requested_features() -> None:
+    adapted, parsed = models_module._diagnostic_panel_frame(
+        _diagnostic_panel()
+    )
+
+    features = models_module._decision_feature_frame(
+        adapted.loc[adapted["decision_eligible"]],
+        feature_blocks=DIAGNOSTIC_FEATURE_BLOCKS,
+        feature_block_ids=("D0",),
+        parsed_by_sha256=parsed,
+    )
+
+    assert tuple(features.columns) == (
+        "landmark_seconds",
+        "endpoint_seconds",
+    )
+
+
+def test_diagnostic_multi_hot_expansion_uses_compact_nullable_booleans() -> None:
+    adapted, parsed = models_module._diagnostic_panel_frame(
+        _diagnostic_panel()
+    )
+
+    features = models_module._decision_feature_frame(
+        adapted.loc[adapted["decision_eligible"]],
+        feature_blocks=DIAGNOSTIC_FEATURE_BLOCKS,
+        feature_block_ids=("D3",),
+        parsed_by_sha256=parsed,
+    )
+
+    multi_hot = [
+        column
+        for column in features
+        if column.startswith("multi_hot__")
+    ]
+    assert multi_hot
+    assert all(str(features[column].dtype) == "boolean" for column in multi_hot)
+
+
+def test_diagnostic_parses_each_unique_decision_payload_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    panel = _diagnostic_panel()
+    second_endpoint = panel.copy(deep=True)
+    second_endpoint["endpoint_seconds"] = 45
+    panel = pd.concat([panel, second_endpoint], ignore_index=True)
+    unique_payloads = panel["decision_feature_sha256"].nunique()
+    original_loads = json.loads
+    parse_calls = 0
+
+    def counting_loads(value: str) -> object:
+        nonlocal parse_calls
+        parse_calls += 1
+        return original_loads(value)
+
+    monkeypatch.setattr(models_module.json, "loads", counting_loads)
+
+    run_x15_historical_trades_diagnostic_walk_forward(
+        panel,
+        model_ids=("b0_empirical_v1",),
+        feature_block_ids=("D0",),
+        fold_ids=("fold_01",),
+        include_magnitude=False,
+    )
+
+    assert parse_calls == unique_payloads
 
 
 def test_hierarchical_weights_equalize_game_then_episode_then_rows() -> None:
