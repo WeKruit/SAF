@@ -724,6 +724,60 @@ def test_prepared_diagnostic_cache_is_reused_across_execution_slices(
     assert not candidate.oof_predictions.empty
 
 
+def test_probability_outputs_are_identical_for_full_grid_and_one_cell_slice() -> None:
+    panel = _diagnostic_panel()
+    full = run_x15_historical_trades_diagnostic_walk_forward(
+        panel,
+        model_ids=("b0_empirical_v1", "shallow_xgboost_v1"),
+        feature_block_ids=("D0", "D4"),
+        fold_ids=("fold_01", "fold_02"),
+        include_magnitude=False,
+    )
+    sliced = run_x15_historical_trades_diagnostic_walk_forward(
+        panel,
+        model_ids=("shallow_xgboost_v1",),
+        feature_block_ids=("D4",),
+        fold_ids=("fold_02",),
+        include_magnitude=False,
+    )
+
+    identity = [
+        "source_row_id",
+        "game_id",
+        "atomic_information_episode_id",
+        "venue",
+        "training_venue",
+        "transport_mode",
+        "fold_id",
+        "feature_block_id",
+        "model_id",
+    ]
+    probabilities = [
+        "s_h_raw_probability",
+        "s_h_calibrated_probability",
+        "o_h_given_s_raw_probability",
+        "o_h_given_s_calibrated_probability",
+        "direction_raw_prob_down",
+        "direction_raw_prob_no_move",
+        "direction_raw_prob_up",
+        "direction_calibrated_prob_down",
+        "direction_calibrated_prob_no_move",
+        "direction_calibrated_prob_up",
+    ]
+    full_cell = full.oof_predictions.loc[
+        full.oof_predictions["fold_id"].eq("fold_02")
+        & full.oof_predictions["feature_block_id"].eq("D4")
+        & full.oof_predictions["model_id"].eq("shallow_xgboost_v1"),
+        [*identity, *probabilities],
+    ].sort_values(identity, kind="mergesort").reset_index(drop=True)
+    sliced_cell = sliced.oof_predictions.loc[
+        :,
+        [*identity, *probabilities],
+    ].sort_values(identity, kind="mergesort").reset_index(drop=True)
+
+    pd.testing.assert_frame_equal(full_cell, sliced_cell)
+
+
 def test_prepared_diagnostic_cache_keeps_only_governed_features() -> None:
     panel = _diagnostic_panel()
     for index in panel.index:

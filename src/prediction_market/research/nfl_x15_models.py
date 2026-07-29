@@ -49,6 +49,20 @@ from prediction_market.research.nfl_x15_development_panel import (
 
 
 RANDOM_STATE: Final[int] = 20260728
+EFFECTIVE_SEED_CONTRACT_ID: Final[str] = (
+    "SHA256_COORDINATE_UINT31_V1"
+)
+EFFECTIVE_SEED_COORDINATE_FIELDS: Final[tuple[str, ...]] = (
+    "base_random_state",
+    "fold_id",
+    "training_venue",
+    "evaluation_venue",
+    "transport_mode",
+    "feature_block_id",
+    "model_id",
+    "purpose",
+)
+EFFECTIVE_SEED_MODULUS: Final[int] = 2**31 - 1
 MODEL_IDS: Final[tuple[str, ...]] = (
     "b0_empirical_v1",
     "regularized_logistic_v1",
@@ -382,6 +396,41 @@ def _sha256(value: object) -> str:
         allow_nan=False,
     )
     return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def effective_random_state(
+    *,
+    base_random_state: int,
+    fold_id: str,
+    training_venue: str,
+    evaluation_venue: str,
+    transport_mode: str,
+    feature_block_id: str,
+    model_id: str,
+    purpose: str,
+) -> int:
+    """Derive a request-order-independent seed from one execution identity."""
+
+    coordinate = {
+        "contract_id": EFFECTIVE_SEED_CONTRACT_ID,
+        "base_random_state": int(base_random_state),
+        "fold_id": str(fold_id),
+        "training_venue": str(training_venue),
+        "evaluation_venue": str(evaluation_venue),
+        "transport_mode": str(transport_mode),
+        "feature_block_id": str(feature_block_id),
+        "model_id": str(model_id),
+        "purpose": str(purpose),
+    }
+    digest = hashlib.sha256(
+        json.dumps(
+            coordinate,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+    ).digest()
+    return int.from_bytes(digest[:8], "big") % EFFECTIVE_SEED_MODULUS
 
 
 def build_x15_week_folds(landmarks: pd.DataFrame) -> tuple[X15WeekFold, ...]:
@@ -2156,6 +2205,11 @@ def _run_x15_walk_forward_engine(
         "transport_pairs": tuple(normalized_transport_pairs),
         "include_magnitude": bool(include_magnitude),
         "random_state": int(random_state),
+        "effective_seed_contract": {
+            "contract_id": EFFECTIVE_SEED_CONTRACT_ID,
+            "coordinate_fields": EFFECTIVE_SEED_COORDINATE_FIELDS,
+            "modulus": EFFECTIVE_SEED_MODULUS,
+        },
         "feature_blocks": feature_blocks,
         "xgb_params": _XGB_PARAMS,
         "quantile_support_contract": quantile_support_contract,
@@ -2166,7 +2220,7 @@ def _run_x15_walk_forward_engine(
     quantile_rows: list[dict[str, object]] = []
     support_rows: list[dict[str, object]] = []
     weight_rows: list[dict[str, object]] = []
-    for fold_index, fold in enumerate(selected_folds):
+    for fold in selected_folds:
         fold_hash = _sha256(
             {
                 "fold_id": fold.fold_id,
@@ -2176,11 +2230,11 @@ def _run_x15_walk_forward_engine(
                 "validation_game_ids": fold.validation_game_ids,
             }
         )
-        for unit_index, (
+        for (
             training_venue,
             evaluation_venue,
             transport_mode,
-        ) in enumerate(execution_units):
+        ) in execution_units:
             train = decision[
                 decision["game_id"].isin(fold.train_game_ids)
                 & decision["venue"].eq(training_venue)
@@ -2229,7 +2283,7 @@ def _run_x15_walk_forward_engine(
                             "total_weight": float(values.sum()),
                         }
                     )
-            for block_index, block_id in enumerate(feature_block_ids):
+            for block_id in feature_block_ids:
                 feature_block_hash = _sha256(
                     {
                         "feature_block_id": block_id,
@@ -2244,18 +2298,21 @@ def _run_x15_walk_forward_engine(
                     train_frame=train,
                     feature_blocks=feature_blocks,
                 )
-                for model_index, model_id in enumerate(model_ids):
+                for model_id in model_ids:
                     if (
                         model_id == "b0_empirical_v1"
                         and block_id != baseline_block_id
                     ):
                         continue
-                    seed = (
-                        int(random_state)
-                        + fold_index * 1_000
-                        + unit_index * 100
-                        + block_index * 10
-                        + model_index
+                    seed = effective_random_state(
+                        base_random_state=int(random_state),
+                        fold_id=fold.fold_id,
+                        training_venue=training_venue,
+                        evaluation_venue=evaluation_venue,
+                        transport_mode=transport_mode,
+                        feature_block_id=block_id,
+                        model_id=model_id,
+                        purpose="PROBABILITY_HEADS",
                     )
                     fits: dict[str, _FittedHead] = {}
                     calibrators: dict[
@@ -2354,7 +2411,16 @@ def _run_x15_walk_forward_engine(
                         evaluation_venue=evaluation_venue,
                         transport_mode=transport_mode,
                         block_id=block_id,
-                        random_state=int(random_state) + fold_index + unit_index,
+                        random_state=effective_random_state(
+                            base_random_state=int(random_state),
+                            fold_id=fold.fold_id,
+                            training_venue=training_venue,
+                            evaluation_venue=evaluation_venue,
+                            transport_mode=transport_mode,
+                            feature_block_id=block_id,
+                            model_id=QUANTILE_MODEL_ID,
+                            purpose="MAGNITUDE",
+                        ),
                         support_contract=quantile_support_contract,
                         validation_weights=validation_weights["MAGNITUDE"],
                         training_game_ids=actual_training_game_ids,
@@ -2962,6 +3028,9 @@ __all__ = [
     "DIAGNOSTIC_SCHEMA_VERSION",
     "DIAGNOSTIC_TARGET_CONTRACT",
     "DIAGNOSTIC_VENUE_TICK_SUPPORT",
+    "EFFECTIVE_SEED_CONTRACT_ID",
+    "EFFECTIVE_SEED_COORDINATE_FIELDS",
+    "EFFECTIVE_SEED_MODULUS",
     "FEATURE_BLOCKS",
     "MODEL_IDS",
     "QUANTILE_MODEL_ID",
@@ -2971,6 +3040,7 @@ __all__ = [
     "X15PreparedDiagnosticPanel",
     "X15WeekFold",
     "build_x15_week_folds",
+    "effective_random_state",
     "hierarchical_sample_weights",
     "prepare_x15_historical_trades_diagnostic_partitions",
     "run_x15_historical_trades_diagnostic_walk_forward",
