@@ -1102,8 +1102,17 @@ def _validate_shard_run(
         raise X15OOFPublicationError(
             "OOF predictions contain games outside fold validation weeks"
         )
+    selection_fold_arrays = _native_polymarket_fold_arrays(predictions)
+    selection_authority_complete = selection_fold_arrays == {
+        "train_weeks": train_weeks,
+        "validation_weeks": validation_weeks,
+        "training_game_ids": training_game_ids,
+        "validation_game_ids": validation_game_ids,
+        "preprocessor_fit_game_ids": training_game_ids,
+    }
     authority_coverage_complete = (
         observed_validation_game_ids == validation_game_ids
+        and selection_authority_complete
     )
     return (
         run_config,

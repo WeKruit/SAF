@@ -407,7 +407,7 @@ def test_partial_fold_batch_is_diagnostic_only(tmp_path: Path) -> None:
     assert document["holdout_reaction_accessed"] is False
 
 
-def test_fold_allows_proven_venue_specific_training_subset(
+def test_fold_publishes_training_subset_as_diagnostic_incomplete(
     tmp_path: Path,
 ) -> None:
     authority = _authority()
@@ -437,7 +437,7 @@ def test_fold_allows_proven_venue_specific_training_subset(
         output_root=tmp_path,
     )
 
-    assert publication.authority_coverage_complete is True
+    assert publication.authority_coverage_complete is False
     document = _manifest(publication.manifest_path)
     assert document["selection_fold_arrays"]["training_game_ids"] == list(
         training_subset
@@ -445,6 +445,66 @@ def test_fold_allows_proven_venue_specific_training_subset(
     assert document["selection_fold_arrays"][
         "preprocessor_fit_game_ids"
     ] == list(training_subset)
+
+
+def test_complete_matrix_with_training_subset_cannot_be_selection_ready(
+    tmp_path: Path,
+) -> None:
+    authority = _authority()
+    shards = []
+    for fold_id, _, _ in EXPECTED_FOLDS:
+        for model_id, feature_block_id in PROBABILITY_DESIGN_MATRIX:
+            run = _fold_run(
+                fold_id,
+                authority=authority,
+                model_id=model_id,
+                feature_block_id=feature_block_id,
+            )
+            if (
+                fold_id == "fold_01"
+                and model_id == "regularized_logistic_v1"
+                and feature_block_id == "D1"
+            ):
+                predictions = run.oof_predictions.copy()
+                training_subset = tuple(
+                    predictions.iloc[0]["training_game_ids"][:-1]
+                )
+                predictions["training_game_ids"] = pd.Series(
+                    [training_subset] * len(predictions), dtype=object
+                )
+                predictions["preprocessor_fit_game_ids"] = pd.Series(
+                    [training_subset] * len(predictions), dtype=object
+                )
+                run = X15ModelRun(
+                    oof_predictions=predictions,
+                    conditional_quantiles=run.conditional_quantiles,
+                    fold_metrics=run.fold_metrics,
+                    support_audit=run.support_audit,
+                    weight_audit=run.weight_audit,
+                    run_config_sha256=run.run_config_sha256,
+                    run_config=run.run_config,
+                )
+            shards.append(
+                publish_x15_oof_shard(
+                    model_run=run,
+                    authority=authority,
+                    cohort_mapping_sha256=MAPPING_SHA,
+                    output_root=tmp_path,
+                )
+            )
+
+    with pytest.raises(
+        X15OOFPublicationError,
+        match="exact shard authority coverage",
+    ):
+        publish_x15_oof_batch(
+            shard_manifest_paths=tuple(
+                shard.manifest_path for shard in shards
+            ),
+            authority=authority,
+            cohort_mapping_sha256=MAPPING_SHA,
+            output_root=tmp_path,
+        )
 
 
 def test_exact_five_fold_batch_verifies_153_authority_before_selection_ready(
