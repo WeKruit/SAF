@@ -1,4 +1,4 @@
-"""Governed, streaming publication of the NFL X-16 exact-153 fact batch."""
+"""Governed, streaming publication of the NFL X-13 exact-153 fact batch."""
 
 from __future__ import annotations
 
@@ -30,6 +30,7 @@ from prediction_market.sports.nfl_x16_fact_extraction import (
 )
 
 
+EXPERIMENT_ID: Final[str] = "X-13"
 EXPECTED_GOVERNANCE_MANIFEST_FILE_SHA256: Final[str] = (
     "sha256:545f7e082055cd5070d907da9eacbdb735dd14351c19c5a83d912764bb595a37"
 )
@@ -515,6 +516,13 @@ def verify_exact153_authority(
     if manifest_sha != EXPECTED_GOVERNANCE_MANIFEST_FILE_SHA256:
         raise NFLExact153PublicationError("governance manifest bytes/hash mismatch")
     if (
+        "experiment_id" in manifest
+        and manifest.get("experiment_id") != EXPERIMENT_ID
+    ):
+        raise NFLExact153PublicationError(
+            "governance manifest experiment identity mismatch"
+        )
+    if (
         manifest.get("schema") != "nfl_factor_expansion_registry_manifest_v2"
         or manifest.get("candidate_game_count")
         != EXPECTED_DEVELOPMENT_GAME_COUNT + EXPECTED_HOLDOUT_GAME_COUNT
@@ -539,8 +547,13 @@ def verify_exact153_authority(
         len(object_bytes) != manifest.get("byte_length")
         or _sha256_bytes(object_bytes) != EXPECTED_GOVERNANCE_OBJECT_SHA256
         or authority_object.get("schema") != "nfl_factor_expansion_registry_v2"
+        or authority_object.get("experiment_id") != EXPERIMENT_ID
         or authority_object.get("status") != "FROZEN"
     ):
+        if authority_object.get("experiment_id") != EXPERIMENT_ID:
+            raise NFLExact153PublicationError(
+                "governance object experiment identity mismatch"
+            )
         raise NFLExact153PublicationError("governance object bytes/hash contract mismatch")
     split_lock = authority_object.get("split_lock")
     if type(split_lock) is not dict:
@@ -1135,6 +1148,7 @@ def _aggregate_counts(
 
 def _authority_binding(authority: Exact153Authority) -> dict[str, object]:
     return {
+        "experiment_id": EXPERIMENT_ID,
         "manifest_file_sha256": authority.manifest_file_sha256,
         "object_sha256": authority.object_sha256,
         "development_game_count": len(authority.development_game_ids),
@@ -1180,7 +1194,7 @@ def _publish_game_bundle(
     table_semantic_sha = _canonical_sha256(table_semantics)
     material: dict[str, object] = {
         "schema": "nfl_x16_exact153_single_game_fact_manifest_v1",
-        "experiment_id": "X-16",
+        "experiment_id": EXPERIMENT_ID,
         "cohort": "development",
         "game_id": game_id,
         "claim_boundary": CLAIM_BOUNDARY,
@@ -1250,6 +1264,7 @@ def _verify_game_bundle(
     if (
         manifest.get("schema")
         != "nfl_x16_exact153_single_game_fact_manifest_v1"
+        or manifest.get("experiment_id") != EXPERIMENT_ID
         or manifest.get("game_id") != expected_game_id
         or manifest.get("cohort") != "development"
         or manifest.get("publication_gate") != "PASS"
@@ -1372,6 +1387,7 @@ def _publish_batch_index(
     aggregate = _aggregate_counts(games)
     semantic_material = {
         "schema": "nfl_x16_exact153_semantic_batch_v1",
+        "experiment_id": EXPERIMENT_ID,
         "authority": _authority_binding(authority),
         "sources": dict(source_bindings),
         "factor_registry": dict(registry_binding),
@@ -1387,7 +1403,7 @@ def _publish_batch_index(
     semantic_batch_sha = _canonical_sha256(semantic_material)
     material: dict[str, object] = {
         "schema": "nfl_x16_exact153_fact_batch_index_v1",
-        "experiment_id": "X-16",
+        "experiment_id": EXPERIMENT_ID,
         "cohort": "development",
         "game_count": len(games),
         "claim_boundary": CLAIM_BOUNDARY,
@@ -1529,6 +1545,7 @@ def publish_exact153_fact_batch(
 __all__ = [
     "BUILDER_VERSION",
     "CLAIM_BOUNDARY",
+    "EXPERIMENT_ID",
     "Exact153Authority",
     "NFLExact153PublicationError",
     "PublishedExact153FactBatch",

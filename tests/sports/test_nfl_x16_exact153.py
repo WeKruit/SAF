@@ -39,6 +39,8 @@ def _write_authority(
     monkeypatch: pytest.MonkeyPatch,
     *,
     assignments: list[dict[str, object]] | None = None,
+    object_experiment_id: str = "X-13",
+    manifest_experiment_id: str | None = None,
 ) -> tuple[Path, tuple[str, ...], tuple[str, ...]]:
     development = ("2025_01_AAA_BBB", "2025_02_CCC_DDD")
     holdout = ("2025_13_EEE_FFF",)
@@ -49,6 +51,7 @@ def _write_authority(
     ]
     object_payload = {
         "schema": "nfl_factor_expansion_registry_v2",
+        "experiment_id": object_experiment_id,
         "status": "FROZEN",
         "split_lock": {
             "development": {
@@ -91,6 +94,8 @@ def _write_authority(
         "object_sha256": object_sha,
         "byte_length": len(object_bytes),
     }
+    if manifest_experiment_id is not None:
+        manifest_payload["experiment_id"] = manifest_experiment_id
     manifest_bytes = _canonical_bytes(manifest_payload)
     manifest_sha = _sha_bytes(manifest_bytes)
     manifest_path = (
@@ -329,6 +334,36 @@ def test_authority_derives_exact_ordered_development_and_rejects_holdout_or_unkn
         authority.require_development(holdout[0])
     with pytest.raises(publication.NFLExact153PublicationError, match="unknown"):
         authority.require_development("2025_99_UNKNOWN_GAME")
+
+
+@pytest.mark.parametrize(
+    ("object_experiment_id", "manifest_experiment_id"),
+    [
+        ("X-16", None),
+        ("X-13", "X-16"),
+    ],
+)
+def test_authority_rejects_non_x13_experiment_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    object_experiment_id: str,
+    manifest_experiment_id: str | None,
+) -> None:
+    manifest_path, _, _ = _write_authority(
+        tmp_path,
+        monkeypatch,
+        object_experiment_id=object_experiment_id,
+        manifest_experiment_id=manifest_experiment_id,
+    )
+
+    with pytest.raises(
+        publication.NFLExact153PublicationError,
+        match="experiment identity",
+    ):
+        publication.verify_exact153_authority(
+            project_root=tmp_path,
+            governance_manifest_path=manifest_path,
+        )
 
 
 def test_authority_rejects_overlapping_development_and_holdout(
@@ -875,3 +910,31 @@ def test_bounded_rerun_has_identical_semantic_hashes_and_batch_identity(
         assert first_game.table_semantic_sha256 == (
             second_game.table_semantic_sha256
         )
+
+
+def test_published_contracts_use_x13_experiment_identity_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path, _, _, registry_path, _ = _configure_inputs(
+        tmp_path, monkeypatch
+    )
+    output_root = tmp_path / "published"
+
+    batch = publication.publish_exact153_fact_batch(
+        project_root=tmp_path,
+        governance_manifest_path=manifest_path,
+        factor_registry_path=registry_path,
+        output_root=output_root,
+    )
+
+    assert publication.EXPERIMENT_ID == "X-13"
+    batch_payload = json.loads(batch.index_path.read_text(encoding="utf-8"))
+    assert batch_payload["experiment_id"] == "X-13"
+    assert batch_payload["authority"]["experiment_id"] == "X-13"
+    for game in batch.games:
+        game_payload = json.loads(game.manifest_path.read_text(encoding="utf-8"))
+        assert game_payload["experiment_id"] == "X-13"
+        assert game_payload["authority"]["experiment_id"] == "X-13"
+        assert '"X-16"' not in game.manifest_path.read_text(encoding="utf-8")
+    assert '"X-16"' not in batch.index_path.read_text(encoding="utf-8")
