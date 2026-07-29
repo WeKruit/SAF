@@ -22,6 +22,9 @@ from prediction_market.research.nfl_x15_models import (
     DIAGNOSTIC_SCHEMA_VERSION,
     DIAGNOSTIC_TARGET_CONTRACT,
     DIAGNOSTIC_VENUE_TICK_SUPPORT,
+    EFFECTIVE_SEED_CONTRACT_ID,
+    EFFECTIVE_SEED_COORDINATE_FIELDS,
+    EFFECTIVE_SEED_MODULUS,
     X15ModelRun,
 )
 from prediction_market.research.nfl_x15_oof_publication import (
@@ -100,6 +103,11 @@ def _run_config(
         "transport_pairs": (),
         "include_magnitude": False,
         "random_state": 20260728,
+        "effective_seed_contract": {
+            "contract_id": EFFECTIVE_SEED_CONTRACT_ID,
+            "coordinate_fields": EFFECTIVE_SEED_COORDINATE_FIELDS,
+            "modulus": EFFECTIVE_SEED_MODULUS,
+        },
         "feature_blocks": {
             f"D{index}": ("landmark_seconds", "endpoint_seconds")
             for index in range(5)
@@ -343,15 +351,9 @@ def test_fold_publication_is_content_addressed_idempotent_and_recoverable(
     assert document["cohort_mapping_sha256"] == MAPPING_SHA
     assert document["run_config_sha256"] == run.run_config_sha256
     assert document["effective_seed_contract"] == {
-        "base_random_state": 20260728,
-        "execution_unit_seed_stride": 100,
-        "formula": (
-            "base_random_state + fold_index*1000 + unit_index*100 "
-            "+ feature_block_index*10 + model_index"
-        ),
-        "shard_fold_index": 0,
-        "shard_feature_block_index": 0,
-        "shard_model_index": 0,
+        "contract_id": EFFECTIVE_SEED_CONTRACT_ID,
+        "coordinate_fields": list(EFFECTIVE_SEED_COORDINATE_FIELDS),
+        "modulus": EFFECTIVE_SEED_MODULUS,
     }
     assert document["effective_seed_contract_sha256"].startswith("sha256:")
     assert document["diagnostic_claim_boundary"] == DIAGNOSTIC_CLAIM_BOUNDARY
@@ -862,6 +864,37 @@ def test_shard_rejects_nonintegral_random_state_seed(
     with pytest.raises(
         X15OOFPublicationError,
         match="random_state.*integer",
+    ):
+        publish_x15_oof_shard(
+            model_run=run,
+            authority=authority,
+            cohort_mapping_sha256=MAPPING_SHA,
+            output_root=tmp_path,
+        )
+
+
+def test_shard_rejects_obsolete_local_index_seed_contract(
+    tmp_path: Path,
+) -> None:
+    authority = _authority()
+    run = _fold_run(
+        "fold_01",
+        authority=authority,
+        config_override={
+            "effective_seed_contract": {
+                "base_random_state": 20260728,
+                "execution_unit_seed_stride": 100,
+                "formula": (
+                    "base_random_state + fold_index*1000 + "
+                    "unit_index*100 + feature_block_index*10 + model_index"
+                ),
+            }
+        },
+    )
+
+    with pytest.raises(
+        X15OOFPublicationError,
+        match="canonical effective_seed_contract",
     ):
         publish_x15_oof_shard(
             model_run=run,

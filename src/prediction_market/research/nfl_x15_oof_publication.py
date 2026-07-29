@@ -42,13 +42,16 @@ from prediction_market.research.nfl_x15_models import (
     DIAGNOSTIC_SCHEMA_VERSION,
     DIAGNOSTIC_TARGET_CONTRACT,
     DIAGNOSTIC_VENUE_TICK_SUPPORT,
+    EFFECTIVE_SEED_CONTRACT_ID,
+    EFFECTIVE_SEED_COORDINATE_FIELDS,
+    EFFECTIVE_SEED_MODULUS,
     X15ModelRun,
 )
 
 
-SHARD_SCHEMA: Final[str] = "nfl_x15_oof_shard_publication_v2"
-BATCH_SCHEMA: Final[str] = "nfl_x15_oof_batch_index_v2"
-BUILDER_VERSION: Final[str] = "nfl-x15-oof-publication-v2"
+SHARD_SCHEMA: Final[str] = "nfl_x15_oof_shard_publication_v3"
+BATCH_SCHEMA: Final[str] = "nfl_x15_oof_batch_index_v3"
+BUILDER_VERSION: Final[str] = "nfl-x15-oof-publication-v3"
 OOF_TABLE_NAMES: Final[tuple[str, ...]] = (
     "oof_predictions",
     "conditional_quantiles",
@@ -166,10 +169,6 @@ _DIRECTION_PROBABILITY_COLUMNS: Final[tuple[str, ...]] = (
 )
 _DIRECTION_CLASSES: Final[frozenset[str]] = frozenset(
     {"DOWN", "NO_MOVE", "UP"}
-)
-_EFFECTIVE_SEED_FORMULA: Final[str] = (
-    "base_random_state + fold_index*1000 + unit_index*100 "
-    "+ feature_block_index*10 + model_index"
 )
 _SHA256_PREFIX: Final[str] = "sha256:"
 _EXPECTED_TRAINING_ONLY_GAME_COUNT: Final[int] = 30
@@ -603,14 +602,19 @@ def _effective_seed_contract(
         raise X15OOFPublicationError(
             "run config random_state is outside the uint32 seed range"
         )
-    return {
-        "base_random_state": base_random_state,
-        "execution_unit_seed_stride": 100,
-        "formula": _EFFECTIVE_SEED_FORMULA,
-        "shard_fold_index": 0,
-        "shard_feature_block_index": 0,
-        "shard_model_index": 0,
+    expected = {
+        "contract_id": EFFECTIVE_SEED_CONTRACT_ID,
+        "coordinate_fields": list(EFFECTIVE_SEED_COORDINATE_FIELDS),
+        "modulus": EFFECTIVE_SEED_MODULUS,
     }
+    configured = run_config.get("effective_seed_contract")
+    if not isinstance(configured, Mapping) or _canonical(
+        configured
+    ) != _canonical(expected):
+        raise X15OOFPublicationError(
+            "run config must bind the canonical effective_seed_contract"
+        )
+    return expected
 
 
 def _validate_run_config(
