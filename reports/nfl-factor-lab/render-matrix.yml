@@ -1,0 +1,42 @@
+experiment_id: X-13
+claim_boundary: PRELIMINARY_SOURCE_TIME_ONLY
+source: factor-lab.qmd
+authority:
+  notebook: notebooks/nfl-factor-lab/NFL_Factor_Lab_Master.ipynb
+  run_index: registries/factors/nfl_factor_lab_run_index_v2.json
+  bundle_schema: NFLFactorLabRunIndexV2
+  cross_game_bundle_sha256: sha256:ac3af1adbc3dabe73e4b8d2a3a9d6bd19639e23108dc419453ea08e1ec38dccb
+quarto_version: 1.9.38
+
+game_reports:
+  source: frozen_discovery_games
+  expected_count: 20
+  parameter: game_id
+
+report_families:
+  - shortlisted_factor
+  - discovery_summary
+  - holdout_summary
+  - method_catalog
+  - data_gap
+
+shortlisted_factor:
+  parameters:
+    - factor_id
+    - market_family
+    - venue
+    - horizon
+    - review_status
+
+discovery_summary:
+  scope: frozen_20_game_discovery
+
+holdout_summary:
+  scope: sealed_historical_holdout
+  gate: shortlist_lock_required
+
+method_catalog:
+  scope: registered_method_cards
+
+data_gap:
+  scope: unresolved_pit_license_and_tracking_fields
