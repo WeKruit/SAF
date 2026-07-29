@@ -929,12 +929,21 @@ def test_published_contracts_use_x13_experiment_identity_only(
     )
 
     assert publication.EXPERIMENT_ID == "X-13"
+    assert publication.BUILDER_VERSION == "nfl_x13_exact153_fact_publication_v1"
     batch_payload = json.loads(batch.index_path.read_text(encoding="utf-8"))
     assert batch_payload["experiment_id"] == "X-13"
+    assert batch_payload["schema"] == "nfl_x13_exact153_fact_batch_index_v1"
+    assert batch_payload["builder_version"] == publication.BUILDER_VERSION
     assert batch_payload["authority"]["experiment_id"] == "X-13"
     for game in batch.games:
-        game_payload = json.loads(game.manifest_path.read_text(encoding="utf-8"))
+        game_material = game.manifest_path.read_text(encoding="utf-8")
+        game_payload = json.loads(game_material)
         assert game_payload["experiment_id"] == "X-13"
+        assert (
+            game_payload["schema"]
+            == "nfl_x13_exact153_single_game_fact_manifest_v1"
+        )
+        assert game_payload["builder_version"] == publication.BUILDER_VERSION
         assert game_payload["authority"]["experiment_id"] == "X-13"
-        assert '"X-16"' not in game.manifest_path.read_text(encoding="utf-8")
-    assert '"X-16"' not in batch.index_path.read_text(encoding="utf-8")
+        assert "x16" not in game_material.casefold()
+    assert "x16" not in batch.index_path.read_text(encoding="utf-8").casefold()

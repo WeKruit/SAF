@@ -50,7 +50,7 @@ DEFAULT_GOVERNANCE_MANIFEST: Final[Path] = Path(
 DEFAULT_FACTOR_REGISTRY: Final[Path] = Path(
     "registries/factors/nfl_factor_registry_v3_draft.json"
 )
-BUILDER_VERSION: Final[str] = "nfl_x16_exact153_fact_publication_v1"
+BUILDER_VERSION: Final[str] = "nfl_x13_exact153_fact_publication_v1"
 CLAIM_BOUNDARY: Final[str] = (
     "DEVELOPMENT_SPORTS_FACTS_ONLY; no market reaction, holdout reaction, "
     "causality, execution, or alpha claim"
@@ -1193,7 +1193,7 @@ def _publish_game_bundle(
     }
     table_semantic_sha = _canonical_sha256(table_semantics)
     material: dict[str, object] = {
-        "schema": "nfl_x16_exact153_single_game_fact_manifest_v1",
+        "schema": "nfl_x13_exact153_single_game_fact_manifest_v1",
         "experiment_id": EXPERIMENT_ID,
         "cohort": "development",
         "game_id": game_id,
@@ -1263,7 +1263,7 @@ def _verify_game_bundle(
     material.pop("bundle_sha256", None)
     if (
         manifest.get("schema")
-        != "nfl_x16_exact153_single_game_fact_manifest_v1"
+        != "nfl_x13_exact153_single_game_fact_manifest_v1"
         or manifest.get("experiment_id") != EXPERIMENT_ID
         or manifest.get("game_id") != expected_game_id
         or manifest.get("cohort") != "development"
@@ -1386,7 +1386,7 @@ def _publish_batch_index(
         )
     aggregate = _aggregate_counts(games)
     semantic_material = {
-        "schema": "nfl_x16_exact153_semantic_batch_v1",
+        "schema": "nfl_x13_exact153_semantic_batch_v1",
         "experiment_id": EXPERIMENT_ID,
         "authority": _authority_binding(authority),
         "sources": dict(source_bindings),
@@ -1402,7 +1402,7 @@ def _publish_batch_index(
     }
     semantic_batch_sha = _canonical_sha256(semantic_material)
     material: dict[str, object] = {
-        "schema": "nfl_x16_exact153_fact_batch_index_v1",
+        "schema": "nfl_x13_exact153_fact_batch_index_v1",
         "experiment_id": EXPERIMENT_ID,
         "cohort": "development",
         "game_count": len(games),
