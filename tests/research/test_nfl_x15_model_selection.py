@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import math
+
 import pandas as pd
 import pytest
 
+from prediction_market.research import nfl_x15_model_selection as selection_module
 from prediction_market.research.nfl_x15_model_selection import (
     FrozenSelectionSpec,
     ModelSelectionError,
@@ -230,6 +233,43 @@ def _spec() -> FrozenSelectionSpec:
     return FrozenSelectionSpec(
         candidate_model_id="regularized_logistic_v1",
         candidate_feature_block_id="D4",
+    )
+
+
+def test_multihead_selection_uses_proper_joint_log_score() -> None:
+    pairs = pd.DataFrame(
+        [
+            {
+                "game_id": "game-1",
+                "atomic_information_episode_id": "episode-1",
+                "s_h_truth_b0": True,
+                "s_h_truth_candidate": True,
+                "o_h_given_s_truth_b0": True,
+                "o_h_given_s_truth_candidate": True,
+                "direction_truth_b0": "UP",
+                "direction_truth_candidate": "UP",
+                "s_h_calibrated_probability_b0": 0.6,
+                "s_h_calibrated_probability_candidate": 0.8,
+                "o_h_given_s_calibrated_probability_b0": 0.5,
+                "o_h_given_s_calibrated_probability_candidate": 0.7,
+                "direction_calibrated_prob_down_b0": 0.2,
+                "direction_calibrated_prob_no_move_b0": 0.3,
+                "direction_calibrated_prob_up_b0": 0.5,
+                "direction_calibrated_prob_down_candidate": 0.1,
+                "direction_calibrated_prob_no_move_candidate": 0.3,
+                "direction_calibrated_prob_up_candidate": 0.6,
+            }
+        ]
+    )
+
+    scored = selection_module._attach_multihead_losses(pairs)
+
+    assert scored.loc[0, "available_head_count"] == 3
+    assert scored.loc[0, "baseline_integrated_row_loss"] == pytest.approx(
+        -math.log(0.6) - math.log(0.5) - math.log(0.5)
+    )
+    assert scored.loc[0, "candidate_integrated_row_loss"] == pytest.approx(
+        -math.log(0.8) - math.log(0.7) - math.log(0.6)
     )
 
 

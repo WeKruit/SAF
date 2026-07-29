@@ -2044,8 +2044,8 @@ def _candidate_b0_integrated_log_loss(
             raise KalshiValidationError(
                 f"{layer} exact row has no evaluable Kalshi truth head"
             )
-        candidate_loss = float(np.mean(candidate_losses))
-        baseline_loss = float(np.mean(baseline_losses))
+        candidate_loss = float(np.sum(candidate_losses))
+        baseline_loss = float(np.sum(baseline_losses))
         records.append(
             {
                 **{

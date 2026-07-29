@@ -970,10 +970,10 @@ def _attach_multihead_losses(pairs: pd.DataFrame) -> pd.DataFrame:
     result["available_head_count"] = available_count
     result["baseline_integrated_row_loss"] = np.nansum(
         baseline_heads, axis=1
-    ) / available_count
+    )
     result["candidate_integrated_row_loss"] = np.nansum(
         candidate_heads, axis=1
-    ) / available_count
+    )
     result["loss_improvement"] = (
         result["baseline_integrated_row_loss"]
         - result["candidate_integrated_row_loss"]

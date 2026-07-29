@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 import inspect
 import json
+import math
 
 import pandas as pd
 import pytest
@@ -44,6 +45,70 @@ CLAIM_BOUNDARY = (
 X11_SPORTS_OUTCOME_EVIDENCE_SHA256 = (
     "sha256:1d0c033459c69778e265be3fca16ae2c87f650d5003a61ffdea4c020a4fd0b05"
 )
+
+
+def test_kalshi_validation_uses_proper_joint_log_score() -> None:
+    grain = {
+        "game_id": "game-1",
+        "nfl_week": 3,
+        "atomic_information_episode_id": "episode-1",
+        "landmark_seconds": 3,
+        "endpoint_seconds": 30,
+        "fold_id": "fold_01",
+        "cohort_authority_sha256": AUTHORITY,
+        "target_contract": TARGET_CONTRACT,
+        "claim_boundary": CLAIM_BOUNDARY,
+        "direction_threshold_probability": 0.01,
+        "direction_threshold_semantics": (
+            "FIXED_CROSS_VENUE_RESEARCH_MATERIALITY_NOT_TICK"
+        ),
+        "venue_tick_support": "UNSUPPORTED",
+        "market_continuity_support": "UNKNOWN",
+        "schema_version": "HistoricalTradesOnlyProbabilityPanelV1",
+        "analysis_scope": "HISTORICAL_TRADES_ONLY_SOURCE_TIME_DIAGNOSTIC",
+        "claim_eligible": False,
+    }
+    pairs = pd.DataFrame(
+        [
+            {
+                **grain,
+                "model_id_candidate": "regularized_logistic_v1",
+                "feature_block_id_candidate": "D4",
+                "model_id_b0": "b0_empirical_v1",
+                "feature_block_id_b0": "D0",
+                "actual_home_contract_id_candidate": "kalshi:home",
+                "actual_home_contract_id_b0": "kalshi:home",
+                "s_h_truth_candidate": True,
+                "s_h_truth_b0": True,
+                "o_h_given_s_truth_candidate": True,
+                "o_h_given_s_truth_b0": True,
+                "direction_truth_candidate": "UP",
+                "direction_truth_b0": "UP",
+                "s_h_calibrated_probability_candidate": 0.8,
+                "s_h_calibrated_probability_b0": 0.6,
+                "o_h_given_s_calibrated_probability_candidate": 0.7,
+                "o_h_given_s_calibrated_probability_b0": 0.5,
+                "direction_calibrated_prob_down_candidate": 0.1,
+                "direction_calibrated_prob_no_move_candidate": 0.3,
+                "direction_calibrated_prob_up_candidate": 0.6,
+                "direction_calibrated_prob_down_b0": 0.2,
+                "direction_calibrated_prob_no_move_b0": 0.3,
+                "direction_calibrated_prob_up_b0": 0.5,
+            }
+        ]
+    )
+
+    scored = validation._candidate_b0_integrated_log_loss(
+        pairs, layer="TEST"
+    )
+
+    assert scored.loc[0, "available_head_count"] == 3
+    assert scored.loc[0, "candidate_integrated_log_loss"] == pytest.approx(
+        -math.log(0.8) - math.log(0.7) - math.log(0.6)
+    )
+    assert scored.loc[0, "b0_integrated_log_loss"] == pytest.approx(
+        -math.log(0.6) - math.log(0.5) - math.log(0.5)
+    )
 X11_HOLDOUT_DRIVE_OUTCOME_COUNT = 1_683
 
 
