@@ -1,159 +1,541 @@
-"""Paired, game-clustered development-only model selection for NFL X-15."""
+"""Frozen, paired model selection over the real NFL X-15 OOF schema.
+
+The selection surface deliberately consumes :class:`X15ModelRun` rather than
+an ad-hoc long-form probability table.  B0 and a candidate are compared on
+identical wide OOF rows, with equal head weight inside a row, equal row weight
+inside an episode, and equal episode weight inside a game.  Games are the
+bootstrap clusters.
+"""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from numbers import Integral, Real
+from typing import Final
 
 import numpy as np
 import pandas as pd
 
+from prediction_market.research.nfl_x15_models import (
+    DIAGNOSTIC_ANALYSIS_SCOPE,
+    DIAGNOSTIC_CLAIM_BOUNDARY,
+    DIAGNOSTIC_DIRECTION_THRESHOLD_PROBABILITY,
+    DIAGNOSTIC_DIRECTION_THRESHOLD_SEMANTICS,
+    DIAGNOSTIC_FEATURE_BLOCKS,
+    DIAGNOSTIC_MARKET_CONTINUITY_SUPPORT,
+    DIAGNOSTIC_SCHEMA_VERSION,
+    DIAGNOSTIC_TARGET_CONTRACT,
+    DIAGNOSTIC_VENUE_TICK_SUPPORT,
+    X15ModelRun,
+)
+from prediction_market.research.nfl_x15_statistics import (
+    X15StatisticsInputError,
+    summarize_development_signals,
+)
 
-BOOTSTRAP_SAMPLES = 10_000
-BOOTSTRAP_SEED = 20260729
-_SHA256_PREFIX_LENGTH = len("sha256:") + 64
-_PAIR_COLUMNS = (
+
+BASELINE_MODEL_ID: Final[str] = "b0_empirical_v1"
+BASELINE_FEATURE_BLOCK_ID: Final[str] = "D0"
+BOOTSTRAP_SAMPLES: Final[int] = 10_000
+BOOTSTRAP_SEED: Final[int] = 20260729
+ANCHOR_LANDMARK_SECONDS: Final[int] = 3
+ANCHOR_ENDPOINT_SECONDS: Final[int] = 30
+LOSS_IMPROVEMENT_SIGN_SEMANTICS: Final[str] = (
+    "POSITIVE_MEANS_CANDIDATE_LOSS_IS_LOWER_THAN_B0"
+)
+DIRECTION_THRESHOLD_PROBABILITY: Final[float] = (
+    DIAGNOSTIC_DIRECTION_THRESHOLD_PROBABILITY
+)
+DIRECTION_THRESHOLD_SEMANTICS: Final[str] = (
+    DIAGNOSTIC_DIRECTION_THRESHOLD_SEMANTICS
+)
+VENUE_TICK_SUPPORT: Final[str] = DIAGNOSTIC_VENUE_TICK_SUPPORT
+MARKET_CONTINUITY_SUPPORT: Final[str] = (
+    DIAGNOSTIC_MARKET_CONTINUITY_SUPPORT
+)
+HISTORICAL_TARGET_CONTRACT: Final[str] = DIAGNOSTIC_TARGET_CONTRACT
+HISTORICAL_CLAIM_BOUNDARY: Final[str] = DIAGNOSTIC_CLAIM_BOUNDARY
+HISTORICAL_SCHEMA_VERSION: Final[str] = DIAGNOSTIC_SCHEMA_VERSION
+HISTORICAL_ANALYSIS_SCOPE: Final[str] = DIAGNOSTIC_ANALYSIS_SCOPE
+
+_PAIR_COLUMNS: Final[tuple[str, ...]] = (
+    "source_row_id",
     "game_id",
+    "nfl_week",
     "atomic_information_episode_id",
     "venue",
     "actual_home_contract_id",
     "landmark_seconds",
     "endpoint_seconds",
-    "head",
+    "fold_id",
+    "cohort_authority_sha256",
+    "target_contract",
+    "claim_boundary",
+    "direction_threshold_probability",
+    "direction_threshold_semantics",
+    "venue_tick_support",
+    "market_continuity_support",
+    "schema_version",
+    "analysis_scope",
+    "claim_eligible",
+    "calibration_venue",
+    "transport_mode",
 )
-_REQUIRED = {
-    *_PAIR_COLUMNS,
-    "nfl_week",
-    "cohort",
-    "authority_sha256",
+_IDENTITY_TEXT_COLUMNS: Final[tuple[str, ...]] = (
+    "game_id",
+    "atomic_information_episode_id",
+    "venue",
+    "training_venue",
+    "actual_home_contract_id",
+    "fold_id",
     "model_id",
-    "probability",
-    "outcome",
+    "feature_block_id",
+    "cohort_authority_sha256",
+    "target_contract",
+    "claim_boundary",
+    "direction_threshold_semantics",
+    "venue_tick_support",
+    "market_continuity_support",
+    "schema_version",
+    "analysis_scope",
+    "calibration_venue",
+    "transport_mode",
+)
+_TRUTH_COLUMNS: Final[tuple[str, ...]] = (
+    "s_h_truth",
+    "o_h_given_s_truth",
+    "direction_truth",
+)
+_REQUIRED_COLUMNS: Final[frozenset[str]] = frozenset(
+    {
+        *_PAIR_COLUMNS,
+        *_IDENTITY_TEXT_COLUMNS,
+        *_TRUTH_COLUMNS,
+        "model_id",
+        "feature_block_id",
+        "s_h_calibrated_probability",
+        "o_h_given_s_calibrated_probability",
+        "direction_calibrated_prob_down",
+        "direction_calibrated_prob_no_move",
+        "direction_calibrated_prob_up",
+    }
+)
+_DIRECTION_PROBABILITY_COLUMNS: Final[tuple[str, ...]] = (
+    "direction_calibrated_prob_down",
+    "direction_calibrated_prob_no_move",
+    "direction_calibrated_prob_up",
+)
+_DIRECTION_INDEX: Final[dict[str, int]] = {
+    "DOWN": 0,
+    "NO_MOVE": 1,
+    "UP": 2,
 }
+_FORBIDDEN_SELECTION_COLUMNS: Final[frozenset[str]] = frozenset(
+    {"factor_id", "factor_version", "predicate_evidence"}
+)
 
 
 class ModelSelectionError(ValueError):
-    """Development model rows cannot support a paired selection claim."""
+    """The real OOF run cannot support the frozen paired selection claim."""
 
 
-@dataclass(frozen=True, slots=True)
-class PairedModelSelection:
-    baseline_model_id: str
-    candidate_model_id: str
-    game_losses: pd.DataFrame
-    mean_log_loss_improvement: float
-    bootstrap_ci_low: float
-    bootstrap_ci_high: float
-    bootstrap_probability_improved: float
-    bootstrap_samples: int
-    seed: int
-    point_gate_passed: bool
-    bootstrap_gate_passed: bool
-    selected: bool
+def _is_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 71
+        and value.startswith("sha256:")
+        and all(character in "0123456789abcdef" for character in value[7:])
+    )
 
 
 def _require_sha256(value: object, *, field: str) -> str:
-    if (
-        not isinstance(value, str)
-        or len(value) != _SHA256_PREFIX_LENGTH
-        or not value.startswith("sha256:")
-        or any(character not in "0123456789abcdef" for character in value[7:])
-    ):
+    if not _is_sha256(value):
         raise ModelSelectionError(f"{field} must be a sha256 digest")
+    return str(value)
+
+
+def _require_nonempty_text(value: object, *, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ModelSelectionError(f"{field} must be a nonempty string")
     return value
 
 
-def _finite_probability(series: pd.Series, *, field: str) -> np.ndarray:
-    numeric = pd.to_numeric(series, errors="coerce").to_numpy(dtype=float)
-    if not np.isfinite(numeric).all() or (numeric <= 0).any() or (numeric >= 1).any():
-        raise ModelSelectionError(f"{field} must contain finite probabilities in (0, 1)")
-    return numeric
+@dataclass(frozen=True, slots=True)
+class FrozenSelectionSpec:
+    """Pre-locked identity, bootstrap, weighting, and anchor semantics."""
 
-
-def _validate(
-    predictions: pd.DataFrame,
-    *,
-    authority_sha256: str,
-    baseline_model_id: str,
-    candidate_model_id: str,
-    n_bootstrap: int,
-) -> pd.DataFrame:
-    expected_authority = _require_sha256(authority_sha256, field="authority_sha256")
-    if not isinstance(predictions, pd.DataFrame) or predictions.empty:
-        raise ModelSelectionError("predictions must be a nonempty DataFrame")
-    missing = sorted(_REQUIRED.difference(predictions.columns))
-    if missing:
-        raise ModelSelectionError(f"predictions missing required columns: {missing}")
-    forbidden = {"factor_id", "factor_version", "predicate_evidence"}.intersection(predictions.columns)
-    if forbidden:
-        raise ModelSelectionError("factor membership is claim-only and cannot enter selection")
-    if baseline_model_id == candidate_model_id:
-        raise ModelSelectionError("baseline and candidate model IDs must differ")
-    if not isinstance(n_bootstrap, Integral) or isinstance(n_bootstrap, bool) or n_bootstrap != BOOTSTRAP_SAMPLES:
-        raise ModelSelectionError("n_bootstrap must equal the frozen 10,000 paired draws")
-    work = predictions.copy()
-    for column in (
-        "game_id",
-        "atomic_information_episode_id",
-        "venue",
-        "actual_home_contract_id",
-        "head",
-        "cohort",
-        "authority_sha256",
-        "model_id",
-    ):
-        if not work[column].map(lambda value: isinstance(value, str) and bool(value.strip())).all():
-            raise ModelSelectionError(f"{column} must be a nonempty string")
-    for column in ("landmark_seconds", "endpoint_seconds"):
-        values = pd.to_numeric(work[column], errors="coerce")
-        if values.isna().any() or not np.equal(values.to_numpy(), values.astype(int).to_numpy()).all() or (values <= 0).any():
-            raise ModelSelectionError(f"{column} must be a positive integer")
-    if not work["cohort"].eq("development").all():
-        raise ModelSelectionError("model selection accepts development rows only")
-    weeks = pd.to_numeric(work["nfl_week"], errors="coerce")
-    if weeks.isna().any() or not np.equal(weeks.to_numpy(), weeks.astype(int).to_numpy()).all() or not weeks.between(1, 12).all():
-        raise ModelSelectionError("development nfl_week must be integral in 1..12")
-    if not work["authority_sha256"].eq(expected_authority).all():
-        raise ModelSelectionError("authority_sha256 does not match the frozen assignment")
-    _finite_probability(work["probability"], field="probability")
-    outcomes = pd.to_numeric(work["outcome"], errors="coerce")
-    if outcomes.isna().any() or not outcomes.isin((0, 1)).all():
-        raise ModelSelectionError("outcome must be binary")
-    work["outcome"] = outcomes.astype(int)
-    work = work.loc[work["model_id"].isin((baseline_model_id, candidate_model_id))].copy()
-    if work.empty:
-        raise ModelSelectionError("baseline and candidate rows are required")
-    duplicate = work.duplicated([*_PAIR_COLUMNS, "model_id"], keep=False)
-    if duplicate.any():
-        raise ModelSelectionError("each model must have one row per exact pair")
-    return work
-
-
-def paired_game_model_selection(
-    predictions: pd.DataFrame,
-    *,
-    candidate_model_id: str,
-    authority_sha256: str,
-    baseline_model_id: str = "B0",
-    n_bootstrap: int = BOOTSTRAP_SAMPLES,
-    seed: int = BOOTSTRAP_SEED,
-    confidence_level: float = 0.95,
-) -> PairedModelSelection:
-    """Compare B0 and one candidate on identical rows, clustered by game."""
-
-    if not isinstance(seed, Integral) or isinstance(seed, bool) or seed < 0:
-        raise ModelSelectionError("seed must be a nonnegative integer")
-    if not isinstance(confidence_level, Real) or isinstance(confidence_level, bool) or not 0 < float(confidence_level) < 1:
-        raise ModelSelectionError("confidence_level must be strictly between zero and one")
-    work = _validate(
-        predictions,
-        authority_sha256=authority_sha256,
-        baseline_model_id=baseline_model_id,
-        candidate_model_id=candidate_model_id,
-        n_bootstrap=n_bootstrap,
+    candidate_model_id: str
+    candidate_feature_block_id: str
+    selection_venue: str = "polymarket"
+    cohort_authority_sha256: str | None = None
+    baseline_model_id: str = BASELINE_MODEL_ID
+    baseline_feature_block_id: str = BASELINE_FEATURE_BLOCK_ID
+    bootstrap_samples: int = BOOTSTRAP_SAMPLES
+    bootstrap_seed: int = BOOTSTRAP_SEED
+    confidence_level: float = 0.95
+    anchor_landmark_seconds: int = ANCHOR_LANDMARK_SECONDS
+    anchor_endpoint_seconds: int = ANCHOR_ENDPOINT_SECONDS
+    loss_improvement_sign_semantics: str = (
+        LOSS_IMPROVEMENT_SIGN_SEMANTICS
     )
-    baseline = work.loc[work["model_id"].eq(baseline_model_id)].copy()
-    candidate = work.loc[work["model_id"].eq(candidate_model_id)].copy()
+
+    def __post_init__(self) -> None:
+        _require_nonempty_text(
+            self.candidate_model_id, field="candidate_model_id"
+        )
+        _require_nonempty_text(
+            self.candidate_feature_block_id,
+            field="candidate_feature_block_id",
+        )
+        _require_nonempty_text(self.selection_venue, field="selection_venue")
+        if self.selection_venue not in {"polymarket", "kalshi"}:
+            raise ModelSelectionError(
+                "selection_venue must be polymarket or kalshi"
+            )
+        if self.cohort_authority_sha256 is not None:
+            _require_sha256(
+                self.cohort_authority_sha256,
+                field="cohort_authority_sha256",
+            )
+        if (
+            self.baseline_model_id != BASELINE_MODEL_ID
+            or self.baseline_feature_block_id
+            != BASELINE_FEATURE_BLOCK_ID
+        ):
+            raise ModelSelectionError(
+                "the frozen diagnostic baseline pair is "
+                "b0_empirical_v1/D0"
+            )
+        if (
+            self.bootstrap_samples != BOOTSTRAP_SAMPLES
+            or self.bootstrap_seed != BOOTSTRAP_SEED
+        ):
+            raise ModelSelectionError(
+                "the paired game bootstrap is frozen at 10,000 draws "
+                "with seed 20260729"
+            )
+        if (
+            isinstance(self.confidence_level, bool)
+            or not isinstance(self.confidence_level, Real)
+            or float(self.confidence_level) != 0.95
+        ):
+            raise ModelSelectionError(
+                "confidence_level is frozen at 0.95"
+            )
+        if (
+            self.anchor_landmark_seconds != ANCHOR_LANDMARK_SECONDS
+            or self.anchor_endpoint_seconds != ANCHOR_ENDPOINT_SECONDS
+        ):
+            raise ModelSelectionError(
+                "the confirmatory anchor is frozen at L=3 -> H=30"
+            )
+        if (
+            self.loss_improvement_sign_semantics
+            != LOSS_IMPROVEMENT_SIGN_SEMANTICS
+        ):
+            raise ModelSelectionError(
+                "loss-improvement sign semantics cannot be changed"
+            )
+        if (
+            self.candidate_model_id == self.baseline_model_id
+            and self.candidate_feature_block_id
+            == self.baseline_feature_block_id
+        ):
+            raise ModelSelectionError("candidate and B0 must differ")
+        if self.candidate_feature_block_id not in (
+            set(DIAGNOSTIC_FEATURE_BLOCKS) - {"D0"}
+        ):
+            raise ModelSelectionError(
+                "historical diagnostic candidates must use D1..D4"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class ModelSelectionResult:
+    """Frozen dual-gate result and the exact audit surfaces behind it."""
+
+    spec: FrozenSelectionSpec
+    cohort_authority_sha256: str
+    run_config_sha256: str
+    schema_version: str
+    analysis_scope: str
+    target_contract: str
+    claim_boundary: str
+    diagnostic_status: str
+    execution_claim_eligible: bool
+    tick_claim_eligible: bool
+    continuity_claim_eligible: bool
+    paired_rows: pd.DataFrame
+    episode_losses: pd.DataFrame
+    game_losses: pd.DataFrame
+    integrated_mean_improvement: float
+    integrated_ci_low: float
+    integrated_ci_high: float
+    bootstrap_probability_improved: float
+    bootstrap_samples: int
+    bootstrap_seed: int
+    integrated_gate_passed: bool
+    anchor_game_losses: pd.DataFrame
+    anchor_game_count: int
+    anchor_episode_count: int
+    anchor_game_coverage: float
+    anchor_episode_coverage: float
+    anchor_support_status: str
+    anchor_mean_improvement: float
+    anchor_sign_reversed: bool
+    anchor_gate_passed: bool
+    loss_improvement_sign_semantics: str
+    selected: bool
+
+
+def _nullable_equal(left: pd.Series, right: pd.Series) -> bool:
+    for left_value, right_value in zip(left, right, strict=True):
+        left_missing = bool(pd.isna(left_value))
+        right_missing = bool(pd.isna(right_value))
+        if left_missing or right_missing:
+            if left_missing and right_missing:
+                continue
+            return False
+        if left_value != right_value:
+            return False
+    return True
+
+
+def _validate_positive_integer_column(
+    frame: pd.DataFrame, column: str
+) -> pd.Series:
+    values = pd.to_numeric(frame[column], errors="coerce")
+    if (
+        values.isna().any()
+        or not np.equal(
+            values.to_numpy(dtype=float),
+            values.astype(int).to_numpy(dtype=float),
+        ).all()
+        or (values <= 0).any()
+    ):
+        raise ModelSelectionError(f"{column} must be a positive integer")
+    return values.astype(int)
+
+
+def _validate_task4_rows(
+    model_run: X15ModelRun, *, spec: FrozenSelectionSpec
+) -> tuple[pd.DataFrame, str]:
+    if not isinstance(model_run, X15ModelRun):
+        raise ModelSelectionError(
+            "selection requires an actual Task4 X15ModelRun"
+        )
+    _require_sha256(
+        model_run.run_config_sha256, field="run_config_sha256"
+    )
+    if not isinstance(model_run.run_config, Mapping):
+        raise ModelSelectionError(
+            "selection requires the stamped Task4 diagnostic run_config"
+        )
+    expected_run_config = {
+        "schema_version": HISTORICAL_SCHEMA_VERSION,
+        "target_contract": HISTORICAL_TARGET_CONTRACT,
+        "claim_boundary": HISTORICAL_CLAIM_BOUNDARY,
+        "analysis_scope": HISTORICAL_ANALYSIS_SCOPE,
+        "direction_threshold_probability": (
+            DIRECTION_THRESHOLD_PROBABILITY
+        ),
+        "direction_threshold_semantics": (
+            DIRECTION_THRESHOLD_SEMANTICS
+        ),
+        "venue_tick_support": VENUE_TICK_SUPPORT,
+        "market_continuity_support": MARKET_CONTINUITY_SUPPORT,
+        "claim_eligible": False,
+    }
+    for field, expected in expected_run_config.items():
+        if model_run.run_config.get(field) != expected:
+            raise ModelSelectionError(
+                f"Task4 diagnostic run_config drifted on {field}"
+            )
+    registered_blocks = model_run.run_config.get("feature_blocks")
+    if (
+        not isinstance(registered_blocks, Mapping)
+        or tuple(registered_blocks) != tuple(DIAGNOSTIC_FEATURE_BLOCKS)
+        or spec.baseline_feature_block_id not in registered_blocks
+        or spec.candidate_feature_block_id not in registered_blocks
+    ):
+        raise ModelSelectionError(
+            "Task4 run_config must register immutable D0..D4 "
+            "diagnostic feature blocks"
+        )
+    predictions = model_run.oof_predictions
+    if not isinstance(predictions, pd.DataFrame) or predictions.empty:
+        raise ModelSelectionError(
+            "X15ModelRun.oof_predictions must be a nonempty DataFrame"
+        )
+    if predictions.columns.duplicated().any():
+        raise ModelSelectionError("OOF predictions have duplicate columns")
+    missing = sorted(_REQUIRED_COLUMNS.difference(predictions.columns))
+    if missing:
+        raise ModelSelectionError(
+            f"Task4 OOF predictions missing required columns: {missing}"
+        )
+    forbidden = sorted(
+        _FORBIDDEN_SELECTION_COLUMNS.intersection(predictions.columns)
+    )
+    if forbidden:
+        raise ModelSelectionError(
+            "factor membership is claim-only and cannot enter model "
+            f"selection: {forbidden}"
+        )
+
+    baseline_mask = (
+        predictions["model_id"].eq(spec.baseline_model_id)
+        & predictions["feature_block_id"].eq(
+            spec.baseline_feature_block_id
+        )
+        & predictions["venue"].eq(spec.selection_venue)
+        & predictions["training_venue"].eq(spec.selection_venue)
+    )
+    candidate_mask = (
+        predictions["model_id"].eq(spec.candidate_model_id)
+        & predictions["feature_block_id"].eq(
+            spec.candidate_feature_block_id
+        )
+        & predictions["venue"].eq(spec.selection_venue)
+        & predictions["training_venue"].eq(spec.selection_venue)
+    )
+    work = predictions.loc[baseline_mask | candidate_mask].copy()
+    if not baseline_mask.any() or not candidate_mask.any():
+        raise ModelSelectionError(
+            "the exact candidate/B0 model and feature-block pairs are "
+            "required in the Task4 OOF run"
+        )
+
+    for column in _IDENTITY_TEXT_COLUMNS:
+        valid = work[column].map(
+            lambda value: isinstance(value, str) and bool(value.strip())
+        )
+        if not valid.all():
+            raise ModelSelectionError(
+                f"Task4 OOF {column} must be a nonempty string"
+            )
+    work["nfl_week"] = _validate_positive_integer_column(
+        work, "nfl_week"
+    )
+    if not work["nfl_week"].between(1, 12).all():
+        raise ModelSelectionError(
+            "development nfl_week must be integral in 1..12"
+        )
+    for column in ("landmark_seconds", "endpoint_seconds"):
+        work[column] = _validate_positive_integer_column(work, column)
+    threshold = pd.to_numeric(
+        work["direction_threshold_probability"], errors="coerce"
+    )
+    if (
+        threshold.isna().any()
+        or not np.isfinite(threshold.to_numpy(dtype=float)).all()
+        or not threshold.eq(DIRECTION_THRESHOLD_PROBABILITY).all()
+    ):
+        raise ModelSelectionError(
+            "direction_threshold_probability is frozen at 0.01"
+        )
+    if not work["direction_threshold_semantics"].eq(
+        DIRECTION_THRESHOLD_SEMANTICS
+    ).all():
+        raise ModelSelectionError(
+            "direction threshold must remain fixed cross-venue research "
+            "materiality, not a tick claim"
+        )
+    if not work["venue_tick_support"].eq(VENUE_TICK_SUPPORT).all():
+        raise ModelSelectionError(
+            "venue_tick_support must preserve raw status UNSUPPORTED"
+        )
+    if not work["market_continuity_support"].eq(
+        MARKET_CONTINUITY_SUPPORT
+    ).all():
+        raise ModelSelectionError(
+            "market_continuity_support must preserve raw status UNKNOWN"
+        )
+    if not work["schema_version"].eq(
+        HISTORICAL_SCHEMA_VERSION
+    ).all():
+        raise ModelSelectionError(
+            "selection requires HistoricalTradesOnlyProbabilityPanelV1"
+        )
+    if not work["analysis_scope"].eq(
+        HISTORICAL_ANALYSIS_SCOPE
+    ).all():
+        raise ModelSelectionError(
+            "selection requires the exact historical source-time "
+            "diagnostic analysis_scope"
+        )
+    if not work["claim_eligible"].map(
+        lambda value: isinstance(value, (bool, np.bool_))
+        and not bool(value)
+    ).all():
+        raise ModelSelectionError(
+            "historical diagnostic rows must preserve claim_eligible=False"
+        )
+    if (
+        not work["calibration_venue"].eq(spec.selection_venue).all()
+        or not work["transport_mode"].eq("VENUE_SPECIFIC").all()
+    ):
+        raise ModelSelectionError(
+            "selection accepts native venue-specific OOF rows only"
+        )
+    if not work["target_contract"].eq(
+        HISTORICAL_TARGET_CONTRACT
+    ).all():
+        raise ModelSelectionError(
+            "selection requires the exact historical trades-only "
+            "target_contract"
+        )
+    if not work["claim_boundary"].eq(
+        HISTORICAL_CLAIM_BOUNDARY
+    ).all():
+        raise ModelSelectionError(
+            "selection requires the exact historical source-time "
+            "probability diagnostic claim_boundary"
+        )
+
+    authorities = tuple(
+        sorted(set(work["cohort_authority_sha256"].astype(str)))
+    )
+    if len(authorities) != 1 or not _is_sha256(authorities[0]):
+        raise ModelSelectionError(
+            "Task4 OOF must bind one cohort_authority_sha256"
+        )
+    authority = authorities[0]
+    if (
+        spec.cohort_authority_sha256 is not None
+        and authority != spec.cohort_authority_sha256
+    ):
+        raise ModelSelectionError(
+            "Task4 OOF cohort_authority_sha256 does not match the "
+            "frozen selection spec"
+        )
+
+    duplicate = work.duplicated(
+        [*_PAIR_COLUMNS, "model_id", "feature_block_id"], keep=False
+    )
+    if duplicate.any():
+        raise ModelSelectionError(
+            "each model must have one OOF row per exact candidate/B0 pair"
+        )
+    return work, authority
+
+
+def _merge_exact_pairs(
+    work: pd.DataFrame, *, spec: FrozenSelectionSpec
+) -> pd.DataFrame:
+    baseline = work.loc[
+        work["model_id"].eq(spec.baseline_model_id)
+        & work["feature_block_id"].eq(
+            spec.baseline_feature_block_id
+        )
+    ].copy()
+    candidate = work.loc[
+        work["model_id"].eq(spec.candidate_model_id)
+        & work["feature_block_id"].eq(
+            spec.candidate_feature_block_id
+        )
+    ].copy()
     pairs = baseline.merge(
         candidate,
         on=list(_PAIR_COLUMNS),
@@ -163,51 +545,565 @@ def paired_game_model_selection(
         indicator=True,
     )
     if not pairs["_merge"].eq("both").all():
-        raise ModelSelectionError("B0 and candidate must score the same exact pairs")
-    if not pairs["game_id"].eq(pairs["game_id"]).all() or not pairs["outcome_b0"].eq(pairs["outcome_candidate"]).all():
-        raise ModelSelectionError("exact pairs must share game identity and outcome")
-    for column in ("nfl_week", "cohort", "authority_sha256"):
-        if not pairs[f"{column}_b0"].eq(pairs[f"{column}_candidate"]).all():
-            raise ModelSelectionError(f"exact pairs disagree on {column}")
-    outcome = pairs["outcome_b0"].to_numpy(dtype=float)
-    baseline_probability = pairs["probability_b0"].to_numpy(dtype=float)
-    candidate_probability = pairs["probability_candidate"].to_numpy(dtype=float)
-    baseline_loss = -outcome * np.log(baseline_probability) - (1 - outcome) * np.log(1 - baseline_probability)
-    candidate_loss = -outcome * np.log(candidate_probability) - (1 - outcome) * np.log(1 - candidate_probability)
-    games = pd.DataFrame(
-        {
-            "game_id": pairs["game_id"].astype(str),
-            "baseline_log_loss": baseline_loss,
-            "candidate_log_loss": candidate_loss,
-        }
-    ).groupby("game_id", sort=True, as_index=False).mean()
-    if len(games) < 2:
-        raise ModelSelectionError("paired game bootstrap requires at least two games")
-    games["log_loss_improvement"] = games["baseline_log_loss"] - games["candidate_log_loss"]
-    improvements = games["log_loss_improvement"].to_numpy(dtype=float)
-    rng = np.random.default_rng(int(seed))
-    indices = rng.integers(0, len(improvements), size=(n_bootstrap, len(improvements)))
-    draws = improvements[indices].mean(axis=1)
-    tail = (1.0 - float(confidence_level)) / 2.0
-    point_estimate = float(improvements.mean())
-    ci_low, ci_high = (float(value) for value in np.quantile(draws, (tail, 1.0 - tail)))
-    probability_improved = float(np.mean(draws > 0.0))
-    point_gate = point_estimate > 0.0
-    bootstrap_gate = ci_low > 0.0
-    return PairedModelSelection(
-        baseline_model_id=baseline_model_id,
-        candidate_model_id=candidate_model_id,
-        game_losses=games,
-        mean_log_loss_improvement=point_estimate,
-        bootstrap_ci_low=ci_low,
-        bootstrap_ci_high=ci_high,
-        bootstrap_probability_improved=probability_improved,
-        bootstrap_samples=n_bootstrap,
-        seed=int(seed),
-        point_gate_passed=point_gate,
-        bootstrap_gate_passed=bootstrap_gate,
-        selected=point_gate and bootstrap_gate,
+        raise ModelSelectionError(
+            "exact candidate/B0 pairs must match on source row, game, "
+            "episode, venue, fold, L, and H"
+        )
+    pairs = pairs.drop(columns="_merge")
+    if not pairs["training_venue_b0"].eq(
+        pairs["training_venue_candidate"]
+    ).all():
+        raise ModelSelectionError(
+            "exact candidate/B0 pairs disagree on training_venue"
+        )
+    for column in _TRUTH_COLUMNS:
+        if not _nullable_equal(
+            pairs[f"{column}_b0"],
+            pairs[f"{column}_candidate"],
+        ):
+            raise ModelSelectionError(
+                f"exact candidate/B0 pairs disagree on {column}"
+            )
+    return pairs
+
+
+def _binary_losses(
+    pairs: pd.DataFrame,
+    *,
+    truth_column: str,
+    probability_column: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    baseline_losses = np.full(len(pairs), np.nan, dtype=float)
+    candidate_losses = np.full(len(pairs), np.nan, dtype=float)
+    for position, (truth, baseline_probability, candidate_probability) in (
+        enumerate(
+            zip(
+                pairs[f"{truth_column}_b0"],
+                pairs[f"{probability_column}_b0"],
+                pairs[f"{probability_column}_candidate"],
+                strict=True,
+            )
+        )
+    ):
+        if pd.isna(truth):
+            continue
+        if isinstance(truth, (bool, np.bool_)):
+            outcome = int(truth)
+        elif (
+            isinstance(truth, (Integral, np.integer))
+            and not isinstance(truth, (bool, np.bool_))
+            and int(truth) in (0, 1)
+        ):
+            outcome = int(truth)
+        else:
+            raise ModelSelectionError(
+                f"{truth_column} must be binary or missing"
+            )
+        probabilities = np.asarray(
+            [baseline_probability, candidate_probability], dtype=float
+        )
+        if (
+            not np.isfinite(probabilities).all()
+            or (probabilities <= 0).any()
+            or (probabilities >= 1).any()
+        ):
+            raise ModelSelectionError(
+                f"available {truth_column} rows require paired calibrated "
+                "probabilities in (0, 1)"
+            )
+        losses = -(
+            outcome * np.log(probabilities)
+            + (1 - outcome) * np.log(1 - probabilities)
+        )
+        baseline_losses[position], candidate_losses[position] = losses
+    return baseline_losses, candidate_losses
+
+
+def _direction_losses(
+    pairs: pd.DataFrame,
+) -> tuple[np.ndarray, np.ndarray]:
+    baseline_losses = np.full(len(pairs), np.nan, dtype=float)
+    candidate_losses = np.full(len(pairs), np.nan, dtype=float)
+    baseline_columns = [
+        f"{column}_b0" for column in _DIRECTION_PROBABILITY_COLUMNS
+    ]
+    candidate_columns = [
+        f"{column}_candidate"
+        for column in _DIRECTION_PROBABILITY_COLUMNS
+    ]
+    for position, truth in enumerate(pairs["direction_truth_b0"]):
+        if pd.isna(truth):
+            continue
+        if str(truth) not in _DIRECTION_INDEX:
+            raise ModelSelectionError(
+                "direction_truth must be DOWN, NO_MOVE, UP, or missing"
+            )
+        baseline = pairs.loc[
+            pairs.index[position], baseline_columns
+        ].to_numpy(dtype=float)
+        candidate = pairs.loc[
+            pairs.index[position], candidate_columns
+        ].to_numpy(dtype=float)
+        probabilities = np.vstack([baseline, candidate])
+        if (
+            not np.isfinite(probabilities).all()
+            or (probabilities <= 0).any()
+            or (probabilities >= 1).any()
+            or not np.allclose(
+                probabilities.sum(axis=1), 1.0, atol=1e-6, rtol=0
+            )
+        ):
+            raise ModelSelectionError(
+                "available direction rows require paired calibrated "
+                "three-class probabilities that sum to one"
+            )
+        truth_index = _DIRECTION_INDEX[str(truth)]
+        baseline_losses[position] = -np.log(baseline[truth_index])
+        candidate_losses[position] = -np.log(candidate[truth_index])
+    return baseline_losses, candidate_losses
+
+
+def _attach_multihead_losses(pairs: pd.DataFrame) -> pd.DataFrame:
+    result = pairs.copy().reset_index(drop=True)
+    s_h_b0, s_h_candidate = _binary_losses(
+        result,
+        truth_column="s_h_truth",
+        probability_column="s_h_calibrated_probability",
+    )
+    observed_b0, observed_candidate = _binary_losses(
+        result,
+        truth_column="o_h_given_s_truth",
+        probability_column="o_h_given_s_calibrated_probability",
+    )
+    direction_b0, direction_candidate = _direction_losses(result)
+    baseline_heads = np.column_stack(
+        [s_h_b0, observed_b0, direction_b0]
+    )
+    candidate_heads = np.column_stack(
+        [s_h_candidate, observed_candidate, direction_candidate]
+    )
+    availability = np.isfinite(baseline_heads) & np.isfinite(
+        candidate_heads
+    )
+    if not np.array_equal(
+        np.isfinite(baseline_heads), np.isfinite(candidate_heads)
+    ):
+        raise ModelSelectionError(
+            "candidate and B0 have asymmetric head availability"
+        )
+    available_count = availability.sum(axis=1)
+    if (available_count == 0).any():
+        raise ModelSelectionError(
+            "every exact candidate/B0 row needs at least one available head"
+        )
+    result["available_head_count"] = available_count
+    result["baseline_integrated_row_loss"] = np.nansum(
+        baseline_heads, axis=1
+    ) / available_count
+    result["candidate_integrated_row_loss"] = np.nansum(
+        candidate_heads, axis=1
+    ) / available_count
+    result["loss_improvement"] = (
+        result["baseline_integrated_row_loss"]
+        - result["candidate_integrated_row_loss"]
+    )
+    result["direction_truth"] = result["direction_truth_b0"]
+
+    episode_columns = [
+        "game_id",
+        "atomic_information_episode_id",
+    ]
+    rows_per_episode = result.groupby(
+        episode_columns, sort=True
+    )["game_id"].transform("size")
+    episodes_per_game = result.groupby("game_id", sort=True)[
+        "atomic_information_episode_id"
+    ].transform("nunique")
+    result["row_weight_within_episode"] = 1.0 / rows_per_episode
+    result["episode_weight_within_game"] = 1.0 / episodes_per_game
+    result["game_weight"] = 1.0
+    result["hierarchical_row_weight"] = (
+        result["row_weight_within_episode"]
+        * result["episode_weight_within_game"]
+    )
+    return result
+
+
+def _hierarchical_losses(
+    rows: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    episode_keys = [
+        "game_id",
+        "atomic_information_episode_id",
+        "venue",
+    ]
+    episodes = (
+        rows.groupby(episode_keys, sort=True, as_index=False)
+        .agg(
+            baseline_loss=("baseline_integrated_row_loss", "mean"),
+            candidate_loss=("candidate_integrated_row_loss", "mean"),
+            row_count=("loss_improvement", "size"),
+        )
+        .reset_index(drop=True)
+    )
+    episodes["loss_improvement"] = (
+        episodes["baseline_loss"] - episodes["candidate_loss"]
+    )
+    games = (
+        episodes.groupby("game_id", sort=True, as_index=False)
+        .agg(
+            baseline_loss=("baseline_loss", "mean"),
+            candidate_loss=("candidate_loss", "mean"),
+            episode_count=("atomic_information_episode_id", "nunique"),
+            row_count=("row_count", "sum"),
+        )
+        .reset_index(drop=True)
+    )
+    games["loss_improvement"] = (
+        games["baseline_loss"] - games["candidate_loss"]
+    )
+    games["hierarchical_weight"] = 1.0
+    return episodes, games
+
+
+def _bootstrap_game_improvements(
+    game_losses: pd.DataFrame, *, spec: FrozenSelectionSpec
+) -> tuple[float, float, float, float]:
+    improvements = game_losses["loss_improvement"].to_numpy(dtype=float)
+    if len(improvements) < 2:
+        raise ModelSelectionError(
+            "paired game bootstrap requires at least two games"
+        )
+    rng = np.random.default_rng(spec.bootstrap_seed)
+    selections = rng.integers(
+        0,
+        len(improvements),
+        size=(spec.bootstrap_samples, len(improvements)),
+    )
+    draws = improvements[selections].mean(axis=1)
+    tail = (1.0 - float(spec.confidence_level)) / 2.0
+    low, high = np.quantile(draws, (tail, 1.0 - tail))
+    return (
+        float(improvements.mean()),
+        float(low),
+        float(high),
+        float(np.mean(draws > 0.0)),
     )
 
 
-__all__ = ["ModelSelectionError", "PairedModelSelection", "paired_game_model_selection"]
+def select_candidate_against_b0(
+    model_run: X15ModelRun, *, spec: FrozenSelectionSpec
+) -> ModelSelectionResult:
+    """Apply the pre-locked integrated and clean-anchor intersection gate."""
+
+    if not isinstance(spec, FrozenSelectionSpec):
+        raise ModelSelectionError("spec must be a FrozenSelectionSpec")
+    work, authority = _validate_task4_rows(model_run, spec=spec)
+    paired = _attach_multihead_losses(
+        _merge_exact_pairs(work, spec=spec)
+    )
+    episode_losses, game_losses = _hierarchical_losses(paired)
+    (
+        integrated_mean,
+        integrated_low,
+        integrated_high,
+        probability_improved,
+    ) = _bootstrap_game_improvements(game_losses, spec=spec)
+    integrated_gate = integrated_mean > 0.0 and integrated_low > 0.0
+
+    anchor = paired.loc[
+        paired["landmark_seconds"].eq(spec.anchor_landmark_seconds)
+        & paired["endpoint_seconds"].eq(spec.anchor_endpoint_seconds)
+    ].copy()
+    if anchor.empty:
+        raise ModelSelectionError(
+            "the frozen clean L=3 -> H=30 anchor is missing"
+        )
+    anchor_episode_losses, anchor_game_losses = _hierarchical_losses(
+        anchor
+    )
+    anchor_game_count = len(anchor_game_losses)
+    anchor_episode_count = len(anchor_episode_losses)
+    anchor_game_coverage = anchor_game_count / len(game_losses)
+    anchor_episode_coverage = anchor_episode_count / len(
+        episode_losses
+    )
+    anchor_supported = anchor_game_count >= 2
+    anchor_mean = float(
+        anchor_game_losses["loss_improvement"].mean()
+    )
+    anchor_sign_reversed = bool(
+        np.sign(anchor_mean) * np.sign(integrated_mean) < 0
+    )
+    anchor_gate = (
+        anchor_supported
+        and anchor_mean >= 0.0
+        and not anchor_sign_reversed
+    )
+    selected = integrated_gate and anchor_gate
+    return ModelSelectionResult(
+        spec=spec,
+        cohort_authority_sha256=authority,
+        run_config_sha256=model_run.run_config_sha256,
+        schema_version=HISTORICAL_SCHEMA_VERSION,
+        analysis_scope=HISTORICAL_ANALYSIS_SCOPE,
+        target_contract=str(paired["target_contract"].iloc[0]),
+        claim_boundary=str(paired["claim_boundary"].iloc[0]),
+        diagnostic_status=(
+            "HISTORICAL_SIGNAL_CANDIDATE"
+            if selected
+            else "HISTORICAL_SIGNAL_REJECTED"
+        ),
+        execution_claim_eligible=False,
+        tick_claim_eligible=False,
+        continuity_claim_eligible=False,
+        paired_rows=paired.reset_index(drop=True),
+        episode_losses=episode_losses.reset_index(drop=True),
+        game_losses=game_losses.reset_index(drop=True),
+        integrated_mean_improvement=integrated_mean,
+        integrated_ci_low=integrated_low,
+        integrated_ci_high=integrated_high,
+        bootstrap_probability_improved=probability_improved,
+        bootstrap_samples=spec.bootstrap_samples,
+        bootstrap_seed=spec.bootstrap_seed,
+        integrated_gate_passed=integrated_gate,
+        anchor_game_losses=anchor_game_losses.reset_index(drop=True),
+        anchor_game_count=anchor_game_count,
+        anchor_episode_count=anchor_episode_count,
+        anchor_game_coverage=float(anchor_game_coverage),
+        anchor_episode_coverage=float(anchor_episode_coverage),
+        anchor_support_status=(
+            "SUPPORTED"
+            if anchor_supported
+            else "INSUFFICIENT_SUPPORT"
+        ),
+        anchor_mean_improvement=anchor_mean,
+        anchor_sign_reversed=anchor_sign_reversed,
+        anchor_gate_passed=anchor_gate,
+        loss_improvement_sign_semantics=(
+            spec.loss_improvement_sign_semantics
+        ),
+        selected=selected,
+    )
+
+
+def build_factor_claim_audit(
+    selection: ModelSelectionResult,
+    *,
+    factor_membership: pd.DataFrame,
+    min_support_games: int = 30,
+    min_support_episodes: int = 20,
+) -> pd.DataFrame:
+    """Publish clean-anchor factor-family BH, LOO, direction, and support.
+
+    Factor membership is joined only after the model has been selected.  It
+    therefore cannot multiply training or selection weights.  The clean
+    ``L=3 -> H=30`` row is the named-claim surface; full horizon paths remain
+    secondary trajectories in ``selection.paired_rows``.
+    """
+
+    if not isinstance(selection, ModelSelectionResult):
+        raise ModelSelectionError(
+            "selection must be a ModelSelectionResult"
+        )
+    if (
+        isinstance(min_support_games, bool)
+        or not isinstance(min_support_games, Integral)
+        or min_support_games <= 0
+        or isinstance(min_support_episodes, bool)
+        or not isinstance(min_support_episodes, Integral)
+        or min_support_episodes <= 0
+    ):
+        raise ModelSelectionError(
+            "factor support minima must be positive integers"
+        )
+    required = {
+        "game_id",
+        "atomic_information_episode_id",
+        "factor_id",
+        "factor_version",
+    }
+    if not isinstance(factor_membership, pd.DataFrame):
+        raise ModelSelectionError(
+            "factor_membership must be a DataFrame"
+        )
+    missing = sorted(required.difference(factor_membership.columns))
+    if missing:
+        raise ModelSelectionError(
+            f"factor_membership missing required columns: {missing}"
+        )
+    membership = factor_membership.loc[:, sorted(required)].copy()
+    for column in required:
+        if not membership[column].map(
+            lambda value: isinstance(value, str) and bool(value.strip())
+        ).all():
+            raise ModelSelectionError(
+                f"factor_membership {column} must be a nonempty string"
+            )
+    if membership.duplicated(
+        [
+            "game_id",
+            "atomic_information_episode_id",
+            "factor_id",
+            "factor_version",
+        ],
+        keep=False,
+    ).any():
+        raise ModelSelectionError(
+            "factor_membership contains duplicate episode tags"
+        )
+    if (
+        membership.groupby("factor_id")["factor_version"].nunique() > 1
+    ).any():
+        raise ModelSelectionError(
+            "each factor_id must bind exactly one factor_version"
+        )
+
+    anchor = selection.paired_rows.loc[
+        selection.paired_rows["landmark_seconds"].eq(
+            selection.spec.anchor_landmark_seconds
+        )
+        & selection.paired_rows["endpoint_seconds"].eq(
+            selection.spec.anchor_endpoint_seconds
+        ),
+        [
+            "game_id",
+            "atomic_information_episode_id",
+            "venue",
+            "loss_improvement",
+            "direction_truth",
+        ],
+    ].copy()
+    if anchor.duplicated(
+        ["game_id", "atomic_information_episode_id"], keep=False
+    ).any():
+        raise ModelSelectionError(
+            "clean-anchor factor claims require one row per episode"
+        )
+    joined = membership.merge(
+        anchor,
+        on=["game_id", "atomic_information_episode_id"],
+        how="inner",
+        validate="many_to_one",
+    )
+    if joined.empty:
+        raise ModelSelectionError(
+            "factor_membership has no clean-anchor episodes"
+        )
+    membership_without_anchor = len(membership) - len(joined)
+    signals = pd.DataFrame(
+        {
+            "factor_id": joined["factor_id"],
+            "venue": joined["venue"],
+            "model_id": selection.spec.candidate_model_id,
+            "game_id": joined["game_id"],
+            "episode_id": joined[
+                "atomic_information_episode_id"
+            ],
+            "gross_markout": joined["loss_improvement"].astype(float),
+            "evaluation_status": "EVALUATED",
+            "dataset_partition": "development",
+        }
+    )
+    try:
+        summary = summarize_development_signals(
+            signals,
+            seed=BOOTSTRAP_SEED,
+            n_bootstrap=BOOTSTRAP_SAMPLES,
+            confidence_level=0.95,
+            min_support_games=int(min_support_games),
+            min_support_signals=int(min_support_episodes),
+        )
+    except X15StatisticsInputError as exc:
+        raise ModelSelectionError(
+            f"factor claim audit is invalid: {exc}"
+        ) from exc
+
+    version = (
+        membership[["factor_id", "factor_version"]]
+        .drop_duplicates()
+        .reset_index(drop=True)
+    )
+    direction = (
+        joined.assign(
+            up_episode=joined["direction_truth"].eq("UP").astype(int),
+            down_episode=joined["direction_truth"].eq("DOWN").astype(int),
+            no_move_episode=joined["direction_truth"]
+            .eq("NO_MOVE")
+            .astype(int),
+        )
+        .groupby(["factor_id", "venue"], sort=True, as_index=False)
+        .agg(
+            distinct_games=("game_id", "nunique"),
+            unique_episodes=(
+                "atomic_information_episode_id",
+                "nunique",
+            ),
+            up_episode_count=("up_episode", "sum"),
+            down_episode_count=("down_episode", "sum"),
+            no_move_episode_count=("no_move_episode", "sum"),
+        )
+    )
+    audit = (
+        summary.merge(version, on="factor_id", validate="many_to_one")
+        .merge(
+            direction,
+            on=["factor_id", "venue"],
+            validate="one_to_one",
+        )
+        .rename(columns={"support_signals": "support_episodes"})
+    )
+    audit["support_status"] = np.where(
+        audit["support_games"].ge(int(min_support_games))
+        & audit["support_episodes"].ge(int(min_support_episodes)),
+        "SUPPORTED",
+        "INSUFFICIENT_SUPPORT",
+    )
+    audit["claim_landmark_seconds"] = ANCHOR_LANDMARK_SECONDS
+    audit["claim_endpoint_seconds"] = ANCHOR_ENDPOINT_SECONDS
+    audit["loss_improvement_sign_semantics"] = (
+        LOSS_IMPROVEMENT_SIGN_SEMANTICS
+    )
+    audit["target_contract"] = selection.target_contract
+    audit["claim_boundary"] = selection.claim_boundary
+    audit["schema_version"] = selection.schema_version
+    audit["analysis_scope"] = selection.analysis_scope
+    audit["claim_eligible"] = False
+    audit["diagnostic_status"] = np.where(
+        audit["support_status"].eq("SUPPORTED") & selection.selected,
+        "HISTORICAL_SIGNAL_CANDIDATE",
+        "HISTORICAL_SIGNAL_REJECTED",
+    )
+    audit["execution_claim_eligible"] = False
+    audit["tick_claim_eligible"] = False
+    audit["continuity_claim_eligible"] = False
+    audit["membership_without_clean_anchor_count"] = (
+        membership_without_anchor
+    )
+    return audit.sort_values(
+        ["factor_family", "factor_id", "venue"], kind="mergesort"
+    ).reset_index(drop=True)
+
+
+__all__ = [
+    "ANCHOR_ENDPOINT_SECONDS",
+    "ANCHOR_LANDMARK_SECONDS",
+    "BASELINE_FEATURE_BLOCK_ID",
+    "BASELINE_MODEL_ID",
+    "BOOTSTRAP_SAMPLES",
+    "BOOTSTRAP_SEED",
+    "DIRECTION_THRESHOLD_PROBABILITY",
+    "DIRECTION_THRESHOLD_SEMANTICS",
+    "MARKET_CONTINUITY_SUPPORT",
+    "FrozenSelectionSpec",
+    "HISTORICAL_CLAIM_BOUNDARY",
+    "HISTORICAL_ANALYSIS_SCOPE",
+    "HISTORICAL_SCHEMA_VERSION",
+    "HISTORICAL_TARGET_CONTRACT",
+    "LOSS_IMPROVEMENT_SIGN_SEMANTICS",
+    "ModelSelectionError",
+    "ModelSelectionResult",
+    "VENUE_TICK_SUPPORT",
+    "build_factor_claim_audit",
+    "select_candidate_against_b0",
+]
