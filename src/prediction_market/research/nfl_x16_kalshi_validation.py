@@ -2,8 +2,9 @@
 
 There is intentionally no final-holdout prediction or reaction-read API in
 this module.  Task 5 may bind the frozen 153/81 cohort metadata, inspect its
-prior-exposure declarations, validate genuine Task4 development OOF transport,
-and lock a metadata-only ledger.  Reaction data remains unreachable here.
+target-specific exposure declarations, validate genuine Task4 development OOF
+transport, and lock a metadata-only ledger.  Reaction data remains unreachable
+here, and prior X-11 sports-outcome exposure forbids Stage-A outcome validation.
 """
 
 from __future__ import annotations
@@ -22,12 +23,14 @@ from prediction_market.research.nfl_x15_models import X15ModelRun
 from prediction_market.research.nfl_x15_model_selection import (
     DIRECTION_THRESHOLD_PROBABILITY,
     DIRECTION_THRESHOLD_SEMANTICS,
+    FrozenDevelopmentAuthority,
     HISTORICAL_ANALYSIS_SCOPE,
     HISTORICAL_CLAIM_BOUNDARY,
     HISTORICAL_SCHEMA_VERSION,
     HISTORICAL_TARGET_CONTRACT,
     MARKET_CONTINUITY_SUPPORT,
     VENUE_TICK_SUPPORT,
+    bind_frozen_development_authority,
 )
 
 
@@ -37,6 +40,15 @@ SOURCE_VENUE: Final[str] = "polymarket"
 TARGET_VENUE: Final[str] = "kalshi"
 VENUE_SPECIFIC_MODE: Final[str] = "VENUE_SPECIFIC"
 TRANSPORT_MODE: Final[str] = "NO_TARGET_RECALIBRATION"
+MIN_TRANSPORT_PAIRED_GAMES: Final[int] = 30
+MIN_TRANSPORT_EVALUATED_GAMES_PER_HEAD: Final[int] = 20
+MIN_TRANSPORT_EVALUATED_ROWS_PER_HEAD: Final[int] = 20
+MAX_LOG_LOSS_DEGRADATION: Final[float] = 0.25
+MAX_BRIER_DEGRADATION: Final[float] = 0.10
+X11_SPORTS_OUTCOME_EVIDENCE_SHA256: Final[str] = (
+    "sha256:1d0c033459c69778e265be3fca16ae2c87f650d5003a61ffdea4c020a4fd0b05"
+)
+X11_HOLDOUT_DRIVE_OUTCOME_COUNT: Final[int] = 1_683
 
 _AUTHORITY_REQUIRED: Final[frozenset[str]] = frozenset(
     {
@@ -46,7 +58,8 @@ _AUTHORITY_REQUIRED: Final[frozenset[str]] = frozenset(
         "kickoff_utc",
         "batch_sha256",
         "cohort_authority_sha256",
-        "prior_exposure_status",
+        "market_reaction_exposure",
+        "sports_outcome_exposure",
         "reaction_read_count",
     }
 )
@@ -103,6 +116,9 @@ _TRANSPORT_REQUIRED: Final[frozenset[str]] = frozenset(
         "direction_calibrated_prob_down",
         "direction_calibrated_prob_no_move",
         "direction_calibrated_prob_up",
+        "s_h_truth",
+        "o_h_given_s_truth",
+        "direction_truth",
     }
 )
 _HASH_PROVENANCE_COLUMNS: Final[tuple[str, ...]] = (
@@ -178,6 +194,33 @@ def _canonical_sha256(value: object) -> str:
     return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def hash_game_id_evidence(game_ids: tuple[str, ...]) -> str:
+    """Hash a canonical authoritative game-ID evidence set."""
+
+    if not isinstance(game_ids, (tuple, list)):
+        raise KalshiValidationError(
+            "game-ID evidence must be a tuple/list"
+        )
+    raw_ids = tuple(game_ids)
+    if (
+        not all(
+            isinstance(game_id, str) and bool(game_id.strip())
+            for game_id in raw_ids
+        )
+        or len(raw_ids) != len(set(raw_ids))
+    ):
+        raise KalshiValidationError(
+            "game-ID evidence must contain unique nonempty IDs"
+        )
+    normalized = tuple(sorted(raw_ids))
+    return _canonical_sha256(
+        {
+            "schema": "authoritative_historical_game_id_evidence_v1",
+            "game_ids": normalized,
+        }
+    )
+
+
 def _text(value: object, *, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise KalshiValidationError(f"{field} must be a nonempty string")
@@ -218,8 +261,11 @@ def _canonical_metadata_records(frame: pd.DataFrame) -> list[dict[str, object]]:
                 "cohort_authority_sha256": str(
                     row["cohort_authority_sha256"]
                 ),
-                "prior_exposure_status": str(
-                    row["prior_exposure_status"]
+                "market_reaction_exposure": str(
+                    row["market_reaction_exposure"]
+                ),
+                "sports_outcome_exposure": str(
+                    row["sports_outcome_exposure"]
                 ),
                 "reaction_read_count": int(row["reaction_read_count"]),
             }
@@ -235,21 +281,103 @@ class FrozenAuthorityMetadata:
     development: pd.DataFrame
     holdout: pd.DataFrame
     overlap_game_ids: tuple[str, ...]
+    holdout_reviewed_overlap_game_ids: tuple[str, ...]
+    holdout_reaction_overlap_game_ids: tuple[str, ...]
+    historical_reviewed_game_ids_sha256: str
+    historical_reaction_game_ids_sha256: str
+    sports_outcome_exposed_game_ids_sha256: str
+    sports_outcome_source_evidence_sha256: str
+    sports_outcome_observation_count: int
+    reaction_blind_metadata_game_ids_sha256: str
     prior_exposure_audit: pd.DataFrame
     holdout_reaction_read_count: int
+    stage_a_outcome_validation_eligible: bool
+    stage_b_market_reaction_validation_eligible: bool
     metadata_sha256: str
+    selection_authority: FrozenDevelopmentAuthority
 
 
 def bind_frozen_authority_metadata(
     cohort_metadata: pd.DataFrame,
     *,
     cohort_authority_sha256: str,
+    historical_reviewed_game_ids: tuple[str, ...],
+    historical_reviewed_game_ids_sha256: str,
+    historical_reaction_game_ids: tuple[str, ...],
+    historical_reaction_game_ids_sha256: str,
+    sports_outcome_exposed_game_ids: tuple[str, ...],
+    sports_outcome_exposed_game_ids_sha256: str,
+    sports_outcome_source_evidence_sha256: str,
+    sports_outcome_observation_count: int,
+    reaction_blind_metadata_game_ids: tuple[str, ...],
+    reaction_blind_metadata_game_ids_sha256: str,
 ) -> FrozenAuthorityMetadata:
-    """Validate and bind exact 153/81 ID, week, kickoff, batch metadata."""
+    """Bind exact cohorts and target-specific holdout exposure evidence."""
 
     authority = _require_sha256(
         cohort_authority_sha256, field="cohort_authority_sha256"
     )
+    reviewed_ids = tuple(historical_reviewed_game_ids)
+    reaction_ids = tuple(historical_reaction_game_ids)
+    sports_outcome_ids = tuple(sports_outcome_exposed_game_ids)
+    reaction_blind_ids = tuple(reaction_blind_metadata_game_ids)
+    reviewed_hash = _require_sha256(
+        historical_reviewed_game_ids_sha256,
+        field="historical_reviewed_game_ids_sha256",
+    )
+    reaction_hash = _require_sha256(
+        historical_reaction_game_ids_sha256,
+        field="historical_reaction_game_ids_sha256",
+    )
+    sports_outcome_hash = _require_sha256(
+        sports_outcome_exposed_game_ids_sha256,
+        field="sports_outcome_exposed_game_ids_sha256",
+    )
+    sports_outcome_source_hash = _require_sha256(
+        sports_outcome_source_evidence_sha256,
+        field="sports_outcome_source_evidence_sha256",
+    )
+    reaction_blind_hash = _require_sha256(
+        reaction_blind_metadata_game_ids_sha256,
+        field="reaction_blind_metadata_game_ids_sha256",
+    )
+    if hash_game_id_evidence(reviewed_ids) != reviewed_hash:
+        raise KalshiValidationError(
+            "historical reviewed game-ID evidence hash mismatch"
+        )
+    if hash_game_id_evidence(reaction_ids) != reaction_hash:
+        raise KalshiValidationError(
+            "historical reaction game-ID evidence hash mismatch"
+        )
+    if (
+        hash_game_id_evidence(sports_outcome_ids)
+        != sports_outcome_hash
+    ):
+        raise KalshiValidationError(
+            "sports outcome game-ID evidence hash mismatch"
+        )
+    if (
+        sports_outcome_source_hash
+        != X11_SPORTS_OUTCOME_EVIDENCE_SHA256
+    ):
+        raise KalshiValidationError(
+            "sports outcome source evidence must bind the frozen X-11 "
+            "artifact SHA-256"
+        )
+    if (
+        isinstance(sports_outcome_observation_count, bool)
+        or not isinstance(sports_outcome_observation_count, Integral)
+        or int(sports_outcome_observation_count)
+        != X11_HOLDOUT_DRIVE_OUTCOME_COUNT
+    ):
+        raise KalshiValidationError(
+            "sports outcome evidence must record exactly 1,683 exposed "
+            "holdout drive outcomes"
+        )
+    if hash_game_id_evidence(reaction_blind_ids) != reaction_blind_hash:
+        raise KalshiValidationError(
+            "reaction-blind metadata game-ID evidence hash mismatch"
+        )
     if not isinstance(cohort_metadata, pd.DataFrame):
         raise KalshiValidationError(
             "cohort_metadata must be a DataFrame"
@@ -274,7 +402,8 @@ def bind_frozen_authority_metadata(
         "kickoff_utc",
         "batch_sha256",
         "cohort_authority_sha256",
-        "prior_exposure_status",
+        "market_reaction_exposure",
+        "sports_outcome_exposure",
     ):
         if not frame[column].map(
             lambda value: isinstance(value, str) and bool(value.strip())
@@ -356,11 +485,19 @@ def bind_frozen_authority_metadata(
         raise KalshiValidationError(
             "holdout reaction access counter must equal zero"
         )
-    if not holdout["prior_exposure_status"].eq(
-        "PRISTINE_NO_PRIOR_REACTION_READ"
+    if not holdout["market_reaction_exposure"].eq(
+        "SEALED_UNREAD"
     ).all():
         raise KalshiValidationError(
-            "all 81 holdout games must declare pristine prior exposure"
+            "all 81 holdout games must declare "
+            "market_reaction_exposure=SEALED_UNREAD"
+        )
+    if not holdout["sports_outcome_exposure"].eq(
+        "PRIOR_EXPOSED_X11"
+    ).all():
+        raise KalshiValidationError(
+            "all 81 holdout games must declare "
+            "sports_outcome_exposure=PRIOR_EXPOSED_X11"
         )
 
     overlap = tuple(
@@ -374,9 +511,35 @@ def bind_frozen_authority_metadata(
         raise KalshiValidationError(
             "development and holdout game IDs are not disjoint"
         )
-    exposure = (
+    holdout_ids = set(holdout["game_id"].astype(str))
+    reviewed_overlap = tuple(
+        sorted(holdout_ids.intersection(reviewed_ids))
+    )
+    reaction_overlap = tuple(
+        sorted(holdout_ids.intersection(reaction_ids))
+    )
+    if reviewed_overlap or reaction_overlap:
+        raise KalshiValidationError(
+            "authoritative historical reviewed/reaction evidence has "
+            "holdout game overlap"
+        )
+    if set(sports_outcome_ids) != holdout_ids:
+        raise KalshiValidationError(
+            "authoritative sports outcome evidence must cover the "
+            "exact 81-game holdout"
+        )
+    if set(reaction_blind_ids) != holdout_ids:
+        raise KalshiValidationError(
+            "authoritative reaction-blind metadata evidence must cover "
+            "the exact 81-game holdout"
+        )
+    declaration_exposure = (
         frame.groupby(
-            ["cohort", "prior_exposure_status"],
+            [
+                "cohort",
+                "market_reaction_exposure",
+                "sports_outcome_exposure",
+            ],
             sort=True,
             as_index=False,
         )
@@ -386,8 +549,91 @@ def bind_frozen_authority_metadata(
         )
         .reset_index(drop=True)
     )
+    declaration_exposure["evidence_kind"] = declaration_exposure[
+        "cohort"
+    ].map(lambda cohort: f"TARGET_SPECIFIC_METADATA:{cohort.upper()}")
+    evidence_rows = pd.DataFrame(
+        [
+            {
+                "cohort": "historical",
+                "market_reaction_exposure": "REVIEWED_ID_SET",
+                "sports_outcome_exposure": "NOT_APPLICABLE",
+                "game_count": len(reviewed_ids),
+                "reaction_read_count": 0,
+                "evidence_kind": "HISTORICAL_REVIEWED_GAME_IDS",
+            },
+            {
+                "cohort": "historical",
+                "market_reaction_exposure": "REACTION_EXPOSED_ID_SET",
+                "sports_outcome_exposure": "NOT_APPLICABLE",
+                "game_count": len(reaction_ids),
+                "reaction_read_count": len(reaction_ids),
+                "evidence_kind": "HISTORICAL_REACTION_GAME_IDS",
+            },
+            {
+                "cohort": "holdout",
+                "market_reaction_exposure": "NOT_APPLICABLE",
+                "sports_outcome_exposure": "PRIOR_EXPOSED_X11",
+                "game_count": len(sports_outcome_ids),
+                "reaction_read_count": 0,
+                "evidence_kind": "SPORTS_OUTCOME_EXPOSED_GAME_IDS",
+                "game_id_evidence_sha256": sports_outcome_hash,
+                "source_evidence_sha256": sports_outcome_source_hash,
+                "observation_count": int(
+                    sports_outcome_observation_count
+                ),
+            },
+            {
+                "cohort": "holdout",
+                "market_reaction_exposure": (
+                    "REACTION_BLIND_METADATA_ONLY"
+                ),
+                "sports_outcome_exposure": "NOT_APPLICABLE",
+                "game_count": len(reaction_blind_ids),
+                "reaction_read_count": 0,
+                "evidence_kind": "REACTION_BLIND_METADATA_GAME_IDS",
+            },
+        ]
+    )
+    exposure = pd.concat(
+        [declaration_exposure, evidence_rows], ignore_index=True
+    )
     metadata_hash = _canonical_sha256(
-        _canonical_metadata_records(frame)
+        {
+            "cohort_metadata": _canonical_metadata_records(frame),
+            "historical_reviewed_game_ids": tuple(
+                sorted(reviewed_ids)
+            ),
+            "historical_reviewed_game_ids_sha256": reviewed_hash,
+            "historical_reaction_game_ids": tuple(
+                sorted(reaction_ids)
+            ),
+            "historical_reaction_game_ids_sha256": reaction_hash,
+            "sports_outcome_exposed_game_ids": tuple(
+                sorted(sports_outcome_ids)
+            ),
+            "sports_outcome_exposed_game_ids_sha256": (
+                sports_outcome_hash
+            ),
+            "sports_outcome_source_evidence_sha256": (
+                sports_outcome_source_hash
+            ),
+            "sports_outcome_observation_count": int(
+                sports_outcome_observation_count
+            ),
+            "reaction_blind_metadata_game_ids": tuple(
+                sorted(reaction_blind_ids)
+            ),
+            "reaction_blind_metadata_game_ids_sha256": (
+                reaction_blind_hash
+            ),
+            "stage_a_outcome_validation_eligible": False,
+            "stage_b_market_reaction_validation_eligible": True,
+        }
+    )
+    selection_authority = bind_frozen_development_authority(
+        development,
+        cohort_authority_sha256=authority,
     )
     return FrozenAuthorityMetadata(
         cohort_authority_sha256=authority,
@@ -400,9 +646,24 @@ def bind_frozen_authority_metadata(
             kind="mergesort",
         ).reset_index(drop=True),
         overlap_game_ids=overlap,
+        holdout_reviewed_overlap_game_ids=reviewed_overlap,
+        holdout_reaction_overlap_game_ids=reaction_overlap,
+        historical_reviewed_game_ids_sha256=reviewed_hash,
+        historical_reaction_game_ids_sha256=reaction_hash,
+        sports_outcome_exposed_game_ids_sha256=sports_outcome_hash,
+        sports_outcome_source_evidence_sha256=(
+            sports_outcome_source_hash
+        ),
+        sports_outcome_observation_count=int(
+            sports_outcome_observation_count
+        ),
+        reaction_blind_metadata_game_ids_sha256=reaction_blind_hash,
         prior_exposure_audit=exposure,
         holdout_reaction_read_count=0,
+        stage_a_outcome_validation_eligible=False,
+        stage_b_market_reaction_validation_eligible=True,
         metadata_sha256=metadata_hash,
+        selection_authority=selection_authority,
     )
 
 
@@ -540,7 +801,7 @@ def _validate_task4_transport_run(
     model_run: X15ModelRun,
     *,
     authority_metadata: FrozenAuthorityMetadata,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     if not isinstance(model_run, X15ModelRun):
         raise KalshiValidationError(
             "venue transport validation requires an actual Task4 "
@@ -693,10 +954,16 @@ def _validate_task4_transport_run(
         & predictions["calibration_venue"].eq(SOURCE_VENUE)
         & predictions["transport_mode"].eq(TRANSPORT_MODE)
     ].copy()
-    if source.empty or target.empty:
+    native_kalshi = predictions.loc[
+        predictions["venue"].eq(TARGET_VENUE)
+        & predictions["training_venue"].eq(TARGET_VENUE)
+        & predictions["calibration_venue"].eq(TARGET_VENUE)
+        & predictions["transport_mode"].eq(VENUE_SPECIFIC_MODE)
+    ].copy()
+    if source.empty or target.empty or native_kalshi.empty:
         raise KalshiValidationError(
             "Task4 run must contain genuine Polymarket source OOF and "
-            "Kalshi development transport OOF"
+            "Kalshi development transport/native OOF"
         )
     development_ids = frozenset(
         authority_metadata.development["game_id"].astype(str)
@@ -707,7 +974,325 @@ def _validate_task4_transport_run(
     target = _validate_fold_local_source_rows(
         target, development_ids=development_ids
     )
-    return source, target
+    native_kalshi = _validate_fold_local_source_rows(
+        native_kalshi, development_ids=development_ids
+    )
+    return source, target, native_kalshi
+
+
+def _nullable_truth_equal(
+    left: pd.Series, right: pd.Series
+) -> bool:
+    for left_value, right_value in zip(left, right, strict=True):
+        left_missing = bool(pd.isna(left_value))
+        right_missing = bool(pd.isna(right_value))
+        if left_missing or right_missing:
+            if left_missing and right_missing:
+                continue
+            return False
+        if left_value != right_value:
+            return False
+    return True
+
+
+def _valid_binary_truth(value: object) -> int | None:
+    if pd.isna(value):
+        return None
+    if isinstance(value, (bool, np.bool_)):
+        return int(value)
+    if (
+        isinstance(value, (Integral, np.integer))
+        and not isinstance(value, (bool, np.bool_))
+        and int(value) in (0, 1)
+    ):
+        return int(value)
+    raise KalshiValidationError(
+        "Kalshi target binary truth must be 0/1 or missing"
+    )
+
+
+def _paired_binary_scores(
+    pairs: pd.DataFrame,
+    *,
+    head: str,
+    truth_column: str,
+    probability_column: str,
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    rows: list[dict[str, object]] = []
+    calibration_rows: list[dict[str, object]] = []
+    for _, row in pairs.iterrows():
+        truth = _valid_binary_truth(row[f"{truth_column}_transport"])
+        if truth is None:
+            continue
+        transport_probability = float(
+            row[f"{probability_column}_transport"]
+        )
+        native_probability = float(
+            row[f"{probability_column}_native"]
+        )
+        if not (
+            np.isfinite(transport_probability)
+            and np.isfinite(native_probability)
+        ):
+            continue
+        if not (
+            0 < transport_probability < 1
+            and 0 < native_probability < 1
+        ):
+            raise KalshiValidationError(
+                f"{head} calibrated probabilities must be in (0, 1)"
+            )
+        rows.append(
+            {
+                "game_id": str(row["game_id"]),
+                "head": head,
+                "truth": truth,
+                "transport_probability": transport_probability,
+                "native_probability": native_probability,
+                "transport_log_loss": -(
+                    truth * np.log(transport_probability)
+                    + (1 - truth)
+                    * np.log(1 - transport_probability)
+                ),
+                "native_log_loss": -(
+                    truth * np.log(native_probability)
+                    + (1 - truth) * np.log(1 - native_probability)
+                ),
+                "transport_brier": (
+                    transport_probability - truth
+                )
+                ** 2,
+                "native_brier": (native_probability - truth) ** 2,
+            }
+        )
+    if rows:
+        score_frame = pd.DataFrame(rows)
+        calibration_rows.append(
+            {
+                "head": head,
+                "class_label": "BINARY_POSITIVE",
+                "evaluated_row_count": len(score_frame),
+                "evaluated_game_count": int(
+                    score_frame["game_id"].nunique()
+                ),
+                "observed_rate": float(score_frame["truth"].mean()),
+                "transport_mean_probability": float(
+                    score_frame["transport_probability"].mean()
+                ),
+                "native_kalshi_mean_probability": float(
+                    score_frame["native_probability"].mean()
+                ),
+                "transport_calibration_gap": float(
+                    abs(
+                        score_frame["transport_probability"].mean()
+                        - score_frame["truth"].mean()
+                    )
+                ),
+                "native_kalshi_calibration_gap": float(
+                    abs(
+                        score_frame["native_probability"].mean()
+                        - score_frame["truth"].mean()
+                    )
+                ),
+            }
+        )
+    return rows, calibration_rows
+
+
+def _paired_direction_scores(
+    pairs: pd.DataFrame,
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    classes = ("DOWN", "NO_MOVE", "UP")
+    probability_columns = (
+        "direction_calibrated_prob_down",
+        "direction_calibrated_prob_no_move",
+        "direction_calibrated_prob_up",
+    )
+    rows: list[dict[str, object]] = []
+    for _, row in pairs.iterrows():
+        truth = row["direction_truth_transport"]
+        if pd.isna(truth):
+            continue
+        if str(truth) not in classes:
+            raise KalshiValidationError(
+                "Kalshi target direction truth is invalid"
+            )
+        transport = np.asarray(
+            [
+                row[f"{column}_transport"]
+                for column in probability_columns
+            ],
+            dtype=float,
+        )
+        native = np.asarray(
+            [
+                row[f"{column}_native"]
+                for column in probability_columns
+            ],
+            dtype=float,
+        )
+        if not np.isfinite(transport).all() or not np.isfinite(native).all():
+            continue
+        if (
+            (transport <= 0).any()
+            or (native <= 0).any()
+            or not np.isclose(transport.sum(), 1.0, atol=1e-6)
+            or not np.isclose(native.sum(), 1.0, atol=1e-6)
+        ):
+            raise KalshiValidationError(
+                "direction probabilities must be positive and sum to one"
+            )
+        truth_index = classes.index(str(truth))
+        one_hot = np.zeros(3, dtype=float)
+        one_hot[truth_index] = 1.0
+        record: dict[str, object] = {
+            "game_id": str(row["game_id"]),
+            "head": "DIRECTION",
+            "truth": str(truth),
+            "transport_log_loss": -np.log(transport[truth_index]),
+            "native_log_loss": -np.log(native[truth_index]),
+            "transport_brier": float(
+                np.square(transport - one_hot).sum()
+            ),
+            "native_brier": float(
+                np.square(native - one_hot).sum()
+            ),
+        }
+        for index, class_label in enumerate(classes):
+            record[f"transport_probability_{class_label}"] = transport[
+                index
+            ]
+            record[f"native_probability_{class_label}"] = native[index]
+            record[f"truth_{class_label}"] = int(
+                truth_index == index
+            )
+        rows.append(record)
+    calibration_rows: list[dict[str, object]] = []
+    if rows:
+        frame = pd.DataFrame(rows)
+        for class_label in classes:
+            observed = frame[f"truth_{class_label}"].mean()
+            transport_mean = frame[
+                f"transport_probability_{class_label}"
+            ].mean()
+            native_mean = frame[
+                f"native_probability_{class_label}"
+            ].mean()
+            calibration_rows.append(
+                {
+                    "head": "DIRECTION",
+                    "class_label": class_label,
+                    "evaluated_row_count": len(frame),
+                    "evaluated_game_count": int(
+                        frame["game_id"].nunique()
+                    ),
+                    "observed_rate": float(observed),
+                    "transport_mean_probability": float(
+                        transport_mean
+                    ),
+                    "native_kalshi_mean_probability": float(
+                        native_mean
+                    ),
+                    "transport_calibration_gap": float(
+                        abs(transport_mean - observed)
+                    ),
+                    "native_kalshi_calibration_gap": float(
+                        abs(native_mean - observed)
+                    ),
+                }
+            )
+    return rows, calibration_rows
+
+
+def _equal_game_score_summary(
+    rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    if not rows:
+        return []
+    frame = pd.DataFrame(rows)
+    head = str(frame["head"].iloc[0])
+    records: list[dict[str, object]] = []
+    for metric, transport_column, native_column in (
+        ("LOG_LOSS", "transport_log_loss", "native_log_loss"),
+        ("BRIER", "transport_brier", "native_brier"),
+    ):
+        games = (
+            frame.groupby("game_id", sort=True, as_index=False)
+            .agg(
+                transport_score=(transport_column, "mean"),
+                native_kalshi_score=(native_column, "mean"),
+            )
+            .reset_index(drop=True)
+        )
+        transport_score = float(games["transport_score"].mean())
+        native_score = float(games["native_kalshi_score"].mean())
+        records.append(
+            {
+                "head": head,
+                "metric": metric,
+                "transport_score": transport_score,
+                "native_kalshi_score": native_score,
+                "score_degradation": (
+                    transport_score - native_score
+                ),
+                "evaluated_game_count": len(games),
+                "evaluated_row_count": len(frame),
+                "aggregation": "EQUAL_GAME",
+            }
+        )
+    return records
+
+
+def _score_transport_against_native(
+    target_native_pairs: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    score_records: list[dict[str, object]] = []
+    calibration_records: list[dict[str, object]] = []
+    for (model_id, feature_block_id), model_rows in (
+        target_native_pairs.groupby(
+            ["model_id", "feature_block_id"],
+            sort=True,
+            observed=True,
+        )
+    ):
+        model_scores: list[dict[str, object]] = []
+        model_calibration: list[dict[str, object]] = []
+        for head, truth_column, probability_column in (
+            (
+                "S_H",
+                "s_h_truth",
+                "s_h_calibrated_probability",
+            ),
+            (
+                "O_H_GIVEN_S",
+                "o_h_given_s_truth",
+                "o_h_given_s_calibrated_probability",
+            ),
+        ):
+            rows, calibration = _paired_binary_scores(
+                model_rows,
+                head=head,
+                truth_column=truth_column,
+                probability_column=probability_column,
+            )
+            model_scores.extend(_equal_game_score_summary(rows))
+            model_calibration.extend(calibration)
+        direction_rows, direction_calibration = (
+            _paired_direction_scores(model_rows)
+        )
+        model_scores.extend(
+            _equal_game_score_summary(direction_rows)
+        )
+        model_calibration.extend(direction_calibration)
+        for record in (*model_scores, *model_calibration):
+            record["model_id"] = str(model_id)
+            record["feature_block_id"] = str(feature_block_id)
+        score_records.extend(model_scores)
+        calibration_records.extend(model_calibration)
+    return (
+        pd.DataFrame(score_records),
+        pd.DataFrame(calibration_records),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -732,10 +1317,19 @@ class DevelopmentVenueValidation:
     paired_game_count: int
     unmatched_source_rows: int
     unmatched_target_rows: int
+    native_comparator_paired_rows: int
+    native_comparator_unmatched_transport_rows: int
+    native_comparator_unmatched_native_rows: int
     coverage_gate_passed: bool
+    score_gate_passed: bool
+    catastrophic_degradation: bool
+    transport_gate_passed: bool
     coverage_audit: pd.DataFrame
     attrition: pd.DataFrame
     exact_pair_diagnostics: pd.DataFrame
+    native_comparison_diagnostics: pd.DataFrame
+    score_summary: pd.DataFrame
+    calibration_summary: pd.DataFrame
 
 
 def validate_development_venue_transport(
@@ -749,10 +1343,14 @@ def validate_development_venue_transport(
         raise KalshiValidationError(
             "authority_metadata must be FrozenAuthorityMetadata"
         )
-    source, target = _validate_task4_transport_run(
+    source, target, native_kalshi = _validate_task4_transport_run(
         model_run, authority_metadata=authority_metadata
     )
-    for frame, label in ((source, "source"), (target, "target")):
+    for frame, label in (
+        (source, "source"),
+        (target, "target"),
+        (native_kalshi, "native Kalshi"),
+    ):
         duplicate = frame.duplicated(
             list(_TRANSPORT_PAIR_COLUMNS), keep=False
         )
@@ -797,6 +1395,49 @@ def validate_development_venue_transport(
                 f"{column}"
             )
 
+    native_pairs_outer = target.merge(
+        native_kalshi,
+        on=list(_TRANSPORT_PAIR_COLUMNS),
+        how="outer",
+        suffixes=("_transport", "_native"),
+        validate="one_to_one",
+        indicator=True,
+    )
+    native_unmatched_transport = int(
+        native_pairs_outer["_merge"].eq("left_only").sum()
+    )
+    native_unmatched_native = int(
+        native_pairs_outer["_merge"].eq("right_only").sum()
+    )
+    native_pairs = native_pairs_outer.loc[
+        native_pairs_outer["_merge"].eq("both")
+    ].drop(columns="_merge")
+    if native_pairs.empty:
+        raise KalshiValidationError(
+            "transported and native Kalshi OOF have no exact target pairs"
+        )
+    for truth_column in (
+        "s_h_truth",
+        "o_h_given_s_truth",
+        "direction_truth",
+    ):
+        if not _nullable_truth_equal(
+            native_pairs[f"{truth_column}_transport"],
+            native_pairs[f"{truth_column}_native"],
+        ):
+            raise KalshiValidationError(
+                f"transport/native Kalshi pairs disagree on {truth_column}"
+            )
+    if not native_pairs["actual_home_contract_id_transport"].eq(
+        native_pairs["actual_home_contract_id_native"]
+    ).all():
+        raise KalshiValidationError(
+            "transport/native Kalshi pairs disagree on target contract ID"
+        )
+    score_summary, calibration_summary = (
+        _score_transport_against_native(native_pairs)
+    )
+
     metadata_weeks = authority_metadata.development.set_index(
         "game_id"
     )["nfl_week"]
@@ -840,6 +1481,26 @@ def validate_development_venue_transport(
     diagnostics["calibration_venue"] = SOURCE_VENUE
     diagnostics["transport_mode"] = TRANSPORT_MODE
     diagnostics["target_recalibration_applied"] = False
+    native_diagnostics = native_pairs.loc[
+        :,
+        [
+            *_TRANSPORT_PAIR_COLUMNS,
+            "source_row_id_transport",
+            "source_row_id_native",
+            "actual_home_contract_id_transport",
+            "actual_home_contract_id_native",
+            "s_h_truth_transport",
+            "o_h_given_s_truth_transport",
+            "direction_truth_transport",
+        ],
+    ].copy()
+    for column in _PROBABILITY_COLUMNS:
+        native_diagnostics[f"{column}_transport"] = pd.to_numeric(
+            native_pairs[f"{column}_transport"], errors="coerce"
+        )
+        native_diagnostics[f"{column}_native_kalshi"] = pd.to_numeric(
+            native_pairs[f"{column}_native"], errors="coerce"
+        )
 
     coverage_keys = [
         "landmark_seconds",
@@ -953,7 +1614,82 @@ def validate_development_venue_transport(
             & paired["endpoint_seconds"].eq(30)
         ).any()
     )
-    coverage_gate = paired_game_count >= 2 and clean_anchor_present
+    coverage_gate = (
+        paired_game_count >= MIN_TRANSPORT_PAIRED_GAMES
+        and clean_anchor_present
+    )
+    expected_score_pairs = {
+        ("S_H", "LOG_LOSS"),
+        ("S_H", "BRIER"),
+        ("O_H_GIVEN_S", "LOG_LOSS"),
+        ("O_H_GIVEN_S", "BRIER"),
+        ("DIRECTION", "LOG_LOSS"),
+        ("DIRECTION", "BRIER"),
+    }
+    expected_model_blocks = set(
+        map(
+            tuple,
+            native_pairs[
+                ["model_id", "feature_block_id"]
+            ].drop_duplicates().to_numpy(),
+        )
+    )
+    observed_model_blocks: set[tuple[object, object]] = set()
+    complete_score_groups = True
+    if not score_summary.empty:
+        for model_block, group in score_summary.groupby(
+            ["model_id", "feature_block_id"],
+            sort=True,
+            observed=True,
+        ):
+            observed_model_blocks.add(tuple(model_block))
+            observed_pairs = set(
+                zip(
+                    group["head"],
+                    group["metric"],
+                    strict=True,
+                )
+            )
+            complete_score_groups = (
+                complete_score_groups
+                and observed_pairs == expected_score_pairs
+                and len(group) == len(expected_score_pairs)
+            )
+    else:
+        complete_score_groups = False
+    score_gate = bool(
+        observed_model_blocks == expected_model_blocks
+        and complete_score_groups
+        and np.isfinite(
+            score_summary[
+                [
+                    "transport_score",
+                    "native_kalshi_score",
+                    "score_degradation",
+                ]
+            ].to_numpy(dtype=float)
+        ).all()
+        and score_summary["evaluated_game_count"]
+        .ge(MIN_TRANSPORT_EVALUATED_GAMES_PER_HEAD)
+        .all()
+        and score_summary["evaluated_row_count"]
+        .ge(MIN_TRANSPORT_EVALUATED_ROWS_PER_HEAD)
+        .all()
+    )
+    catastrophic = False
+    if not score_summary.empty:
+        log_loss_bad = score_summary["metric"].eq("LOG_LOSS") & (
+            score_summary["score_degradation"]
+            > MAX_LOG_LOSS_DEGRADATION
+        )
+        brier_bad = score_summary["metric"].eq("BRIER") & (
+            score_summary["score_degradation"]
+            > MAX_BRIER_DEGRADATION
+        )
+        catastrophic = bool((log_loss_bad | brier_bad).any())
+    transport_gate = (
+        coverage_gate and score_gate and not catastrophic
+    )
     return DevelopmentVenueValidation(
         source_venue=SOURCE_VENUE,
         target_venue=TARGET_VENUE,
@@ -968,7 +1704,7 @@ def validate_development_venue_transport(
         claim_boundary=str(paired["claim_boundary"].iloc[0]),
         diagnostic_status=(
             "HISTORICAL_SIGNAL_CANDIDATE"
-            if coverage_gate
+            if transport_gate
             else "HISTORICAL_SIGNAL_REJECTED"
         ),
         execution_claim_eligible=False,
@@ -979,13 +1715,39 @@ def validate_development_venue_transport(
         paired_game_count=paired_game_count,
         unmatched_source_rows=unmatched_source_rows,
         unmatched_target_rows=unmatched_target_rows,
+        native_comparator_paired_rows=len(native_pairs),
+        native_comparator_unmatched_transport_rows=(
+            native_unmatched_transport
+        ),
+        native_comparator_unmatched_native_rows=(
+            native_unmatched_native
+        ),
         coverage_gate_passed=coverage_gate,
+        score_gate_passed=score_gate,
+        catastrophic_degradation=catastrophic,
+        transport_gate_passed=transport_gate,
         coverage_audit=coverage.sort_values(
             coverage_keys, kind="mergesort"
         ).reset_index(drop=True),
         attrition=attrition,
         exact_pair_diagnostics=diagnostics.sort_values(
             list(_TRANSPORT_PAIR_COLUMNS), kind="mergesort"
+        ).reset_index(drop=True),
+        native_comparison_diagnostics=native_diagnostics.sort_values(
+            list(_TRANSPORT_PAIR_COLUMNS), kind="mergesort"
+        ).reset_index(drop=True),
+        score_summary=score_summary.sort_values(
+            ["model_id", "feature_block_id", "head", "metric"],
+            kind="mergesort",
+        ).reset_index(drop=True),
+        calibration_summary=calibration_summary.sort_values(
+            [
+                "model_id",
+                "feature_block_id",
+                "head",
+                "class_label",
+            ],
+            kind="mergesort",
         ).reset_index(drop=True),
     )
 
@@ -1178,6 +1940,21 @@ def lock_preholdout_metadata_audit(
         != authority_metadata.cohort_authority_sha256
         or ledger.metadata_sha256 != authority_metadata.metadata_sha256
         or authority_metadata.holdout_reaction_read_count != 0
+        or authority_metadata.stage_a_outcome_validation_eligible is not False
+        or (
+            authority_metadata.stage_b_market_reaction_validation_eligible
+            is not True
+        )
+        or authority_metadata.sports_outcome_source_evidence_sha256
+        != X11_SPORTS_OUTCOME_EVIDENCE_SHA256
+        or authority_metadata.sports_outcome_observation_count
+        != X11_HOLDOUT_DRIVE_OUTCOME_COUNT
+        or not authority_metadata.holdout[
+            "market_reaction_exposure"
+        ].eq("SEALED_UNREAD").all()
+        or not authority_metadata.holdout[
+            "sports_outcome_exposure"
+        ].eq("PRIOR_EXPOSED_X11").all()
     ):
         raise KalshiValidationError(
             "metadata ledger does not bind the frozen authority"
@@ -1190,6 +1967,16 @@ def lock_preholdout_metadata_audit(
         "chain_sha256": latest,
         "metadata_access_count": len(ledger.records) - 1,
         "holdout_reaction_read_count": 0,
+        "market_reaction_exposure": "SEALED_UNREAD",
+        "sports_outcome_exposure": "PRIOR_EXPOSED_X11",
+        "sports_outcome_source_evidence_sha256": (
+            authority_metadata.sports_outcome_source_evidence_sha256
+        ),
+        "sports_outcome_observation_count": (
+            authority_metadata.sports_outcome_observation_count
+        ),
+        "stage_a_outcome_validation_eligible": False,
+        "stage_b_market_reaction_validation_eligible": True,
     }
     return {
         **lock_payload,
@@ -1205,6 +1992,8 @@ __all__ = [
     "KalshiValidationError",
     "MetadataAccessRecord",
     "PrelockMetadataLedger",
+    "X11_HOLDOUT_DRIVE_OUTCOME_COUNT",
+    "X11_SPORTS_OUTCOME_EVIDENCE_SHA256",
     "begin_prelock_metadata_ledger",
     "bind_frozen_authority_metadata",
     "lock_preholdout_metadata_audit",

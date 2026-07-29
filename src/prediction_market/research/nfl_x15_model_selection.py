@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+import hashlib
+import json
 from numbers import Integral, Real
 from typing import Final
 
@@ -30,6 +32,9 @@ from prediction_market.research.nfl_x15_models import (
     X15ModelRun,
 )
 from prediction_market.research.nfl_x15_statistics import (
+    DEFAULT_MAX_GAME_CONTRIBUTION,
+    DEFAULT_MAX_Q_VALUE,
+    DEFAULT_MIN_LOO_SAME_SIGN,
     X15StatisticsInputError,
     summarize_development_signals,
 )
@@ -58,6 +63,16 @@ HISTORICAL_TARGET_CONTRACT: Final[str] = DIAGNOSTIC_TARGET_CONTRACT
 HISTORICAL_CLAIM_BOUNDARY: Final[str] = DIAGNOSTIC_CLAIM_BOUNDARY
 HISTORICAL_SCHEMA_VERSION: Final[str] = DIAGNOSTIC_SCHEMA_VERSION
 HISTORICAL_ANALYSIS_SCOPE: Final[str] = DIAGNOSTIC_ANALYSIS_SCOPE
+EXPECTED_DEVELOPMENT_GAME_COUNT: Final[int] = 153
+EXPECTED_FOLDS: Final[
+    tuple[tuple[str, tuple[int, ...], tuple[int, ...]], ...]
+] = (
+    ("fold_01", (1, 2), (3, 4)),
+    ("fold_02", (1, 2, 3, 4), (5, 6)),
+    ("fold_03", tuple(range(1, 7)), (7, 8)),
+    ("fold_04", tuple(range(1, 9)), (9, 10)),
+    ("fold_05", tuple(range(1, 11)), (11, 12)),
+)
 
 _PAIR_COLUMNS: Final[tuple[str, ...]] = (
     "source_row_id",
@@ -119,6 +134,11 @@ _REQUIRED_COLUMNS: Final[frozenset[str]] = frozenset(
         "direction_calibrated_prob_down",
         "direction_calibrated_prob_no_move",
         "direction_calibrated_prob_up",
+        "train_weeks",
+        "validation_weeks",
+        "training_game_ids",
+        "validation_game_ids",
+        "preprocessor_fit_game_ids",
     }
 )
 _DIRECTION_PROBABILITY_COLUMNS: Final[tuple[str, ...]] = (
@@ -161,6 +181,121 @@ def _require_nonempty_text(value: object, *, field: str) -> str:
     return value
 
 
+def _canonical_sha256(value: object) -> str:
+    payload = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class FrozenDevelopmentAuthority:
+    """Exact 153-game metadata binding used by the final selection gate."""
+
+    cohort_authority_sha256: str
+    development_games: tuple[
+        tuple[str, int, str, str], ...
+    ]
+    metadata_sha256: str
+
+    @property
+    def game_count(self) -> int:
+        return len(self.development_games)
+
+    @property
+    def game_weeks(self) -> dict[str, int]:
+        return {
+            game_id: week
+            for game_id, week, _, _ in self.development_games
+        }
+
+
+def bind_frozen_development_authority(
+    development_metadata: pd.DataFrame,
+    *,
+    cohort_authority_sha256: str,
+) -> FrozenDevelopmentAuthority:
+    """Bind exact governed IDs, weeks, kickoffs, and batch hashes."""
+
+    authority = _require_sha256(
+        cohort_authority_sha256,
+        field="cohort_authority_sha256",
+    )
+    required = {
+        "game_id",
+        "nfl_week",
+        "kickoff_utc",
+        "batch_sha256",
+        "cohort_authority_sha256",
+    }
+    if not isinstance(development_metadata, pd.DataFrame):
+        raise ModelSelectionError(
+            "development_metadata must be a DataFrame"
+        )
+    missing = sorted(required.difference(development_metadata.columns))
+    if missing:
+        raise ModelSelectionError(
+            f"development_metadata missing required columns: {missing}"
+        )
+    frame = development_metadata.loc[:, sorted(required)].copy()
+    if (
+        len(frame) != EXPECTED_DEVELOPMENT_GAME_COUNT
+        or frame["game_id"].nunique() != EXPECTED_DEVELOPMENT_GAME_COUNT
+    ):
+        raise ModelSelectionError(
+            "selection authority requires exactly 153 unique "
+            "development game IDs"
+        )
+    for column in ("game_id", "kickoff_utc"):
+        if not frame[column].map(
+            lambda value: isinstance(value, str) and bool(value.strip())
+        ).all():
+            raise ModelSelectionError(
+                f"development_metadata {column} must be nonempty text"
+            )
+    weeks = pd.to_numeric(frame["nfl_week"], errors="coerce")
+    if (
+        weeks.isna().any()
+        or not np.equal(
+            weeks.to_numpy(dtype=float),
+            weeks.astype(int).to_numpy(dtype=float),
+        ).all()
+        or not weeks.between(1, 12).all()
+        or set(weeks.astype(int)) != set(range(1, 13))
+    ):
+        raise ModelSelectionError(
+            "selection authority nfl_week must cover integral weeks 1..12"
+        )
+    if not frame["batch_sha256"].map(_is_sha256).all():
+        raise ModelSelectionError(
+            "selection authority batch_sha256 values are invalid"
+        )
+    if not frame["cohort_authority_sha256"].eq(authority).all():
+        raise ModelSelectionError(
+            "selection authority rows disagree on "
+            "cohort_authority_sha256"
+        )
+    games = tuple(
+        (
+            str(row.game_id),
+            int(row.nfl_week),
+            str(row.kickoff_utc),
+            str(row.batch_sha256),
+        )
+        for row in frame.sort_values(
+            "game_id", kind="mergesort"
+        ).itertuples(index=False)
+    )
+    return FrozenDevelopmentAuthority(
+        cohort_authority_sha256=authority,
+        development_games=games,
+        metadata_sha256=_canonical_sha256(games),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class FrozenSelectionSpec:
     """Pre-locked identity, bootstrap, weighting, and anchor semantics."""
@@ -189,9 +324,9 @@ class FrozenSelectionSpec:
             field="candidate_feature_block_id",
         )
         _require_nonempty_text(self.selection_venue, field="selection_venue")
-        if self.selection_venue not in {"polymarket", "kalshi"}:
+        if self.selection_venue != "polymarket":
             raise ModelSelectionError(
-                "selection_venue must be polymarket or kalshi"
+                "selection_venue is fixed at polymarket"
             )
         if self.cohort_authority_sha256 is not None:
             _require_sha256(
@@ -266,6 +401,10 @@ class ModelSelectionResult:
     execution_claim_eligible: bool
     tick_claim_eligible: bool
     continuity_claim_eligible: bool
+    authority_gate_passed: bool
+    authority_gate_failures: tuple[str, ...]
+    development_authority_game_count: int
+    observed_fold_ids: tuple[str, ...]
     paired_rows: pd.DataFrame
     episode_losses: pd.DataFrame
     game_losses: pd.DataFrame
@@ -519,6 +658,127 @@ def _validate_task4_rows(
             "each model must have one OOF row per exact candidate/B0 pair"
         )
     return work, authority
+
+
+def _tuple_value(value: object) -> tuple[object, ...] | None:
+    if not isinstance(value, (tuple, list)):
+        return None
+    return tuple(value)
+
+
+def _development_authority_gate(
+    model_run: X15ModelRun,
+    work: pd.DataFrame,
+    *,
+    row_authority_sha256: str,
+    authority: FrozenDevelopmentAuthority | None,
+    spec: FrozenSelectionSpec,
+) -> tuple[bool, tuple[str, ...], int, tuple[str, ...]]:
+    failures: list[str] = []
+    observed_fold_ids = tuple(
+        sorted(set(work["fold_id"].astype(str)))
+    )
+    if authority is None:
+        return (
+            False,
+            ("FROZEN_DEVELOPMENT_AUTHORITY_REQUIRED",),
+            0,
+            observed_fold_ids,
+        )
+    if not isinstance(authority, FrozenDevelopmentAuthority):
+        raise ModelSelectionError(
+            "authority must be FrozenDevelopmentAuthority"
+        )
+    if authority.game_count != EXPECTED_DEVELOPMENT_GAME_COUNT:
+        failures.append("EXACT_153_GAME_AUTHORITY_REQUIRED")
+    if (
+        authority.cohort_authority_sha256 != row_authority_sha256
+        or model_run.run_config.get("cohort_authority_sha256")
+        != authority.cohort_authority_sha256
+    ):
+        failures.append("COHORT_AUTHORITY_MISMATCH")
+
+    expected_fold_ids = tuple(fold[0] for fold in EXPECTED_FOLDS)
+    configured_fold_ids = _tuple_value(
+        model_run.run_config.get("fold_ids")
+    )
+    if (
+        configured_fold_ids != expected_fold_ids
+        or observed_fold_ids != expected_fold_ids
+    ):
+        failures.append("ALL_FIVE_FOLDS_REQUIRED")
+
+    game_weeks = authority.game_weeks
+    authority_weeks = work["game_id"].map(game_weeks)
+    if (
+        authority_weeks.isna().any()
+        or not authority_weeks.astype("Int64").eq(
+            work["nfl_week"].astype("Int64")
+        ).all()
+    ):
+        failures.append("GAME_WEEK_AUTHORITY_MISMATCH")
+    for fold_id, train_weeks, validation_weeks in EXPECTED_FOLDS:
+        expected_training_ids = tuple(
+            sorted(
+                game_id
+                for game_id, week in game_weeks.items()
+                if week in train_weeks
+            )
+        )
+        expected_validation_ids = tuple(
+            sorted(
+                game_id
+                for game_id, week in game_weeks.items()
+                if week in validation_weeks
+            )
+        )
+        fold_rows = work.loc[work["fold_id"].eq(fold_id)]
+        if fold_rows.empty:
+            failures.append(f"{fold_id}:MISSING")
+            continue
+        for column, expected in (
+            ("train_weeks", train_weeks),
+            ("validation_weeks", validation_weeks),
+            ("training_game_ids", expected_training_ids),
+            ("validation_game_ids", expected_validation_ids),
+            ("preprocessor_fit_game_ids", expected_training_ids),
+        ):
+            if not fold_rows[column].map(
+                lambda value: _tuple_value(value) == tuple(expected)
+            ).all():
+                failures.append(f"{fold_id}:{column.upper()}_MISMATCH")
+        for model_id, block_id in (
+            (
+                spec.baseline_model_id,
+                spec.baseline_feature_block_id,
+            ),
+            (
+                spec.candidate_model_id,
+                spec.candidate_feature_block_id,
+            ),
+        ):
+            observed_games = tuple(
+                sorted(
+                    set(
+                        fold_rows.loc[
+                            fold_rows["model_id"].eq(model_id)
+                            & fold_rows["feature_block_id"].eq(block_id),
+                            "game_id",
+                        ].astype(str)
+                    )
+                )
+            )
+            if observed_games != expected_validation_ids:
+                failures.append(
+                    f"{fold_id}:{model_id}/{block_id}:"
+                    "VALIDATION_GAME_COVERAGE_MISMATCH"
+                )
+    return (
+        not failures,
+        tuple(dict.fromkeys(failures)),
+        authority.game_count,
+        observed_fold_ids,
+    )
 
 
 def _merge_exact_pairs(
@@ -792,13 +1052,28 @@ def _bootstrap_game_improvements(
 
 
 def select_candidate_against_b0(
-    model_run: X15ModelRun, *, spec: FrozenSelectionSpec
+    model_run: X15ModelRun,
+    *,
+    spec: FrozenSelectionSpec,
+    authority: FrozenDevelopmentAuthority | None = None,
 ) -> ModelSelectionResult:
     """Apply the pre-locked integrated and clean-anchor intersection gate."""
 
     if not isinstance(spec, FrozenSelectionSpec):
         raise ModelSelectionError("spec must be a FrozenSelectionSpec")
-    work, authority = _validate_task4_rows(model_run, spec=spec)
+    work, row_authority = _validate_task4_rows(model_run, spec=spec)
+    (
+        authority_gate,
+        authority_failures,
+        authority_game_count,
+        observed_fold_ids,
+    ) = _development_authority_gate(
+        model_run,
+        work,
+        row_authority_sha256=row_authority,
+        authority=authority,
+        spec=spec,
+    )
     paired = _attach_multihead_losses(
         _merge_exact_pairs(work, spec=spec)
     )
@@ -840,10 +1115,10 @@ def select_candidate_against_b0(
         and anchor_mean >= 0.0
         and not anchor_sign_reversed
     )
-    selected = integrated_gate and anchor_gate
+    selected = authority_gate and integrated_gate and anchor_gate
     return ModelSelectionResult(
         spec=spec,
-        cohort_authority_sha256=authority,
+        cohort_authority_sha256=row_authority,
         run_config_sha256=model_run.run_config_sha256,
         schema_version=HISTORICAL_SCHEMA_VERSION,
         analysis_scope=HISTORICAL_ANALYSIS_SCOPE,
@@ -852,11 +1127,19 @@ def select_candidate_against_b0(
         diagnostic_status=(
             "HISTORICAL_SIGNAL_CANDIDATE"
             if selected
-            else "HISTORICAL_SIGNAL_REJECTED"
+            else (
+                "PARTIAL_DEVELOPMENT_DIAGNOSTIC_ONLY"
+                if not authority_gate
+                else "HISTORICAL_SIGNAL_REJECTED"
+            )
         ),
         execution_claim_eligible=False,
         tick_claim_eligible=False,
         continuity_claim_eligible=False,
+        authority_gate_passed=authority_gate,
+        authority_gate_failures=authority_failures,
+        development_authority_game_count=authority_game_count,
+        observed_fold_ids=observed_fold_ids,
         paired_rows=paired.reset_index(drop=True),
         episode_losses=episode_losses.reset_index(drop=True),
         game_losses=game_losses.reset_index(drop=True),
@@ -991,16 +1274,27 @@ def build_factor_claim_audit(
             "factor_membership has no clean-anchor episodes"
         )
     membership_without_anchor = len(membership) - len(joined)
+    equal_game_units = (
+        joined.groupby(
+            ["factor_id", "venue", "game_id"],
+            sort=True,
+            as_index=False,
+        )
+        .agg(gross_markout=("loss_improvement", "mean"))
+        .reset_index(drop=True)
+    )
     signals = pd.DataFrame(
         {
-            "factor_id": joined["factor_id"],
-            "venue": joined["venue"],
+            "factor_id": equal_game_units["factor_id"],
+            "venue": equal_game_units["venue"],
             "model_id": selection.spec.candidate_model_id,
-            "game_id": joined["game_id"],
-            "episode_id": joined[
-                "atomic_information_episode_id"
-            ],
-            "gross_markout": joined["loss_improvement"].astype(float),
+            "game_id": equal_game_units["game_id"],
+            "episode_id": equal_game_units["game_id"].map(
+                lambda game_id: f"{game_id}:equal-game-effect-unit"
+            ),
+            "gross_markout": equal_game_units[
+                "gross_markout"
+            ].astype(float),
             "evaluation_status": "EVALUATED",
             "dataset_partition": "development",
         }
@@ -1012,7 +1306,7 @@ def build_factor_claim_audit(
             n_bootstrap=BOOTSTRAP_SAMPLES,
             confidence_level=0.95,
             min_support_games=int(min_support_games),
-            min_support_signals=int(min_support_episodes),
+            min_support_signals=int(min_support_games),
         )
     except X15StatisticsInputError as exc:
         raise ModelSelectionError(
@@ -1051,8 +1345,13 @@ def build_factor_claim_audit(
             on=["factor_id", "venue"],
             validate="one_to_one",
         )
-        .rename(columns={"support_signals": "support_episodes"})
+        .rename(
+            columns={
+                "support_signals": "equal_game_effect_unit_count"
+            }
+        )
     )
+    audit["support_episodes"] = audit["unique_episodes"].astype(int)
     audit["support_status"] = np.where(
         audit["support_games"].ge(int(min_support_games))
         & audit["support_episodes"].ge(int(min_support_episodes)),
@@ -1069,10 +1368,40 @@ def build_factor_claim_audit(
     audit["schema_version"] = selection.schema_version
     audit["analysis_scope"] = selection.analysis_scope
     audit["claim_eligible"] = False
+    audit["bh_q_gate_passed"] = audit["bh_q_value"].le(
+        DEFAULT_MAX_Q_VALUE
+    )
+    audit["loo_sign_gate_passed"] = audit[
+        "leave_one_game_out_same_sign_rate"
+    ].ge(DEFAULT_MIN_LOO_SAME_SIGN)
+    audit["max_game_contribution_gate_passed"] = audit[
+        "max_single_game_absolute_contribution_ratio"
+    ].le(DEFAULT_MAX_GAME_CONTRIBUTION)
+    audit["registered_gate_passed"] = (
+        selection.selected
+        & audit["support_status"].eq("SUPPORTED")
+        & audit["recommended_for_gating"]
+        & audit["mean_ci_excludes_zero"]
+        & audit["bh_q_gate_passed"]
+        & audit["loo_sign_gate_passed"]
+        & audit["max_game_contribution_gate_passed"]
+        & audit["individual_statistical_gate"]
+        & audit["passes_development_gate"]
+    )
+    review_only = (
+        selection.selected
+        & audit["support_status"].eq("SUPPORTED")
+        & audit["individual_statistical_gate"]
+        & ~audit["passes_development_gate"]
+    )
     audit["diagnostic_status"] = np.where(
-        audit["support_status"].eq("SUPPORTED") & selection.selected,
+        audit["registered_gate_passed"],
         "HISTORICAL_SIGNAL_CANDIDATE",
-        "HISTORICAL_SIGNAL_REJECTED",
+        np.where(
+            review_only,
+            "HISTORICAL_SIGNAL_REVIEW_ONLY",
+            "HISTORICAL_SIGNAL_REJECTED",
+        ),
     )
     audit["execution_claim_eligible"] = False
     audit["tick_claim_eligible"] = False
@@ -1094,6 +1423,9 @@ __all__ = [
     "BOOTSTRAP_SEED",
     "DIRECTION_THRESHOLD_PROBABILITY",
     "DIRECTION_THRESHOLD_SEMANTICS",
+    "EXPECTED_DEVELOPMENT_GAME_COUNT",
+    "EXPECTED_FOLDS",
+    "FrozenDevelopmentAuthority",
     "MARKET_CONTINUITY_SUPPORT",
     "FrozenSelectionSpec",
     "HISTORICAL_CLAIM_BOUNDARY",
@@ -1103,6 +1435,7 @@ __all__ = [
     "LOSS_IMPROVEMENT_SIGN_SEMANTICS",
     "ModelSelectionError",
     "ModelSelectionResult",
+    "bind_frozen_development_authority",
     "VENUE_TICK_SUPPORT",
     "build_factor_claim_audit",
     "select_candidate_against_b0",
