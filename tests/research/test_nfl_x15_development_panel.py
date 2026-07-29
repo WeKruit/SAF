@@ -347,8 +347,12 @@ def _market() -> tuple[pd.DataFrame, pd.DataFrame]:
     return pd.DataFrame(observations), pd.DataFrame(inventory_rows)
 
 
-def _source_fixture(tmp_path: Path) -> DevelopmentSourceSpec:
-    facts, hits = _facts()
+def _source_fixture(
+    tmp_path: Path,
+    *,
+    facts_override: tuple[pd.DataFrame, pd.DataFrame] | None = None,
+) -> DevelopmentSourceSpec:
+    facts, hits = _facts() if facts_override is None else facts_override
     observations, inventory = _market()
     facts_game = _publish_game_manifest(
         tmp_path,
@@ -438,6 +442,94 @@ def _source_fixture(tmp_path: Path) -> DevelopmentSourceSpec:
     )
 
 
+def test_landmark_uses_next_fact_finalized_known_at_boundary(
+    tmp_path: Path,
+) -> None:
+    facts, hits = _facts()
+    second = facts["atomic_information_episode_id"].eq("episode-2")
+    facts.loc[second, "source_interval_start"] = "2025-09-07T12:00:03Z"
+    facts.loc[second, "source_interval_end"] = "2025-09-07T12:00:04Z"
+    facts.loc[second, "known_at"] = "2025-09-07T12:00:04Z"
+    spec = _source_fixture(
+        tmp_path / "source",
+        facts_override=(facts, hits),
+    )
+
+    publication = publish_exact153_development_panel(
+        project_root=tmp_path / "source",
+        output_root=tmp_path / "source" / "published",
+        source_spec=spec,
+        confirmatory_evidence={},
+    )
+    _, tables = _read_game_tables(publication)
+    panel = tables["diagnostic_panel"]
+    invalid = panel.loc[
+        panel["atomic_information_episode_id"].eq("episode-1")
+        & panel["landmark_seconds"].ge(3)
+    ]
+    before_finalization = panel.loc[
+        panel["atomic_information_episode_id"].eq("episode-1")
+        & panel["landmark_seconds"].eq(2)
+    ]
+
+    assert set(panel["schema_version"]) == {
+        "HistoricalTradesOnlyProbabilityPanelV2"
+    }
+    assert before_finalization["sports_clean_l"].eq(True).all()
+    assert set(before_finalization["sports_clean_l_reason"]) == {
+        "SPORTS_WINDOW_CLEAN"
+    }
+    assert before_finalization["decision_eligible"].eq(True).all()
+    assert invalid["sports_clean_l"].eq(False).all()
+    assert set(invalid["sports_clean_l_reason"]) == {
+        "NEXT_FINALIZED_INFORMATION_EVENT_AT_OR_BEFORE_L"
+    }
+    assert invalid["decision_eligible"].eq(False).all()
+    assert set(invalid["attrition_reason"]) == {
+        "LANDMARK_NEXT_FINALIZED_INFORMATION_EVENT_AT_OR_BEFORE_L"
+    }
+
+
+def test_unknown_terminal_continuity_fails_closed_with_explicit_reason(
+    tmp_path: Path,
+) -> None:
+    facts, hits = _facts()
+    terminal = facts["atomic_information_episode_id"].eq("episode-2")
+    facts.loc[terminal, "outcome_tags"] = "[]"
+    facts.loc[terminal, "primary_action"] = "UNKNOWN_TERMINAL_STATUS"
+    facts.loc[terminal, "game_seconds_remaining"] = 1
+    facts.loc[terminal, "source_interval_start"] = "2025-09-07T12:00:03Z"
+    facts.loc[terminal, "source_interval_end"] = "2025-09-07T12:00:04Z"
+    facts.loc[terminal, "known_at"] = "2025-09-07T12:00:04Z"
+    spec = _source_fixture(
+        tmp_path / "source",
+        facts_override=(facts, hits),
+    )
+
+    publication = publish_exact153_development_panel(
+        project_root=tmp_path / "source",
+        output_root=tmp_path / "source" / "published",
+        source_spec=spec,
+        confirmatory_evidence={},
+    )
+    _, tables = _read_game_tables(publication)
+    final_episode = tables["diagnostic_panel"].loc[
+        tables["diagnostic_panel"][
+            "atomic_information_episode_id"
+        ].eq("episode-2")
+    ]
+
+    assert not final_episode.empty
+    assert final_episode["sports_clean_l"].eq(False).all()
+    assert set(final_episode["sports_clean_l_reason"]) == {
+        "SPORTS_CONTINUITY_UNKNOWN"
+    }
+    assert final_episode["decision_eligible"].eq(False).all()
+    assert set(final_episode["attrition_reason"]) == {
+        "LANDMARK_SPORTS_CONTINUITY_UNKNOWN"
+    }
+
+
 def _confirmatory_evidence(venue: str) -> VenueConfirmatoryEvidence:
     tick_rules = pd.DataFrame(
         [
@@ -514,7 +606,7 @@ def test_complete_evidence_calls_real_v3_builder_and_keeps_diagnostic_separate(
         CONFIRMATORY_CLAIM_BOUNDARY
     }
     assert set(tables["diagnostic_panel"]["schema_version"]) == {
-        "HistoricalTradesOnlyProbabilityPanelV1"
+        "HistoricalTradesOnlyProbabilityPanelV2"
     }
     assert set(tables["diagnostic_panel"]["claim_boundary"]) == {
         DIAGNOSTIC_CLAIM_BOUNDARY
@@ -763,7 +855,7 @@ def test_verified_diagnostic_partition_iterator_loads_complete_bound_batch(
     )
     assert set(partition.panel["game_id"]) == {GAME_ID}
     assert set(partition.panel["schema_version"]) == {
-        "HistoricalTradesOnlyProbabilityPanelV1"
+        "HistoricalTradesOnlyProbabilityPanelV2"
     }
 
 

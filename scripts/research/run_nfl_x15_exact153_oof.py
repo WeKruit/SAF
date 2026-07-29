@@ -39,19 +39,9 @@ from prediction_market.research.nfl_x15_oof_publication import (
 )
 
 
-DEFAULT_PANEL_BATCH = Path(
-    "artifacts/market-observation/nfl/x15/"
-    "historical-trades-only-development-panel-v1/batches/manifests/"
-    "sha256/3d/"
-    "3d2247c8b075748ccfa219daaf760e1681e85cb8fe0601bc2c9657381c7a969e"
-    ".batch-index.json"
-)
-DEFAULT_PANEL_BATCH_FILE_SHA256 = (
-    "sha256:3d2247c8b075748ccfa219daaf760e1681e85cb8fe0601bc2c9657381c7a969e"
-)
 DEFAULT_OUTPUT_ROOT = Path(
     "artifacts/market-observation/nfl/x15/"
-    "stage-b-probability-oof-v1"
+    "stage-b-probability-oof-v2"
 )
 EXPECTED_GAME_COUNT = 153
 
@@ -201,11 +191,15 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--project-root", type=Path, default=Path.cwd())
     parser.add_argument(
-        "--panel-batch", type=Path, default=DEFAULT_PANEL_BATCH
+        "--panel-batch",
+        type=Path,
+        required=True,
+        help="Published HistoricalTradesOnlyProbabilityPanelV2 batch index.",
     )
     parser.add_argument(
         "--panel-batch-file-sha256",
-        default=DEFAULT_PANEL_BATCH_FILE_SHA256,
+        required=True,
+        help="SHA-256 of the published V2 batch-index file.",
     )
     parser.add_argument(
         "--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT

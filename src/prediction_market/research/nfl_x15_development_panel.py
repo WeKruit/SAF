@@ -3,7 +3,7 @@
 The historical development artifacts support two deliberately separate target
 contracts:
 
-* ``HistoricalTradesOnlyProbabilityPanelV1`` is a retrospective source-time
+* ``HistoricalTradesOnlyProbabilityPanelV2`` is a retrospective source-time
   diagnostic.  Direction uses the ADR-0006 fixed cross-venue materiality
   threshold of one probability point.  It does not assert a venue tick or
   continuous market availability.
@@ -38,7 +38,7 @@ import pyarrow.parquet as pq
 from prediction_market.research import nfl_x15_landmarks as _landmarks
 
 
-DIAGNOSTIC_SCHEMA = "HistoricalTradesOnlyProbabilityPanelV1"
+DIAGNOSTIC_SCHEMA = "HistoricalTradesOnlyProbabilityPanelV2"
 DIAGNOSTIC_CLAIM_BOUNDARY = (
     "HISTORICAL_TRADES_ONLY_SOURCE_TIME_PROBABILITY_DIAGNOSTIC"
 )
@@ -50,7 +50,7 @@ DIRECTION_THRESHOLD_SEMANTICS = (
 )
 MARKET_CONTINUITY_SUPPORT = "UNKNOWN"
 VENUE_TICK_SUPPORT = "UNSUPPORTED"
-BUILDER_VERSION = "nfl-x15-development-panel-v1"
+BUILDER_VERSION = "nfl-x15-development-panel-v2"
 
 DEFAULT_FACTS_BATCH = Path(
     "artifacts/market-observation/nfl/x13/exact-153-facts-v3/"
@@ -100,7 +100,7 @@ DEFAULT_AUTHORITY_OBJECT_SHA256 = (
 )
 DEFAULT_OUTPUT_ROOT = Path(
     "artifacts/market-observation/nfl/x15/"
-    "historical-trades-only-development-panel-v1"
+    "historical-trades-only-development-panel-v2"
 )
 
 _SHA256_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -1165,20 +1165,52 @@ def _sports_continuity(
         "atomic_information_episode_id",
         "source_interval_start",
         "source_interval_end",
+        "known_at",
+        "outcome_tags",
     }
     if not required.issubset(eligible_facts.columns) or eligible_facts.empty:
         raise DevelopmentPanelError("eligible facts cannot build sports continuity")
     facts = eligible_facts.copy()
-    for column in ("source_interval_start", "source_interval_end"):
+    for column in (
+        "source_interval_start",
+        "source_interval_end",
+        "known_at",
+    ):
         facts[column] = pd.to_datetime(facts[column], utc=True, errors="raise")
-    game_end = facts["source_interval_end"].max()
     facts = facts.sort_values(
         ["source_interval_start", "atomic_information_episode_id"],
         kind="mergesort",
     ).reset_index(drop=True)
-    facts["next_salient_event_time_utc"] = facts["source_interval_start"].shift(-1)
-    facts["game_end_time_utc"] = game_end
-    facts["sports_continuity_source"] = "VERIFIED_FINALIZED_SPORTS_SOURCE_INTERVALS"
+    facts["next_salient_event_time_utc"] = facts.groupby(
+        "game_id",
+        sort=False,
+    )["known_at"].shift(-1)
+    terminal = pd.Series(
+        [
+            "GAME_END"
+            in _landmarks._parse_event_tags(
+                value,
+                label="episode_facts.outcome_tags",
+            )
+            for value in facts["outcome_tags"]
+        ],
+        index=facts.index,
+        dtype=bool,
+    )
+    game_end_by_game: dict[str, pd.Timestamp] = {}
+    for game_id, game in facts.loc[terminal].groupby(
+        "game_id",
+        sort=False,
+    ):
+        finalized_times = game["known_at"].drop_duplicates()
+        if len(finalized_times) == 1:
+            game_end_by_game[str(game_id)] = finalized_times.iloc[0]
+    facts["game_end_time_utc"] = facts["game_id"].astype(str).map(
+        game_end_by_game
+    )
+    facts["sports_continuity_source"] = (
+        "NEXT_ELIGIBLE_FACT_KNOWN_AT_AND_EXPLICIT_GAME_END_TAG"
+    )
     return facts.loc[
         :,
         [
@@ -1193,22 +1225,47 @@ def _sports_continuity(
 
 def _sports_clean(
     row: pd.Series,
-    endpoint_time: pd.Timestamp,
+    horizon_time: pd.Timestamp,
+    *,
+    window_start: pd.Timestamp,
+    horizon_label: str,
 ) -> tuple[bool, str]:
+    if horizon_label not in {"L", "H"}:
+        raise AssertionError(horizon_label)
     next_event = row["next_salient_event_time_utc"]
     game_end = row["game_end_time_utc"]
-    candidates: list[tuple[pd.Timestamp, str]] = []
-    if pd.notna(next_event) and next_event <= endpoint_time:
+    candidates: list[tuple[pd.Timestamp, int, str]] = []
+    if (
+        pd.notna(next_event)
+        and window_start < next_event <= horizon_time
+    ):
         candidates.append(
             (
                 next_event,
-                "NEXT_FINALIZED_INFORMATION_EVENT_AT_OR_BEFORE_H",
+                0,
+                "NEXT_FINALIZED_INFORMATION_EVENT_AT_OR_BEFORE_"
+                f"{horizon_label}",
             )
         )
-    if pd.notna(game_end) and game_end <= endpoint_time:
-        candidates.append((game_end, "GAME_END_AT_OR_BEFORE_H"))
+    if pd.notna(game_end) and window_start < game_end <= horizon_time:
+        candidates.append(
+            (
+                game_end,
+                1,
+                f"GAME_END_AT_OR_BEFORE_{horizon_label}",
+            )
+        )
     if candidates:
-        return False, min(candidates, key=lambda value: (value[0], value[1]))[1]
+        return False, min(
+            candidates,
+            key=lambda value: (value[0], value[1], value[2]),
+        )[2]
+    continuity_bounded = bool(
+        pd.notna(game_end)
+        or (pd.notna(next_event) and next_event > horizon_time)
+    )
+    if not continuity_bounded:
+        return False, "SPORTS_CONTINUITY_UNKNOWN"
     return True, "SPORTS_WINDOW_CLEAN"
 
 
@@ -1480,6 +1537,12 @@ def _diagnostic_panel(
                     seconds=landmark_seconds
                 )
                 mark_l = marks_l[landmark_seconds]
+                sports_clean_l, sports_clean_l_reason = _sports_clean(
+                    continuity,
+                    landmark_time,
+                    window_start=interval_end,
+                    horizon_label="L",
+                )
                 stage_a_status, stage_a = _landmarks._reference_at_l(
                     reference, landmark_time=landmark_time
                 )
@@ -1547,9 +1610,14 @@ def _diagnostic_panel(
                     )
                     mark_h = marks_h[endpoint_seconds]
                     sports_clean_h, sports_reason = _sports_clean(
-                        continuity, endpoint_time
+                        continuity,
+                        endpoint_time,
+                        window_start=interval_end,
+                        horizon_label="H",
                     )
-                    decision_eligible = mark_l.observed
+                    decision_eligible = bool(
+                        mark_l.observed and sports_clean_l
+                    )
                     actual_trade_observed_h = mark_h.observed
                     target_eligible = bool(
                         decision_eligible
@@ -1572,7 +1640,11 @@ def _diagnostic_panel(
                         else math.nan
                     )
                     if not decision_eligible:
-                        attrition_reason = f"LANDMARK_{mark_l.status}"
+                        attrition_reason = (
+                            f"LANDMARK_{mark_l.status}"
+                            if not mark_l.observed
+                            else f"LANDMARK_{sports_clean_l_reason}"
+                        )
                     elif not sports_clean_h:
                         attrition_reason = sports_reason
                     elif not actual_trade_observed_h:
@@ -1625,6 +1697,8 @@ def _diagnostic_panel(
                             ),
                             "mark_l_observed_size": mark_l.observed_size,
                             "mark_l_semantics": mark_l.semantics,
+                            "sports_clean_l": sports_clean_l,
+                            "sports_clean_l_reason": sports_clean_l_reason,
                             "mark_h_trade_ids_json": json.dumps(
                                 list(mark_h.trade_ids),
                                 separators=(",", ":"),

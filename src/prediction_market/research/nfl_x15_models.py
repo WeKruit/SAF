@@ -46,9 +46,13 @@ from prediction_market.research.nfl_x15_distribution import (
 from prediction_market.research.nfl_x15_development_panel import (
     VerifiedDiagnosticPanelPartition,
 )
+from prediction_market.research.nfl_x15_landmarks import ENDPOINT_SECONDS
 
 
 RANDOM_STATE: Final[int] = 20260728
+SURVIVAL_PROBABILITY_CONTRACT: Final[str] = (
+    "DISCRETE_INTERVAL_SURVIVAL_PRODUCT_V1"
+)
 EFFECTIVE_SEED_CONTRACT_ID: Final[str] = (
     "SHA256_COORDINATE_UINT31_V1"
 )
@@ -155,7 +159,7 @@ FEATURE_BLOCKS: Final[Mapping[str, tuple[str, ...]]] = {
     ),
 }
 DIAGNOSTIC_SCHEMA_VERSION: Final[str] = (
-    "HistoricalTradesOnlyProbabilityPanelV1"
+    "HistoricalTradesOnlyProbabilityPanelV2"
 )
 DIAGNOSTIC_TARGET_CONTRACT: Final[str] = (
     "HISTORICAL_TRADES_ONLY_HOME_PROBABILITY"
@@ -242,6 +246,8 @@ DIAGNOSTIC_MODEL_INPUT_COLUMNS: Final[tuple[str, ...]] = (
     "endpoint_seconds",
     "decision_eligible",
     "target_eligible",
+    "sports_clean_l",
+    "sports_clean_l_reason",
     "sports_clean_h",
     "sports_clean_reason",
     "actual_trade_observed_h",
@@ -568,6 +574,145 @@ def _nullable_bool(frame: pd.DataFrame, column: str) -> pd.Series:
     return values.astype("boolean")
 
 
+def _annotate_discrete_survival_intervals(
+    frame: pd.DataFrame,
+) -> pd.DataFrame:
+    """Derive conditional interval-survival targets from cumulative S(L, H)."""
+
+    landmark = pd.to_numeric(frame["landmark_seconds"], errors="coerce")
+    endpoint = pd.to_numeric(frame["endpoint_seconds"], errors="coerce")
+    if (
+        landmark.isna().any()
+        or endpoint.isna().any()
+        or not np.equal(landmark, np.floor(landmark)).all()
+        or not np.equal(endpoint, np.floor(endpoint)).all()
+    ):
+        raise X15ModelInputError(
+            "landmark_seconds and endpoint_seconds must be integers"
+        )
+    frame["landmark_seconds"] = landmark.astype(int)
+    frame["endpoint_seconds"] = endpoint.astype(int)
+    frozen_endpoints = tuple(int(value) for value in ENDPOINT_SECONDS)
+    frozen_endpoint_set = set(frozen_endpoints)
+    if (
+        not frame["endpoint_seconds"].isin(frozen_endpoint_set).all()
+        or not frame["endpoint_seconds"].gt(frame["landmark_seconds"]).all()
+    ):
+        raise X15ModelInputError(
+            "survival endpoints must be frozen endpoints strictly after L"
+        )
+
+    interval_starts: list[int] = []
+    for landmark_seconds, endpoint_seconds in frame.loc[
+        :, ["landmark_seconds", "endpoint_seconds"]
+    ].itertuples(index=False, name=None):
+        previous = tuple(
+            value for value in frozen_endpoints if value < endpoint_seconds
+        )
+        previous_endpoint = previous[-1] if previous else landmark_seconds
+        interval_starts.append(max(landmark_seconds, previous_endpoint))
+    frame["_s_interval_start_seconds"] = np.asarray(
+        interval_starts, dtype=int
+    )
+    frame["_s_interval_at_risk"] = False
+    interval_truth = pd.Series(
+        pd.NA,
+        index=frame.index,
+        dtype="boolean",
+    )
+    path_columns = list(_PANEL_GRAIN[:-1])
+    for _, path in frame.groupby(
+        path_columns,
+        sort=False,
+        observed=True,
+        dropna=False,
+    ):
+        ordered = path.sort_values("endpoint_seconds", kind="mergesort")
+        by_endpoint = {
+            int(value): int(index)
+            for index, value in ordered["endpoint_seconds"].items()
+        }
+        survival_failed = False
+        for index, row in ordered.iterrows():
+            cumulative_truth = row["s_h"]
+            if pd.notna(cumulative_truth):
+                if bool(cumulative_truth) and survival_failed:
+                    raise X15ModelInputError(
+                        "cumulative S_H cannot return true after failure"
+                    )
+                if not bool(cumulative_truth):
+                    survival_failed = True
+            interval_start = int(row["_s_interval_start_seconds"])
+            landmark_seconds = int(row["landmark_seconds"])
+            if interval_start == landmark_seconds:
+                at_risk = bool(row["decision_eligible"])
+            else:
+                prior_index = by_endpoint.get(interval_start)
+                if prior_index is None:
+                    raise X15ModelInputError(
+                        "survival endpoint grid is incomplete before H"
+                    )
+                prior_truth = frame.at[prior_index, "s_h"]
+                at_risk = bool(
+                    row["decision_eligible"]
+                    and pd.notna(prior_truth)
+                    and bool(prior_truth)
+                )
+            frame.at[index, "_s_interval_at_risk"] = at_risk
+            if at_risk and pd.notna(cumulative_truth):
+                interval_truth.at[index] = bool(cumulative_truth)
+    frame["_s_interval_at_risk"] = frame[
+        "_s_interval_at_risk"
+    ].astype(bool)
+    frame["_s_interval_truth"] = interval_truth
+    return frame
+
+
+def _cumulative_survival_product(
+    frame: pd.DataFrame,
+    interval_probabilities: np.ndarray,
+) -> np.ndarray:
+    """Multiply ordered interval-survival probabilities along each L path."""
+
+    probabilities = np.asarray(interval_probabilities, dtype=float)
+    if probabilities.shape != (len(frame),):
+        raise X15ModelInputError(
+            "interval survival probabilities must align with validation rows"
+        )
+    finite = np.isfinite(probabilities)
+    if (
+        (probabilities[finite] < 0).any()
+        or (probabilities[finite] > 1).any()
+    ):
+        raise X15ModelInputError(
+            "interval survival probabilities must lie in [0, 1]"
+        )
+    result = np.full(len(frame), np.nan, dtype=float)
+    work = frame.loc[
+        :, [*list(_PANEL_GRAIN[:-1]), "endpoint_seconds"]
+    ].copy()
+    work["_position"] = np.arange(len(work), dtype=int)
+    for _, path in work.groupby(
+        list(_PANEL_GRAIN[:-1]),
+        sort=False,
+        observed=True,
+        dropna=False,
+    ):
+        running = 1.0
+        available = True
+        ordered = path.sort_values(
+            "endpoint_seconds", kind="mergesort"
+        )
+        for position in ordered["_position"].to_numpy(dtype=int):
+            probability = probabilities[position]
+            if not np.isfinite(probability):
+                available = False
+            if available:
+                running *= float(probability)
+                result[position] = running
+    return result
+
+
 def _panel_frame(panel: object, *, copy_input: bool = True) -> pd.DataFrame:
     if isinstance(panel, pd.DataFrame):
         frame = panel.copy(deep=True) if copy_input else panel
@@ -616,6 +761,9 @@ def _panel_frame(panel: object, *, copy_input: bool = True) -> pd.DataFrame:
     frame["target_eligible"] = _strict_bool(frame, "target_eligible")
     frame["s_h"] = _nullable_bool(frame, "s_h")
     frame["o_h_given_s"] = _nullable_bool(frame, "o_h_given_s")
+    frame["o_h_given_s"] = frame["o_h_given_s"].where(
+        frame["s_h"].eq(True), pd.NA
+    ).astype("boolean")
     frame["_direction_truth"] = frame["direction"].where(
         frame["direction"].isin(DIRECTION_CLASSES), pd.NA
     )
@@ -638,6 +786,7 @@ def _panel_frame(panel: object, *, copy_input: bool = True) -> pd.DataFrame:
     frame = frame.sort_values(list(_PANEL_GRAIN), kind="mergesort").reset_index(
         drop=True
     )
+    frame = _annotate_discrete_survival_intervals(frame)
     frame["_source_row_id"] = np.arange(len(frame), dtype=int)
     build_x15_week_folds(frame)
     return frame
@@ -1034,7 +1183,10 @@ def _feature_bundle(
 
 def _head_mask(frame: pd.DataFrame, head: str) -> pd.Series:
     if head == "S_H":
-        return frame["s_h"].notna()
+        return (
+            frame["_s_interval_at_risk"]
+            & frame["_s_interval_truth"].notna()
+        )
     if head == "O_H_GIVEN_S":
         return frame["s_h"].eq(True) & frame["o_h_given_s"].notna()
     if head == "DIRECTION":
@@ -1044,10 +1196,18 @@ def _head_mask(frame: pd.DataFrame, head: str) -> pd.Series:
 
 def _head_labels(frame: pd.DataFrame, head: str) -> np.ndarray:
     if head == "S_H":
-        return frame["s_h"].astype(bool).astype(int).to_numpy()
+        return (
+            frame["_s_interval_truth"].astype(bool).astype(int).to_numpy()
+        )
     if head == "O_H_GIVEN_S":
         return frame["o_h_given_s"].astype(bool).astype(int).to_numpy()
     return frame["_direction_truth"].astype(str).to_numpy()
+
+
+def _evaluation_mask(frame: pd.DataFrame, head: str) -> pd.Series:
+    if head == "S_H":
+        return frame["s_h"].notna()
+    return _head_mask(frame, head)
 
 
 def _training_hash(
@@ -1067,7 +1227,7 @@ def _training_hash(
                 "source_row_id": int(row._source_row_id),
                 "decision_feature_sha256": str(row.decision_feature_sha256),
                 "truth": _canonical(
-                    row.s_h
+                    row._s_interval_truth
                     if head == "S_H"
                     else row.o_h_given_s
                     if head == "O_H_GIVEN_S"
@@ -2204,6 +2364,7 @@ def _run_x15_walk_forward_engine(
         "fold_ids": selected_fold_ids,
         "transport_pairs": tuple(normalized_transport_pairs),
         "include_magnitude": bool(include_magnitude),
+        "survival_probability_contract": SURVIVAL_PROBABILITY_CONTRACT,
         "random_state": int(random_state),
         "effective_seed_contract": {
             "contract_id": EFFECTIVE_SEED_CONTRACT_ID,
@@ -2254,7 +2415,7 @@ def _run_x15_walk_forward_engine(
             training_data_sha256 = _training_data_hash(train)
             validation_weights = {
                 head: hierarchical_sample_weights(
-                    validation, _head_mask(validation, head)
+                    validation, _evaluation_mask(validation, head)
                 )
                 for head in ("S_H", "O_H_GIVEN_S", "DIRECTION")
             }
@@ -2378,6 +2539,14 @@ def _run_x15_walk_forward_engine(
                             if head == "DIRECTION"
                             else _calibrate_binary(calibrator, raw[head])
                         )
+                    raw["S_H"] = _cumulative_survival_product(
+                        validation,
+                        raw["S_H"],
+                    )
+                    calibrated["S_H"] = _cumulative_survival_product(
+                        validation,
+                        calibrated["S_H"],
+                    )
                     prediction_rows.extend(
                         _prediction_rows(
                             validation,
@@ -2601,7 +2770,7 @@ def _diagnostic_panel_frame(
         source = panel.panel
     else:
         raise X15ModelInputError(
-            "diagnostic input must be HistoricalTradesOnlyProbabilityPanelV1 "
+            "diagnostic input must be HistoricalTradesOnlyProbabilityPanelV2 "
             "or its panel DataFrame"
         )
     required = set(DIAGNOSTIC_MODEL_INPUT_COLUMNS)
@@ -2661,16 +2830,29 @@ def _diagnostic_panel_frame(
         )
     frame["decision_eligible"] = _strict_bool(frame, "decision_eligible")
     frame["target_eligible"] = _strict_bool(frame, "target_eligible")
+    frame["sports_clean_l"] = _strict_bool(frame, "sports_clean_l")
     frame["sports_clean_h"] = _strict_bool(frame, "sports_clean_h")
     frame["actual_trade_observed_h"] = _strict_bool(
         frame, "actual_trade_observed_h"
     )
-    reasons = frame["sports_clean_reason"]
-    if reasons.isna().any() or any(
+    landmark_reasons = frame["sports_clean_l_reason"]
+    endpoint_reasons = frame["sports_clean_reason"]
+    if landmark_reasons.isna().any() or any(
         type(value) is not str or not value.strip()
-        for value in reasons.drop_duplicates()
+        for value in landmark_reasons.drop_duplicates()
+    ):
+        raise X15ModelInputError("sports_clean_l_reason must be nonempty")
+    if endpoint_reasons.isna().any() or any(
+        type(value) is not str or not value.strip()
+        for value in endpoint_reasons.drop_duplicates()
     ):
         raise X15ModelInputError("sports_clean_reason must be nonempty")
+    if (
+        frame["decision_eligible"] & ~frame["sports_clean_l"]
+    ).any():
+        raise X15ModelInputError(
+            "diagnostic decision_eligible requires sports_clean_l"
+        )
     expected_target = (
         frame["decision_eligible"]
         & frame["sports_clean_h"]
@@ -2729,7 +2911,9 @@ def _diagnostic_panel_frame(
             "only for UP/DOWN"
         )
     frame["s_h"] = frame["sports_clean_h"]
-    frame["o_h_given_s"] = frame["actual_trade_observed_h"]
+    frame["o_h_given_s"] = frame["actual_trade_observed_h"].where(
+        frame["sports_clean_h"], pd.NA
+    )
     frame["schema_version"] = "VenueReactionPanelV3"
     frame.drop(
         columns=sorted(set(frame.columns) - _PANEL_REQUIRED), inplace=True
@@ -3035,6 +3219,7 @@ __all__ = [
     "MODEL_IDS",
     "QUANTILE_MODEL_ID",
     "RANDOM_STATE",
+    "SURVIVAL_PROBABILITY_CONTRACT",
     "X15ModelInputError",
     "X15ModelRun",
     "X15PreparedDiagnosticPanel",

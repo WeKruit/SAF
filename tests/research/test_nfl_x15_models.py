@@ -54,7 +54,7 @@ def _decision_json(
         "venue": venue,
         "actual_home_contract_id": f"{venue}:{game_id}:home",
         "landmark_seconds": 5,
-        "endpoint_seconds": 30,
+        "endpoint_seconds": 10,
         "tick_rule_id": f"{venue}:tick",
         "tick_size": 0.01,
         "mark_l_trade_id": f"{venue}:{game_id}:l",
@@ -135,7 +135,7 @@ def _panel() -> pd.DataFrame:
                         "actual_home_contract_id": f"{venue}:{game_id}:home",
                         "nfl_week": week,
                         "landmark_seconds": 5,
-                        "endpoint_seconds": 30,
+                        "endpoint_seconds": 10,
                         "decision_eligible": True,
                         "target_eligible": target_eligible,
                         "s_h": survived,
@@ -172,6 +172,8 @@ def _diagnostic_panel() -> pd.DataFrame:
     panel["schema_version"] = DIAGNOSTIC_SCHEMA_VERSION
     panel["target_contract"] = DIAGNOSTIC_TARGET_CONTRACT
     panel["claim_boundary"] = DIAGNOSTIC_CLAIM_BOUNDARY
+    panel["sports_clean_l"] = True
+    panel["sports_clean_l_reason"] = "SPORTS_WINDOW_CLEAN"
     panel["sports_clean_h"] = panel["s_h"]
     panel["sports_clean_reason"] = np.where(
         panel["s_h"].astype(bool), "CLEAN", "NEXT_SALIENT_EVENT"
@@ -204,6 +206,22 @@ def _diagnostic_panel() -> pd.DataFrame:
             decision_json
         )
     return panel.drop(columns=["s_h", "o_h_given_s"])
+
+
+def _two_endpoint_diagnostic_panel() -> pd.DataFrame:
+    first = _diagnostic_panel()
+    second = first.copy(deep=True)
+    second["endpoint_seconds"] = 15
+    loses_survival = second["game_id"].str.endswith("G02")
+    second.loc[loses_survival, "sports_clean_h"] = False
+    second.loc[loses_survival, "sports_clean_reason"] = (
+        "NEXT_FINALIZED_INFORMATION_EVENT_AT_OR_BEFORE_H"
+    )
+    second.loc[loses_survival, "target_eligible"] = False
+    second.loc[loses_survival, "delta_l_h"] = np.nan
+    second.loc[loses_survival, "direction"] = "UNOBSERVED"
+    second.loc[loses_survival, "conditional_magnitude"] = np.nan
+    return pd.concat([first, second], ignore_index=True)
 
 
 def _verified_diagnostic_partitions(
@@ -324,6 +342,8 @@ def test_diagnostic_model_input_projection_is_public_minimal_and_immutable() -> 
         "target_contract",
         "claim_boundary",
         "cohort_authority_sha256",
+        "sports_clean_l",
+        "sports_clean_l_reason",
         "sports_clean_h",
         "sports_clean_reason",
         "actual_trade_observed_h",
@@ -360,6 +380,9 @@ def test_explicit_diagnostic_entry_stamps_nonconfirmatory_target_contract_everyw
     assert result.run_config["target_contract"] == DIAGNOSTIC_TARGET_CONTRACT
     assert result.run_config["claim_boundary"] == DIAGNOSTIC_CLAIM_BOUNDARY
     assert result.run_config["analysis_scope"] == DIAGNOSTIC_ANALYSIS_SCOPE
+    assert result.run_config["survival_probability_contract"] == (
+        "DISCRETE_INTERVAL_SURVIVAL_PRODUCT_V1"
+    )
     assert (
         result.run_config["analysis_scope"]
         == "HISTORICAL_TRADES_ONLY_SOURCE_TIME_DIAGNOSTIC"
@@ -401,7 +424,7 @@ def test_explicit_diagnostic_entry_stamps_nonconfirmatory_target_contract_everyw
         (
             "schema_version",
             "VenueReactionPanelV3",
-            "HistoricalTradesOnlyProbabilityPanelV1",
+            "HistoricalTradesOnlyProbabilityPanelV2",
         ),
         ("target_contract", "WRONG_TARGET", "target_contract"),
         ("claim_boundary", "WRONG_CLAIM", "claim_boundary"),
@@ -512,7 +535,14 @@ def test_diagnostic_adapter_projects_to_core_columns_and_preserves_categories() 
     assert "direction_threshold_semantics" not in adapted
     assert set(adapted).issubset(
         models_module._PANEL_REQUIRED
-        | {"_direction_truth", "_conditional_magnitude", "_source_row_id"}
+        | {
+            "_direction_truth",
+            "_conditional_magnitude",
+            "_s_interval_start_seconds",
+            "_s_interval_at_risk",
+            "_s_interval_truth",
+            "_source_row_id",
+        }
     )
     for column in (
         "game_id",
@@ -522,6 +552,99 @@ def test_diagnostic_adapter_projects_to_core_columns_and_preserves_categories() 
         "decision_feature_sha256",
     ):
         assert isinstance(adapted[column].dtype, pd.CategoricalDtype)
+
+
+def test_discrete_survival_intervals_use_frozen_grid_and_only_at_risk_rows() -> None:
+    adapted, _ = models_module._diagnostic_panel_frame(
+        _two_endpoint_diagnostic_panel()
+    )
+    selected = adapted[
+        adapted["venue"].astype(str).eq("kalshi")
+        & adapted["nfl_week"].eq(1)
+    ]
+
+    never_survives = selected[
+        selected["game_id"].astype(str).eq("2025_01_G00")
+    ].sort_values("endpoint_seconds")
+    assert never_survives["_s_interval_start_seconds"].tolist() == [5, 10]
+    assert never_survives["_s_interval_at_risk"].tolist() == [True, False]
+    assert never_survives["_s_interval_truth"].tolist()[0] == False
+    assert pd.isna(never_survives["_s_interval_truth"].tolist()[1])
+
+    fails_second_interval = selected[
+        selected["game_id"].astype(str).eq("2025_01_G02")
+    ].sort_values("endpoint_seconds")
+    assert fails_second_interval["_s_interval_start_seconds"].tolist() == [
+        5,
+        10,
+    ]
+    assert fails_second_interval["_s_interval_at_risk"].tolist() == [
+        True,
+        True,
+    ]
+    assert fails_second_interval["_s_interval_truth"].tolist() == [True, False]
+
+
+def test_model_outputs_product_of_interval_survival_probabilities(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_predict = models_module._predict_head
+
+    def fixed_interval_predictions(
+        fitted: object,
+        frame: pd.DataFrame,
+        matrix: np.ndarray,
+    ) -> np.ndarray:
+        if fitted.head == "S_H":
+            return np.where(frame["endpoint_seconds"].eq(10), 0.8, 0.5)
+        return original_predict(fitted, frame, matrix)
+
+    monkeypatch.setattr(
+        models_module,
+        "_predict_head",
+        fixed_interval_predictions,
+    )
+    monkeypatch.setattr(
+        models_module,
+        "_calibrate_binary",
+        lambda _calibrator, raw: np.asarray(raw, dtype=float),
+    )
+
+    result = run_x15_historical_trades_diagnostic_walk_forward(
+        _two_endpoint_diagnostic_panel(),
+        model_ids=("b0_empirical_v1",),
+        feature_block_ids=("D0",),
+        fold_ids=("fold_01",),
+        include_magnitude=False,
+    )
+    predictions = result.oof_predictions.sort_values(
+        [
+            "game_id",
+            "venue",
+            "atomic_information_episode_id",
+            "landmark_seconds",
+            "endpoint_seconds",
+        ],
+        kind="mergesort",
+    )
+    for probability_column in (
+        "s_h_raw_probability",
+        "s_h_calibrated_probability",
+    ):
+        paths = predictions.groupby(
+            [
+                "game_id",
+                "venue",
+                "atomic_information_episode_id",
+                "landmark_seconds",
+            ],
+            observed=True,
+            sort=True,
+        )
+        for _, path in paths:
+            assert path[probability_column].tolist() == pytest.approx([0.8, 0.4])
+            assert path[probability_column].is_monotonic_decreasing
+    assert set(predictions["s_h_truth"].dropna().unique()) == {False, True}
 
 
 def test_diagnostic_d0_expands_only_requested_features() -> None:
@@ -568,7 +691,7 @@ def test_diagnostic_parses_each_unique_decision_payload_once(
 ) -> None:
     panel = _diagnostic_panel()
     second_endpoint = panel.copy(deep=True)
-    second_endpoint["endpoint_seconds"] = 45
+    second_endpoint["endpoint_seconds"] = 15
     panel = pd.concat([panel, second_endpoint], ignore_index=True)
     unique_payloads = panel["decision_feature_sha256"].nunique()
     original_loads = json.loads

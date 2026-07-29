@@ -17,7 +17,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Verify frozen X13/StageA/market artifacts and publish the "
-            "HistoricalTradesOnlyProbabilityPanelV1 one game at a time. "
+            "HistoricalTradesOnlyProbabilityPanelV2 one game at a time. "
             "No upstream I/O and no holdout reads."
         )
     )
