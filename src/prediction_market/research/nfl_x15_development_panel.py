@@ -303,6 +303,30 @@ def _canonical_sha256(value: object) -> str:
     return _sha256_bytes(_canonical_bytes(value))
 
 
+def confirmatory_evidence_frame_sha256(frame: pd.DataFrame) -> str:
+    """Return the canonical semantic digest for one evidence frame."""
+
+    if not isinstance(frame, pd.DataFrame):
+        raise DevelopmentPanelError("confirmatory evidence must be a DataFrame")
+    if frame.columns.duplicated().any() or any(
+        type(column) is not str or not column
+        for column in frame.columns
+    ):
+        raise DevelopmentPanelError(
+            "confirmatory evidence columns must be unique nonempty strings"
+        )
+    columns = sorted(frame.columns)
+    rows = frame.loc[:, columns].to_dict("records")
+    rows.sort(key=_canonical_bytes)
+    return _canonical_sha256(
+        {
+            "schema": "nfl_x15_confirmatory_evidence_frame_v1",
+            "columns": columns,
+            "rows": rows,
+        }
+    )
+
+
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -726,14 +750,14 @@ def _read_verified_table(
         str(descriptor["object_path"]),
         label=f"{label}.{table_name}.object",
     )
-    _stable_read(
+    payload = _stable_read(
         object_path,
         label=f"{label}.{table_name}.object",
         expected_sha256=object_sha,
         expected_length=byte_length,
     )
     try:
-        parquet = pq.ParquetFile(object_path)
+        parquet = pq.ParquetFile(io.BytesIO(payload))
         if parquet.metadata.num_rows != row_count:
             raise DevelopmentPanelError(
                 f"{label}.{table_name} Parquet row count mismatch"
@@ -777,6 +801,7 @@ def _adapt_market(
         "price",
         "size",
         "provenance",
+        "raw_market_id",
     }
     missing_inventory = required_inventory - set(inventory.columns)
     missing_observations = required_observations - set(observations.columns)
@@ -835,8 +860,7 @@ def _adapt_market(
         )
     kalshi = joined["venue"].astype(str).eq("kalshi")
     if (
-        "raw_market_id" in joined.columns
-        and not joined.loc[kalshi, "raw_market_id"]
+        not joined.loc[kalshi, "raw_market_id"]
         .astype(str)
         .eq(joined.loc[kalshi, "raw_contract_id"].astype(str))
         .all()
@@ -1487,11 +1511,23 @@ def _confirmatory_evidence_audit(
             raise DevelopmentPanelError(
                 f"{game_id}.{venue} evidence venue is inconsistent"
             )
-        for value, label in (
-            (packet.tick_rule_source_sha256, "tick_rule_source_sha256"),
-            (packet.continuity_source_sha256, "continuity_source_sha256"),
+        for frame, value, label in (
+            (
+                packet.tick_rules,
+                packet.tick_rule_source_sha256,
+                "tick_rule_source_sha256",
+            ),
+            (
+                packet.market_continuity,
+                packet.continuity_source_sha256,
+                "continuity_source_sha256",
+            ),
         ):
             _require_sha256(value, label=f"{game_id}.{venue}.{label}")
+            if confirmatory_evidence_frame_sha256(frame) != value:
+                raise DevelopmentPanelError(
+                    f"{game_id}.{venue}.{label} does not bind canonical evidence"
+                )
         rows.append(
             {
                 "game_id": game_id,
@@ -1992,6 +2028,7 @@ __all__ = [
     "PublishedDevelopmentGame",
     "VenueConfirmatoryEvidence",
     "VerifiedDevelopmentSources",
+    "confirmatory_evidence_frame_sha256",
     "default_development_source_spec",
     "publish_exact153_development_panel",
     "verify_development_sources",

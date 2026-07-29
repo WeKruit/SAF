@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
 import subprocess
 import sys
+from types import MappingProxyType
 
 import pandas as pd
 import pyarrow as pa
@@ -43,6 +45,19 @@ def _canonical(value: object) -> bytes:
 
 def _sha(payload: bytes) -> str:
     return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def _evidence_frame_sha256(frame: pd.DataFrame) -> str:
+    columns = sorted(map(str, frame.columns))
+    rows = frame.loc[:, columns].to_dict("records")
+    rows.sort(key=_development_panel._canonical_bytes)
+    return _development_panel._canonical_sha256(
+        {
+            "schema": "nfl_x15_confirmatory_evidence_frame_v1",
+            "columns": columns,
+            "rows": rows,
+        }
+    )
 
 
 def _publish_parquet(root: Path, relative_prefix: str, frame: pd.DataFrame) -> dict:
@@ -424,38 +439,40 @@ def _source_fixture(tmp_path: Path) -> DevelopmentSourceSpec:
 
 
 def _confirmatory_evidence(venue: str) -> VenueConfirmatoryEvidence:
+    tick_rules = pd.DataFrame(
+        [
+            {
+                "venue": venue,
+                "tick_rule_id": f"{venue}-historical-rule",
+                "effective_start_utc": "2025-09-07T00:00:00Z",
+                "effective_end_utc": "2025-09-08T00:00:00Z",
+                "tick_size": 0.01,
+            }
+        ]
+    )
+    market_continuity = pd.DataFrame(
+        [
+            {
+                "game_id": GAME_ID,
+                "atomic_information_episode_id": episode,
+                "continuity_verified_until_utc": (
+                    "2025-09-07T12:01:05Z"
+                    if episode == "episode-1"
+                    else "2025-09-07T12:03:05Z"
+                ),
+                "suspension_time_utc": pd.NaT,
+                "continuity_gap_time_utc": pd.NaT,
+            }
+            for episode in ("episode-1", "episode-2")
+        ]
+    )
     return VenueConfirmatoryEvidence(
         venue=venue,
         tick_rule_id=f"{venue}-historical-rule",
-        tick_rules=pd.DataFrame(
-            [
-                {
-                    "venue": venue,
-                    "tick_rule_id": f"{venue}-historical-rule",
-                    "effective_start_utc": "2025-09-07T00:00:00Z",
-                    "effective_end_utc": "2025-09-08T00:00:00Z",
-                    "tick_size": 0.01,
-                }
-            ]
-        ),
-        market_continuity=pd.DataFrame(
-            [
-                {
-                    "game_id": GAME_ID,
-                    "atomic_information_episode_id": episode,
-                    "continuity_verified_until_utc": (
-                        "2025-09-07T12:01:05Z"
-                        if episode == "episode-1"
-                        else "2025-09-07T12:03:05Z"
-                    ),
-                    "suspension_time_utc": pd.NaT,
-                    "continuity_gap_time_utc": pd.NaT,
-                }
-                for episode in ("episode-1", "episode-2")
-            ]
-        ),
-        tick_rule_source_sha256="sha256:" + ("1" if venue == "polymarket" else "2") * 64,
-        continuity_source_sha256="sha256:" + ("3" if venue == "polymarket" else "4") * 64,
+        tick_rules=tick_rules,
+        market_continuity=market_continuity,
+        tick_rule_source_sha256=_evidence_frame_sha256(tick_rules),
+        continuity_source_sha256=_evidence_frame_sha256(market_continuity),
     )
 
 
@@ -571,6 +588,81 @@ def test_missing_rule_and_continuity_fail_confirmatory_but_publish_diagnostic(
     assert set(tables["diagnostic_panel"]["venue_tick_support"]) == {"UNSUPPORTED"}
     assert manifest["confirmatory_venue_count"] == 0
     assert manifest["diagnostic_venue_count"] == 2
+
+
+def test_verified_table_decodes_the_bytes_that_passed_sha_verification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    descriptor = _publish_parquet(
+        tmp_path,
+        "dataset",
+        pd.DataFrame({"value": [1]}),
+    )
+    object_path = tmp_path / "dataset" / descriptor["object_path"]
+    tampered_payload = _development_panel._parquet_bytes(
+        pd.DataFrame({"value": [999]})
+    )
+    batch = _development_panel._VerifiedBatch(
+        path=tmp_path / "dataset" / "batch.json",
+        file_sha256=SOURCE_SHA,
+        root=tmp_path / "dataset",
+        document=MappingProxyType({}),
+        games=MappingProxyType({}),
+    )
+    manifest = {"tables": [{"name": "payload", **descriptor}]}
+    stable_read = _development_panel._stable_read
+
+    def _swap_after_verification(path: Path, **kwargs) -> bytes:
+        payload = stable_read(path, **kwargs)
+        path.write_bytes(tampered_payload)
+        return payload
+
+    monkeypatch.setattr(
+        _development_panel,
+        "_stable_read",
+        _swap_after_verification,
+    )
+
+    observed = _development_panel._read_verified_table(
+        batch=batch,
+        manifest=manifest,
+        table_name="payload",
+        market_style=False,
+        label="adversarial",
+    )
+
+    assert observed["value"].tolist() == [1]
+
+
+def test_invented_confirmatory_source_sha_cannot_unlock_evidence() -> None:
+    packet = _confirmatory_evidence("kalshi")
+    packet = replace(packet, tick_rule_source_sha256=SOURCE_SHA)
+
+    with pytest.raises(
+        DevelopmentPanelError,
+        match="tick_rule_source_sha256 does not bind canonical evidence",
+    ):
+        _development_panel._confirmatory_evidence_audit(
+            game_id=GAME_ID,
+            venues=["kalshi"],
+            evidence={(GAME_ID, "kalshi"): packet},
+        )
+
+
+def test_kalshi_observations_require_exact_raw_ticker_identity() -> None:
+    observations, inventory = _market()
+
+    with pytest.raises(
+        DevelopmentPanelError,
+        match="market input missing columns.*raw_market_id",
+    ):
+        _development_panel._adapt_market(
+            game_id=GAME_ID,
+            home_team="HME",
+            observations=observations.drop(columns=["raw_market_id"]),
+            inventory=inventory,
+        )
 
 
 def test_tampered_published_input_fails_before_output(tmp_path: Path) -> None:
