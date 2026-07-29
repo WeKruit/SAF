@@ -70,7 +70,10 @@ def _emit(event: str, **values: object) -> None:
 def _explicit_utc(value: pd.Timestamp) -> str:
     if value.tzinfo is None:
         raise ValueError("authority source time must be timezone-aware")
-    return value.tz_convert("UTC").isoformat().replace("+00:00", "Z")
+    # Keep one fixed ISO-8601 shape.  Pandas parses a mixed series of
+    # fractional/non-fractional ISO strings with one inferred format, so
+    # variable precision would turn otherwise valid rows into NaT.
+    return value.tz_convert("UTC").strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def _prepare_with_authority(
