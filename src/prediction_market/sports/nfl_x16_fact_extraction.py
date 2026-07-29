@@ -17,7 +17,7 @@ from typing import Any, Mapping, Sequence
 import pandas as pd
 
 
-SCHEMA_VERSION = "CanonicalFactorEventV1"
+SCHEMA_VERSION = "EpisodeFactV3"
 CLAIM_BOUNDARY = "SPORTS_FACT_DESCRIPTION_ONLY_NO_MARKET_REACTION"
 _SHA_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _INJURY_RE = re.compile(
@@ -344,6 +344,17 @@ def _outcome_tags(
         turnover = True
     if turnover:
         tags.add("TURNOVER")
+    if (
+        "TOUCHDOWN" in tags
+        and (
+            turnover
+            or (
+                _text(row.get("td_team")) is not None
+                and _text(row.get("td_team")) == _text(row.get("defteam"))
+            )
+        )
+    ):
+        tags.add("DEFENSIVE_TOUCHDOWN")
     if _indicator(row.get("safety")) and not no_play:
         tags.update(("SAFETY", "SCORE"))
     if _indicator(row.get("punt_blocked")):
@@ -427,6 +438,172 @@ def _outcome_tags(
     ):
         tags.add("POSSESSION_CHANGE")
     return tuple(sorted(tags))
+
+
+def _actor_team(
+    row: Mapping[str, object],
+    *,
+    action: str,
+    tags: Sequence[str],
+    home_team: str,
+    away_team: str,
+) -> str | None:
+    explicit = _text(row.get("actor_team"))
+    if explicit in {home_team, away_team}:
+        return explicit
+    if "DEFENSIVE_TOUCHDOWN" in tags or "INTERCEPTION" in tags:
+        return _text(row.get("defteam"))
+    if action == "KICKOFF":
+        return _text(row.get("defteam"))
+    return _text(row.get("posteam"))
+
+
+def _beneficiary_team(
+    row: Mapping[str, object],
+    *,
+    tags: Sequence[str],
+    final_sports_outcome_eligible: bool,
+    home_team: str,
+    away_team: str,
+) -> tuple[str | None, str]:
+    if not final_sports_outcome_eligible:
+        return None, "UNRESOLVED"
+    tag_set = set(tags)
+    if "SCORE" in tag_set:
+        td_team = _text(row.get("td_team"))
+        if td_team in {home_team, away_team}:
+            return td_team, "RESOLVED_FINAL_SPORTS_RULE"
+        team = (
+            _text(row.get("defteam"))
+            if "SAFETY" in tag_set or "DEFENSIVE_TOUCHDOWN" in tag_set
+            else _text(row.get("posteam"))
+        )
+        if team in {home_team, away_team}:
+            return team, "RESOLVED_FINAL_SPORTS_RULE"
+    if tag_set.intersection({"INTERCEPTION", "FUMBLE_LOST", "TURNOVER_ON_DOWNS"}):
+        recovery_team = _text(row.get("fumble_recovery_1_team"))
+        team = (
+            recovery_team
+            if recovery_team in {home_team, away_team}
+            else _text(row.get("defteam"))
+        )
+        if team in {home_team, away_team}:
+            return team, "RESOLVED_FINAL_SPORTS_RULE"
+    return None, "UNRESOLVED"
+
+
+def _is_home(team: str | None, *, home_team: str, away_team: str) -> bool | None:
+    if team == home_team:
+        return True
+    if team == away_team:
+        return False
+    return None
+
+
+def _information_status(row: Mapping[str, object]) -> str:
+    status = (_text(row.get("information_status")) or "FINAL").upper()
+    if status not in {"PROVISIONAL", "FINAL", "REVERSED"}:
+        raise NFLFactExtractionError(
+            "information_status must be PROVISIONAL, FINAL, or REVERSED"
+        )
+    return status
+
+
+def _canonical_utc(value: object, field: str) -> pd.Timestamp:
+    text = _text(value)
+    if text is None:
+        raise NFLFactExtractionError(f"{field} is missing")
+    try:
+        timestamp = pd.Timestamp(text)
+    except (TypeError, ValueError) as exc:
+        raise NFLFactExtractionError(f"{field} must be a timestamp") from exc
+    if timestamp.tzinfo is None:
+        raise NFLFactExtractionError(f"{field} must include a UTC offset")
+    return timestamp.tz_convert("UTC")
+
+
+def _timestamp_text(timestamp: pd.Timestamp) -> str:
+    return timestamp.isoformat().replace("+00:00", "Z")
+
+
+def _source_interval(
+    row: Mapping[str, object],
+) -> tuple[str | None, str | None, str, str | None]:
+    explicit_start = _text(row.get("source_interval_start"))
+    explicit_end = _text(row.get("source_interval_end"))
+    if (explicit_start is None) != (explicit_end is None):
+        raise NFLFactExtractionError(
+            "source_interval_start and source_interval_end must be provided together"
+        )
+    if explicit_start is not None and explicit_end is not None:
+        start = _canonical_utc(explicit_start, "source_interval_start")
+        end = _canonical_utc(explicit_end, "source_interval_end")
+        resolution = _text(row.get("source_resolution")) or "EXPLICIT_INTERVAL"
+    else:
+        source_time = _text(row.get("time_of_day"))
+        if source_time is None:
+            return None, None, "UNAVAILABLE", None
+        start = _canonical_utc(source_time, "time_of_day")
+        fractional = re.search(r"\.(\d+)(?:Z|[+-]\d{2}:?\d{2})\Z", source_time)
+        digits = 0 if fractional is None else len(fractional.group(1))
+        if digits == 0:
+            resolution, width = "SECOND", pd.Timedelta(seconds=1)
+        elif digits <= 3:
+            resolution, width = "MILLISECOND", pd.Timedelta(milliseconds=1)
+        elif digits <= 6:
+            resolution, width = "MICROSECOND", pd.Timedelta(microseconds=1)
+        else:
+            resolution, width = "NANOSECOND", pd.Timedelta(nanoseconds=1)
+        end = start + width
+    if start >= end:
+        raise NFLFactExtractionError(
+            "source interval must use positive-width [start,end) semantics"
+        )
+    known_at_value = _text(row.get("known_at"))
+    known_at = (
+        end
+        if known_at_value is None
+        else _canonical_utc(known_at_value, "known_at")
+    )
+    if known_at < end:
+        raise NFLFactExtractionError(
+            "known_at cannot precede source_interval_end"
+        )
+    return (
+        _timestamp_text(start),
+        _timestamp_text(end),
+        resolution,
+        _timestamp_text(known_at),
+    )
+
+
+def _adjudication_sequence_id(
+    row: Mapping[str, object],
+    *,
+    game_id: str,
+    play_id: str,
+) -> str | None:
+    key = next(
+        (
+            value
+            for field in (
+                "adjudication_sequence_key",
+                "adjudication_sequence_id",
+                "adjudication_play_id",
+                "review_of_play_id",
+            )
+            if (value := _text(row.get(field))) is not None
+        ),
+        None,
+    )
+    if key is None and _indicator(row.get("replay_or_challenge")):
+        key = play_id
+    if key is None:
+        return None
+    digest = hashlib.sha256(
+        _canonical_bytes({"game_id": game_id, "source_adjudication_key": key})
+    ).hexdigest()
+    return f"{game_id}:adjudication:{digest[:24]}"
 
 
 _EXPLICIT_ROLES = (
@@ -621,10 +798,11 @@ def build_game_fact_tables(
     reconciliation_rows: list[dict[str, object]] = []
     roster_lookup: dict[tuple[str, str], tuple[str, str]] = {}
     roster_snapshots: list[tuple[int, str, str, str, set[str]]] = []
+    pending_score_sequence: tuple[str, str | None] | None = None
 
     for index, row in enumerate(records):
         play_id = str(row["_play_id"])
-        event_id = f"{game_id}:{play_id}"
+        event_id = f"{game_id}:episode:{play_id}"
         participation = participation_index.get(play_id)
         posteam = _text(row.get("posteam"))
         defteam = _text(row.get("defteam"))
@@ -660,8 +838,51 @@ def build_game_fact_tables(
         tags = _outcome_tags(row, next_possession=next_possession[index])
         no_play = _text(row.get("play_type")) == "no_play"
         deleted = _indicator(row.get("play_deleted"))
+        information_status = _information_status(row)
+        (
+            source_interval_start,
+            source_interval_end,
+            source_resolution,
+            known_at,
+        ) = _source_interval(row)
+        adjudication_sequence_id = _adjudication_sequence_id(
+            row, game_id=game_id, play_id=play_id
+        )
+        score_sequence_id: str | None = None
+        if "TOUCHDOWN" in tags and not (no_play or deleted):
+            score_sequence_id = f"{game_id}:score:{play_id}"
+            pending_score_sequence = (score_sequence_id, _text(row.get("td_team")) or posteam)
+        elif action == "TRY" and pending_score_sequence is not None:
+            pending_id, pending_team = pending_score_sequence
+            if pending_team is None or posteam == pending_team:
+                score_sequence_id = pending_id
+            pending_score_sequence = None
+        elif action not in {"ADMIN", "TIMEOUT", "PENALTY"}:
+            pending_score_sequence = None
         admin = action in {"ADMIN", "TIMEOUT", "PENALTY"}
-        factor_eligible = not (no_play or deleted or admin)
+        final_sports_outcome_eligible = (
+            information_status == "FINAL"
+            and not (no_play or deleted or admin)
+        )
+        factor_eligible = final_sports_outcome_eligible
+        stage_b_information_event_eligible = (
+            not deleted
+            and known_at is not None
+        )
+        actor_team = _actor_team(
+            row,
+            action=action,
+            tags=tags,
+            home_team=home_team,
+            away_team=away_team,
+        )
+        beneficiary_team, beneficiary_resolution_status = _beneficiary_team(
+            row,
+            tags=tags,
+            final_sports_outcome_eligible=final_sports_outcome_eligible,
+            home_team=home_team,
+            away_team=away_team,
+        )
         yardline = _number(row.get("yardline_100"))
         score_margin_home = (
             None
@@ -717,7 +938,21 @@ def build_game_fact_tables(
             "claim_boundary": CLAIM_BOUNDARY,
             "game_id": game_id,
             "event_id": event_id,
+            "raw_play_id": play_id,
             "play_id": play_id,
+            "atomic_information_episode_id": event_id,
+            "score_sequence_id": score_sequence_id,
+            "adjudication_sequence_id": adjudication_sequence_id,
+            "information_status": information_status,
+            "stage_b_information_event_eligible": (
+                stage_b_information_event_eligible
+            ),
+            "final_sports_outcome_eligible": final_sports_outcome_eligible,
+            "source_interval_start": source_interval_start,
+            "source_interval_end": source_interval_end,
+            "source_resolution": source_resolution,
+            "source_interval_semantics": "[START,END)",
+            "known_at": known_at,
             "order_sequence": int(row["_order"]),
             "source_time_utc": _text(row.get("time_of_day")),
             "source_time_semantics": "NFLVERSE_SOURCE_POINT_NOT_LOCAL_RECEIVE_TIME",
@@ -726,6 +961,18 @@ def build_game_fact_tables(
             "game_seconds_remaining": _integer(row.get("game_seconds_remaining")),
             "home_team": home_team,
             "away_team": away_team,
+            "actor_team": actor_team,
+            "beneficiary_team": beneficiary_team,
+            "actor_is_home": _is_home(
+                actor_team, home_team=home_team, away_team=away_team
+            ),
+            "beneficiary_is_home": _is_home(
+                beneficiary_team, home_team=home_team, away_team=away_team
+            ),
+            "possession_is_home": _is_home(
+                posteam, home_team=home_team, away_team=away_team
+            ),
+            "beneficiary_resolution_status": beneficiary_resolution_status,
             "possession_before": posteam,
             "posteam_semantics": posteam_semantics,
             "defense_team": defteam,
@@ -826,6 +1073,10 @@ def build_game_fact_tables(
             ),
             "home_wp_delta_diagnostic": vegas_delta,
             "reference_semantics": "NFLVERSE_VEGAS_WP_DIAGNOSTIC_NOT_GROUND_TRUTH",
+            "source_hashes": json.dumps(
+                [pbp_sha, participation_sha],
+                separators=(",", ":"),
+            ),
             "pbp_source_sha256": pbp_sha,
             "participation_source_sha256": participation_sha,
         }
@@ -904,6 +1155,7 @@ def build_game_fact_tables(
                 "game_id": game_id,
                 "raw_play_id": play_id,
                 "event_id": event_id,
+                "atomic_information_episode_id": event_id,
                 "raw_row_preserved": True,
                 "row_disposition": event["row_disposition"],
                 "factor_eligible": factor_eligible,

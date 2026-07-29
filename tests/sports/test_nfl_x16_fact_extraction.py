@@ -245,6 +245,445 @@ def _registry() -> dict[str, object]:
     }
 
 
+def _episode_rows(*rows: dict[str, object]) -> pd.DataFrame:
+    common = {
+        "game_id": "2025_14_DAL_DET",
+        "home_team": "DET",
+        "away_team": "DAL",
+        "season": 2025,
+        "season_type": "REG",
+        "week": 14,
+        "qtr": 1,
+        "time": "10:00",
+        "home_timeouts_remaining": 3,
+        "away_timeouts_remaining": 3,
+        "play_deleted": 0,
+        "goal_to_go": 0,
+        "posteam_score": 0,
+        "defteam_score": 0,
+        "total_home_score": 0,
+        "total_away_score": 0,
+        "down": 1,
+        "ydstogo": 10,
+        "yrdln": "DAL 25",
+        "yardline_100": 75,
+    }
+    return pd.DataFrame([{**common, **row} for row in rows])
+
+
+def _build_episode_rows(*rows: dict[str, object]):
+    return build_game_fact_tables(
+        _episode_rows(*rows),
+        pd.DataFrame(),
+        factor_registry=_registry(),
+        pbp_source_sha256=PBP_SHA,
+        participation_source_sha256=PARTICIPATION_SHA,
+    )
+
+
+def test_td_and_pat_are_distinct_episode_facts_in_one_score_sequence() -> None:
+    tables = _build_episode_rows(
+        {
+            "play_id": 10,
+            "order_sequence": 10,
+            "time_of_day": "2025-12-05T01:20:00.000Z",
+            "play_type": "pass",
+            "play_type_nfl": "PASS",
+            "posteam": "DET",
+            "defteam": "DAL",
+            "touchdown": 1,
+            "pass_touchdown": 1,
+            "td_team": "DET",
+            "total_home_score": 6,
+        },
+        {
+            "play_id": 11,
+            "order_sequence": 11,
+            "time_of_day": "2025-12-05T01:20:30.000Z",
+            "play_type": "extra_point",
+            "play_type_nfl": "XP_KICK",
+            "posteam": "DET",
+            "defteam": "DAL",
+            "posteam_score": 6,
+            "extra_point_result": "good",
+            "total_home_score": 7,
+        },
+    )
+    events = tables.events.set_index("raw_play_id")
+    touchdown = events.loc["10"]
+    pat = events.loc["11"]
+
+    assert touchdown["schema_version"] == "EpisodeFactV3"
+    assert (
+        touchdown["atomic_information_episode_id"]
+        != pat["atomic_information_episode_id"]
+    )
+    assert touchdown["score_sequence_id"] == pat["score_sequence_id"]
+    assert pd.notna(touchdown["score_sequence_id"])
+    assert tables.events["atomic_information_episode_id"].is_unique
+    assert tables.reconciliation["atomic_information_episode_id"].is_unique
+
+
+def test_td_and_two_point_try_are_distinct_facts_in_one_score_sequence() -> None:
+    tables = _build_episode_rows(
+        {
+            "play_id": 13,
+            "order_sequence": 13,
+            "time_of_day": "2025-12-05T01:22:00.000Z",
+            "play_type": "run",
+            "play_type_nfl": "RUSH",
+            "posteam": "DET",
+            "defteam": "DAL",
+            "touchdown": 1,
+            "rush_touchdown": 1,
+            "td_team": "DET",
+            "total_home_score": 6,
+        },
+        {
+            "play_id": 14,
+            "order_sequence": 14,
+            "time_of_day": "2025-12-05T01:22:30.000Z",
+            "play_type": "pass",
+            "play_type_nfl": "PAT2",
+            "posteam": "DET",
+            "defteam": "DAL",
+            "posteam_score": 6,
+            "two_point_conv_result": "success",
+            "total_home_score": 8,
+        },
+    )
+    rows = tables.events.set_index("raw_play_id")
+
+    assert rows.loc["14", "primary_action"] == "TRY"
+    assert (
+        rows.loc["13", "atomic_information_episode_id"]
+        != rows.loc["14", "atomic_information_episode_id"]
+    )
+    assert rows.loc["13", "score_sequence_id"] == rows.loc[
+        "14", "score_sequence_id"
+    ]
+
+
+def test_episode_and_sequence_ids_do_not_depend_on_input_row_order() -> None:
+    pbp = _episode_rows(
+        {
+            "play_id": 15,
+            "order_sequence": 15,
+            "time_of_day": "2025-12-05T01:23:00.000Z",
+            "play_type": "pass",
+            "play_type_nfl": "PASS",
+            "posteam": "DET",
+            "defteam": "DAL",
+            "touchdown": 1,
+            "td_team": "DET",
+        },
+        {
+            "play_id": 16,
+            "order_sequence": 16,
+            "time_of_day": "2025-12-05T01:23:30.000Z",
+            "play_type": "extra_point",
+            "play_type_nfl": "XP_KICK",
+            "posteam": "DET",
+            "defteam": "DAL",
+            "extra_point_result": "good",
+        },
+    )
+
+    def identities(frame: pd.DataFrame) -> list[dict[str, object]]:
+        return (
+            build_game_fact_tables(
+                frame,
+                pd.DataFrame(),
+                factor_registry=_registry(),
+                pbp_source_sha256=PBP_SHA,
+                participation_source_sha256=PARTICIPATION_SHA,
+            )
+            .events[
+                [
+                    "raw_play_id",
+                    "atomic_information_episode_id",
+                    "score_sequence_id",
+                ]
+            ]
+            .to_dict("records")
+        )
+
+    assert identities(pbp) == identities(pbp.iloc[::-1].reset_index(drop=True))
+
+
+def test_episode_fact_v3_contract_preserves_required_identity_and_provenance() -> None:
+    tables = _build_episode_rows(
+        {
+            "play_id": 12,
+            "order_sequence": 12,
+            "time_of_day": "2025-12-05T01:21:00.000Z",
+            "play_type": "run",
+            "play_type_nfl": "RUSH",
+            "posteam": "DAL",
+            "defteam": "DET",
+        }
+    )
+    required = {
+        "atomic_information_episode_id",
+        "score_sequence_id",
+        "adjudication_sequence_id",
+        "source_interval_start",
+        "source_interval_end",
+        "source_resolution",
+        "information_status",
+        "stage_b_information_event_eligible",
+        "final_sports_outcome_eligible",
+        "known_at",
+        "home_team",
+        "away_team",
+        "actor_team",
+        "beneficiary_team",
+        "actor_is_home",
+        "beneficiary_is_home",
+        "possession_is_home",
+        "beneficiary_resolution_status",
+        "source_hashes",
+        "pbp_source_sha256",
+        "participation_source_sha256",
+    }
+
+    assert required.issubset(tables.events.columns)
+    assert json.loads(tables.events.iloc[0]["source_hashes"]) == [
+        PBP_SHA,
+        PARTICIPATION_SHA,
+    ]
+
+
+def test_pick_six_is_one_multitag_episode_with_defense_as_beneficiary() -> None:
+    tables = _build_episode_rows(
+        {
+            "play_id": 20,
+            "order_sequence": 20,
+            "time_of_day": "2025-12-05T01:25:00.000Z",
+            "play_type": "pass",
+            "play_type_nfl": "INTERCEPTION",
+            "posteam": "DAL",
+            "defteam": "DET",
+            "interception": 1,
+            "touchdown": 1,
+            "return_touchdown": 1,
+            "td_team": "DET",
+            "total_home_score": 6,
+        }
+    )
+    row = tables.events.iloc[0]
+    tags = set(json.loads(row["outcome_tags"]))
+
+    assert len(tables.events) == 1
+    assert {
+        "INTERCEPTION",
+        "TURNOVER",
+        "TOUCHDOWN",
+        "DEFENSIVE_TOUCHDOWN",
+    }.issubset(tags)
+    assert row["actor_team"] == "DET"
+    assert row["beneficiary_team"] == "DET"
+    assert bool(row["actor_is_home"])
+    assert bool(row["beneficiary_is_home"])
+    assert not bool(row["possession_is_home"])
+    assert row["beneficiary_resolution_status"] == "RESOLVED_FINAL_SPORTS_RULE"
+
+
+def test_turnover_on_downs_benefits_defense_without_reorienting_actor() -> None:
+    tables = _build_episode_rows(
+        {
+            "play_id": 30,
+            "order_sequence": 30,
+            "time_of_day": "2025-12-05T01:30:00.000Z",
+            "play_type": "run",
+            "play_type_nfl": "RUSH",
+            "posteam": "DAL",
+            "defteam": "DET",
+            "fourth_down_failed": 1,
+            "down": 4,
+            "ydstogo": 2,
+            "yards_gained": 1,
+        }
+    )
+    row = tables.events.iloc[0]
+
+    assert "TURNOVER_ON_DOWNS" in json.loads(row["outcome_tags"])
+    assert row["actor_team"] == "DAL"
+    assert row["beneficiary_team"] == "DET"
+    assert not bool(row["actor_is_home"])
+    assert bool(row["beneficiary_is_home"])
+
+
+def test_adjudication_status_is_stage_b_eligible_only_with_independent_time() -> None:
+    tables = _build_episode_rows(
+        {
+            "play_id": 40,
+            "order_sequence": 40,
+            "time_of_day": "2025-12-05T01:35:00.000Z",
+            "play_type": "pass",
+            "play_type_nfl": "INTERCEPTION",
+            "posteam": "DAL",
+            "defteam": "DET",
+            "interception": 1,
+            "information_status": "PROVISIONAL",
+            "adjudication_sequence_key": "reviewed-snap-40",
+        },
+        {
+            "play_id": 41,
+            "order_sequence": 41,
+            "time_of_day": None,
+            "play_type": "pass",
+            "play_type_nfl": "INTERCEPTION",
+            "posteam": "DAL",
+            "defteam": "DET",
+            "interception": 1,
+            "information_status": "REVERSED",
+            "adjudication_sequence_key": "reviewed-snap-40",
+        },
+    )
+    rows = tables.events.set_index("raw_play_id")
+    provisional = rows.loc["40"]
+    reversed_row = rows.loc["41"]
+
+    assert provisional["information_status"] == "PROVISIONAL"
+    assert reversed_row["information_status"] == "REVERSED"
+    assert bool(provisional["stage_b_information_event_eligible"])
+    assert not bool(reversed_row["stage_b_information_event_eligible"])
+    assert not bool(provisional["final_sports_outcome_eligible"])
+    assert not bool(reversed_row["final_sports_outcome_eligible"])
+    assert (
+        provisional["adjudication_sequence_id"]
+        == reversed_row["adjudication_sequence_id"]
+    )
+    assert pd.notna(provisional["adjudication_sequence_id"])
+
+
+def test_nullified_final_ruling_is_not_a_final_sports_outcome() -> None:
+    tables = _build_episode_rows(
+        {
+            "play_id": 42,
+            "order_sequence": 42,
+            "time_of_day": "2025-12-05T01:36:00.000Z",
+            "play_type": "no_play",
+            "play_type_nfl": "PENALTY",
+            "posteam": "DAL",
+            "defteam": "DET",
+            "penalty": 1,
+            "information_status": "FINAL",
+            "desc": "Penalty, no play.",
+        }
+    )
+    row = tables.events.iloc[0]
+
+    assert row["information_status"] == "FINAL"
+    assert not bool(row["final_sports_outcome_eligible"])
+    assert not bool(row["factor_eligible"])
+    assert pd.isna(row["beneficiary_team"])
+    assert row["beneficiary_resolution_status"] == "UNRESOLVED"
+
+
+def test_source_intervals_are_left_closed_right_open_at_source_resolution() -> None:
+    tables = _build_episode_rows(
+        {
+            "play_id": 50,
+            "order_sequence": 50,
+            "time_of_day": None,
+            "source_interval_start": "2025-12-05T01:40:00Z",
+            "source_interval_end": "2025-12-05T01:40:01Z",
+            "source_resolution": "SECOND",
+            "play_type": "run",
+            "play_type_nfl": "RUSH",
+            "posteam": "DAL",
+            "defteam": "DET",
+        },
+        {
+            "play_id": 51,
+            "order_sequence": 51,
+            "time_of_day": "2025-12-05T01:40:02.123Z",
+            "play_type": "run",
+            "play_type_nfl": "RUSH",
+            "posteam": "DAL",
+            "defteam": "DET",
+        },
+    )
+    rows = tables.events.set_index("raw_play_id")
+    explicit = rows.loc["50"]
+    point = rows.loc["51"]
+
+    assert pd.Timestamp(explicit["source_interval_start"]) < pd.Timestamp(
+        explicit["source_interval_end"]
+    )
+    assert explicit["known_at"] == explicit["source_interval_end"]
+    assert explicit["source_resolution"] == "SECOND"
+    assert explicit["source_interval_semantics"] == "[START,END)"
+    assert (
+        pd.Timestamp(point["source_interval_end"])
+        - pd.Timestamp(point["source_interval_start"])
+        == pd.Timedelta(milliseconds=1)
+    )
+    assert point["source_resolution"] == "MILLISECOND"
+
+
+def test_retried_snap_is_a_new_episode_in_the_same_adjudication_sequence() -> None:
+    tables = _build_episode_rows(
+        {
+            "play_id": 60,
+            "order_sequence": 60,
+            "time_of_day": "2025-12-05T01:45:00.000Z",
+            "play_type": "no_play",
+            "play_type_nfl": "PENALTY",
+            "posteam": "DAL",
+            "defteam": "DET",
+            "penalty": 1,
+            "adjudication_sequence_key": "retried-snap-60",
+        },
+        {
+            "play_id": 61,
+            "order_sequence": 61,
+            "time_of_day": "2025-12-05T01:45:20.000Z",
+            "play_type": "run",
+            "play_type_nfl": "RUSH",
+            "posteam": "DAL",
+            "defteam": "DET",
+            "adjudication_sequence_key": "retried-snap-60",
+        },
+    )
+    rows = tables.events.set_index("raw_play_id")
+    nullified = rows.loc["60"]
+    retry = rows.loc["61"]
+
+    assert (
+        nullified["atomic_information_episode_id"]
+        != retry["atomic_information_episode_id"]
+    )
+    assert (
+        nullified["adjudication_sequence_id"]
+        == retry["adjudication_sequence_id"]
+    )
+    assert not bool(nullified["final_sports_outcome_eligible"])
+    assert bool(retry["final_sports_outcome_eligible"])
+
+
+def test_administrative_episode_does_not_invent_a_beneficiary() -> None:
+    tables = _build_episode_rows(
+        {
+            "play_id": 62,
+            "order_sequence": 62,
+            "time_of_day": "2025-12-05T01:46:00.000Z",
+            "play_type": None,
+            "play_type_nfl": "END_QUARTER",
+            "desc": "END QUARTER 1",
+        }
+    )
+    row = tables.events.iloc[0]
+
+    assert row["primary_action"] == "ADMIN"
+    assert pd.isna(row["beneficiary_team"])
+    assert pd.isna(row["beneficiary_is_home"])
+    assert row["beneficiary_resolution_status"] == "UNRESOLVED"
+    assert not bool(row["final_sports_outcome_eligible"])
+
+
 def test_extraction_preserves_every_raw_row_and_one_primary_action() -> None:
     tables = build_game_fact_tables(
         _pbp_rows(),
@@ -281,6 +720,9 @@ def test_reversed_safety_keeps_review_fact_but_not_safety_outcome() -> None:
     assert row["primary_action"] == "SACK"
     assert {"REVIEWED", "REVERSED"}.issubset(tags)
     assert "SAFETY" not in tags
+    assert row["information_status"] == "FINAL"
+    assert bool(row["final_sports_outcome_eligible"])
+    assert bool(row["stage_b_information_event_eligible"])
 
 
 def test_no_play_is_visible_but_not_factor_eligible() -> None:
