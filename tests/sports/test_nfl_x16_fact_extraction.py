@@ -489,6 +489,70 @@ def test_pick_six_is_one_multitag_episode_with_defense_as_beneficiary() -> None:
     assert row["beneficiary_resolution_status"] == "RESOLVED_FINAL_SPORTS_RULE"
 
 
+def test_double_turnover_offensive_td_uses_structured_scoring_team() -> None:
+    tables = _build_episode_rows(
+        {
+            "game_id": "2025_05_TEN_ARI",
+            "home_team": "ARI",
+            "away_team": "TEN",
+            "play_id": 4224,
+            "order_sequence": 4224,
+            "time_of_day": "2025-10-05T22:51:00.000Z",
+            "play_type": "pass",
+            "play_type_nfl": "INTERCEPTION",
+            "posteam": "TEN",
+            "defteam": "ARI",
+            "interception": 1,
+            "fumble": 1,
+            "fumble_lost": 1,
+            "fumble_recovery_1_team": "TEN",
+            "touchdown": 1,
+            "return_touchdown": 1,
+            "td_team": "TEN",
+            "total_away_score": 6,
+        }
+    )
+    row = tables.events.iloc[0]
+    tags = set(json.loads(row["outcome_tags"]))
+
+    assert {
+        "INTERCEPTION",
+        "FUMBLE_LOST",
+        "TURNOVER",
+        "TOUCHDOWN",
+    }.issubset(tags)
+    assert "DEFENSIVE_TOUCHDOWN" not in tags
+    assert row["beneficiary_team"] == "TEN"
+    assert not bool(row["beneficiary_is_home"])
+    assert row["beneficiary_resolution_status"] == "RESOLVED_FINAL_SPORTS_RULE"
+
+
+def test_turnover_touchdown_without_td_team_fails_closed() -> None:
+    tables = _build_episode_rows(
+        {
+            "play_id": 4225,
+            "order_sequence": 4225,
+            "time_of_day": "2025-10-05T22:52:00.000Z",
+            "play_type": "pass",
+            "play_type_nfl": "INTERCEPTION",
+            "posteam": "DAL",
+            "defteam": "DET",
+            "interception": 1,
+            "touchdown": 1,
+            "return_touchdown": 1,
+        }
+    )
+    row = tables.events.iloc[0]
+    tags = set(json.loads(row["outcome_tags"]))
+
+    assert "TURNOVER" in tags
+    assert "TOUCHDOWN" in tags
+    assert "DEFENSIVE_TOUCHDOWN" not in tags
+    assert pd.isna(row["beneficiary_team"])
+    assert pd.isna(row["beneficiary_is_home"])
+    assert row["beneficiary_resolution_status"] == "UNRESOLVED"
+
+
 def test_turnover_on_downs_benefits_defense_without_reorienting_actor() -> None:
     tables = _build_episode_rows(
         {

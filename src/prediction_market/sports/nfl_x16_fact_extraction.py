@@ -346,13 +346,8 @@ def _outcome_tags(
         tags.add("TURNOVER")
     if (
         "TOUCHDOWN" in tags
-        and (
-            turnover
-            or (
-                _text(row.get("td_team")) is not None
-                and _text(row.get("td_team")) == _text(row.get("defteam"))
-            )
-        )
+        and _text(row.get("td_team")) is not None
+        and _text(row.get("td_team")) == _text(row.get("defteam"))
     ):
         tags.add("DEFENSIVE_TOUCHDOWN")
     if _indicator(row.get("safety")) and not no_play:
@@ -473,6 +468,8 @@ def _beneficiary_team(
         td_team = _text(row.get("td_team"))
         if td_team in {home_team, away_team}:
             return td_team, "RESOLVED_FINAL_SPORTS_RULE"
+        if "TOUCHDOWN" in tag_set and "TURNOVER" in tag_set:
+            return None, "UNRESOLVED"
         team = (
             _text(row.get("defteam"))
             if "SAFETY" in tag_set or "DEFENSIVE_TOUCHDOWN" in tag_set
