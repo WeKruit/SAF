@@ -5,14 +5,13 @@ from __future__ import annotations
 import gc
 import hashlib
 import inspect
-import io
 import json
 import math
 import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final, Mapping, Sequence
+from typing import Final, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -56,7 +55,105 @@ CLAIM_BOUNDARY: Final[str] = (
     "causality, execution, or alpha claim"
 )
 
+_CANONICAL_EVENT_COLUMNS: Final[tuple[str, ...]] = (
+    "schema_version",
+    "claim_boundary",
+    "game_id",
+    "event_id",
+    "raw_play_id",
+    "play_id",
+    "atomic_information_episode_id",
+    "score_sequence_id",
+    "adjudication_sequence_id",
+    "information_status",
+    "stage_b_information_event_eligible",
+    "final_sports_outcome_eligible",
+    "source_interval_start",
+    "source_interval_end",
+    "source_resolution",
+    "source_interval_semantics",
+    "known_at",
+    "order_sequence",
+    "source_time_utc",
+    "source_time_semantics",
+    "quarter",
+    "game_clock",
+    "game_seconds_remaining",
+    "home_team",
+    "away_team",
+    "actor_team",
+    "beneficiary_team",
+    "actor_is_home",
+    "beneficiary_is_home",
+    "possession_is_home",
+    "beneficiary_resolution_status",
+    "possession_before",
+    "posteam_semantics",
+    "defense_team",
+    "next_observed_possession",
+    "offense_direction",
+    "transition_direction_semantics",
+    "field_orientation_semantics",
+    "pre_home_score",
+    "pre_away_score",
+    "post_home_score",
+    "post_away_score",
+    "score_margin_home",
+    "score_margin_offense",
+    "down",
+    "distance",
+    "goal_to_go",
+    "pre_yardline",
+    "post_yardline",
+    "pre_field_coordinate_0_100",
+    "post_field_coordinate_0_100",
+    "next_observed_state_play_id",
+    "next_observed_possession_state",
+    "next_observed_yardline",
+    "next_observed_field_coordinate_0_100",
+    "visual_end_field_coordinate_0_100",
+    "visual_end_semantics",
+    "yardline_100",
+    "pre_red_zone",
+    "tied",
+    "one_score_game",
+    "drive_id",
+    "series_id",
+    "primary_action",
+    "outcome_tags",
+    "yards_gained",
+    "air_yards",
+    "yards_after_catch",
+    "return_yards",
+    "pass_length",
+    "pass_location",
+    "run_location",
+    "run_gap",
+    "kick_distance",
+    "field_goal_result",
+    "extra_point_result",
+    "two_point_result",
+    "penalty_team",
+    "penalty_type",
+    "penalty_yards",
+    "review_result",
+    "timeout_team",
+    "home_timeouts_remaining",
+    "away_timeouts_remaining",
+    "description",
+    "participation_status",
+    "factor_eligible",
+    "row_disposition",
+    "home_wp_before_diagnostic",
+    "home_wp_after_diagnostic",
+    "home_wp_delta_diagnostic",
+    "reference_semantics",
+    "source_hashes",
+    "pbp_source_sha256",
+    "participation_source_sha256",
+)
 TABLE_SCHEMAS: Final[Mapping[str, tuple[str, ...]]] = {
+    "canonical_factor_events": _CANONICAL_EVENT_COLUMNS,
     "factor_event_tags": (
         "game_id",
         "event_id",
@@ -141,6 +238,95 @@ TABLE_SCHEMAS: Final[Mapping[str, tuple[str, ...]]] = {
         "pbp_source_sha256",
     ),
 }
+_EVENT_BOOLEAN_COLUMNS: Final[frozenset[str]] = frozenset(
+    {
+        "stage_b_information_event_eligible",
+        "final_sports_outcome_eligible",
+        "actor_is_home",
+        "beneficiary_is_home",
+        "possession_is_home",
+        "goal_to_go",
+        "pre_red_zone",
+        "tied",
+        "one_score_game",
+        "factor_eligible",
+    }
+)
+_EVENT_INTEGER_COLUMNS: Final[frozenset[str]] = frozenset(
+    {
+        "order_sequence",
+        "quarter",
+        "game_seconds_remaining",
+        "pre_home_score",
+        "pre_away_score",
+        "post_home_score",
+        "post_away_score",
+        "score_margin_home",
+        "score_margin_offense",
+        "down",
+        "distance",
+        "home_timeouts_remaining",
+        "away_timeouts_remaining",
+    }
+)
+_EVENT_FLOAT_COLUMNS: Final[frozenset[str]] = frozenset(
+    {
+        "pre_field_coordinate_0_100",
+        "post_field_coordinate_0_100",
+        "next_observed_field_coordinate_0_100",
+        "visual_end_field_coordinate_0_100",
+        "yardline_100",
+        "yards_gained",
+        "air_yards",
+        "yards_after_catch",
+        "return_yards",
+        "kick_distance",
+        "penalty_yards",
+        "home_wp_before_diagnostic",
+        "home_wp_after_diagnostic",
+        "home_wp_delta_diagnostic",
+    }
+)
+_COLUMN_KIND_OVERRIDES: Final[Mapping[tuple[str, str], str]] = {
+    **{
+        ("canonical_factor_events", column): "boolean"
+        for column in _EVENT_BOOLEAN_COLUMNS
+    },
+    **{
+        ("canonical_factor_events", column): "Int64"
+        for column in _EVENT_INTEGER_COLUMNS
+    },
+    **{
+        ("canonical_factor_events", column): "Float64"
+        for column in _EVENT_FLOAT_COLUMNS
+    },
+    ("factor_coverage_audit", "event_count"): "Int64",
+    ("factor_coverage_audit", "game_count"): "Int64",
+    ("sports_row_reconciliation", "raw_row_preserved"): "boolean",
+    ("sports_row_reconciliation", "factor_eligible"): "boolean",
+}
+TABLE_PANDAS_DTYPES: Final[Mapping[str, Mapping[str, str]]] = {
+    name: {
+        column: _COLUMN_KIND_OVERRIDES.get((name, column), "string")
+        for column in columns
+    }
+    for name, columns in TABLE_SCHEMAS.items()
+}
+_ARROW_TYPES: Final[Mapping[str, pa.DataType]] = {
+    "string": pa.string(),
+    "boolean": pa.bool_(),
+    "Int64": pa.int64(),
+    "Float64": pa.float64(),
+}
+TABLE_ARROW_SCHEMAS: Final[Mapping[str, pa.Schema]] = {
+    name: pa.schema(
+        [
+            pa.field(column, _ARROW_TYPES[TABLE_PANDAS_DTYPES[name][column]])
+            for column in columns
+        ]
+    )
+    for name, columns in TABLE_SCHEMAS.items()
+}
 _TABLE_ATTRIBUTES: Final[tuple[tuple[str, str], ...]] = (
     ("canonical_factor_events", "events"),
     ("factor_event_tags", "tags"),
@@ -150,12 +336,6 @@ _TABLE_ATTRIBUTES: Final[tuple[tuple[str, str], ...]] = (
     ("factor_hits", "factor_hits"),
     ("factor_coverage_audit", "factor_coverage"),
     ("sports_row_reconciliation", "reconciliation"),
-)
-_EVENT_REQUIRED_COLUMNS: Final[tuple[str, ...]] = (
-    "game_id",
-    "event_id",
-    "raw_play_id",
-    "atomic_information_episode_id",
 )
 
 
@@ -566,17 +746,26 @@ def _ordered_frame(name: str, frame: pd.DataFrame) -> pd.DataFrame:
     if frame.columns.duplicated().any():
         raise NFLExact153PublicationError(f"{name} has duplicate columns")
     expected = TABLE_SCHEMAS.get(name)
-    if expected is not None:
-        unexpected = set(frame.columns).difference(expected)
-        if unexpected:
-            raise NFLExact153PublicationError(f"{name} schema drifted")
-        frame = frame.reindex(columns=list(expected))
-    elif name == "canonical_factor_events":
-        missing = set(_EVENT_REQUIRED_COLUMNS).difference(frame.columns)
-        if frame.empty or missing:
-            raise NFLExact153PublicationError(
-                "canonical_factor_events schema is incomplete"
-            )
+    if expected is None:
+        raise NFLExact153PublicationError(f"unknown published table: {name}")
+    if name == "canonical_factor_events" and frame.empty:
+        raise NFLExact153PublicationError(
+            "canonical_factor_events must be nonempty"
+        )
+    unexpected = set(frame.columns).difference(expected)
+    missing = set(expected).difference(frame.columns)
+    allowed_missing = (
+        {"unit"} if name == "factor_event_players" else set()
+    )
+    if unexpected or (not frame.empty and missing.difference(allowed_missing)):
+        raise NFLExact153PublicationError(f"{name} schema drifted")
+    frame = frame.reindex(columns=list(expected))
+    try:
+        frame = frame.astype(TABLE_PANDAS_DTYPES[name])
+    except (TypeError, ValueError) as exc:
+        raise NFLExact153PublicationError(
+            f"{name} values violate the fixed physical schema"
+        ) from exc
     records = frame.to_dict(orient="records")
     order = sorted(
         range(len(records)),
@@ -623,23 +812,78 @@ def _validate_referential_integrity(
     raw_ids = tuple(
         _stable_play_id(value, label="PBP") for value in pbp["play_id"]
     )
-    event_ids = set(tables.events["event_id"].astype(str))
-    raw_event_ids = tuple(tables.events["raw_play_id"].astype(str))
-    atomic_ids = tuple(
-        tables.events["atomic_information_episode_id"].astype(str)
+    event_key_columns = (
+        "game_id",
+        "event_id",
+        "raw_play_id",
+        "play_id",
+        "atomic_information_episode_id",
     )
+    if tables.events.loc[:, list(event_key_columns)].isna().any().any():
+        raise NFLExact153PublicationError(
+            f"parent event identity is null: {game_id}"
+        )
+    duplicate_event_id_rows = int(
+        tables.events.duplicated(["event_id"], keep=False).sum()
+    )
+    duplicate_atomic_rows = int(
+        tables.events.duplicated(
+            ["game_id", "atomic_information_episode_id"], keep=False
+        ).sum()
+    )
+    if duplicate_event_id_rows or duplicate_atomic_rows:
+        raise NFLExact153PublicationError(
+            f"parent event identity is duplicate: {game_id}"
+        )
+    raw_event_ids = tuple(tables.events["raw_play_id"].astype(str))
+    event_records = tables.events.loc[:, list(event_key_columns)].to_dict(
+        orient="records"
+    )
+    parent_by_event: dict[str, tuple[str, str]] = {}
+    parent_by_raw: dict[str, tuple[str, str]] = {}
+    for row in event_records:
+        event_id = str(row["event_id"])
+        raw_play_id = str(row["raw_play_id"])
+        play_id = str(row["play_id"])
+        atomic_id = str(row["atomic_information_episode_id"])
+        if play_id != raw_play_id:
+            raise NFLExact153PublicationError(
+                f"parent event play/raw mapping mismatch: {game_id}"
+            )
+        parent_by_event[event_id] = (raw_play_id, atomic_id)
+        parent_by_raw[raw_play_id] = (event_id, atomic_id)
     reconciliation_raw_ids = tuple(
         tables.reconciliation["raw_play_id"].astype(str)
     )
     if (
         set(tables.events["game_id"].astype(str)) != {game_id}
         or len(raw_event_ids) != len(set(raw_event_ids))
-        or len(atomic_ids) != len(set(atomic_ids))
         or len(tables.events) != len(raw_ids)
         or set(raw_event_ids) != set(raw_ids)
     ):
         raise NFLExact153PublicationError(
             f"extractor must emit exactly one unique event per raw key: {game_id}"
+        )
+    reconciliation_keys = (
+        "game_id",
+        "raw_play_id",
+        "event_id",
+        "atomic_information_episode_id",
+    )
+    if (
+        tables.reconciliation.loc[:, list(reconciliation_keys)]
+        .isna()
+        .any()
+        .any()
+        or tables.reconciliation.duplicated(
+            ["game_id", "raw_play_id"], keep=False
+        ).any()
+        or tables.reconciliation.duplicated(
+            list(reconciliation_keys), keep=False
+        ).any()
+    ):
+        raise NFLExact153PublicationError(
+            f"reconciliation has duplicate or null link keys: {game_id}"
         )
     if (
         set(tables.reconciliation["game_id"].astype(str)) != {game_id}
@@ -654,34 +898,141 @@ def _validate_referential_integrity(
         raise NFLExact153PublicationError(
             f"extractor reconciliation has silent loss: {game_id}"
         )
-    foreign_key_orphans = 0
-    for name, frame in (
-        ("factor_event_tags", tables.tags),
-        ("factor_event_players", tables.players),
-        ("injury_evidence", tables.injury_evidence),
-        ("factor_hits", tables.factor_hits),
-        ("sports_row_reconciliation", tables.reconciliation),
-    ):
-        if not frame.empty:
-            if set(frame["game_id"].astype(str)) != {game_id}:
-                raise NFLExact153PublicationError(
-                    f"{name} leaked another game: {game_id}"
-                )
-            foreign_key_orphans += int(
-                (~frame["event_id"].astype(str).isin(event_ids)).sum()
-            )
-    if not tables.availability.empty:
-        if set(tables.availability["game_id"].astype(str)) != {game_id}:
+    reconciliation_mismatches = 0
+    for row in tables.reconciliation.loc[
+        :, list(reconciliation_keys)
+    ].to_dict(orient="records"):
+        expected = parent_by_raw.get(str(row["raw_play_id"]))
+        observed = (
+            str(row["event_id"]),
+            str(row["atomic_information_episode_id"]),
+        )
+        if expected != observed:
+            reconciliation_mismatches += 1
+    if reconciliation_mismatches:
+        raise NFLExact153PublicationError(
+            f"reconciliation parent mapping mismatch: {game_id}"
+        )
+    child_specs: tuple[
+        tuple[str, pd.DataFrame, tuple[str, ...]], ...
+    ] = (
+        (
+            "factor_event_tags",
+            tables.tags,
+            ("game_id", "event_id", "play_id", "tag"),
+        ),
+        (
+            "factor_event_players",
+            tables.players,
+            (
+                "game_id",
+                "event_id",
+                "play_id",
+                "role",
+                "player_id",
+                "player_name",
+            ),
+        ),
+        (
+            "injury_evidence",
+            tables.injury_evidence,
+            (
+                "game_id",
+                "event_id",
+                "play_id",
+                "evidence_type",
+                "status",
+                "team",
+                "jersey_number",
+                "source_player_name",
+                "player_id",
+            ),
+        ),
+        (
+            "factor_hits",
+            tables.factor_hits,
+            (
+                "game_id",
+                "event_id",
+                "play_id",
+                "factor_id",
+                "factor_version",
+            ),
+        ),
+    )
+    child_link_mismatches = 0
+    duplicate_child_rows = 0
+    for name, frame, unique_columns in child_specs:
+        duplicate_child_rows += int(
+            frame.duplicated(list(unique_columns), keep=False).sum()
+        )
+        if frame.empty:
+            continue
+        if (
+            frame[["game_id", "event_id", "play_id"]]
+            .isna()
+            .any()
+            .any()
+            or set(frame["game_id"].astype(str)) != {game_id}
+        ):
             raise NFLExact153PublicationError(
-                f"player_availability_events leaked another game: {game_id}"
+                f"{name} has a null or cross-game link: {game_id}"
+            )
+        for row in frame[["event_id", "play_id"]].to_dict(orient="records"):
+            parent = parent_by_event.get(str(row["event_id"]))
+            if parent is None or parent[0] != str(row["play_id"]):
+                child_link_mismatches += 1
+    availability_unique = (
+        "game_id",
+        "team",
+        "unit",
+        "player_id",
+        "availability_observation",
+        "interval_start_event_id",
+        "interval_end_event_id",
+    )
+    duplicate_child_rows += int(
+        tables.availability.duplicated(
+            list(availability_unique), keep=False
+        ).sum()
+    )
+    if not tables.availability.empty:
+        if (
+            tables.availability[
+                [
+                    "game_id",
+                    "interval_start_event_id",
+                    "interval_end_event_id",
+                ]
+            ]
+            .isna()
+            .any()
+            .any()
+            or set(tables.availability["game_id"].astype(str)) != {game_id}
+        ):
+            raise NFLExact153PublicationError(
+                f"player_availability_events has a null or cross-game link: {game_id}"
             )
         for column in ("interval_start_event_id", "interval_end_event_id"):
-            foreign_key_orphans += int(
-                (~tables.availability[column].astype(str).isin(event_ids)).sum()
+            child_link_mismatches += int(
+                (
+                    ~tables.availability[column]
+                    .astype(str)
+                    .isin(parent_by_event)
+                ).sum()
             )
-    if foreign_key_orphans:
+    duplicate_child_rows += int(
+        tables.factor_coverage.duplicated(
+            ["factor_id", "factor_version"], keep=False
+        ).sum()
+    )
+    if duplicate_child_rows:
         raise NFLExact153PublicationError(
-            f"child event foreign key violation: {game_id}"
+            f"child table has duplicate primary/link keys: {game_id}"
+        )
+    if child_link_mismatches:
+        raise NFLExact153PublicationError(
+            f"child event/play foreign key link mapping mismatch: {game_id}"
         )
     return {
         "raw_pbp_rows": len(pbp),
@@ -693,12 +1044,27 @@ def _validate_referential_integrity(
         "participation_orphan_rows": 0,
         "raw_rows_silently_dropped": 0,
         "event_fk_orphan_rows": 0,
+        "duplicate_event_id_rows": 0,
+        "duplicate_atomic_episode_rows": 0,
+        "reconciliation_mapping_mismatch_rows": 0,
+        "duplicate_child_primary_rows": 0,
+        "child_link_mapping_mismatch_rows": 0,
         "publication_gate": "PASS",
     }
 
 
-def _parquet_bytes(frame: pd.DataFrame) -> tuple[bytes, str]:
-    table = pa.Table.from_pandas(frame, preserve_index=False)
+def _parquet_bytes(name: str, frame: pd.DataFrame) -> tuple[bytes, str]:
+    try:
+        table = pa.Table.from_pandas(
+            frame,
+            schema=TABLE_ARROW_SCHEMAS[name],
+            preserve_index=False,
+            safe=True,
+        )
+    except (KeyError, TypeError, ValueError, pa.ArrowException) as exc:
+        raise NFLExact153PublicationError(
+            f"{name} cannot be encoded with its fixed Arrow schema"
+        ) from exc
     sink = pa.BufferOutputStream()
     pq.write_table(
         table,
@@ -722,7 +1088,7 @@ def _publish_table(
     name: str,
     frame: pd.DataFrame,
 ) -> dict[str, object]:
-    payload, schema_fingerprint = _parquet_bytes(frame)
+    payload, schema_fingerprint = _parquet_bytes(name, frame)
     object_sha = _sha256_bytes(payload)
     digest = object_sha.removeprefix("sha256:")
     relative = (
@@ -749,6 +1115,9 @@ def _publish_table(
         "byte_length": len(payload),
         "row_count": len(frame),
         "schema_columns": list(frame.columns),
+        "pandas_dtypes": {
+            column: str(frame[column].dtype) for column in frame.columns
+        },
         "schema_fingerprint": schema_fingerprint,
         "semantic_rows_sha256": semantic_sha,
     }
@@ -928,6 +1297,7 @@ def _verify_game_bundle(
             )
         try:
             frame = pd.read_parquet(object_path)
+            parquet_schema = pq.read_schema(object_path)
         except Exception as exc:
             raise NFLExact153PublicationError(
                 f"published table is unreadable: {expected_game_id}.{name}"
@@ -935,6 +1305,13 @@ def _verify_game_bundle(
         if (
             len(frame) != descriptor.get("row_count")
             or list(frame.columns) != descriptor.get("schema_columns")
+            or {
+                column: str(frame[column].dtype) for column in frame.columns
+            }
+            != descriptor.get("pandas_dtypes")
+            or parquet_schema.remove_metadata() != TABLE_ARROW_SCHEMAS[name]
+            or _sha256_bytes(parquet_schema.serialize().to_pybytes())
+            != descriptor.get("schema_fingerprint")
             or pq.ParquetFile(object_path).metadata.num_rows
             != descriptor.get("row_count")
         ):

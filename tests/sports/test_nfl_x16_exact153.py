@@ -7,6 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
+import pyarrow.parquet as pq
 import pytest
 
 from prediction_market.sports import nfl_x16_exact153 as publication
@@ -442,7 +443,9 @@ def test_per_game_publication_preserves_td_pat_ids_and_fixed_empty_schemas(
         )
 
 
-def test_fixed_player_schema_preserves_nonempty_participation_unit() -> None:
+def test_fixed_player_schema_preserves_nonempty_participation_unit(
+    tmp_path: Path,
+) -> None:
     pbp = pd.DataFrame(
         [
             {
@@ -492,11 +495,37 @@ def test_fixed_player_schema_preserves_nonempty_participation_unit() -> None:
     )
 
     normalized = publication._normalize_tables(tables)
+    empty = publication._ordered_frame(
+        "factor_event_players",
+        pd.DataFrame(),
+    )
 
     assert tuple(normalized.players.columns) == publication.TABLE_SCHEMAS[
         "factor_event_players"
     ]
     assert set(normalized.players["unit"]) == {"OFFENSE", "DEFENSE"}
+    assert tuple(map(str, empty.dtypes)) == tuple(
+        map(str, normalized.players.dtypes)
+    )
+    empty_descriptor = publication._publish_table(
+        output_root=tmp_path,
+        game_id="empty",
+        name="factor_event_players",
+        frame=empty,
+    )
+    populated_descriptor = publication._publish_table(
+        output_root=tmp_path,
+        game_id="populated",
+        name="factor_event_players",
+        frame=normalized.players,
+    )
+    empty_schema = pq.read_schema(
+        tmp_path / empty_descriptor["object_path"]
+    ).remove_metadata()
+    populated_schema = pq.read_schema(
+        tmp_path / populated_descriptor["object_path"]
+    ).remove_metadata()
+    assert empty_schema == populated_schema
 
 
 def test_zero_orphan_duplicate_and_silent_loss_audits_are_bound(
@@ -636,6 +665,73 @@ def test_child_event_fk_failure_blocks_batch_publication(
     with pytest.raises(
         publication.NFLExact153PublicationError,
         match="foreign key",
+    ):
+        publication.publish_exact153_fact_batch(
+            project_root=tmp_path,
+            governance_manifest_path=manifest_path,
+            factor_registry_path=registry_path,
+            output_root=output_root,
+        )
+
+    assert not list(output_root.rglob("*.batch-index.json"))
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "duplicate_event_id",
+        "permuted_reconciliation_episode_id",
+        "child_event_play_mismatch",
+    ],
+)
+def test_exact_parent_child_mappings_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    corruption: str,
+) -> None:
+    manifest_path, _, _, registry_path, _ = _configure_inputs(
+        tmp_path, monkeypatch
+    )
+
+    def corrupt_mapping(*args: object, **kwargs: object) -> object:
+        tables = real_build_game_fact_tables(*args, **kwargs)
+        if len(tables.events) < 2:
+            return tables
+        events = tables.events.copy()
+        reconciliation = tables.reconciliation.copy()
+        tags = tables.tags.copy()
+        if corruption == "duplicate_event_id":
+            first_event_id = str(events.iloc[0]["event_id"])
+            second_event_id = str(events.iloc[1]["event_id"])
+            events.loc[events.index[1], "event_id"] = first_event_id
+            reconciliation.loc[
+                reconciliation["event_id"].eq(second_event_id), "event_id"
+            ] = first_event_id
+            tags.loc[tags["event_id"].eq(second_event_id), "event_id"] = (
+                first_event_id
+            )
+        elif corruption == "permuted_reconciliation_episode_id":
+            reconciliation["atomic_information_episode_id"] = list(
+                reversed(reconciliation["atomic_information_episode_id"].tolist())
+            )
+        else:
+            first_event_id = str(events.iloc[0]["event_id"])
+            second_play_id = str(events.iloc[1]["raw_play_id"])
+            target = tags.index[tags["event_id"].eq(first_event_id)][0]
+            tags.loc[target, "play_id"] = second_play_id
+        return replace(
+            tables,
+            events=events,
+            reconciliation=reconciliation,
+            tags=tags,
+        )
+
+    monkeypatch.setattr(publication, "build_game_fact_tables", corrupt_mapping)
+    output_root = tmp_path / "published"
+
+    with pytest.raises(
+        publication.NFLExact153PublicationError,
+        match="duplicate|mapping|link",
     ):
         publication.publish_exact153_fact_batch(
             project_root=tmp_path,
