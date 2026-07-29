@@ -759,12 +759,15 @@ def _reference_at_l(
         "post_state_known_at": None,
     }
     if reference is None:
-        return "MISSING", unavailable
+        return "UNAVAILABLE", unavailable
+    if (
+        pd.notna(reference["post_state_known_at"])
+        and reference["post_state_known_at"] > landmark_time
+    ):
+        return "NOT_KNOWN_AT_L", unavailable
     reference_status = str(reference["reference_status"])
     if reference_status != "SUPPORTED":
-        return reference_status, unavailable
-    if reference["post_state_known_at"] > landmark_time:
-        return "NOT_KNOWN_AT_L", unavailable
+        return "UNAVAILABLE", unavailable
     return (
         "AVAILABLE",
         {
@@ -1172,7 +1175,6 @@ def build_venue_reaction_panel_v3(
                         "prior_60s_actual_trade_count": count_60,
                         "prior_60s_actual_trade_size": size_60,
                         "stage_a_status": stage_a_status,
-                        "reference_status": reference_status,
                         **stage_a,
                         "reference_gap_at_landmark": reference_gap,
                         "multi_hot_features": multi_hot_features,

@@ -392,7 +392,7 @@ def test_real_stage_a_contract_allows_unsupported_nulls_and_gates_b4_at_l() -> N
         5,
     )
     assert unsupported_row["reference_status"] == "MODEL_SUPPORT_UNPROVEN"
-    assert unsupported_row["stage_a_status"] == "MODEL_SUPPORT_UNPROVEN"
+    assert unsupported_row["stage_a_status"] == "UNAVAILABLE"
     assert pd.isna(unsupported_row["p_before_home"])
     assert pd.isna(unsupported_row["p_after_home"])
 
@@ -414,6 +414,36 @@ def test_real_stage_a_contract_allows_unsupported_nulls_and_gates_b4_at_l() -> N
     error = getattr(landmarks, "VenueReactionPanelError")
     with pytest.raises(error, match="SUPPORTED"):
         _build(stage_a_references=invalid)
+
+
+def test_future_raw_reference_status_cannot_change_decision_features() -> None:
+    rows = []
+    for reference_status in (
+        "SUPPORTED",
+        "COMPOSITE_TRANSITION",
+        "MISSING_POST_STATE",
+    ):
+        reference = _inputs()["stage_a_references"].copy()
+        reference.loc[0, "reference_status"] = reference_status
+        reference.loc[0, "post_state_known_at"] = (
+            "2025-09-05T00:00:02.500Z"
+        )
+        if reference_status != "SUPPORTED":
+            reference.loc[
+                0,
+                ["p_after_home", "reference_delta_home"],
+            ] = None
+        row = _row(_build(stage_a_references=reference).panel, 1, 5)
+        assert row["reference_status"] == reference_status
+        assert row["stage_a_status"] == "NOT_KNOWN_AT_L"
+        rows.append(row)
+
+    assert len({row["decision_features_json"] for row in rows}) == 1
+    assert len({row["decision_feature_sha256"] for row in rows}) == 1
+    assert all(
+        "reference_status" not in row["decision_features_json"]
+        for row in rows
+    )
 
 
 def test_non_stage_b_and_missing_interval_facts_are_audited_not_panelled() -> None:
