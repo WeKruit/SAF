@@ -38,7 +38,6 @@ _PANEL_GRAIN = (
 )
 _FACT_REQUIRED = {
     *_FACT_IDENTITY,
-    "week",
     "event_id",
     "source_interval_start",
     "source_interval_end",
@@ -49,6 +48,12 @@ _FACT_REQUIRED = {
     "away_team",
     "outcome_tags",
     "pbp_source_sha256",
+}
+_COHORT_METADATA_REQUIRED = {
+    "game_id",
+    "nfl_week",
+    "cohort",
+    "authority_sha256",
 }
 _REFERENCE_REQUIRED = {
     *_FACT_IDENTITY,
@@ -104,12 +109,6 @@ _CONTINUITY_REQUIRED = {
     "game_end_time_utc",
     "continuity_gap_time_utc",
     "continuity_verified_until_utc",
-}
-_NOISE_REQUIRED = {
-    "venue",
-    "landmark_seconds",
-    "endpoint_seconds",
-    "matched_control_p95",
 }
 _FACT_FEATURE_COLUMNS = (
     "source_resolution",
@@ -361,12 +360,6 @@ def _validate_facts(
         axis=None
     ):
         raise VenueReactionPanelError("episode game team identity is inconsistent")
-    week = _finite_numeric(facts["week"], label="episode_facts.week", lower=1)
-    if not np.equal(week.to_numpy(), week.astype(int).to_numpy()).all():
-        raise VenueReactionPanelError("episode_facts.week must be integral")
-    facts["week"] = week.astype(int)
-    if facts.groupby("game_id")["week"].nunique().gt(1).any():
-        raise VenueReactionPanelError("episode game week is inconsistent")
     for source_hash in facts["pbp_source_sha256"]:
         _sha256(source_hash, label="episode_facts.pbp_source_sha256")
     facts["_event_tags"] = [
@@ -682,36 +675,44 @@ def _validate_continuity(frame: pd.DataFrame, facts: pd.DataFrame) -> pd.DataFra
     return continuity
 
 
-def _validate_noise(frame: pd.DataFrame | None) -> pd.DataFrame:
-    if frame is None:
-        return pd.DataFrame(columns=sorted(_NOISE_REQUIRED))
-    noise = _require_frame(
+def _validate_cohort_metadata(
+    frame: pd.DataFrame,
+    *,
+    facts: pd.DataFrame,
+) -> pd.DataFrame:
+    metadata = _require_frame(
         frame,
-        label="matched_control_noise",
-        required=_NOISE_REQUIRED,
-        allow_empty=True,
+        label="cohort_metadata",
+        required=_COHORT_METADATA_REQUIRED,
     )
-    if noise.empty:
-        return noise
-    _strings(noise, ("venue",), label="matched_control_noise")
-    for column in ("landmark_seconds", "endpoint_seconds"):
-        numeric = _finite_numeric(
-            noise[column], label=f"matched_control_noise.{column}"
+    _strings(
+        metadata,
+        ("game_id", "cohort", "authority_sha256"),
+        label="cohort_metadata",
+    )
+    if metadata.duplicated(["game_id"]).any():
+        raise VenueReactionPanelError("cohort_metadata game_id is not unique")
+    if not metadata["cohort"].eq("development").all():
+        raise VenueReactionPanelError("cohort_metadata cohort must be development")
+    weeks = _finite_numeric(
+        metadata["nfl_week"], label="cohort_metadata.nfl_week", lower=1
+    )
+    if not np.equal(weeks.to_numpy(), weeks.astype(int).to_numpy()).all():
+        raise VenueReactionPanelError("cohort_metadata.nfl_week must be integral")
+    metadata["nfl_week"] = weeks.astype(int)
+    if metadata["nfl_week"].gt(12).any():
+        raise VenueReactionPanelError("cohort_metadata.nfl_week must be in 1..12")
+    for authority in metadata["authority_sha256"]:
+        _sha256(authority, label="cohort_metadata.authority_sha256")
+    if metadata["authority_sha256"].nunique() != 1:
+        raise VenueReactionPanelError("cohort_metadata authority_sha256 must be single")
+    expected = set(facts["game_id"].astype(str))
+    observed = set(metadata["game_id"].astype(str))
+    if expected != observed:
+        raise VenueReactionPanelError(
+            "cohort_metadata game set must exactly match episode_facts"
         )
-        if not np.equal(numeric.to_numpy(), numeric.astype(int).to_numpy()).all():
-            raise VenueReactionPanelError(
-                f"matched_control_noise.{column} must be integral"
-            )
-        noise[column] = numeric.astype(int)
-    noise["matched_control_p95"] = _finite_numeric(
-        noise["matched_control_p95"],
-        label="matched_control_noise.matched_control_p95",
-        lower=0,
-    )
-    key = ["venue", "landmark_seconds", "endpoint_seconds"]
-    if noise.duplicated(key).any():
-        raise VenueReactionPanelError("matched_control_noise identity is not unique")
-    return noise
+    return metadata
 
 
 def _trade_index(trades: pd.DataFrame) -> _TradeIndex:
@@ -877,23 +878,6 @@ def _activity(
     return after - first, float(trades.prefix_sizes[after] - trades.prefix_sizes[first])
 
 
-def _noise_threshold(
-    noise: pd.DataFrame,
-    *,
-    venue: str,
-    landmark: int,
-    endpoint: int,
-) -> float | None:
-    selected = noise.loc[
-        noise["venue"].eq(venue)
-        & noise["landmark_seconds"].eq(landmark)
-        & noise["endpoint_seconds"].eq(endpoint)
-    ]
-    if selected.empty:
-        return None
-    return float(selected.iloc[0]["matched_control_p95"])
-
-
 def _direction(delta: float, tick: float) -> str:
     if delta > tick or math.isclose(delta, tick, rel_tol=0, abs_tol=1e-12):
         return "UP"
@@ -959,18 +943,24 @@ def build_venue_reaction_panel_v3(
     contract_metadata: pd.DataFrame,
     tick_rules: pd.DataFrame,
     continuity: pd.DataFrame,
-    matched_control_noise: pd.DataFrame | None = None,
+    cohort_metadata: pd.DataFrame,
 ) -> VenueReactionPanelV3:
     """Build the complete actual-home VenueReactionPanelV3 and attrition audit."""
 
     all_facts, facts, fact_attrition = _validate_facts(episode_facts)
+    cohorts = _validate_cohort_metadata(cohort_metadata, facts=all_facts)
     references = _validate_references(stage_a_references)
     hits = _validate_factor_hits(factor_hits, all_facts)
     market = _validate_market(market_rows)
     contracts = _validate_contracts(contract_metadata)
     rules = _validate_rules(tick_rules)
     continuity_rows = _validate_continuity(continuity, facts)
-    noise = _validate_noise(matched_control_noise)
+    facts = facts.merge(
+        cohorts.loc[:, ["game_id", "nfl_week", "authority_sha256"]],
+        on="game_id",
+        how="inner",
+        validate="many_to_one",
+    )
 
     eligible_event_keys = set(
         map(
@@ -1256,21 +1246,6 @@ def build_venue_reaction_panel_v3(
                         if direction in {"UP", "DOWN"}
                         else math.nan
                     )
-                    p95 = _noise_threshold(
-                        noise,
-                        venue=str(contract["venue"]),
-                        landmark=landmark,
-                        endpoint=endpoint,
-                    )
-                    abnormal: object = pd.NA
-                    if target_eligible and p95 is not None:
-                        magnitude_at_h = abs(delta)
-                        abnormal = magnitude_at_h > p95 or math.isclose(
-                            magnitude_at_h,
-                            p95,
-                            rel_tol=0,
-                            abs_tol=1e-12,
-                        )
                     if not bool(fact["stage_b_information_event_eligible"]):
                         attrition_reason = "FACT_NOT_STAGE_B_ELIGIBLE"
                     elif not mark_l.observed:
@@ -1332,7 +1307,10 @@ def build_venue_reaction_panel_v3(
                             "schema_version": SCHEMA_VERSION,
                             "claim_boundary": CLAIM_BOUNDARY,
                             "game_id": str(fact["game_id"]),
-                            "nfl_week": int(fact["week"]),
+                            "nfl_week": int(fact["nfl_week"]),
+                            "cohort_authority_sha256": str(
+                                fact["authority_sha256"]
+                            ),
                             "atomic_information_episode_id": str(
                                 fact["atomic_information_episode_id"]
                             ),
@@ -1379,10 +1357,6 @@ def build_venue_reaction_panel_v3(
                             "delta_l_h": delta,
                             "direction": direction,
                             "conditional_magnitude": magnitude,
-                            "matched_control_p95": (
-                                p95 if p95 is not None else math.nan
-                            ),
-                            "abnormal_move": abnormal,
                             "stage_a_status": stage_a_status,
                             "reference_status": reference_status,
                             "p_before_home": stage_a["p_before_home"],

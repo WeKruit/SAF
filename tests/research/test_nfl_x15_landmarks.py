@@ -11,7 +11,6 @@ def _inputs() -> dict[str, pd.DataFrame]:
         [
             {
                 "game_id": "2025_01_AAA_BBB",
-                "week": 1,
                 "event_id": "event-1",
                 "atomic_information_episode_id": "episode-1",
                 "source_interval_start": "2025-09-05T00:00:00Z",
@@ -161,13 +160,13 @@ def _inputs() -> dict[str, pd.DataFrame]:
             }
         ]
     )
-    noise = pd.DataFrame(
+    cohort_metadata = pd.DataFrame(
         [
             {
-                "venue": "kalshi",
-                "landmark_seconds": 1,
-                "endpoint_seconds": 5,
-                "matched_control_p95": 0.20,
+                "game_id": "2025_01_AAA_BBB",
+                "nfl_week": 1,
+                "cohort": "development",
+                "authority_sha256": "sha256:" + "e" * 64,
             }
         ]
     )
@@ -179,7 +178,7 @@ def _inputs() -> dict[str, pd.DataFrame]:
         "contract_metadata": contracts,
         "tick_rules": tick_rules,
         "continuity": continuity,
-        "matched_control_noise": noise,
+        "cohort_metadata": cohort_metadata,
     }
 
 
@@ -291,11 +290,12 @@ def test_multi_event_factor_membership_is_order_invariant() -> None:
 
 
 def test_panel_publishes_frozen_week_and_separate_factor_membership() -> None:
-    facts = _inputs()["episode_facts"].copy()
-    facts.loc[0, "week"] = 12
-    result = _build(episode_facts=facts)
+    metadata = _inputs()["cohort_metadata"].copy()
+    metadata.loc[0, "nfl_week"] = 12
+    result = _build(cohort_metadata=metadata)
 
     assert set(result.panel["nfl_week"]) == {12}
+    assert set(result.panel["cohort_authority_sha256"]) == {"sha256:" + "e" * 64}
     assert len(result.factor_membership) == 1
     membership = result.factor_membership.iloc[0]
     assert membership["game_id"] == "2025_01_AAA_BBB"
@@ -306,13 +306,11 @@ def test_panel_publishes_frozen_week_and_separate_factor_membership() -> None:
     assert membership["pbp_source_sha256"] == "sha256:" + "c" * 64
     assert "factor_id" not in result.panel.columns
 
-    inconsistent = pd.concat([facts, facts.copy()], ignore_index=True)
-    inconsistent.loc[1, "event_id"] = "event-week-mismatch"
-    inconsistent.loc[1, "atomic_information_episode_id"] = "episode-week-mismatch"
-    inconsistent.loc[1, "week"] = 13
+    inconsistent = pd.concat([metadata, metadata.copy()], ignore_index=True)
+    inconsistent.loc[1, "game_id"] = "2025_02_CCC_DDD"
     error = getattr(landmarks, "VenueReactionPanelError")
-    with pytest.raises(error, match="week"):
-        _build(episode_facts=inconsistent)
+    with pytest.raises(error, match="game set"):
+        _build(cohort_metadata=inconsistent)
 
 
 def test_survival_censor_and_missing_observation_are_distinct_and_never_filled() -> None:
@@ -424,7 +422,7 @@ def test_trade_index_preserves_mark_and_activity_boundaries() -> None:
     assert overlap_mark.status == "ORDER_AMBIGUOUS"
 
 
-def test_tick_defines_direction_and_p95_only_defines_abnormal_move() -> None:
+def test_tick_defines_direction_without_fold_local_noise_labels() -> None:
     rows = _inputs()["market_rows"].copy()
     extra = []
     for trade_id, second, price in (
@@ -452,7 +450,8 @@ def test_tick_defines_direction_and_p95_only_defines_abnormal_move() -> None:
     no_move = _row(panel, 1, 15)
     assert up["direction"] == "UP"
     assert up["conditional_magnitude"] == pytest.approx(0.02)
-    assert bool(up["abnormal_move"]) is False
+    assert "matched_control_p95" not in panel.columns
+    assert "abnormal_move" not in panel.columns
     assert down["direction"] == "DOWN"
     assert down["conditional_magnitude"] == pytest.approx(0.01)
     assert no_move["direction"] == "NO_MOVE"
