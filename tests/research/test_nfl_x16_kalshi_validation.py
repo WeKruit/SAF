@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 
 import pandas as pd
@@ -27,6 +28,11 @@ from test_nfl_x15_models import (
     _diagnostic_panel,
     _sha256_text,
 )
+from test_nfl_x15_model_selection import (
+    _authority as _complete_selection_authority,
+    _run as _complete_selection_run,
+    _spec as _complete_selection_spec,
+)
 
 
 AUTHORITY = "sha256:" + "a" * 64
@@ -38,6 +44,13 @@ X11_SPORTS_OUTCOME_EVIDENCE_SHA256 = (
     "sha256:1d0c033459c69778e265be3fca16ae2c87f650d5003a61ffdea4c020a4fd0b05"
 )
 X11_HOLDOUT_DRIVE_OUTCOME_COUNT = 1_683
+
+
+def _selection_spec() -> FrozenSelectionSpec:
+    return FrozenSelectionSpec(
+        candidate_model_id="regularized_logistic_v1",
+        candidate_feature_block_id="D4",
+    )
 
 
 def _run_config(
@@ -106,8 +119,6 @@ def _authority_rows() -> pd.DataFrame:
 def _bind_authority(
     rows: pd.DataFrame | None = None,
     *,
-    reviewed_game_ids: tuple[str, ...] = (),
-    reaction_game_ids: tuple[str, ...] = (),
     sports_outcome_exposed_game_ids: tuple[str, ...] | None = None,
     reaction_blind_metadata_game_ids: tuple[str, ...] | None = None,
     authority: str = AUTHORITY,
@@ -131,14 +142,6 @@ def _bind_authority(
     return bind_frozen_authority_metadata(
         authority_rows,
         cohort_authority_sha256=authority,
-        historical_reviewed_game_ids=reviewed_game_ids,
-        historical_reviewed_game_ids_sha256=hash_game_id_evidence(
-            reviewed_game_ids
-        ),
-        historical_reaction_game_ids=reaction_game_ids,
-        historical_reaction_game_ids_sha256=hash_game_id_evidence(
-            reaction_game_ids
-        ),
         sports_outcome_exposed_game_ids=sports_ids,
         sports_outcome_exposed_game_ids_sha256=hash_game_id_evidence(
             sports_ids
@@ -227,7 +230,12 @@ def _class_probabilities(
     return tuple(values[direction])
 
 
-def _source_and_transport(*, catastrophic: bool = False) -> X15ModelRun:
+def _source_and_transport(
+    *,
+    catastrophic: bool = False,
+    jointly_bad: bool = False,
+    mixed_factor_bad_games: int = 0,
+) -> X15ModelRun:
     metadata = _authority_rows().loc[
         lambda frame: frame["cohort"].eq("development")
     ]
@@ -238,6 +246,7 @@ def _source_and_transport(*, catastrophic: bool = False) -> X15ModelRun:
     source: list[dict[str, object]] = []
     transported: list[dict[str, object]] = []
     native: list[dict[str, object]] = []
+    last_candidate_source: dict[str, object] | None = None
     for game_position, game in enumerate(
         evaluation_games.itertuples(index=False)
     ):
@@ -274,6 +283,12 @@ def _source_and_transport(*, catastrophic: bool = False) -> X15ModelRun:
         transport_binary = 0.74 if bool(s_truth) else 0.26
         if catastrophic:
             transport_binary = 0.08 if bool(s_truth) else 0.92
+        elif jointly_bad:
+            transport_binary = 0.18 if bool(s_truth) else 0.82
+            native_binary = 0.20 if bool(s_truth) else 0.80
+        elif game_position < mixed_factor_bad_games:
+            transport_binary = 0.45 if bool(s_truth) else 0.55
+            native_binary = 0.47 if bool(s_truth) else 0.53
         native_observation = (
             0.82 if o_truth is not pd.NA and bool(o_truth) else 0.18
         )
@@ -283,6 +298,20 @@ def _source_and_transport(*, catastrophic: bool = False) -> X15ModelRun:
         if catastrophic:
             transport_observation = (
                 0.08 if o_truth is not pd.NA and bool(o_truth) else 0.92
+            )
+        elif jointly_bad:
+            transport_observation = (
+                0.18 if o_truth is not pd.NA and bool(o_truth) else 0.82
+            )
+            native_observation = (
+                0.20 if o_truth is not pd.NA and bool(o_truth) else 0.80
+            )
+        elif game_position < mixed_factor_bad_games:
+            transport_observation = (
+                0.45 if o_truth is not pd.NA and bool(o_truth) else 0.55
+            )
+            native_observation = (
+                0.47 if o_truth is not pd.NA and bool(o_truth) else 0.53
             )
         native_direction = (
             _class_probabilities(
@@ -294,11 +323,34 @@ def _source_and_transport(*, catastrophic: bool = False) -> X15ModelRun:
         transport_direction = (
             _class_probabilities(
                 str(direction),
-                correct_probability=(0.08 if catastrophic else 0.70),
+                correct_probability=(
+                    0.08
+                    if catastrophic
+                    else (
+                        0.15
+                        if jointly_bad
+                        else (
+                            0.45
+                            if game_position < mixed_factor_bad_games
+                            else 0.70
+                        )
+                    )
+                ),
             )
             if direction is not pd.NA
             else (0.25, 0.5, 0.25)
         )
+        if jointly_bad and direction is not pd.NA:
+            native_direction = _class_probabilities(
+                str(direction), correct_probability=0.17
+            )
+        elif (
+            game_position < mixed_factor_bad_games
+            and direction is not pd.NA
+        ):
+            native_direction = _class_probabilities(
+                str(direction), correct_probability=0.47
+            )
         identity = {
             "cohort_authority_sha256": AUTHORITY,
             "game_id": str(game.game_id),
@@ -357,26 +409,22 @@ def _source_and_transport(*, catastrophic: bool = False) -> X15ModelRun:
             "model_spec_sha256": "sha256:" + "8" * 64,
             "fold_sha256": "sha256:" + fold_character * 64,
         }
-        source.append(
-            {
-                **identity,
-                "source_row_id": game_position,
-                "actual_home_contract_id": f"poly-{game.game_id}",
-                "venue": "polymarket",
-                "training_venue": "polymarket",
-                "calibration_venue": "polymarket",
-                "transport_mode": "VENUE_SPECIFIC",
-                "s_h_calibrated_probability": transport_binary,
-                "o_h_given_s_calibrated_probability": (
-                    transport_observation
-                ),
-                "direction_calibrated_prob_down": transport_direction[0],
-                "direction_calibrated_prob_no_move": (
-                    transport_direction[1]
-                ),
-                "direction_calibrated_prob_up": transport_direction[2],
-            }
-        )
+        candidate_source = {
+            **identity,
+            "source_row_id": game_position,
+            "actual_home_contract_id": f"poly-{game.game_id}",
+            "venue": "polymarket",
+            "training_venue": "polymarket",
+            "calibration_venue": "polymarket",
+            "transport_mode": "VENUE_SPECIFIC",
+            "s_h_calibrated_probability": transport_binary,
+            "o_h_given_s_calibrated_probability": transport_observation,
+            "direction_calibrated_prob_down": transport_direction[0],
+            "direction_calibrated_prob_no_move": transport_direction[1],
+            "direction_calibrated_prob_up": transport_direction[2],
+        }
+        source.append(candidate_source)
+        last_candidate_source = candidate_source
         transported.append(
             {
                 **identity,
@@ -415,7 +463,74 @@ def _source_and_transport(*, catastrophic: bool = False) -> X15ModelRun:
                 "direction_calibrated_prob_up": native_direction[2],
             }
         )
-    unmatched_source = source[-1].copy()
+        b0_binary = 0.62 if bool(s_truth) else 0.38
+        b0_observation = (
+            0.62 if o_truth is not pd.NA and bool(o_truth) else 0.38
+        )
+        b0_direction = (
+            _class_probabilities(
+                str(direction), correct_probability=0.58
+            )
+            if direction is not pd.NA
+            else (0.3, 0.4, 0.3)
+        )
+        b0_identity = {
+            **identity,
+            "model_id": "b0_empirical_v1",
+            "feature_block_id": "D0",
+            "feature_block_sha256": "sha256:" + "0" * 64,
+            "model_spec_sha256": "sha256:" + "1" * 64,
+        }
+        source.append(
+            {
+                **b0_identity,
+                "source_row_id": game_position + 3_000,
+                "actual_home_contract_id": f"poly-{game.game_id}",
+                "venue": "polymarket",
+                "training_venue": "polymarket",
+                "calibration_venue": "polymarket",
+                "transport_mode": "VENUE_SPECIFIC",
+                "s_h_calibrated_probability": b0_binary,
+                "o_h_given_s_calibrated_probability": b0_observation,
+                "direction_calibrated_prob_down": b0_direction[0],
+                "direction_calibrated_prob_no_move": b0_direction[1],
+                "direction_calibrated_prob_up": b0_direction[2],
+            }
+        )
+        transported.append(
+            {
+                **b0_identity,
+                "source_row_id": game_position + 4_000,
+                "actual_home_contract_id": f"kalshi-{game.game_id}",
+                "venue": "kalshi",
+                "training_venue": "polymarket",
+                "calibration_venue": "polymarket",
+                "transport_mode": "NO_TARGET_RECALIBRATION",
+                "s_h_calibrated_probability": b0_binary,
+                "o_h_given_s_calibrated_probability": b0_observation,
+                "direction_calibrated_prob_down": b0_direction[0],
+                "direction_calibrated_prob_no_move": b0_direction[1],
+                "direction_calibrated_prob_up": b0_direction[2],
+            }
+        )
+        native.append(
+            {
+                **b0_identity,
+                "source_row_id": game_position + 5_000,
+                "actual_home_contract_id": f"kalshi-{game.game_id}",
+                "venue": "kalshi",
+                "training_venue": "kalshi",
+                "calibration_venue": "kalshi",
+                "transport_mode": "VENUE_SPECIFIC",
+                "s_h_calibrated_probability": b0_binary,
+                "o_h_given_s_calibrated_probability": b0_observation,
+                "direction_calibrated_prob_down": b0_direction[0],
+                "direction_calibrated_prob_no_move": b0_direction[1],
+                "direction_calibrated_prob_up": b0_direction[2],
+            }
+        )
+    assert last_candidate_source is not None
+    unmatched_source = last_candidate_source.copy()
     unmatched_source["source_row_id"] = 9_999
     unmatched_source["atomic_information_episode_id"] = (
         "source-only-episode"
@@ -436,10 +551,8 @@ def _source_and_transport(*, catastrophic: bool = False) -> X15ModelRun:
 
 
 def test_binds_authoritative_153_81_target_specific_exposure() -> None:
-    metadata = _bind_authority(
-        reviewed_game_ids=("development-000",),
-        reaction_game_ids=("development-001",),
-    )
+    metadata = _bind_authority()
+    evidence = validation.load_frozen_historical_exposure_evidence()
 
     assert len(metadata.development) == 153
     assert len(metadata.holdout) == 81
@@ -447,6 +560,12 @@ def test_binds_authoritative_153_81_target_specific_exposure() -> None:
     assert metadata.holdout_reviewed_overlap_game_ids == ()
     assert metadata.holdout_reaction_overlap_game_ids == ()
     assert metadata.holdout_reaction_read_count == 0
+    assert metadata.historical_reviewed_game_ids_sha256 == (
+        evidence.reviewed_game_ids_sha256
+    )
+    assert metadata.historical_reaction_game_ids_sha256 == (
+        evidence.reaction_game_ids_sha256
+    )
     assert metadata.selection_authority.game_count == 153
     assert metadata.stage_a_outcome_validation_eligible is False
     assert metadata.sports_outcome_source_evidence_sha256 == (
@@ -470,69 +589,46 @@ def test_binds_authoritative_153_81_target_specific_exposure() -> None:
     }.issubset(set(metadata.prior_exposure_audit["evidence_kind"]))
 
 
-def test_sealed_reaction_declaration_cannot_override_authoritative_overlap() -> None:
-    holdout_game_id = str(
-        _authority_rows()
-        .loc[lambda frame: frame["cohort"].eq("holdout"), "game_id"]
-        .iloc[0]
+def test_historical_exposure_is_derived_from_fixed_tracked_artifacts() -> None:
+    evidence = validation.load_frozen_historical_exposure_evidence()
+
+    assert evidence.reviewed_artifact_path.endswith(
+        "6ce0c257106fa8badd9b43d7a5615fa582ce8d0eae714bdf1453334116716294"
+        ".holdout-selection.json"
     )
+    assert evidence.reviewed_artifact_sha256 == (
+        "sha256:"
+        "1685ee5084d99670abeb623bba16c9dd310b972c1b7778c0a967d171dd679034"
+    )
+    assert len(evidence.reviewed_game_ids) == 20
+    assert evidence.reaction_artifact_path.endswith(
+        "a2aa20c764523d9c117e0087eb319cc50bbf736924009c9f7b8850fb471a3ea4"
+        ".manifest.json"
+    )
+    assert evidence.reaction_artifact_sha256 == (
+        "sha256:"
+        "a2aa20c764523d9c117e0087eb319cc50bbf736924009c9f7b8850fb471a3ea4"
+    )
+    assert len(evidence.reaction_game_ids) == 153
+
+
+def test_sealed_reaction_declaration_cannot_override_authoritative_overlap() -> None:
+    evidence = validation.load_frozen_historical_exposure_evidence()
+    rows = _authority_rows()
+    rows.loc[
+        rows.loc[rows["cohort"].eq("holdout")].index[0], "game_id"
+    ] = evidence.reviewed_game_ids[0]
     with pytest.raises(
         KalshiValidationError,
         match="authoritative historical.*holdout.*overlap",
     ):
-        _bind_authority(reviewed_game_ids=(holdout_game_id,))
+        _bind_authority(rows)
 
-    with pytest.raises(KalshiValidationError, match="evidence hash"):
-        bind_frozen_authority_metadata(
-            _authority_rows(),
-            cohort_authority_sha256=AUTHORITY,
-            historical_reviewed_game_ids=(),
-            historical_reviewed_game_ids_sha256="sha256:" + "0" * 64,
-            historical_reaction_game_ids=(),
-            historical_reaction_game_ids_sha256=hash_game_id_evidence(()),
-            sports_outcome_exposed_game_ids=tuple(
-                _authority_rows()
-                .loc[
-                    lambda frame: frame["cohort"].eq("holdout"),
-                    "game_id",
-                ]
-                .astype(str)
-            ),
-            sports_outcome_exposed_game_ids_sha256=hash_game_id_evidence(
-                tuple(
-                    _authority_rows()
-                    .loc[
-                        lambda frame: frame["cohort"].eq("holdout"),
-                        "game_id",
-                    ]
-                    .astype(str)
-                )
-            ),
-            sports_outcome_source_evidence_sha256=(
-                X11_SPORTS_OUTCOME_EVIDENCE_SHA256
-            ),
-            sports_outcome_observation_count=(
-                X11_HOLDOUT_DRIVE_OUTCOME_COUNT
-            ),
-            reaction_blind_metadata_game_ids=tuple(
-                _authority_rows()
-                .loc[
-                    lambda frame: frame["cohort"].eq("holdout"),
-                    "game_id",
-                ]
-                .astype(str)
-            ),
-            reaction_blind_metadata_game_ids_sha256=hash_game_id_evidence(
-                tuple(
-                    _authority_rows()
-                    .loc[
-                        lambda frame: frame["cohort"].eq("holdout"),
-                        "game_id",
-                    ]
-                    .astype(str)
-                )
-            ),
-        )
+    parameters = inspect.signature(
+        bind_frozen_authority_metadata
+    ).parameters
+    assert "historical_reviewed_game_ids" not in parameters
+    assert "historical_reaction_game_ids" not in parameters
 
 
 def test_sports_outcome_exposure_must_cover_exact_holdout_authority() -> None:
@@ -547,6 +643,7 @@ def test_transport_scores_kalshi_truth_against_native_kalshi_oof() -> None:
     result = validate_development_venue_transport(
         _source_and_transport(),
         authority_metadata=_bind_authority(),
+        spec=_selection_spec(),
     )
 
     assert result.target_recalibration_applied is False
@@ -556,6 +653,11 @@ def test_transport_scores_kalshi_truth_against_native_kalshi_oof() -> None:
     assert result.paired_game_count == 36
     assert result.score_gate_passed is True
     assert result.catastrophic_degradation is False
+    assert result.transport_b0_improvement_gate_passed is True
+    assert result.transport_b0_ci_low > 0.0
+    assert result.transport_b0_bootstrap_samples == 10_000
+    assert result.transport_b0_bootstrap_seed == 20260729
+    assert not result.native_b0_score_summary.empty
     assert result.transport_gate_passed is True
     assert result.diagnostic_status == "HISTORICAL_SIGNAL_CANDIDATE"
     assert {"S_H", "O_H_GIVEN_S", "DIRECTION"} == set(
@@ -578,12 +680,124 @@ def test_catastrophic_transport_degradation_fails_candidate_gate() -> None:
     result = validate_development_venue_transport(
         _source_and_transport(catastrophic=True),
         authority_metadata=_bind_authority(),
+        spec=_selection_spec(),
     )
 
     assert result.score_gate_passed is True
     assert result.catastrophic_degradation is True
     assert result.transport_gate_passed is False
     assert result.diagnostic_status == "HISTORICAL_SIGNAL_REJECTED"
+
+
+def test_jointly_bad_transport_and_native_cannot_beat_frozen_b0() -> None:
+    result = validate_development_venue_transport(
+        _source_and_transport(jointly_bad=True),
+        authority_metadata=_bind_authority(),
+        spec=_selection_spec(),
+    )
+
+    assert result.score_gate_passed is True
+    assert result.catastrophic_degradation is False
+    assert result.transport_b0_mean_improvement < 0.0
+    assert result.transport_b0_improvement_gate_passed is False
+    assert result.transport_gate_passed is False
+    assert result.diagnostic_status == "HISTORICAL_SIGNAL_REJECTED"
+
+
+def test_factor_shortlist_requires_factor_specific_dual_venue_gate() -> None:
+    selection = select_candidate_against_b0(
+        _complete_selection_run(),
+        spec=_complete_selection_spec(),
+        authority=_complete_selection_authority(),
+    )
+    transport = validate_development_venue_transport(
+        _source_and_transport(),
+        authority_metadata=_bind_authority(),
+        spec=_selection_spec(),
+    )
+    polymarket_membership = selection.paired_rows[
+        ["game_id", "atomic_information_episode_id"]
+    ].drop_duplicates()
+    kalshi_membership = transport.transport_b0_pair_diagnostics[
+        ["game_id", "atomic_information_episode_id"]
+    ].drop_duplicates()
+    membership = pd.concat(
+        [polymarket_membership, kalshi_membership],
+        ignore_index=True,
+    ).drop_duplicates()
+    membership["factor_id"] = "NFL.PASS.COMPLETE"
+    membership["factor_version"] = "v1"
+
+    shortlist = validation.build_cross_venue_factor_shortlist(
+        selection,
+        transport_validation=transport,
+        factor_membership=membership,
+        min_support_games=30,
+        min_support_episodes=30,
+    )
+
+    row = shortlist.iloc[0]
+    assert bool(row["polymarket_individual_statistical_gate"]) is True
+    assert bool(row["kalshi_individual_statistical_gate"]) is True
+    assert bool(row["cross_venue_same_sign"]) is True
+    assert bool(row["factor_specific_dual_venue_gate_passed"]) is True
+    assert row["diagnostic_status"] == "HISTORICAL_SIGNAL_CANDIDATE"
+
+
+def test_global_transport_gate_cannot_replace_bad_kalshi_factor_gate() -> None:
+    selection = select_candidate_against_b0(
+        _complete_selection_run(),
+        spec=_complete_selection_spec(),
+        authority=_complete_selection_authority(),
+    )
+    transport = validate_development_venue_transport(
+        _source_and_transport(mixed_factor_bad_games=5),
+        authority_metadata=_bind_authority(),
+        spec=_selection_spec(),
+    )
+    assert transport.transport_gate_passed is True
+    negative_kalshi_games = set(
+        transport.transport_b0_pair_diagnostics.groupby(
+            "game_id", sort=True
+        )["loss_improvement"]
+        .mean()
+        .loc[lambda values: values.lt(0)]
+        .index.astype(str)
+    )
+    assert len(negative_kalshi_games) == 5
+    polymarket_membership = (
+        selection.paired_rows[
+            ["game_id", "atomic_information_episode_id"]
+        ]
+        .drop_duplicates()
+        .loc[lambda frame: frame["game_id"].isin(
+            sorted(frame["game_id"].unique())[:5]
+        )]
+    )
+    kalshi_membership = transport.transport_b0_pair_diagnostics.loc[
+        lambda frame: frame["game_id"].isin(negative_kalshi_games),
+        ["game_id", "atomic_information_episode_id"],
+    ].drop_duplicates()
+    membership = pd.concat(
+        [polymarket_membership, kalshi_membership],
+        ignore_index=True,
+    ).drop_duplicates()
+    membership["factor_id"] = "NFL.PASS.COMPLETE"
+    membership["factor_version"] = "v1"
+
+    shortlist = validation.build_cross_venue_factor_shortlist(
+        selection,
+        transport_validation=transport,
+        factor_membership=membership,
+        min_support_games=5,
+        min_support_episodes=5,
+    )
+
+    row = shortlist.iloc[0]
+    assert row["kalshi_mean_effect"] < 0.0
+    assert bool(row["global_transport_gate_passed"]) is True
+    assert bool(row["factor_specific_dual_venue_gate_passed"]) is False
+    assert row["diagnostic_status"] != "HISTORICAL_SIGNAL_CANDIDATE"
 
 
 def test_transport_rejects_target_recalibration_and_provenance_drift() -> None:
@@ -608,7 +822,9 @@ def test_transport_rejects_target_recalibration_and_provenance_drift() -> None:
         KalshiValidationError, match="genuine Polymarket source OOF"
     ):
         validate_development_venue_transport(
-            recalibrated_run, authority_metadata=metadata
+            recalibrated_run,
+            authority_metadata=metadata,
+            spec=_selection_spec(),
         )
 
     drifted = run.oof_predictions.copy()
@@ -630,7 +846,9 @@ def test_transport_rejects_target_recalibration_and_provenance_drift() -> None:
         match="source-only preprocessor_training_sha256",
     ):
         validate_development_venue_transport(
-            drifted_run, authority_metadata=metadata
+            drifted_run,
+            authority_metadata=metadata,
+            spec=_selection_spec(),
         )
 
 
@@ -698,10 +916,6 @@ def test_genuine_fold_slice_scores_but_cannot_select() -> None:
             )
         ),
         cohort_authority_sha256=authority,
-        historical_reviewed_game_ids=(),
-        historical_reviewed_game_ids_sha256=hash_game_id_evidence(()),
-        historical_reaction_game_ids=(),
-        historical_reaction_game_ids_sha256=hash_game_id_evidence(()),
         sports_outcome_exposed_game_ids=tuple(
             authority_rows.loc[
                 authority_rows["cohort"].eq("holdout"), "game_id"
@@ -742,7 +956,9 @@ def test_genuine_fold_slice_scores_but_cannot_select() -> None:
         authority=metadata.selection_authority,
     )
     transport = validate_development_venue_transport(
-        run, authority_metadata=metadata
+        run,
+        authority_metadata=metadata,
+        spec=_selection_spec(),
     )
 
     assert selection.authority_gate_passed is False

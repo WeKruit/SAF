@@ -256,6 +256,17 @@ def bind_frozen_development_authority(
             raise ModelSelectionError(
                 f"development_metadata {column} must be nonempty text"
             )
+    kickoff = pd.to_datetime(
+        frame["kickoff_utc"], utc=True, errors="coerce"
+    )
+    explicitly_utc = frame["kickoff_utc"].str.endswith(
+        ("Z", "+00:00")
+    )
+    if kickoff.isna().any() or not explicitly_utc.all():
+        raise ModelSelectionError(
+            "selection authority kickoff_utc must be an explicit UTC "
+            "timestamp"
+        )
     weeks = pd.to_numeric(frame["nfl_week"], errors="coerce")
     if (
         weeks.isna().any()

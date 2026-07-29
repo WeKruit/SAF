@@ -249,6 +249,19 @@ def test_complete_153_all_five_folds_is_required_for_selection() -> None:
     assert result.game_losses["hierarchical_weight"].eq(1.0).all()
 
 
+def test_development_authority_requires_explicit_utc_kickoff() -> None:
+    metadata = _development_metadata()
+    metadata.loc[metadata.index[0], "kickoff_utc"] = (
+        "2025-09-01T12:00:00"
+    )
+
+    with pytest.raises(ModelSelectionError, match="explicit UTC"):
+        bind_frozen_development_authority(
+            metadata,
+            cohort_authority_sha256=AUTHORITY,
+        )
+
+
 def test_resumable_fold_slice_is_diagnostic_only_and_cannot_select() -> None:
     result = select_candidate_against_b0(
         _run(complete=False), spec=_spec(), authority=_authority()
