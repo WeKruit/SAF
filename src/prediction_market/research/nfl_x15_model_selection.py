@@ -9,7 +9,7 @@ bootstrap clusters.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import hashlib
 import json
@@ -29,6 +29,7 @@ from prediction_market.research.nfl_x15_models import (
     DIAGNOSTIC_SCHEMA_VERSION,
     DIAGNOSTIC_TARGET_CONTRACT,
     DIAGNOSTIC_VENUE_TICK_SUPPORT,
+    SURVIVAL_PROBABILITY_CONTRACT,
     X15ModelRun,
 )
 from prediction_market.research.nfl_x15_statistics import (
@@ -42,6 +43,18 @@ from prediction_market.research.nfl_x15_statistics import (
 
 BASELINE_MODEL_ID: Final[str] = "b0_empirical_v1"
 BASELINE_FEATURE_BLOCK_ID: Final[str] = "D0"
+STAGE_B_CANDIDATE_SUITE: Final[
+    tuple[tuple[str, str], ...]
+] = (
+    ("regularized_logistic_v1", "D1"),
+    ("regularized_logistic_v1", "D2"),
+    ("regularized_logistic_v1", "D3"),
+    ("regularized_logistic_v1", "D4"),
+    ("shallow_xgboost_v1", "D1"),
+    ("shallow_xgboost_v1", "D2"),
+    ("shallow_xgboost_v1", "D3"),
+    ("shallow_xgboost_v1", "D4"),
+)
 BOOTSTRAP_SAMPLES: Final[int] = 10_000
 BOOTSTRAP_SEED: Final[int] = 20260729
 ANCHOR_LANDMARK_SECONDS: Final[int] = 3
@@ -182,14 +195,66 @@ def _require_nonempty_text(value: object, *, field: str) -> str:
     return value
 
 
+def _canonical(value: object) -> object:
+    if value is None or value is pd.NA:
+        return None
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    if isinstance(value, (float, np.floating)):
+        number = float(value)
+        return number if np.isfinite(number) else None
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    if isinstance(value, Mapping):
+        return {
+            str(key): _canonical(child)
+            for key, child in sorted(
+                value.items(), key=lambda item: str(item[0])
+            )
+        }
+    if isinstance(value, (list, tuple, set, np.ndarray)):
+        children = list(value)
+        if isinstance(value, set):
+            children = sorted(children, key=repr)
+        return [_canonical(child) for child in children]
+    try:
+        missing = pd.isna(value)
+    except (TypeError, ValueError):
+        missing = False
+    if isinstance(missing, (bool, np.bool_)) and missing:
+        return None
+    return str(value)
+
+
 def _canonical_sha256(value: object) -> str:
     payload = json.dumps(
-        value,
+        _canonical(value),
         sort_keys=True,
         separators=(",", ":"),
-        ensure_ascii=True,
+        allow_nan=False,
     )
     return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+STAGE_B_WINNER_RULE_SHA256: Final[str] = _canonical_sha256(
+    {
+        "rule": "ONE_STANDARD_ERROR_V1",
+        "candidate_suite": STAGE_B_CANDIDATE_SUITE,
+        "baseline": (BASELINE_MODEL_ID, BASELINE_FEATURE_BLOCK_ID),
+        "candidate_gate": (
+            "AUTHORITY_AND_INTEGRATED_PAIRED_GAME_CLUSTER_CI_LOW_GT_0"
+            "_AND_L3_H30_ANCHOR_AT_LEAST_30_GAMES_NO_SIGN_REVERSAL"
+        ),
+        "best": "MAX_INTEGRATED_MEAN_IMPROVEMENT",
+        "best_standard_error": (
+            "SAMPLE_SD_PER_GAME_LOSS_IMPROVEMENT_DIV_SQRT_GAME_COUNT"
+        ),
+        "eligible": "MEAN_GTE_BEST_MEAN_MINUS_BEST_STANDARD_ERROR",
+        "simplicity_order": STAGE_B_CANDIDATE_SUITE,
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -440,6 +505,26 @@ class ModelSelectionResult:
     selected: bool
 
 
+@dataclass(frozen=True, slots=True)
+class StageBModelSelectionResult:
+    """Frozen eight-candidate Stage-B V2 winner decision and audit."""
+
+    decision_status: str
+    winner: ModelSelectionResult | None
+    candidate_results: tuple[ModelSelectionResult, ...]
+    candidate_audit: pd.DataFrame
+    best_integrated_mean_improvement: float | None
+    best_standard_error: float | None
+    one_se_threshold: float | None
+    cohort_authority_sha256: str
+    shared_run_config_sha256: str
+    suite_run_config_sha256: str
+    candidate_audit_sha256: str
+    schema_version: str
+    survival_probability_contract: str
+    winner_rule_sha256: str
+
+
 def _nullable_equal(left: pd.Series, right: pd.Series) -> bool:
     for left_value, right_value in zip(left, right, strict=True):
         left_missing = bool(pd.isna(left_value))
@@ -483,8 +568,16 @@ def _validate_task4_rows(
         raise ModelSelectionError(
             "selection requires the stamped Task4 diagnostic run_config"
         )
+    if (
+        _canonical_sha256(model_run.run_config)
+        != model_run.run_config_sha256
+    ):
+        raise ModelSelectionError("Task4 run_config SHA-256 mismatch")
     expected_run_config = {
         "schema_version": HISTORICAL_SCHEMA_VERSION,
+        "survival_probability_contract": (
+            SURVIVAL_PROBABILITY_CONTRACT
+        ),
         "target_contract": HISTORICAL_TARGET_CONTRACT,
         "claim_boundary": HISTORICAL_CLAIM_BOUNDARY,
         "analysis_scope": HISTORICAL_ANALYSIS_SCOPE,
@@ -500,6 +593,11 @@ def _validate_task4_rows(
     }
     for field, expected in expected_run_config.items():
         if model_run.run_config.get(field) != expected:
+            if field == "schema_version":
+                raise ModelSelectionError(
+                    "selection requires "
+                    "HistoricalTradesOnlyProbabilityPanelV2 run_config"
+                )
             raise ModelSelectionError(
                 f"Task4 diagnostic run_config drifted on {field}"
             )
@@ -607,7 +705,7 @@ def _validate_task4_rows(
         HISTORICAL_SCHEMA_VERSION
     ).all():
         raise ModelSelectionError(
-            "selection requires HistoricalTradesOnlyProbabilityPanelV1"
+            "selection requires HistoricalTradesOnlyProbabilityPanelV2"
         )
     if not work["analysis_scope"].eq(
         HISTORICAL_ANALYSIS_SCOPE
@@ -1182,6 +1280,415 @@ def select_candidate_against_b0(
     )
 
 
+def _stage_b_projection_identity(
+    model_run: X15ModelRun,
+) -> tuple[tuple[str, str], str]:
+    if not isinstance(model_run, X15ModelRun):
+        raise ModelSelectionError(
+            "Stage-B selection requires X15ModelRun projections"
+        )
+    if not isinstance(model_run.run_config, Mapping):
+        raise ModelSelectionError(
+            "Stage-B selection requires stamped projection run_config"
+        )
+    _require_sha256(
+        model_run.run_config_sha256, field="run_config_sha256"
+    )
+    if (
+        _canonical_sha256(model_run.run_config)
+        != model_run.run_config_sha256
+    ):
+        raise ModelSelectionError("Stage-B run_config SHA-256 mismatch")
+    if (
+        model_run.run_config.get("schema_version")
+        != HISTORICAL_SCHEMA_VERSION
+    ):
+        raise ModelSelectionError(
+            "Stage-B selection requires "
+            "HistoricalTradesOnlyProbabilityPanelV2"
+        )
+    if (
+        model_run.run_config.get("survival_probability_contract")
+        != SURVIVAL_PROBABILITY_CONTRACT
+    ):
+        raise ModelSelectionError(
+            "Stage-B selection requires "
+            "survival_probability_contract="
+            "DISCRETE_INTERVAL_SURVIVAL_PRODUCT_V1"
+        )
+
+    model_ids = _tuple_value(model_run.run_config.get("model_ids"))
+    feature_block_ids = _tuple_value(
+        model_run.run_config.get("feature_block_ids")
+    )
+    if (
+        model_ids is None
+        or len(model_ids) != 2
+        or model_ids[0] != BASELINE_MODEL_ID
+        or feature_block_ids is None
+        or len(feature_block_ids) != 2
+        or feature_block_ids[0] != BASELINE_FEATURE_BLOCK_ID
+    ):
+        raise ModelSelectionError(
+            "Stage-B projection run_config identity must be "
+            "baseline plus one candidate"
+        )
+    candidate = (str(model_ids[1]), str(feature_block_ids[1]))
+    if candidate not in STAGE_B_CANDIDATE_SUITE:
+        raise ModelSelectionError(
+            "Stage-B projection run_config identity is not selectable"
+        )
+    if model_ids != (BASELINE_MODEL_ID, candidate[0]) or (
+        feature_block_ids
+        != (BASELINE_FEATURE_BLOCK_ID, candidate[1])
+    ):
+        raise ModelSelectionError(
+            "Stage-B projection run_config identity is malformed"
+        )
+
+    predictions = model_run.oof_predictions
+    required = {
+        "model_id",
+        "feature_block_id",
+        "venue",
+        "training_venue",
+    }
+    if (
+        not isinstance(predictions, pd.DataFrame)
+        or predictions.empty
+        or not required.issubset(predictions.columns)
+    ):
+        raise ModelSelectionError(
+            "Stage-B selection requires identified OOF prediction rows"
+        )
+    if (
+        not predictions["venue"].eq("polymarket").all()
+        or not predictions["training_venue"].eq("polymarket").all()
+    ):
+        raise ModelSelectionError(
+            "Stage-B selection requires all 8 frozen native Polymarket "
+            "projection candidates"
+        )
+    observed_pairs = set(
+        zip(
+            predictions["model_id"].astype(str),
+            predictions["feature_block_id"].astype(str),
+            strict=True,
+        )
+    )
+    expected_pairs = {
+        (BASELINE_MODEL_ID, BASELINE_FEATURE_BLOCK_ID),
+        candidate,
+    }
+    if observed_pairs != expected_pairs:
+        raise ModelSelectionError(
+            "Stage-B projection rows must contain exactly baseline "
+            "plus the configured candidate"
+        )
+
+    fold_ids = _tuple_value(model_run.run_config.get("fold_ids"))
+    expected_fold_ids = tuple(fold[0] for fold in EXPECTED_FOLDS)
+    source_shards = model_run.run_config.get("source_shards")
+    if (
+        fold_ids != expected_fold_ids
+        or not isinstance(source_shards, (tuple, list))
+    ):
+        raise ModelSelectionError(
+            "Stage-B projection source_shards require all five folds"
+        )
+    observed_cells: list[tuple[str, str, str]] = []
+    for shard in source_shards:
+        if not isinstance(shard, Mapping):
+            raise ModelSelectionError(
+                "Stage-B projection source_shards are malformed"
+            )
+        cell = (
+            str(shard.get("fold_id", "")),
+            str(shard.get("model_id", "")),
+            str(shard.get("feature_block_id", "")),
+        )
+        observed_cells.append(cell)
+        for field in (
+            "manifest_sha256",
+            "shard_bundle_sha256",
+            "oof_predictions_sha256",
+        ):
+            _require_sha256(
+                shard.get(field),
+                field=f"source_shards.{field}",
+            )
+    expected_cells = tuple(
+        (fold_id, model_id, feature_block_id)
+        for fold_id in expected_fold_ids
+        for model_id, feature_block_id in (
+            (BASELINE_MODEL_ID, BASELINE_FEATURE_BLOCK_ID),
+            candidate,
+        )
+    )
+    if (
+        len(set(observed_cells)) != len(observed_cells)
+        or tuple(observed_cells) != expected_cells
+    ):
+        raise ModelSelectionError(
+            "Stage-B projection source_shards contain missing, "
+            "duplicate, or wrong execution identities"
+        )
+    for field in (
+        "source_batch_manifest_sha256",
+        "source_batch_sha256",
+    ):
+        _require_sha256(
+            model_run.run_config.get(field),
+            field=f"run_config.{field}",
+        )
+    source_batch_path = model_run.run_config.get(
+        "source_batch_manifest_path"
+    )
+    if not isinstance(source_batch_path, str) or not source_batch_path:
+        raise ModelSelectionError(
+            "Stage-B projection requires source_batch_manifest_path"
+        )
+
+    shared_config = dict(model_run.run_config)
+    for field in ("model_ids", "feature_block_ids", "source_shards"):
+        shared_config.pop(field, None)
+    return candidate, _canonical_sha256(shared_config)
+
+
+def _validate_stage_b_candidate_suite(
+    model_runs: Sequence[X15ModelRun],
+) -> tuple[
+    tuple[X15ModelRun, ...],
+    str,
+    str,
+]:
+    if isinstance(model_runs, (str, bytes)) or not isinstance(
+        model_runs, Sequence
+    ):
+        raise ModelSelectionError(
+            "Stage-B selection requires 8 projection runs"
+        )
+    if len(model_runs) != len(STAGE_B_CANDIDATE_SUITE):
+        raise ModelSelectionError(
+            "Stage-B selection requires all 8 frozen Polymarket "
+            "candidate projections"
+        )
+    by_candidate: dict[tuple[str, str], X15ModelRun] = {}
+    shared_hashes: set[str] = set()
+    for model_run in model_runs:
+        candidate, shared_hash = _stage_b_projection_identity(model_run)
+        if candidate in by_candidate:
+            raise ModelSelectionError(
+                f"Stage-B duplicate candidate projection: {candidate}"
+            )
+        by_candidate[candidate] = model_run
+        shared_hashes.add(shared_hash)
+    missing = [
+        candidate
+        for candidate in STAGE_B_CANDIDATE_SUITE
+        if candidate not in by_candidate
+    ]
+    if missing:
+        raise ModelSelectionError(
+            "Stage-B selection requires all 8 frozen Polymarket "
+            f"candidate projections; missing={missing}"
+        )
+    if len(shared_hashes) != 1:
+        raise ModelSelectionError(
+            "all Stage-B projection runs must share one run_config"
+        )
+    ordered_runs = tuple(
+        by_candidate[candidate]
+        for candidate in STAGE_B_CANDIDATE_SUITE
+    )
+    suite_run_config_sha256 = _canonical_sha256(
+        tuple(
+            {
+                "candidate": candidate,
+                "run_config_sha256": model_run.run_config_sha256,
+            }
+            for candidate, model_run in zip(
+                STAGE_B_CANDIDATE_SUITE,
+                ordered_runs,
+                strict=True,
+            )
+        )
+    )
+    return (
+        ordered_runs,
+        next(iter(shared_hashes)),
+        suite_run_config_sha256,
+    )
+
+
+def _game_standard_error(result: ModelSelectionResult) -> float:
+    improvements = result.game_losses["loss_improvement"].to_numpy(
+        dtype=float
+    )
+    if (
+        len(improvements) < 2
+        or not np.isfinite(improvements).all()
+    ):
+        raise ModelSelectionError(
+            "one-standard-error selection requires at least two finite "
+            "per-game loss improvements"
+        )
+    return float(
+        np.std(improvements, ddof=1) / np.sqrt(len(improvements))
+    )
+
+
+def select_stage_b_v2_winner(
+    model_runs: Sequence[X15ModelRun],
+    *,
+    authority: FrozenDevelopmentAuthority | None = None,
+) -> StageBModelSelectionResult:
+    """Select the frozen Stage-B V2 suite with the one-SE winner rule."""
+
+    (
+        ordered_runs,
+        shared_run_config_sha256,
+        suite_run_config_sha256,
+    ) = _validate_stage_b_candidate_suite(model_runs)
+    results = tuple(
+        select_candidate_against_b0(
+            model_run,
+            spec=FrozenSelectionSpec(
+                candidate_model_id=model_id,
+                candidate_feature_block_id=feature_block_id,
+            ),
+            authority=authority,
+        )
+        for model_run, (model_id, feature_block_id) in zip(
+            ordered_runs,
+            STAGE_B_CANDIDATE_SUITE,
+            strict=True,
+        )
+    )
+    expected_authority = results[0].cohort_authority_sha256
+    if any(
+        result.cohort_authority_sha256 != expected_authority
+        or result.schema_version != HISTORICAL_SCHEMA_VERSION
+        or result.run_config_sha256 != model_run.run_config_sha256
+        for result, model_run in zip(
+            results, ordered_runs, strict=True
+        )
+    ):
+        raise ModelSelectionError(
+            "all Stage-B candidate results must share authority and "
+            "run_config"
+        )
+    standard_errors = tuple(
+        _game_standard_error(result) for result in results
+    )
+    passed = [
+        (index, result)
+        for index, result in enumerate(results)
+        if result.selected
+    ]
+    winner: ModelSelectionResult | None = None
+    best_mean: float | None = None
+    best_standard_error: float | None = None
+    threshold: float | None = None
+    within_one_se = [False] * len(results)
+    if passed:
+        best_index, best = max(
+            passed,
+            key=lambda item: item[1].integrated_mean_improvement,
+        )
+        best_mean = float(best.integrated_mean_improvement)
+        best_standard_error = standard_errors[best_index]
+        threshold = best_mean - best_standard_error
+        for index, result in passed:
+            within_one_se[index] = (
+                result.integrated_mean_improvement >= threshold
+            )
+        winner_index = next(
+            index
+            for index, eligible in enumerate(within_one_se)
+            if eligible
+        )
+        winner = results[winner_index]
+
+    audit_rows = []
+    for index, (result, standard_error) in enumerate(
+        zip(results, standard_errors, strict=True)
+    ):
+        audit_rows.append(
+            {
+                "candidate_model_id": result.spec.candidate_model_id,
+                "candidate_feature_block_id": (
+                    result.spec.candidate_feature_block_id
+                ),
+                "baseline_model_id": result.spec.baseline_model_id,
+                "baseline_feature_block_id": (
+                    result.spec.baseline_feature_block_id
+                ),
+                "gate_selected": result.selected,
+                "diagnostic_status": result.diagnostic_status,
+                "authority_gate_passed": (
+                    result.authority_gate_passed
+                ),
+                "authority_gate_failures": (
+                    result.authority_gate_failures
+                ),
+                "integrated_mean_improvement": (
+                    result.integrated_mean_improvement
+                ),
+                "integrated_ci_low": result.integrated_ci_low,
+                "integrated_ci_high": result.integrated_ci_high,
+                "integrated_gate_passed": (
+                    result.integrated_gate_passed
+                ),
+                "anchor_game_count": result.anchor_game_count,
+                "anchor_mean_improvement": (
+                    result.anchor_mean_improvement
+                ),
+                "anchor_sign_reversed": (
+                    result.anchor_sign_reversed
+                ),
+                "anchor_gate_passed": result.anchor_gate_passed,
+                "game_count": len(result.game_losses),
+                "standard_error": standard_error,
+                "within_one_se": within_one_se[index],
+                "complexity_rank": index + 1,
+                "final_winner": result is winner,
+                "cohort_authority_sha256": (
+                    result.cohort_authority_sha256
+                ),
+                "run_config_sha256": result.run_config_sha256,
+                "shared_run_config_sha256": (
+                    shared_run_config_sha256
+                ),
+                "suite_run_config_sha256": suite_run_config_sha256,
+                "schema_version": result.schema_version,
+                "survival_probability_contract": (
+                    SURVIVAL_PROBABILITY_CONTRACT
+                ),
+                "winner_rule_sha256": STAGE_B_WINNER_RULE_SHA256,
+            }
+        )
+    candidate_audit_sha256 = _canonical_sha256(audit_rows)
+    return StageBModelSelectionResult(
+        decision_status=(
+            "MODEL_ADVANCE" if winner is not None else "NO_MODEL_ADVANCE"
+        ),
+        winner=winner,
+        candidate_results=results,
+        candidate_audit=pd.DataFrame(audit_rows),
+        best_integrated_mean_improvement=best_mean,
+        best_standard_error=best_standard_error,
+        one_se_threshold=threshold,
+        cohort_authority_sha256=expected_authority,
+        shared_run_config_sha256=shared_run_config_sha256,
+        suite_run_config_sha256=suite_run_config_sha256,
+        candidate_audit_sha256=candidate_audit_sha256,
+        schema_version=HISTORICAL_SCHEMA_VERSION,
+        survival_probability_contract=SURVIVAL_PROBABILITY_CONTRACT,
+        winner_rule_sha256=STAGE_B_WINNER_RULE_SHA256,
+    )
+
+
 def build_factor_claim_audit(
     selection: ModelSelectionResult,
     *,
@@ -1447,8 +1954,12 @@ __all__ = [
     "LOSS_IMPROVEMENT_SIGN_SEMANTICS",
     "ModelSelectionError",
     "ModelSelectionResult",
+    "STAGE_B_CANDIDATE_SUITE",
+    "STAGE_B_WINNER_RULE_SHA256",
+    "StageBModelSelectionResult",
     "bind_frozen_development_authority",
     "VENUE_TICK_SUPPORT",
     "build_factor_claim_audit",
     "select_candidate_against_b0",
+    "select_stage_b_v2_winner",
 ]

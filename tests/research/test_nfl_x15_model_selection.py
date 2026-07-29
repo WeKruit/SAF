@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import math
 
 import pandas as pd
@@ -12,6 +13,7 @@ from prediction_market.research.nfl_x15_model_selection import (
     bind_frozen_development_authority,
     build_factor_claim_audit,
     select_candidate_against_b0,
+    select_stage_b_v2_winner,
 )
 from prediction_market.research.nfl_x15_models import X15ModelRun
 
@@ -27,6 +29,16 @@ FOLDS = (
     ("fold_03", tuple(range(1, 7)), (7, 8)),
     ("fold_04", tuple(range(1, 9)), (9, 10)),
     ("fold_05", tuple(range(1, 11)), (11, 12)),
+)
+STAGE_B_CANDIDATE_SUITE = (
+    ("regularized_logistic_v1", "D1"),
+    ("regularized_logistic_v1", "D2"),
+    ("regularized_logistic_v1", "D3"),
+    ("regularized_logistic_v1", "D4"),
+    ("shallow_xgboost_v1", "D1"),
+    ("shallow_xgboost_v1", "D2"),
+    ("shallow_xgboost_v1", "D3"),
+    ("shallow_xgboost_v1", "D4"),
 )
 
 
@@ -54,9 +66,51 @@ def _authority():
     )
 
 
-def _run_config(*, fold_ids: tuple[str, ...]) -> dict[str, object]:
+def _source_shards(
+    *,
+    fold_ids: tuple[str, ...],
+    candidate_model_id: str,
+    candidate_feature_block_id: str,
+) -> tuple[dict[str, object], ...]:
+    return tuple(
+        {
+            "fold_id": fold_id,
+            "model_id": model_id,
+            "feature_block_id": feature_block_id,
+            "manifest_sha256": (
+                "sha256:"
+                + f"{position * 2 + cell_position + 1:064x}"
+            ),
+            "shard_bundle_sha256": (
+                "sha256:"
+                + f"{position * 2 + cell_position + 101:064x}"
+            ),
+            "oof_predictions_sha256": (
+                "sha256:"
+                + f"{position * 2 + cell_position + 201:064x}"
+            ),
+        }
+        for position, fold_id in enumerate(fold_ids)
+        for cell_position, (model_id, feature_block_id) in enumerate(
+            (
+                ("b0_empirical_v1", "D0"),
+                (candidate_model_id, candidate_feature_block_id),
+            )
+        )
+    )
+
+
+def _run_config(
+    *,
+    fold_ids: tuple[str, ...],
+    candidate_model_id: str = "regularized_logistic_v1",
+    candidate_feature_block_id: str = "D4",
+) -> dict[str, object]:
     return {
-        "schema_version": "HistoricalTradesOnlyProbabilityPanelV1",
+        "schema_version": "HistoricalTradesOnlyProbabilityPanelV2",
+        "survival_probability_contract": (
+            "DISCRETE_INTERVAL_SURVIVAL_PRODUCT_V1"
+        ),
         "target_contract": TARGET_CONTRACT,
         "claim_boundary": CLAIM_BOUNDARY,
         "analysis_scope": (
@@ -78,7 +132,19 @@ def _run_config(*, fold_ids: tuple[str, ...]) -> dict[str, object]:
             "D4": (),
         },
         "fold_ids": fold_ids,
+        "model_ids": ("b0_empirical_v1", candidate_model_id),
+        "feature_block_ids": ("D0", candidate_feature_block_id),
         "transport_pairs": (),
+        "source_shards": _source_shards(
+            fold_ids=fold_ids,
+            candidate_model_id=candidate_model_id,
+            candidate_feature_block_id=candidate_feature_block_id,
+        ),
+        "source_batch_manifest_path": (
+            "batches/sha256-example.batch-manifest.json"
+        ),
+        "source_batch_manifest_sha256": "sha256:" + "b" * 64,
+        "source_batch_sha256": "sha256:" + "d" * 64,
     }
 
 
@@ -90,6 +156,8 @@ def _task4_predictions(
     *,
     complete: bool,
     unequal_episodes: bool = False,
+    candidate_model_id: str = "regularized_logistic_v1",
+    candidate_feature_block_id: str = "D4",
 ) -> pd.DataFrame:
     metadata = _development_metadata()
     if complete:
@@ -128,7 +196,11 @@ def _task4_predictions(
             for landmark, endpoint in ((3, 30), (5, 60)):
                 for model_id, block_id, good in (
                     ("b0_empirical_v1", "D0", False),
-                    ("regularized_logistic_v1", "D4", True),
+                    (
+                        candidate_model_id,
+                        candidate_feature_block_id,
+                        True,
+                    ),
                 ):
                     probability = 0.82 if truth else 0.18
                     if not good:
@@ -173,7 +245,7 @@ def _task4_predictions(
                             "target_contract": TARGET_CONTRACT,
                             "claim_boundary": CLAIM_BOUNDARY,
                             "schema_version": (
-                                "HistoricalTradesOnlyProbabilityPanelV1"
+                                "HistoricalTradesOnlyProbabilityPanelV2"
                             ),
                             "analysis_scope": (
                                 "HISTORICAL_TRADES_ONLY_SOURCE_TIME_"
@@ -213,19 +285,38 @@ def _run(
     *,
     complete: bool = True,
     unequal_episodes: bool = False,
+    candidate_model_id: str = "regularized_logistic_v1",
+    candidate_feature_block_id: str = "D4",
 ) -> X15ModelRun:
     fold_ids = tuple(fold[0] for fold in FOLDS) if complete else ("fold_01",)
+    run_config = _run_config(
+        fold_ids=fold_ids,
+        candidate_model_id=candidate_model_id,
+        candidate_feature_block_id=candidate_feature_block_id,
+    )
     return X15ModelRun(
         oof_predictions=_task4_predictions(
             complete=complete,
             unequal_episodes=unequal_episodes,
+            candidate_model_id=candidate_model_id,
+            candidate_feature_block_id=candidate_feature_block_id,
         ),
         conditional_quantiles=pd.DataFrame(),
         fold_metrics=pd.DataFrame(),
         support_audit=pd.DataFrame(),
         weight_audit=pd.DataFrame(),
-        run_config_sha256="sha256:" + "c" * 64,
-        run_config=_run_config(fold_ids=fold_ids),
+        run_config_sha256=selection_module._canonical_sha256(run_config),
+        run_config=run_config,
+    )
+
+
+def _stage_b_v2_runs() -> tuple[X15ModelRun, ...]:
+    return tuple(
+        _run(
+            candidate_model_id=model_id,
+            candidate_feature_block_id=feature_block_id,
+        )
+        for model_id, feature_block_id in STAGE_B_CANDIDATE_SUITE
     )
 
 
@@ -498,4 +589,375 @@ def test_diagnostic_block_and_nonexecution_contract_fail_closed() -> None:
     with pytest.raises(ModelSelectionError, match="claim_eligible=False"):
         select_candidate_against_b0(
             drifted, spec=_spec(), authority=_authority()
+        )
+
+
+def test_stage_b_v2_winner_interface_is_exposed() -> None:
+    assert callable(select_stage_b_v2_winner)
+    assert (
+        selection_module.STAGE_B_CANDIDATE_SUITE
+        == STAGE_B_CANDIDATE_SUITE
+    )
+
+
+@pytest.mark.parametrize(
+    ("schema_version", "survival_contract"),
+    [
+        ("HistoricalTradesOnlyProbabilityPanelV1", None),
+        ("HistoricalTradesOnlyProbabilityPanelV2", None),
+        (
+            "HistoricalTradesOnlyProbabilityPanelV2",
+            "CONDITIONAL_HEAD_PRODUCT_V0",
+        ),
+    ],
+)
+def test_stage_b_rejects_v1_or_missing_survival_contract(
+    schema_version: str,
+    survival_contract: str | None,
+) -> None:
+    runs = _stage_b_v2_runs()
+    run = runs[0]
+    run_config = dict(run.run_config)
+    run_config["schema_version"] = schema_version
+    if survival_contract is None:
+        run_config.pop("survival_probability_contract", None)
+    else:
+        run_config["survival_probability_contract"] = survival_contract
+    predictions = run.oof_predictions.copy()
+    predictions["schema_version"] = schema_version
+    drifted = replace(
+        run,
+        oof_predictions=predictions,
+        run_config=run_config,
+        run_config_sha256=selection_module._canonical_sha256(run_config),
+    )
+
+    with pytest.raises(
+        ModelSelectionError,
+        match=(
+            "HistoricalTradesOnlyProbabilityPanelV2"
+            if schema_version.endswith("V1")
+            else "survival_probability_contract"
+        ),
+    ):
+        select_stage_b_v2_winner(
+            (drifted, *runs[1:]),
+            authority=_authority(),
+        )
+
+
+def test_stage_b_requires_all_eight_frozen_candidates() -> None:
+    runs = _stage_b_v2_runs()
+
+    with pytest.raises(ModelSelectionError, match="all 8 frozen"):
+        select_stage_b_v2_winner(
+            runs[:-1],
+            authority=_authority(),
+        )
+
+
+def test_stage_b_consumes_eight_verified_projection_runs_end_to_end() -> None:
+    runs = _stage_b_v2_runs()
+    for run, candidate in zip(
+        runs, STAGE_B_CANDIDATE_SUITE, strict=True
+    ):
+        observed = set(
+            zip(
+                run.oof_predictions["model_id"],
+                run.oof_predictions["feature_block_id"],
+                strict=True,
+            )
+        )
+        assert observed == {("b0_empirical_v1", "D0"), candidate}
+
+    result = select_stage_b_v2_winner(
+        runs,
+        authority=_authority(),
+    )
+
+    assert len(result.candidate_results) == 8
+    assert result.candidate_audit["gate_selected"].all()
+    assert result.winner is not None
+    assert (
+        result.winner.spec.candidate_model_id,
+        result.winner.spec.candidate_feature_block_id,
+    ) == STAGE_B_CANDIDATE_SUITE[0]
+
+
+def _stub_suite_results(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    selected_means: dict[tuple[str, str], tuple[bool, float, float]],
+) -> None:
+    base = select_candidate_against_b0(
+        _run(),
+        spec=_spec(),
+        authority=_authority(),
+    )
+
+    def stub(
+        model_run: X15ModelRun,
+        *,
+        spec: FrozenSelectionSpec,
+        authority,
+    ):
+        del authority
+        selected, mean, standard_error = selected_means[
+            (spec.candidate_model_id, spec.candidate_feature_block_id)
+        ]
+        spread = standard_error
+        game_losses = pd.DataFrame(
+            {
+                "game_id": ("stub-game-1", "stub-game-2"),
+                "loss_improvement": (
+                    mean - spread,
+                    mean + spread,
+                ),
+            }
+        )
+        return replace(
+            base,
+            spec=spec,
+            diagnostic_status=(
+                "HISTORICAL_SIGNAL_CANDIDATE"
+                if selected
+                else "HISTORICAL_SIGNAL_REJECTED"
+            ),
+            integrated_mean_improvement=mean,
+            integrated_ci_low=mean - 0.01,
+            integrated_ci_high=mean + 0.01,
+            integrated_gate_passed=selected,
+            anchor_mean_improvement=max(mean, 0.0),
+            anchor_sign_reversed=False,
+            anchor_gate_passed=selected,
+            game_losses=game_losses,
+            run_config_sha256=model_run.run_config_sha256,
+            selected=selected,
+        )
+
+    monkeypatch.setattr(
+        selection_module,
+        "select_candidate_against_b0",
+        stub,
+    )
+
+
+def test_stage_b_no_gate_passes_means_no_model_advance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_suite_results(
+        monkeypatch,
+        selected_means={
+            pair: (False, -0.01, 0.01)
+            for pair in STAGE_B_CANDIDATE_SUITE
+        },
+    )
+
+    result = select_stage_b_v2_winner(
+        _stage_b_v2_runs(),
+        authority=_authority(),
+    )
+
+    assert result.decision_status == "NO_MODEL_ADVANCE"
+    assert result.winner is None
+    assert len(result.candidate_audit) == 8
+    assert not result.candidate_audit["within_one_se"].any()
+    assert not result.candidate_audit["final_winner"].any()
+
+
+def test_stage_b_one_se_rule_selects_simpler_eligible_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected_means = {
+        pair: (True, 0.10, 0.01)
+        for pair in STAGE_B_CANDIDATE_SUITE
+    }
+    selected_means[("regularized_logistic_v1", "D1")] = (
+        True,
+        0.16,
+        0.01,
+    )
+    selected_means[("shallow_xgboost_v1", "D4")] = (
+        True,
+        0.20,
+        0.05,
+    )
+    _stub_suite_results(
+        monkeypatch,
+        selected_means=selected_means,
+    )
+
+    result = select_stage_b_v2_winner(
+        _stage_b_v2_runs(),
+        authority=_authority(),
+    )
+
+    assert result.decision_status == "MODEL_ADVANCE"
+    assert result.winner is not None
+    assert (
+        result.winner.spec.candidate_model_id,
+        result.winner.spec.candidate_feature_block_id,
+    ) == ("regularized_logistic_v1", "D1")
+    assert result.best_standard_error == pytest.approx(0.05)
+    assert result.one_se_threshold == pytest.approx(0.15)
+    assert result.candidate_audit["complexity_rank"].tolist() == list(
+        range(1, 9)
+    )
+    assert result.candidate_audit["winner_rule_sha256"].nunique() == 1
+    assert result.candidate_audit["cohort_authority_sha256"].nunique() == 1
+    assert result.candidate_audit["run_config_sha256"].nunique() == 8
+    assert (
+        result.candidate_audit["shared_run_config_sha256"].nunique()
+        == 1
+    )
+    assert result.candidate_audit_sha256 == (
+        selection_module._canonical_sha256(
+            result.candidate_audit.to_dict("records")
+        )
+    )
+    assert result.suite_run_config_sha256 == (
+        selection_module._canonical_sha256(
+            tuple(
+                {
+                    "candidate": candidate,
+                    "run_config_sha256": run.run_config_sha256,
+                }
+                for candidate, run in zip(
+                    STAGE_B_CANDIDATE_SUITE,
+                    _stage_b_v2_runs(),
+                    strict=True,
+                )
+            )
+        )
+    )
+    assert not (
+        result.candidate_audit["candidate_feature_block_id"] == "D0"
+    ).any()
+
+
+def test_stage_b_clearly_better_candidate_outside_one_se_wins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected_means = {
+        pair: (True, 0.10, 0.01)
+        for pair in STAGE_B_CANDIDATE_SUITE
+    }
+    selected_means[("regularized_logistic_v1", "D1")] = (
+        True,
+        0.20,
+        0.01,
+    )
+    selected_means[("shallow_xgboost_v1", "D4")] = (
+        True,
+        0.30,
+        0.01,
+    )
+    _stub_suite_results(
+        monkeypatch,
+        selected_means=selected_means,
+    )
+
+    result = select_stage_b_v2_winner(
+        _stage_b_v2_runs(),
+        authority=_authority(),
+    )
+
+    assert result.winner is not None
+    assert (
+        result.winner.spec.candidate_model_id,
+        result.winner.spec.candidate_feature_block_id,
+    ) == ("shallow_xgboost_v1", "D4")
+    simple = result.candidate_audit.loc[
+        result.candidate_audit["complexity_rank"].eq(1)
+    ].iloc[0]
+    assert bool(simple["within_one_se"]) is False
+
+
+def test_stage_b_kalshi_rows_cannot_satisfy_candidate_suite() -> None:
+    runs = _stage_b_v2_runs()
+    run = runs[0]
+    missing_pair = STAGE_B_CANDIDATE_SUITE[0]
+    predictions = run.oof_predictions.copy()
+    kalshi_mask = (
+        predictions["model_id"].eq(missing_pair[0])
+        & predictions["feature_block_id"].eq(missing_pair[1])
+    )
+    predictions.loc[kalshi_mask, "venue"] = "kalshi"
+    predictions.loc[kalshi_mask, "training_venue"] = "kalshi"
+    predictions.loc[kalshi_mask, "calibration_venue"] = "kalshi"
+
+    with pytest.raises(ModelSelectionError, match="all 8 frozen"):
+        select_stage_b_v2_winner(
+            (
+                replace(run, oof_predictions=predictions),
+                *runs[1:],
+            ),
+            authority=_authority(),
+        )
+
+
+def test_stage_b_rejects_duplicate_projection_candidate_identity() -> None:
+    runs = _stage_b_v2_runs()
+
+    with pytest.raises(ModelSelectionError, match="duplicate candidate"):
+        select_stage_b_v2_winner(
+            (*runs[:-1], runs[0]),
+            authority=_authority(),
+        )
+
+
+def test_stage_b_rejects_wrong_projection_run_identity() -> None:
+    runs = _stage_b_v2_runs()
+    run = runs[0]
+    run_config = dict(run.run_config)
+    run_config["model_ids"] = (
+        "b0_empirical_v1",
+        "not_a_real_model",
+    )
+    drifted = replace(
+        run,
+        run_config=run_config,
+        run_config_sha256=selection_module._canonical_sha256(run_config),
+    )
+
+    with pytest.raises(ModelSelectionError, match="run_config identity"):
+        select_stage_b_v2_winner(
+            (drifted, *runs[1:]),
+            authority=_authority(),
+        )
+
+
+def test_stage_b_rejects_run_config_digest_mismatch() -> None:
+    runs = _stage_b_v2_runs()
+    run = runs[0]
+    run_config = dict(run.run_config)
+    run_config["source_batch_sha256"] = "sha256:" + "e" * 64
+
+    with pytest.raises(ModelSelectionError, match="SHA-256 mismatch"):
+        select_stage_b_v2_winner(
+            (
+                replace(run, run_config=run_config),
+                *runs[1:],
+            ),
+            authority=_authority(),
+        )
+
+
+def test_stage_b_rejects_duplicate_source_shard_identity() -> None:
+    runs = _stage_b_v2_runs()
+    run = runs[0]
+    run_config = dict(run.run_config)
+    source_shards = list(run_config["source_shards"])
+    source_shards[-1] = source_shards[0]
+    run_config["source_shards"] = tuple(source_shards)
+    drifted = replace(
+        run,
+        run_config=run_config,
+        run_config_sha256=selection_module._canonical_sha256(run_config),
+    )
+
+    with pytest.raises(ModelSelectionError, match="source_shards"):
+        select_stage_b_v2_winner(
+            (drifted, *runs[1:]),
+            authority=_authority(),
         )
