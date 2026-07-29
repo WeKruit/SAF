@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from dataclasses import dataclass
 from typing import Final, Iterable, Mapping, Sequence
 
@@ -146,6 +147,7 @@ _FOLD_WEEK_WINDOWS: Final[
 )
 _PANEL_REQUIRED: Final[set[str]] = {
     "schema_version",
+    "cohort_authority_sha256",
     "game_id",
     "atomic_information_episode_id",
     "venue",
@@ -190,6 +192,7 @@ _DECISION_LEAKAGE_KEYS: Final[set[str]] = {
 _BINARY_MIN_GAMES: Final[int] = 2
 _DIRECTION_MIN_GAMES: Final[int] = 3
 _PROBABILITY_EPSILON: Final[float] = 1e-6
+_SHA256_RE: Final[re.Pattern[str]] = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _XGB_PARAMS: Final[dict[str, object]] = {
     "n_estimators": 16,
     "max_depth": 2,
@@ -414,6 +417,18 @@ def _panel_frame(panel: object) -> pd.DataFrame:
         raise X15ModelInputError("VenueReactionPanelV3 must be nonempty")
     if not frame["schema_version"].eq("VenueReactionPanelV3").all():
         raise X15ModelInputError("schema_version must be VenueReactionPanelV3")
+    authorities = frame["cohort_authority_sha256"]
+    if authorities.isna().any() or not authorities.map(
+        lambda value: type(value) is str
+        and _SHA256_RE.fullmatch(value) is not None
+    ).all():
+        raise X15ModelInputError(
+            "cohort_authority_sha256 must contain sha256 digests"
+        )
+    if authorities.nunique() != 1:
+        raise X15ModelInputError(
+            "one cohort authority sha256 is required per Stage B run"
+        )
     if frame.duplicated(list(_PANEL_GRAIN)).any():
         raise X15ModelInputError("VenueReactionPanelV3 grain is not unique")
     for column in (
@@ -501,8 +516,9 @@ def _decision_feature_frame(frame: pd.DataFrame) -> pd.DataFrame:
             else:
                 record[feature] = parsed.get(feature)
         for column in sorted(all_multi_hot):
-            record[column] = bool(
-                multi_hot.get(column.removeprefix("multi_hot__"), False)
+            raw_key = column.removeprefix("multi_hot__")
+            record[column] = (
+                bool(multi_hot[raw_key]) if raw_key in multi_hot else pd.NA
             )
         records.append(record)
     return pd.DataFrame(records, index=frame.index)
@@ -515,7 +531,10 @@ def _sha256_text_exact(value: object) -> str:
 
 
 def _resolved_columns(
-    feature_frame: pd.DataFrame, block_id: str
+    feature_frame: pd.DataFrame,
+    block_id: str,
+    *,
+    vocabulary_indexes: pd.Index,
 ) -> tuple[str, ...]:
     requested = FEATURE_BLOCKS[block_id]
     resolved: list[str] = []
@@ -526,6 +545,9 @@ def _resolved_columns(
                     value
                     for value in feature_frame.columns
                     if value.startswith("multi_hot__")
+                    and feature_frame.loc[vocabulary_indexes, value]
+                    .notna()
+                    .any()
                 )
             )
         else:
@@ -546,7 +568,9 @@ def _feature_bundle(
     block_id: str,
     train_frame: pd.DataFrame,
 ) -> _FeatureBundle:
-    columns = _resolved_columns(feature_frame, block_id)
+    columns = _resolved_columns(
+        feature_frame, block_id, vocabulary_indexes=train_indexes
+    )
     train = feature_frame.loc[train_indexes, list(columns)].copy()
     validation = feature_frame.loc[validation_indexes, list(columns)].copy()
     categorical = [
@@ -561,6 +585,9 @@ def _feature_bundle(
     ]
     numeric = [column for column in columns if column not in categorical]
     for column in numeric:
+        if column.startswith("multi_hot__"):
+            train[column] = train[column].fillna(False)
+            validation[column] = validation[column].fillna(False)
         train[column] = pd.to_numeric(train[column], errors="coerce")
         validation[column] = pd.to_numeric(validation[column], errors="coerce")
     for column in categorical:
@@ -1073,15 +1100,22 @@ def _calibrate_direction(
 def _support_row(
     fold: X15WeekFold,
     *,
-    venue: str,
+    training_venue: str,
+    evaluation_venue: str,
+    transport_mode: str,
     block_id: str,
     fitted: _FittedHead,
     train: pd.DataFrame,
+    cohort_authority_sha256: str,
 ) -> dict[str, object]:
     mask = _head_mask(train, fitted.head)
     return {
         "fold_id": fold.fold_id,
-        "venue": venue,
+        "cohort_authority_sha256": cohort_authority_sha256,
+        "venue": evaluation_venue,
+        "training_venue": training_venue,
+        "calibration_venue": training_venue,
+        "transport_mode": transport_mode,
         "feature_block_id": block_id,
         "model_id": fitted.model_id,
         "head": fitted.head,
@@ -1089,6 +1123,9 @@ def _support_row(
         "support_reason": fitted.reason,
         "training_row_count": int(mask.sum()),
         "training_game_count": int(train.loc[mask, "game_id"].nunique()),
+        "training_game_ids": tuple(
+            sorted(train["game_id"].astype(str).unique())
+        ),
         "training_classes": fitted.classes,
         "binary_min_games": _BINARY_MIN_GAMES,
         "direction_min_games": _DIRECTION_MIN_GAMES,
@@ -1100,12 +1137,17 @@ def _prediction_rows(
     validation: pd.DataFrame,
     *,
     fold: X15WeekFold,
-    venue: str,
+    training_venue: str,
+    evaluation_venue: str,
+    transport_mode: str,
     block_id: str,
     model_id: str,
     feature_block_sha256: str,
     fold_sha256: str,
     training_data_sha256: str,
+    training_game_ids: tuple[str, ...],
+    validation_game_ids: tuple[str, ...],
+    cohort_authority_sha256: str,
     bundle: _FeatureBundle,
     fits: Mapping[str, _FittedHead],
     calibrators: Mapping[
@@ -1122,24 +1164,25 @@ def _prediction_rows(
         rows.append(
             {
                 "source_row_id": int(source["_source_row_id"]),
+                "cohort_authority_sha256": cohort_authority_sha256,
                 "game_id": source["game_id"],
                 "nfl_week": int(source["nfl_week"]),
                 "atomic_information_episode_id": source[
                     "atomic_information_episode_id"
                 ],
-                "venue": venue,
-                "training_venue": venue,
+                "venue": evaluation_venue,
+                "training_venue": training_venue,
+                "calibration_venue": training_venue,
+                "transport_mode": transport_mode,
                 "actual_home_contract_id": source["actual_home_contract_id"],
                 "landmark_seconds": int(source["landmark_seconds"]),
                 "endpoint_seconds": int(source["endpoint_seconds"]),
                 "fold_id": fold.fold_id,
                 "train_weeks": fold.train_weeks,
                 "validation_weeks": fold.validation_weeks,
-                "training_game_ids": fold.train_game_ids,
-                "validation_game_ids": fold.validation_game_ids,
-                "preprocessor_fit_game_ids": tuple(
-                    sorted(set(fold.train_game_ids))
-                ),
+                "training_game_ids": training_game_ids,
+                "validation_game_ids": validation_game_ids,
+                "preprocessor_fit_game_ids": training_game_ids,
                 "model_id": model_id,
                 "feature_block_id": block_id,
                 "decision_eligible": True,
@@ -1370,7 +1413,15 @@ def _direction_game_metrics(group: pd.DataFrame) -> dict[str, float]:
 
 def _probability_metric_rows(predictions: pd.DataFrame) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
-    keys = ["fold_id", "venue", "model_id", "feature_block_id"]
+    keys = [
+        "fold_id",
+        "venue",
+        "training_venue",
+        "calibration_venue",
+        "transport_mode",
+        "model_id",
+        "feature_block_id",
+    ]
     for key, candidate in predictions.groupby(keys, sort=True):
         game_rows: list[dict[str, object]] = []
         for game_id, game in candidate.groupby("game_id", sort=True):
@@ -1398,8 +1449,8 @@ def _probability_metric_rows(predictions: pd.DataFrame) -> list[dict[str, object
                         "head": head,
                         "metric_name": metric_name,
                         "metric_value": metric_value,
-                        "cluster_interval_low": math.nan,
-                        "cluster_interval_high": math.nan,
+                        "game_effect_p025": math.nan,
+                        "game_effect_p975": math.nan,
                     }
                     rows.append(row)
                     game_rows.append(row)
@@ -1418,10 +1469,10 @@ def _probability_metric_rows(predictions: pd.DataFrame) -> list[dict[str, object
                     "head": head,
                     "metric_name": metric_name,
                     "metric_value": float(np.mean(finite)) if len(finite) else math.nan,
-                    "cluster_interval_low": (
+                    "game_effect_p025": (
                         float(np.quantile(finite, 0.025)) if len(finite) else math.nan
                     ),
-                    "cluster_interval_high": (
+                    "game_effect_p975": (
                         float(np.quantile(finite, 0.975)) if len(finite) else math.nan
                     ),
                 }
@@ -1465,10 +1516,15 @@ def _magnitude_outputs(
     validation: pd.DataFrame,
     bundle: _FeatureBundle,
     fold: X15WeekFold,
-    venue: str,
+    training_venue: str,
+    evaluation_venue: str,
+    transport_mode: str,
     block_id: str,
     random_state: int,
     support_contract: QuantileSupportContract,
+    validation_weights: pd.Series,
+    training_game_ids: tuple[str, ...],
+    cohort_authority_sha256: str,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     mask = (
         train["target_eligible"]
@@ -1483,8 +1539,6 @@ def _magnitude_outputs(
     training_features = pd.DataFrame(
         bundle.train_matrix[positions], columns=numeric_columns
     )
-    if training_features.empty:
-        return [], []
     fitted = fit_directional_quantiles(
         training_features,
         train.loc[mask, "_conditional_magnitude"].to_numpy(dtype=float),
@@ -1519,7 +1573,11 @@ def _magnitude_outputs(
         support_rows.append(
             {
                 "fold_id": fold.fold_id,
-                "venue": venue,
+                "cohort_authority_sha256": cohort_authority_sha256,
+                "venue": evaluation_venue,
+                "training_venue": training_venue,
+                "calibration_venue": training_venue,
+                "transport_mode": transport_mode,
                 "feature_block_id": block_id,
                 "model_id": QUANTILE_MODEL_ID,
                 "head": f"MAGNITUDE_{direction}",
@@ -1531,7 +1589,10 @@ def _magnitude_outputs(
                 ),
                 "training_row_count": support.row_count,
                 "training_game_count": support.game_count,
-                "training_classes": (direction,),
+                "training_game_ids": training_game_ids,
+                "training_classes": (
+                    (direction,) if support.row_count > 0 else ()
+                ),
                 "primary_min_rows": support.primary_min_rows,
                 "primary_min_games": support.primary_min_games,
                 "extreme_min_rows": support.extreme_min_rows,
@@ -1554,13 +1615,16 @@ def _magnitude_outputs(
             output_rows.append(
                 {
                     "source_row_id": int(source["_source_row_id"]),
+                    "cohort_authority_sha256": cohort_authority_sha256,
                     "game_id": source["game_id"],
                     "nfl_week": int(source["nfl_week"]),
                     "atomic_information_episode_id": source[
                         "atomic_information_episode_id"
                     ],
-                    "venue": venue,
-                    "training_venue": venue,
+                    "venue": evaluation_venue,
+                    "training_venue": training_venue,
+                    "calibration_venue": training_venue,
+                    "transport_mode": transport_mode,
                     "fold_id": fold.fold_id,
                     "feature_block_id": block_id,
                     "model_id": QUANTILE_MODEL_ID,
@@ -1575,6 +1639,12 @@ def _magnitude_outputs(
                         if bool(source["target_eligible"])
                         and source["_direction_truth"] == direction
                         else math.nan
+                    ),
+                    "magnitude_weight": (
+                        float(validation_weights.loc[source.name])
+                        if bool(source["target_eligible"])
+                        and source["_direction_truth"] == direction
+                        else 0.0
                     ),
                     "support_status": support.primary_status,
                     "extreme_quantile_status": support.extreme_status,
@@ -1600,9 +1670,7 @@ def _magnitude_outputs(
                             "support_contract": support_contract,
                         }
                     ),
-                    "preprocessor_fit_game_ids": tuple(
-                        sorted(set(fold.train_game_ids))
-                    ),
+                    "preprocessor_fit_game_ids": training_game_ids,
                 }
             )
     return output_rows, support_rows
@@ -1614,7 +1682,15 @@ def _magnitude_metric_rows(
     if quantiles.empty:
         return []
     rows: list[dict[str, object]] = []
-    keys = ["fold_id", "venue", "model_id", "feature_block_id"]
+    keys = [
+        "fold_id",
+        "venue",
+        "training_venue",
+        "calibration_venue",
+        "transport_mode",
+        "model_id",
+        "feature_block_id",
+    ]
     primary = [f"q{int(value * 100):02d}" for value in PRIMARY_QUANTILES]
     for key, candidate in quantiles.groupby(keys, sort=True):
         game_values: list[dict[str, object]] = []
@@ -1627,6 +1703,9 @@ def _magnitude_metric_rows(
             metrics = magnitude_distribution_metrics(
                 game.loc[valid, "conditional_magnitude_truth"].to_numpy(),
                 game.loc[valid, primary],
+                sample_weight=game.loc[valid, "magnitude_weight"].to_numpy(
+                    dtype=float
+                ),
             )
             for metric_name, value in metrics.items():
                 row = {
@@ -1636,8 +1715,8 @@ def _magnitude_metric_rows(
                     "head": "MAGNITUDE",
                     "metric_name": metric_name,
                     "metric_value": value,
-                    "cluster_interval_low": math.nan,
-                    "cluster_interval_high": math.nan,
+                    "game_effect_p025": math.nan,
+                    "game_effect_p975": math.nan,
                 }
                 rows.append(row)
                 game_values.append(row)
@@ -1654,8 +1733,8 @@ def _magnitude_metric_rows(
                     "head": "MAGNITUDE",
                     "metric_name": metric_name,
                     "metric_value": float(np.mean(finite)),
-                    "cluster_interval_low": float(np.quantile(finite, 0.025)),
-                    "cluster_interval_high": float(np.quantile(finite, 0.975)),
+                    "game_effect_p025": float(np.quantile(finite, 0.025)),
+                    "game_effect_p975": float(np.quantile(finite, 0.975)),
                 }
             )
     return rows
@@ -1667,6 +1746,7 @@ def run_x15_walk_forward(
     model_ids: Sequence[str] = MODEL_IDS,
     feature_block_ids: Sequence[str] = tuple(FEATURE_BLOCKS),
     fold_ids: Sequence[str] | None = None,
+    transport_pairs: Sequence[tuple[str, str]] = (),
     include_magnitude: bool = True,
     quantile_support_contract: QuantileSupportContract = QuantileSupportContract(),
     random_state: int = RANDOM_STATE,
@@ -1682,6 +1762,9 @@ def run_x15_walk_forward(
     if decision.empty:
         raise X15ModelInputError("panel has no decision-eligible rows")
     feature_frame = _decision_feature_frame(decision)
+    cohort_authority_sha256 = str(
+        decision["cohort_authority_sha256"].iloc[0]
+    )
     unknown_models = sorted(set(model_ids) - set(MODEL_IDS))
     unknown_blocks = sorted(set(feature_block_ids) - set(FEATURE_BLOCKS))
     if unknown_models:
@@ -1692,6 +1775,31 @@ def run_x15_walk_forward(
         raise X15ModelInputError("model_ids must be unique")
     if len(set(feature_block_ids)) != len(tuple(feature_block_ids)):
         raise X15ModelInputError("feature_block_ids must be unique")
+    venues = tuple(sorted(decision["venue"].unique()))
+    normalized_transport_pairs: list[tuple[str, str]] = []
+    for pair in transport_pairs:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            raise X15ModelInputError(
+                "transport_pairs must contain (source, target) venue pairs"
+            )
+        source_venue, target_venue = (str(pair[0]), str(pair[1]))
+        if source_venue == target_venue:
+            raise X15ModelInputError(
+                "transport source and target venues must differ"
+            )
+        if source_venue not in venues or target_venue not in venues:
+            raise X15ModelInputError(
+                "transport source and target must exist in the panel"
+            )
+        normalized_transport_pairs.append((source_venue, target_venue))
+    if len(set(normalized_transport_pairs)) != len(normalized_transport_pairs):
+        raise X15ModelInputError("transport_pairs must be unique")
+    execution_units = [
+        (venue, venue, "VENUE_SPECIFIC") for venue in venues
+    ] + [
+        (source, target, "NO_TARGET_RECALIBRATION")
+        for source, target in normalized_transport_pairs
+    ]
     folds = build_x15_week_folds(decision)
     available_fold_ids = {fold.fold_id for fold in folds}
     selected_fold_ids = (
@@ -1708,18 +1816,19 @@ def run_x15_walk_forward(
         "model_ids": tuple(model_ids),
         "feature_block_ids": tuple(feature_block_ids),
         "fold_ids": selected_fold_ids,
+        "transport_pairs": tuple(normalized_transport_pairs),
         "include_magnitude": bool(include_magnitude),
         "random_state": int(random_state),
         "feature_blocks": FEATURE_BLOCKS,
         "xgb_params": _XGB_PARAMS,
         "quantile_support_contract": quantile_support_contract,
+        "cohort_authority_sha256": cohort_authority_sha256,
     }
     run_hash = _sha256(run_config)
     prediction_rows: list[dict[str, object]] = []
     quantile_rows: list[dict[str, object]] = []
     support_rows: list[dict[str, object]] = []
     weight_rows: list[dict[str, object]] = []
-    venues = tuple(sorted(decision["venue"].unique()))
     for fold_index, fold in enumerate(selected_folds):
         fold_hash = _sha256(
             {
@@ -1730,17 +1839,27 @@ def run_x15_walk_forward(
                 "validation_game_ids": fold.validation_game_ids,
             }
         )
-        for venue_index, venue in enumerate(venues):
+        for unit_index, (
+            training_venue,
+            evaluation_venue,
+            transport_mode,
+        ) in enumerate(execution_units):
             train = decision[
                 decision["game_id"].isin(fold.train_game_ids)
-                & decision["venue"].eq(venue)
+                & decision["venue"].eq(training_venue)
             ]
             validation = decision[
                 decision["game_id"].isin(fold.validation_game_ids)
-                & decision["venue"].eq(venue)
+                & decision["venue"].eq(evaluation_venue)
             ]
             if train.empty or validation.empty:
                 continue
+            actual_training_game_ids = tuple(
+                sorted(train["game_id"].astype(str).unique())
+            )
+            actual_validation_game_ids = tuple(
+                sorted(validation["game_id"].astype(str).unique())
+            )
             training_data_sha256 = _training_data_hash(train)
             validation_weights = {
                 head: hierarchical_sample_weights(
@@ -1748,6 +1867,14 @@ def run_x15_walk_forward(
                 )
                 for head in ("S_H", "O_H_GIVEN_S", "DIRECTION")
             }
+            magnitude_validation_mask = (
+                validation["target_eligible"]
+                & validation["_direction_truth"].isin(DIRECTION_CONDITIONS)
+                & validation["_conditional_magnitude"].notna()
+            )
+            validation_weights["MAGNITUDE"] = hierarchical_sample_weights(
+                validation, magnitude_validation_mask
+            )
             for head, weights in validation_weights.items():
                 for game_id, values in weights.groupby(
                     validation["game_id"], sort=True
@@ -1755,7 +1882,10 @@ def run_x15_walk_forward(
                     weight_rows.append(
                         {
                             "fold_id": fold.fold_id,
-                            "venue": venue,
+                            "venue": evaluation_venue,
+                            "training_venue": training_venue,
+                            "calibration_venue": training_venue,
+                            "transport_mode": transport_mode,
                             "partition": "VALIDATION",
                             "head": head,
                             "game_id": game_id,
@@ -1782,7 +1912,7 @@ def run_x15_walk_forward(
                     seed = (
                         int(random_state)
                         + fold_index * 1_000
-                        + venue_index * 100
+                        + unit_index * 100
                         + block_index * 10
                         + model_index
                     )
@@ -1807,10 +1937,13 @@ def run_x15_walk_forward(
                         support_rows.append(
                             _support_row(
                                 fold,
-                                venue=venue,
+                                training_venue=training_venue,
+                                evaluation_venue=evaluation_venue,
+                                transport_mode=transport_mode,
                                 block_id=block_id,
                                 fitted=fitted,
                                 train=train,
+                                cohort_authority_sha256=cohort_authority_sha256,
                             )
                         )
                         for game_id, values in training_weights.groupby(
@@ -1819,7 +1952,10 @@ def run_x15_walk_forward(
                             weight_rows.append(
                                 {
                                     "fold_id": fold.fold_id,
-                                    "venue": venue,
+                                    "venue": evaluation_venue,
+                                    "training_venue": training_venue,
+                                    "calibration_venue": training_venue,
+                                    "transport_mode": transport_mode,
                                     "partition": "TRAINING",
                                     "head": head,
                                     "game_id": game_id,
@@ -1847,12 +1983,17 @@ def run_x15_walk_forward(
                         _prediction_rows(
                             validation,
                             fold=fold,
-                            venue=venue,
+                            training_venue=training_venue,
+                            evaluation_venue=evaluation_venue,
+                            transport_mode=transport_mode,
                             block_id=block_id,
                             model_id=model_id,
                             feature_block_sha256=feature_block_hash,
                             fold_sha256=fold_hash,
                             training_data_sha256=training_data_sha256,
+                            training_game_ids=actual_training_game_ids,
+                            validation_game_ids=actual_validation_game_ids,
+                            cohort_authority_sha256=cohort_authority_sha256,
                             bundle=bundle,
                             fits=fits,
                             calibrators=calibrators,
@@ -1867,10 +2008,15 @@ def run_x15_walk_forward(
                         validation=validation,
                         bundle=bundle,
                         fold=fold,
-                        venue=venue,
+                        training_venue=training_venue,
+                        evaluation_venue=evaluation_venue,
+                        transport_mode=transport_mode,
                         block_id=block_id,
-                        random_state=int(random_state) + fold_index + venue_index,
+                        random_state=int(random_state) + fold_index + unit_index,
                         support_contract=quantile_support_contract,
+                        validation_weights=validation_weights["MAGNITUDE"],
+                        training_game_ids=actual_training_game_ids,
+                        cohort_authority_sha256=cohort_authority_sha256,
                     )
                     quantile_rows.extend(output)
                     support_rows.extend(support)
@@ -1887,6 +2033,8 @@ def run_x15_walk_forward(
     sort_predictions = [
         "fold_id",
         "venue",
+        "training_venue",
+        "transport_mode",
         "feature_block_id",
         "model_id",
         "game_id",
@@ -1902,6 +2050,8 @@ def run_x15_walk_forward(
             [
                 "fold_id",
                 "venue",
+                "training_venue",
+                "transport_mode",
                 "feature_block_id",
                 "model_id",
                 "game_id",
@@ -1915,6 +2065,8 @@ def run_x15_walk_forward(
             [
                 "fold_id",
                 "venue",
+                "training_venue",
+                "transport_mode",
                 "feature_block_id",
                 "model_id",
                 "head",
@@ -1930,6 +2082,8 @@ def run_x15_walk_forward(
             [
                 "fold_id",
                 "venue",
+                "training_venue",
+                "transport_mode",
                 "feature_block_id",
                 "model_id",
                 "head",
@@ -1938,7 +2092,15 @@ def run_x15_walk_forward(
         ).reset_index(drop=True)
     if not weights.empty:
         weights = weights.sort_values(
-            ["fold_id", "venue", "partition", "head", "game_id"],
+            [
+                "fold_id",
+                "venue",
+                "training_venue",
+                "transport_mode",
+                "partition",
+                "head",
+                "game_id",
+            ],
             kind="mergesort",
         ).reset_index(drop=True)
     return X15ModelRun(

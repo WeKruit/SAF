@@ -12,6 +12,7 @@ from prediction_market.research.nfl_x15_models import (
     MODEL_IDS,
     X15ModelInputError,
     X15ModelRun,
+    _magnitude_metric_rows,
     build_x15_week_folds,
     hierarchical_sample_weights,
     run_x15_walk_forward,
@@ -113,6 +114,9 @@ def _panel() -> pd.DataFrame:
                 rows.append(
                     {
                         "schema_version": "VenueReactionPanelV3",
+                        "cohort_authority_sha256": _sha256_text(
+                            "frozen-development-authority"
+                        ),
                         "game_id": game_id,
                         "atomic_information_episode_id": episode_id,
                         "venue": venue,
@@ -336,6 +340,43 @@ def test_heldout_features_never_fit_outer_transformer_or_calibrator() -> None:
     )
 
 
+def test_future_only_multi_hot_tag_cannot_change_fold_schema_or_predictions() -> None:
+    frame = _panel()
+    tampered = frame.copy(deep=True)
+    future = (
+        tampered["nfl_week"].eq(3)
+        & tampered["venue"].eq("kalshi")
+        & tampered["game_id"].str.endswith("G00")
+    )
+    decoded = json.loads(tampered.loc[future, "decision_features_json"].iloc[0])
+    decoded["multi_hot_features"]["event_tag__future_only"] = True
+    decision_json = json.dumps(decoded, sort_keys=True, separators=(",", ":"))
+    tampered.loc[future, "decision_features_json"] = decision_json
+    tampered.loc[future, "decision_feature_sha256"] = _sha256_text(decision_json)
+
+    kwargs = {
+        "model_ids": ("regularized_logistic_v1",),
+        "feature_block_ids": ("B3",),
+        "fold_ids": ("fold_01",),
+        "include_magnitude": False,
+    }
+    first = run_x15_walk_forward(frame, **kwargs).oof_predictions
+    second = run_x15_walk_forward(tampered, **kwargs).oof_predictions
+    compared = [
+        "source_row_id",
+        "model_id",
+        "venue",
+        "preprocessor_training_sha256",
+        "s_h_raw_probability",
+        "o_h_given_s_raw_probability",
+        "direction_raw_prob_down",
+        "direction_raw_prob_no_move",
+        "direction_raw_prob_up",
+    ]
+
+    pd.testing.assert_frame_equal(first.loc[:, compared], second.loc[:, compared])
+
+
 def test_missing_endpoint_is_retained_as_unavailable_and_never_no_move() -> None:
     panel = _panel()
     missing_mask = (
@@ -439,6 +480,191 @@ def test_runner_connects_oof_features_to_conditional_quantile_distribution() -> 
     assert not supported.empty
     assert np.all(supported.to_numpy() >= 0)
     assert np.all(np.diff(supported.to_numpy(), axis=1) >= 0)
+
+
+def test_fold_metrics_label_game_effect_quantiles_as_descriptive_not_ci() -> None:
+    metrics = _small_run(_panel()).fold_metrics
+
+    assert "cluster_interval_low" not in metrics
+    assert "cluster_interval_high" not in metrics
+    assert {"game_effect_p025", "game_effect_p975"}.issubset(metrics)
+
+
+def test_magnitude_metrics_use_validation_hierarchical_weights() -> None:
+    quantiles = pd.DataFrame(
+        {
+            "fold_id": ["fold_01", "fold_01"],
+            "venue": ["kalshi", "kalshi"],
+            "training_venue": ["kalshi", "kalshi"],
+            "calibration_venue": ["kalshi", "kalshi"],
+            "transport_mode": ["VENUE_SPECIFIC", "VENUE_SPECIFIC"],
+            "model_id": ["directional_quantile_xgboost_v1"] * 2,
+            "feature_block_id": ["B0", "B0"],
+            "game_id": ["g1", "g1"],
+            "conditional_magnitude_truth": [0.0, 1.0],
+            "magnitude_weight": [0.9, 0.1],
+            "q10": [0.0, 0.0],
+            "q25": [0.0, 0.0],
+            "q50": [0.0, 0.0],
+            "q75": [0.0, 0.0],
+            "q90": [0.0, 0.0],
+        }
+    )
+
+    rows = pd.DataFrame(_magnitude_metric_rows(quantiles))
+    q50 = rows[
+        rows["metric_scope"].eq("GAME")
+        & rows["metric_name"].eq("pinball_q50")
+    ]
+
+    assert q50["metric_value"].iloc[0] == pytest.approx(0.05)
+
+
+def test_zero_moving_magnitude_rows_emit_two_explicit_support_artifacts() -> None:
+    panel = _panel()
+    training_moving = (
+        panel["nfl_week"].isin([1, 2])
+        & panel["direction"].isin(["UP", "DOWN"])
+    )
+    panel.loc[training_moving, "direction"] = "NO_MOVE"
+    panel.loc[training_moving, "conditional_magnitude"] = np.nan
+    panel.loc[training_moving, "delta_l_h"] = 0.0
+
+    result = run_x15_walk_forward(
+        panel,
+        model_ids=("b0_empirical_v1",),
+        feature_block_ids=("B0",),
+        fold_ids=("fold_01",),
+        include_magnitude=True,
+    )
+    support = result.support_audit[
+        result.support_audit["head"].isin(["MAGNITUDE_DOWN", "MAGNITUDE_UP"])
+    ]
+
+    assert set(support["head"]) == {"MAGNITUDE_DOWN", "MAGNITUDE_UP"}
+    assert support["support_status"].eq("INSUFFICIENT_SUPPORT").all()
+    assert set(result.conditional_quantiles["direction_condition"]) == {
+        "DOWN",
+        "UP",
+    }
+    assert result.conditional_quantiles[
+        ["q10", "q25", "q50", "q75", "q90"]
+    ].isna().all(axis=None)
+
+
+def test_published_fit_games_are_actual_venue_specific_training_games() -> None:
+    panel = _panel()
+    missing_game = "2025_01_G00"
+    panel = panel[
+        ~(
+            panel["venue"].eq("kalshi")
+            & panel["game_id"].eq(missing_game)
+        )
+    ].reset_index(drop=True)
+
+    result = run_x15_walk_forward(
+        panel,
+        model_ids=("b0_empirical_v1",),
+        feature_block_ids=("B0",),
+        fold_ids=("fold_01",),
+        include_magnitude=False,
+    )
+    kalshi = result.oof_predictions[result.oof_predictions["venue"].eq("kalshi")]
+
+    assert all(missing_game not in values for values in kalshi["training_game_ids"])
+    assert all(
+        missing_game not in values
+        for values in kalshi["preprocessor_fit_game_ids"]
+    )
+    kalshi_support = result.support_audit[
+        result.support_audit["venue"].eq("kalshi")
+    ]
+    assert all(
+        missing_game not in values
+        for values in kalshi_support["training_game_ids"]
+    )
+
+
+def test_requires_one_frozen_cohort_authority_and_carries_it_to_provenance() -> None:
+    panel = _panel()
+    authority = panel["cohort_authority_sha256"].iloc[0]
+
+    result = _small_run(panel)
+
+    assert result.oof_predictions["cohort_authority_sha256"].eq(authority).all()
+    assert result.support_audit["cohort_authority_sha256"].eq(authority).all()
+
+    missing = panel.drop(columns="cohort_authority_sha256")
+    with pytest.raises(X15ModelInputError, match="cohort_authority_sha256"):
+        _small_run(missing)
+
+    inconsistent = panel.copy()
+    inconsistent.loc[
+        inconsistent["game_id"].eq("2025_01_G00"),
+        "cohort_authority_sha256",
+    ] = _sha256_text("different-authority")
+    with pytest.raises(X15ModelInputError, match="one cohort authority"):
+        _small_run(inconsistent)
+
+
+def test_transport_fits_and_calibrates_only_source_then_scores_target_venue() -> None:
+    panel = _panel()
+    target_tampered = panel.copy(deep=True)
+    target_training = (
+        target_tampered["venue"].eq("kalshi")
+        & target_tampered["nfl_week"].isin([1, 2])
+    )
+    target_tampered.loc[target_training, "s_h"] = True
+    for index in target_tampered.index[target_training]:
+        decoded = json.loads(
+            target_tampered.loc[index, "decision_features_json"]
+        )
+        decoded["mark_l_price"] = 0.99
+        decision_json = json.dumps(
+            decoded, sort_keys=True, separators=(",", ":")
+        )
+        target_tampered.loc[index, "decision_features_json"] = decision_json
+        target_tampered.loc[index, "decision_feature_sha256"] = _sha256_text(
+            decision_json
+        )
+    kwargs = {
+        "model_ids": ("regularized_logistic_v1",),
+        "feature_block_ids": ("B3",),
+        "fold_ids": ("fold_01",),
+        "include_magnitude": False,
+        "transport_pairs": (("polymarket", "kalshi"),),
+    }
+
+    first = run_x15_walk_forward(panel, **kwargs).oof_predictions
+    second = run_x15_walk_forward(
+        target_tampered, **kwargs
+    ).oof_predictions
+    first = first[first["transport_mode"].eq("NO_TARGET_RECALIBRATION")]
+    second = second[second["transport_mode"].eq("NO_TARGET_RECALIBRATION")]
+    compared = [
+        "source_row_id",
+        "training_venue",
+        "calibration_venue",
+        "venue",
+        "transport_mode",
+        "preprocessor_training_sha256",
+        "s_h_calibration_training_sha256",
+        "direction_calibration_training_sha256",
+        "s_h_raw_probability",
+        "o_h_given_s_raw_probability",
+        "direction_raw_prob_down",
+        "direction_raw_prob_no_move",
+        "direction_raw_prob_up",
+    ]
+
+    assert not first.empty
+    assert first["training_venue"].eq("polymarket").all()
+    assert first["calibration_venue"].eq("polymarket").all()
+    assert first["venue"].eq("kalshi").all()
+    pd.testing.assert_frame_equal(
+        first.loc[:, compared].reset_index(drop=True),
+        second.loc[:, compared].reset_index(drop=True),
+    )
 
 
 def test_predictions_and_training_hashes_are_deterministic() -> None:

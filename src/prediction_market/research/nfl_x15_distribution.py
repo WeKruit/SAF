@@ -122,8 +122,11 @@ def _numeric_features(
     features: pd.DataFrame,
     *,
     expected_columns: tuple[str, ...] | None = None,
+    allow_empty: bool = False,
 ) -> np.ndarray:
-    if not isinstance(features, pd.DataFrame) or features.empty:
+    if not isinstance(features, pd.DataFrame) or (
+        features.empty and not allow_empty
+    ):
         raise X15DistributionError("features must be a nonempty DataFrame")
     columns = tuple(str(column) for column in features.columns)
     if expected_columns is not None and columns != expected_columns:
@@ -215,7 +218,7 @@ def fit_directional_quantiles(
 ) -> DirectionalQuantileModels:
     """Fit direction-specific XGBoost quantiles on S&O, UP/DOWN rows only."""
 
-    matrix = _numeric_features(features)
+    matrix = _numeric_features(features, allow_empty=True)
     target = np.asarray(magnitude, dtype=float)
     direction_values = np.asarray(directions, dtype=object)
     games = np.asarray(game_ids, dtype=object)
