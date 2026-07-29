@@ -10,9 +10,10 @@ bootstrap clusters.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 import hashlib
 import json
+import math
 from numbers import Integral, Real
 from typing import Final
 
@@ -1538,46 +1539,306 @@ def _game_standard_error(result: ModelSelectionResult) -> float:
     )
 
 
-def select_stage_b_v2_winner(
-    model_runs: Sequence[X15ModelRun],
-    *,
-    authority: FrozenDevelopmentAuthority | None = None,
-) -> StageBModelSelectionResult:
-    """Select the frozen Stage-B V2 suite with the one-SE winner rule."""
+_MODEL_SELECTION_RESULT_FRAME_FIELDS: Final[tuple[str, ...]] = (
+    "paired_rows",
+    "episode_losses",
+    "game_losses",
+    "anchor_game_losses",
+)
 
-    (
-        ordered_runs,
-        shared_run_config_sha256,
-        suite_run_config_sha256,
-    ) = _validate_stage_b_candidate_suite(model_runs)
-    results = tuple(
-        select_candidate_against_b0(
-            model_run,
-            spec=FrozenSelectionSpec(
-                candidate_model_id=model_id,
-                candidate_feature_block_id=feature_block_id,
-            ),
-            authority=authority,
-        )
-        for model_run, (model_id, feature_block_id) in zip(
-            ordered_runs,
-            STAGE_B_CANDIDATE_SUITE,
-            strict=True,
-        )
+
+def _typed_dataframe_value(value: object) -> str:
+    if value is None:
+        return "builtins.NoneType\0"
+    if value is pd.NA:
+        return "pandas._libs.missing.NAType\0"
+    if value is pd.NaT:
+        return "pandas._libs.tslibs.nattype.NaTType\0"
+    value_class = type(value)
+    if value_class is bool:
+        return "builtins.bool\0" + ("true" if value else "false")
+    if value_class is int:
+        return "builtins.int\0" + str(value)
+    if value_class is float:
+        if math.isnan(value):
+            encoded = "nan"
+        elif math.isinf(value):
+            encoded = "+inf" if value > 0 else "-inf"
+        else:
+            encoded = value.hex()
+        return "builtins.float\0" + encoded
+    if value_class is str:
+        return "builtins.str\0" + value
+    value_type = (
+        f"{value_class.__module__}.{value_class.__qualname__}"
     )
-    expected_authority = results[0].cohort_authority_sha256
-    if any(
-        result.cohort_authority_sha256 != expected_authority
-        or result.schema_version != HISTORICAL_SCHEMA_VERSION
-        or result.run_config_sha256 != model_run.run_config_sha256
-        for result, model_run in zip(
-            results, ordered_runs, strict=True
+    if isinstance(value, (bool, np.bool_)):
+        return value_type + "\0" + ("true" if value else "false")
+    if isinstance(value, Integral):
+        return value_type + "\0" + str(int(value))
+    if isinstance(value, np.floating):
+        number = float(value)
+        if np.isnan(number):
+            encoded = "nan"
+        elif np.isposinf(number):
+            encoded = "+inf"
+        elif np.isneginf(number):
+            encoded = "-inf"
+        else:
+            encoded = repr(value)
+        return value_type + "\0" + encoded
+    if isinstance(value, Real):
+        return value_type + "\0" + str(value)
+    if isinstance(value, str):
+        return value_type + "\0" + value
+    if isinstance(value, bytes):
+        return value_type + "\0" + value.hex()
+    if isinstance(value, pd.Timestamp):
+        return value_type + "\0" + value.isoformat()
+    if isinstance(value, Mapping):
+        encoded_items = [
+            (
+                _typed_dataframe_value(key),
+                _typed_dataframe_value(child),
+            )
+            for key, child in value.items()
+        ]
+        encoded_items.sort(key=lambda item: item[0])
+        return value_type + "\0" + json.dumps(
+            encoded_items,
+            separators=(",", ":"),
         )
-    ):
+    if isinstance(value, (list, tuple, set, np.ndarray)):
+        encoded_items = [
+            _typed_dataframe_value(child) for child in list(value)
+        ]
+        if isinstance(value, set):
+            encoded_items.sort()
+        return value_type + "\0" + json.dumps(
+            encoded_items,
+            separators=(",", ":"),
+        )
+    try:
+        missing = pd.isna(value)
+    except (TypeError, ValueError):
+        missing = False
+    if isinstance(missing, (bool, np.bool_)) and missing:
+        return value_type + "\0missing"
+    return value_type + "\0" + str(value)
+
+
+def _typed_dtype_descriptor(value: object) -> dict[str, object]:
+    value_type = f"{type(value).__module__}.{type(value).__qualname__}"
+    descriptor: dict[str, object] = {
+        "type": value_type,
+        "str": str(value),
+        "repr": repr(value),
+    }
+    if isinstance(value, np.dtype):
+        descriptor["parameters"] = {
+            "str": value.str,
+            "descr": _typed_dataframe_value(value.descr),
+            "metadata": _typed_dataframe_value(value.metadata),
+        }
+    elif isinstance(value, pd.StringDtype):
+        descriptor["parameters"] = {
+            "storage": value.storage,
+            "na_value": _typed_dataframe_value(value.na_value),
+        }
+    elif isinstance(value, pd.CategoricalDtype):
+        descriptor["parameters"] = {
+            "categories": _typed_index_descriptor(value.categories),
+            "ordered": value.ordered,
+        }
+    elif isinstance(value, pd.DatetimeTZDtype):
+        descriptor["parameters"] = {
+            "unit": value.unit,
+            "timezone_type": (
+                f"{type(value.tz).__module__}."
+                f"{type(value.tz).__qualname__}"
+            ),
+            "timezone_str": str(value.tz),
+            "timezone_repr": repr(value.tz),
+        }
+    elif isinstance(value, pd.ArrowDtype):
+        arrow_dtype = value.pyarrow_dtype
+        descriptor["parameters"] = {
+            "arrow_type": (
+                f"{type(arrow_dtype).__module__}."
+                f"{type(arrow_dtype).__qualname__}"
+            ),
+            "arrow_str": str(arrow_dtype),
+            "arrow_repr": repr(arrow_dtype),
+        }
+    elif isinstance(value, pd.PeriodDtype):
+        descriptor["parameters"] = {
+            "frequency_type": (
+                f"{type(value.freq).__module__}."
+                f"{type(value.freq).__qualname__}"
+            ),
+            "frequency_str": str(value.freq),
+            "frequency_repr": repr(value.freq),
+        }
+    elif isinstance(value, pd.IntervalDtype):
+        descriptor["parameters"] = {
+            "subtype": _typed_dtype_descriptor(value.subtype),
+            "closed": value.closed,
+        }
+    elif isinstance(value, pd.SparseDtype):
+        descriptor["parameters"] = {
+            "subtype": _typed_dtype_descriptor(value.subtype),
+            "fill_value": _typed_dataframe_value(value.fill_value),
+        }
+    elif isinstance(value, pd.api.extensions.ExtensionDtype):
+        array_type = value.construct_array_type()
+        descriptor["parameters"] = {
+            "name": value.name,
+            "array_type": (
+                f"{array_type.__module__}.{array_type.__qualname__}"
+            ),
+        }
+    return descriptor
+
+
+def _typed_index_descriptor(index: pd.Index) -> dict[str, object]:
+    descriptor: dict[str, object] = {
+        "type": f"{type(index).__module__}.{type(index).__qualname__}",
+        "dtype": _typed_dtype_descriptor(index.dtype),
+        "names": tuple(
+            _typed_dataframe_value(name) for name in index.names
+        ),
+        "values": tuple(
+            _typed_dataframe_value(value) for value in index
+        ),
+    }
+    if isinstance(index, pd.MultiIndex):
+        descriptor["multiindex"] = {
+            "levels": tuple(
+                _typed_index_descriptor(level) for level in index.levels
+            ),
+            "codes": tuple(
+                {
+                    "dtype": _typed_dtype_descriptor(codes.dtype),
+                    "values": tuple(int(code) for code in codes),
+                }
+                for codes in index.codes
+            ),
+            "sortorder": _typed_dataframe_value(index.sortorder),
+        }
+    elif isinstance(index, pd.RangeIndex):
+        descriptor["range"] = {
+            "start": index.start,
+            "stop": index.stop,
+            "step": index.step,
+        }
+    frequency = getattr(index, "freq", None)
+    if frequency is not None:
+        descriptor["frequency"] = {
+            "type": (
+                f"{type(frequency).__module__}."
+                f"{type(frequency).__qualname__}"
+            ),
+            "str": str(frequency),
+            "repr": repr(frequency),
+        }
+    return descriptor
+
+
+def _dataframe_evidence_sha256(
+    frame: object,
+    *,
+    field: str,
+) -> str:
+    if not isinstance(frame, pd.DataFrame):
         raise ModelSelectionError(
-            "all Stage-B candidate results must share authority and "
-            "run_config"
+            f"ModelSelectionResult.{field} must be a DataFrame"
         )
+    if frame.columns.has_duplicates:
+        raise ModelSelectionError(
+            f"ModelSelectionResult.{field} columns must be unique"
+        )
+    digest = hashlib.sha256()
+
+    def bind(label: str, value: object) -> None:
+        label_bytes = label.encode("utf-8")
+        payload = json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        digest.update(len(label_bytes).to_bytes(4, "big"))
+        digest.update(label_bytes)
+        digest.update(len(payload).to_bytes(8, "big"))
+        digest.update(payload)
+
+    bind("schema", "nfl_x15_typed_dataframe_evidence_v2")
+    bind("columns", _typed_index_descriptor(frame.columns))
+    bind(
+        "dtypes",
+        tuple(
+            _typed_dtype_descriptor(dtype) for dtype in frame.dtypes
+        ),
+    )
+    bind("index", _typed_index_descriptor(frame.index))
+    bind("record_count", len(frame))
+    for row in frame.itertuples(index=False, name=None):
+        bind(
+            "record",
+            tuple(_typed_dataframe_value(value) for value in row),
+        )
+    return "sha256:" + digest.hexdigest()
+
+
+def _model_selection_result_evidence(
+    result: object,
+) -> dict[str, str]:
+    if not isinstance(result, ModelSelectionResult):
+        raise ModelSelectionError(
+            "Stage-B V2 candidates must be ModelSelectionResult evidence"
+        )
+    frame_hashes = {
+        f"{field}_sha256": _dataframe_evidence_sha256(
+            getattr(result, field),
+            field=field,
+        )
+        for field in _MODEL_SELECTION_RESULT_FRAME_FIELDS
+    }
+    scalar_fields: dict[str, object] = {}
+    for descriptor in fields(result):
+        if descriptor.name in _MODEL_SELECTION_RESULT_FRAME_FIELDS:
+            continue
+        value = getattr(result, descriptor.name)
+        if descriptor.name == "spec":
+            scalar_fields["spec"] = {
+                spec_field.name: getattr(value, spec_field.name)
+                for spec_field in fields(FrozenSelectionSpec)
+            }
+        else:
+            scalar_fields[descriptor.name] = value
+    result_sha256 = _canonical_sha256(
+        {
+            "schema": "nfl_x15_model_selection_result_evidence_v1",
+            "scalar_fields": scalar_fields,
+            "dataframe_sha256s": frame_hashes,
+        }
+    )
+    return {
+        **frame_hashes,
+        "model_selection_result_sha256": result_sha256,
+    }
+
+
+def _stage_b_decision(
+    results: tuple[ModelSelectionResult, ...],
+) -> tuple[
+    tuple[float, ...],
+    ModelSelectionResult | None,
+    float | None,
+    float | None,
+    float | None,
+    tuple[bool, ...],
+]:
     standard_errors = tuple(
         _game_standard_error(result) for result in results
     )
@@ -1609,8 +1870,26 @@ def select_stage_b_v2_winner(
             if eligible
         )
         winner = results[winner_index]
+    return (
+        standard_errors,
+        winner,
+        best_mean,
+        best_standard_error,
+        threshold,
+        tuple(within_one_se),
+    )
 
-    audit_rows = []
+
+def _stage_b_candidate_audit_rows(
+    results: tuple[ModelSelectionResult, ...],
+    *,
+    standard_errors: tuple[float, ...],
+    within_one_se: tuple[bool, ...],
+    winner: ModelSelectionResult | None,
+    shared_run_config_sha256: str,
+    suite_run_config_sha256: str,
+) -> list[dict[str, object]]:
+    audit_rows: list[dict[str, object]] = []
     for index, (result, standard_error) in enumerate(
         zip(results, standard_errors, strict=True)
     ):
@@ -1666,16 +1945,197 @@ def select_stage_b_v2_winner(
                     SURVIVAL_PROBABILITY_CONTRACT
                 ),
                 "winner_rule_sha256": STAGE_B_WINNER_RULE_SHA256,
+                **_model_selection_result_evidence(result),
             }
         )
-    candidate_audit_sha256 = _canonical_sha256(audit_rows)
-    return StageBModelSelectionResult(
+    return audit_rows
+
+
+def verify_stage_b_v2_selection_result(
+    selection: object,
+) -> StageBModelSelectionResult:
+    """Recompute and verify the complete frozen Stage-B V2 decision."""
+
+    if not isinstance(selection, StageBModelSelectionResult):
+        raise ModelSelectionError(
+            "Stage-B V2 evidence must be a StageBModelSelectionResult"
+        )
+    results = selection.candidate_results
+    if (
+        not isinstance(results, tuple)
+        or len(results) != len(STAGE_B_CANDIDATE_SUITE)
+        or any(
+            not isinstance(result, ModelSelectionResult)
+            for result in results
+        )
+        or tuple(
+            (
+                result.spec.candidate_model_id,
+                result.spec.candidate_feature_block_id,
+            )
+            for result in results
+        )
+        != STAGE_B_CANDIDATE_SUITE
+    ):
+        raise ModelSelectionError(
+            "Stage-B V2 evidence does not contain the frozen candidate suite"
+        )
+    expected_authority = results[0].cohort_authority_sha256
+    expected_suite_sha256 = _canonical_sha256(
+        tuple(
+            {
+                "candidate": candidate,
+                "run_config_sha256": result.run_config_sha256,
+            }
+            for candidate, result in zip(
+                STAGE_B_CANDIDATE_SUITE,
+                results,
+                strict=True,
+            )
+        )
+    )
+    if (
+        selection.cohort_authority_sha256 != expected_authority
+        or any(
+            result.cohort_authority_sha256 != expected_authority
+            or result.schema_version != HISTORICAL_SCHEMA_VERSION
+            or not _is_sha256(result.run_config_sha256)
+            for result in results
+        )
+        or not _is_sha256(selection.shared_run_config_sha256)
+        or selection.suite_run_config_sha256 != expected_suite_sha256
+        or selection.schema_version != HISTORICAL_SCHEMA_VERSION
+        or selection.survival_probability_contract
+        != SURVIVAL_PROBABILITY_CONTRACT
+        or selection.winner_rule_sha256 != STAGE_B_WINNER_RULE_SHA256
+    ):
+        raise ModelSelectionError(
+            "Stage-B V2 authority, run, or probability contract drifted"
+        )
+    (
+        standard_errors,
+        expected_winner,
+        best_mean,
+        best_standard_error,
+        threshold,
+        within_one_se,
+    ) = _stage_b_decision(results)
+    expected_status = (
+        "MODEL_ADVANCE"
+        if expected_winner is not None
+        else "NO_MODEL_ADVANCE"
+    )
+    if (
+        selection.decision_status != expected_status
+        or selection.winner is not expected_winner
+        or selection.best_integrated_mean_improvement != best_mean
+        or selection.best_standard_error != best_standard_error
+        or selection.one_se_threshold != threshold
+    ):
+        raise ModelSelectionError(
+            "Stage-B V2 decision or winner identity does not match "
+            "candidate evidence"
+        )
+    expected_rows = _stage_b_candidate_audit_rows(
+        results,
+        standard_errors=standard_errors,
+        within_one_se=within_one_se,
+        winner=expected_winner,
+        shared_run_config_sha256=selection.shared_run_config_sha256,
+        suite_run_config_sha256=selection.suite_run_config_sha256,
+    )
+    expected_columns = list(expected_rows[0])
+    expected_audit = pd.DataFrame(expected_rows)
+    expected_audit_sha256 = _dataframe_evidence_sha256(
+        expected_audit,
+        field="candidate_audit",
+    )
+    if (
+        not isinstance(selection.candidate_audit, pd.DataFrame)
+        or list(selection.candidate_audit.columns) != expected_columns
+        or _dataframe_evidence_sha256(
+            selection.candidate_audit,
+            field="candidate_audit",
+        )
+        != expected_audit_sha256
+        or selection.candidate_audit_sha256
+        != expected_audit_sha256
+    ):
+        raise ModelSelectionError(
+            "Stage-B V2 candidate audit does not bind complete "
+            "ModelSelectionResult evidence"
+        )
+    return selection
+
+
+def select_stage_b_v2_winner(
+    model_runs: Sequence[X15ModelRun],
+    *,
+    authority: FrozenDevelopmentAuthority | None = None,
+) -> StageBModelSelectionResult:
+    """Select the frozen Stage-B V2 suite with the one-SE winner rule."""
+
+    (
+        ordered_runs,
+        shared_run_config_sha256,
+        suite_run_config_sha256,
+    ) = _validate_stage_b_candidate_suite(model_runs)
+    results = tuple(
+        select_candidate_against_b0(
+            model_run,
+            spec=FrozenSelectionSpec(
+                candidate_model_id=model_id,
+                candidate_feature_block_id=feature_block_id,
+            ),
+            authority=authority,
+        )
+        for model_run, (model_id, feature_block_id) in zip(
+            ordered_runs,
+            STAGE_B_CANDIDATE_SUITE,
+            strict=True,
+        )
+    )
+    expected_authority = results[0].cohort_authority_sha256
+    if any(
+        result.cohort_authority_sha256 != expected_authority
+        or result.schema_version != HISTORICAL_SCHEMA_VERSION
+        or result.run_config_sha256 != model_run.run_config_sha256
+        for result, model_run in zip(
+            results, ordered_runs, strict=True
+        )
+    ):
+        raise ModelSelectionError(
+            "all Stage-B candidate results must share authority and "
+            "run_config"
+        )
+    (
+        standard_errors,
+        winner,
+        best_mean,
+        best_standard_error,
+        threshold,
+        within_one_se,
+    ) = _stage_b_decision(results)
+    audit_rows = _stage_b_candidate_audit_rows(
+        results,
+        standard_errors=standard_errors,
+        within_one_se=within_one_se,
+        winner=winner,
+        shared_run_config_sha256=shared_run_config_sha256,
+        suite_run_config_sha256=suite_run_config_sha256,
+    )
+    candidate_audit = pd.DataFrame(audit_rows)
+    candidate_audit_sha256 = _dataframe_evidence_sha256(
+        candidate_audit,
+        field="candidate_audit",
+    )
+    selection = StageBModelSelectionResult(
         decision_status=(
             "MODEL_ADVANCE" if winner is not None else "NO_MODEL_ADVANCE"
         ),
         winner=winner,
         candidate_results=results,
-        candidate_audit=pd.DataFrame(audit_rows),
+        candidate_audit=candidate_audit,
         best_integrated_mean_improvement=best_mean,
         best_standard_error=best_standard_error,
         one_se_threshold=threshold,
@@ -1687,6 +2147,7 @@ def select_stage_b_v2_winner(
         survival_probability_contract=SURVIVAL_PROBABILITY_CONTRACT,
         winner_rule_sha256=STAGE_B_WINNER_RULE_SHA256,
     )
+    return verify_stage_b_v2_selection_result(selection)
 
 
 def build_factor_claim_audit(
@@ -1962,4 +2423,5 @@ __all__ = [
     "build_factor_claim_audit",
     "select_candidate_against_b0",
     "select_stage_b_v2_winner",
+    "verify_stage_b_v2_selection_result",
 ]

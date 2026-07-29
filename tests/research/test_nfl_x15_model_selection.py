@@ -594,6 +594,7 @@ def test_diagnostic_block_and_nonexecution_contract_fail_closed() -> None:
 
 def test_stage_b_v2_winner_interface_is_exposed() -> None:
     assert callable(select_stage_b_v2_winner)
+    assert callable(selection_module.verify_stage_b_v2_selection_result)
     assert (
         selection_module.STAGE_B_CANDIDATE_SUITE
         == STAGE_B_CANDIDATE_SUITE
@@ -682,6 +683,390 @@ def test_stage_b_consumes_eight_verified_projection_runs_end_to_end() -> None:
         result.winner.spec.candidate_model_id,
         result.winner.spec.candidate_feature_block_id,
     ) == STAGE_B_CANDIDATE_SUITE[0]
+    assert {
+        "paired_rows_sha256",
+        "episode_losses_sha256",
+        "game_losses_sha256",
+        "anchor_game_losses_sha256",
+        "model_selection_result_sha256",
+    }.issubset(result.candidate_audit.columns)
+    assert (
+        selection_module.verify_stage_b_v2_selection_result(result)
+        is result
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "paired_rows",
+        "paired_rows_index",
+        "paired_rows_dtype",
+        "promotion_metric",
+        "winner_identity",
+    ],
+)
+def test_stage_b_verifier_rejects_replaced_candidate_evidence(
+    mutation: str,
+) -> None:
+    result = select_stage_b_v2_winner(
+        _stage_b_v2_runs(),
+        authority=_authority(),
+    )
+    winner = result.winner
+    assert winner is not None
+
+    if mutation == "winner_identity":
+        replaced = replace(result, winner=result.candidate_results[1])
+    else:
+        if mutation == "paired_rows":
+            mutated_winner = replace(
+                winner,
+                paired_rows=winner.paired_rows.iloc[:-1].copy(),
+            )
+        elif mutation == "paired_rows_index":
+            mutated_rows = winner.paired_rows.copy()
+            mutated_rows.index = pd.Index(
+                range(len(mutated_rows)),
+                dtype="uint64",
+            )
+            mutated_winner = replace(
+                winner,
+                paired_rows=mutated_rows,
+            )
+        elif mutation == "paired_rows_dtype":
+            mutated_rows = winner.paired_rows.copy()
+            dtype = mutated_rows["game_id"].dtype
+            assert isinstance(dtype, pd.StringDtype)
+            storage = "pyarrow" if dtype.storage == "python" else "python"
+            mutated_rows["game_id"] = mutated_rows["game_id"].astype(
+                pd.StringDtype(storage=storage)
+            )
+            mutated_winner = replace(
+                winner,
+                paired_rows=mutated_rows,
+            )
+        else:
+            mutated_winner = replace(
+                winner,
+                integrated_mean_improvement=(
+                    winner.integrated_mean_improvement + 1.0
+                ),
+            )
+        candidate_results = tuple(
+            mutated_winner if candidate is winner else candidate
+            for candidate in result.candidate_results
+        )
+        replaced = replace(
+            result,
+            winner=mutated_winner,
+            candidate_results=candidate_results,
+        )
+
+    with pytest.raises(ModelSelectionError, match="Stage-B V2"):
+        selection_module.verify_stage_b_v2_selection_result(replaced)
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        pytest.param(None, math.inf, id="missing-to-positive-infinity"),
+        pytest.param(math.nan, None, id="nan-to-none"),
+        pytest.param(math.inf, -math.inf, id="infinity-sign"),
+    ],
+)
+def test_stage_b_verifier_rejects_typed_paired_row_cell_replacement(
+    before: object,
+    after: object,
+) -> None:
+    result = select_stage_b_v2_winner(
+        _stage_b_v2_runs(),
+        authority=_authority(),
+    )
+    winner = result.winner
+    assert winner is not None
+    paired_rows = winner.paired_rows.copy()
+    paired_rows["loss_improvement"] = paired_rows[
+        "loss_improvement"
+    ].astype(object)
+    paired_rows.at[paired_rows.index[0], "loss_improvement"] = before
+    rebound_winner = replace(winner, paired_rows=paired_rows)
+    rebound_candidates = tuple(
+        rebound_winner if candidate is winner else candidate
+        for candidate in result.candidate_results
+    )
+    (
+        standard_errors,
+        expected_winner,
+        _,
+        _,
+        _,
+        within_one_se,
+    ) = selection_module._stage_b_decision(rebound_candidates)
+    assert expected_winner is rebound_winner
+    audit_rows = selection_module._stage_b_candidate_audit_rows(
+        rebound_candidates,
+        standard_errors=standard_errors,
+        within_one_se=within_one_se,
+        winner=expected_winner,
+        shared_run_config_sha256=result.shared_run_config_sha256,
+        suite_run_config_sha256=result.suite_run_config_sha256,
+    )
+    candidate_audit = pd.DataFrame(audit_rows)
+    rebound = replace(
+        result,
+        winner=rebound_winner,
+        candidate_results=rebound_candidates,
+        candidate_audit=candidate_audit,
+        candidate_audit_sha256=(
+            selection_module._dataframe_evidence_sha256(
+                candidate_audit,
+                field="candidate_audit",
+            )
+        ),
+    )
+    assert (
+        selection_module.verify_stage_b_v2_selection_result(rebound)
+        is rebound
+    )
+
+    attacked_rows = paired_rows.copy()
+    attacked_rows.at[
+        attacked_rows.index[0], "loss_improvement"
+    ] = after
+    attacked_winner = replace(
+        rebound_winner,
+        paired_rows=attacked_rows,
+    )
+    attacked_candidates = tuple(
+        attacked_winner if candidate is rebound_winner else candidate
+        for candidate in rebound_candidates
+    )
+    attacked = replace(
+        rebound,
+        winner=attacked_winner,
+        candidate_results=attacked_candidates,
+    )
+
+    with pytest.raises(ModelSelectionError, match="Stage-B V2"):
+        selection_module.verify_stage_b_v2_selection_result(attacked)
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "paired_rows",
+        "episode_losses",
+        "game_losses",
+        "anchor_game_losses",
+    ),
+)
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        pytest.param(None, pd.NA, id="none-vs-pandas-na"),
+        pytest.param(None, math.nan, id="none-vs-nan"),
+        pytest.param(None, math.inf, id="none-vs-positive-infinity"),
+        pytest.param(math.inf, -math.inf, id="infinity-sign"),
+        pytest.param(True, 1, id="bool-vs-int"),
+        pytest.param(1, 1.0, id="int-vs-float"),
+        pytest.param(1, "1", id="int-vs-string"),
+    ],
+)
+def test_dataframe_evidence_hash_distinguishes_typed_cells(
+    field: str,
+    left: object,
+    right: object,
+) -> None:
+    left_frame = pd.DataFrame(
+        {"value": pd.Series([left], dtype=object)}
+    )
+    right_frame = pd.DataFrame(
+        {"value": pd.Series([right], dtype=object)}
+    )
+
+    assert selection_module._dataframe_evidence_sha256(
+        left_frame,
+        field=field,
+    ) != selection_module._dataframe_evidence_sha256(
+        right_frame,
+        field=field,
+    )
+
+
+@pytest.mark.parametrize("dtype", ("uint64", object))
+def test_dataframe_evidence_hash_binds_row_index_class_and_dtype(
+    dtype: object,
+) -> None:
+    range_indexed = pd.DataFrame({"value": [1]})
+    typed_indexed = pd.DataFrame(
+        {"value": [1]},
+        index=pd.Index([0], dtype=dtype),
+    )
+
+    assert selection_module._dataframe_evidence_sha256(
+        range_indexed,
+        field="paired_rows",
+    ) != selection_module._dataframe_evidence_sha256(
+        typed_indexed,
+        field="paired_rows",
+    )
+
+
+@pytest.mark.parametrize("dtype", ("uint64", object))
+def test_dataframe_evidence_hash_binds_column_index_class_and_dtype(
+    dtype: object,
+) -> None:
+    range_columns = pd.DataFrame([[1]])
+    typed_columns = pd.DataFrame(
+        [[1]],
+        columns=pd.Index([0], dtype=dtype),
+    )
+
+    assert selection_module._dataframe_evidence_sha256(
+        range_columns,
+        field="paired_rows",
+    ) != selection_module._dataframe_evidence_sha256(
+        typed_columns,
+        field="paired_rows",
+    )
+
+
+@pytest.mark.parametrize("axis", ("index", "columns"))
+@pytest.mark.parametrize("mutation", ("level_dtype", "levels_and_codes"))
+def test_dataframe_evidence_hash_binds_multiindex_metadata(
+    axis: str,
+    mutation: str,
+) -> None:
+    if mutation == "level_dtype":
+        left_axis = pd.MultiIndex(
+            levels=[
+                pd.Index([1], dtype="int64"),
+                pd.Index(["a"]),
+            ],
+            codes=[[0], [0]],
+        )
+        right_axis = pd.MultiIndex(
+            levels=[
+                pd.Index([1], dtype="uint64"),
+                pd.Index(["a"]),
+            ],
+            codes=[[0], [0]],
+        )
+    else:
+        left_axis = pd.MultiIndex(
+            levels=[pd.Index(["a", "b"]), pd.Index([1])],
+            codes=[[0], [0]],
+        )
+        right_axis = pd.MultiIndex(
+            levels=[pd.Index(["b", "a"]), pd.Index([1])],
+            codes=[[1], [0]],
+        )
+    left = pd.DataFrame([[1]])
+    right = pd.DataFrame([[1]])
+    setattr(left, axis, left_axis)
+    setattr(right, axis, right_axis)
+
+    assert selection_module._dataframe_evidence_sha256(
+        left,
+        field="paired_rows",
+    ) != selection_module._dataframe_evidence_sha256(
+        right,
+        field="paired_rows",
+    )
+
+
+@pytest.mark.parametrize(
+    ("left_dtype", "right_dtype"),
+    [
+        pytest.param(
+            pd.StringDtype(storage="python"),
+            pd.StringDtype(storage="pyarrow"),
+            id="string-storage",
+        ),
+        pytest.param(
+            pd.CategoricalDtype(
+                categories=["a", "b"],
+                ordered=False,
+            ),
+            pd.CategoricalDtype(
+                categories=["a", "c"],
+                ordered=False,
+            ),
+            id="categorical-categories",
+        ),
+        pytest.param(
+            pd.CategoricalDtype(
+                categories=["a", "b"],
+                ordered=False,
+            ),
+            pd.CategoricalDtype(
+                categories=["a", "b"],
+                ordered=True,
+            ),
+            id="categorical-order",
+        ),
+    ],
+)
+def test_dataframe_evidence_hash_binds_typed_dtype_parameters(
+    left_dtype: object,
+    right_dtype: object,
+) -> None:
+    left = pd.DataFrame(
+        {"value": pd.Series(["a"], dtype=left_dtype)}
+    )
+    right = pd.DataFrame(
+        {"value": pd.Series(["a"], dtype=right_dtype)}
+    )
+
+    assert selection_module._dataframe_evidence_sha256(
+        left,
+        field="paired_rows",
+    ) != selection_module._dataframe_evidence_sha256(
+        right,
+        field="paired_rows",
+    )
+
+
+def test_typed_dtype_descriptor_binds_datetime_and_arrow_metadata() -> None:
+    datetime_descriptor = selection_module._typed_dtype_descriptor(
+        pd.DatetimeTZDtype(unit="ns", tz="UTC")
+    )
+    arrow_descriptor = selection_module._typed_dtype_descriptor(
+        pd.Series([1], dtype="int64[pyarrow]").dtype
+    )
+
+    assert datetime_descriptor["parameters"] == {
+        "unit": "ns",
+        "timezone_type": "datetime.timezone",
+        "timezone_str": "UTC",
+        "timezone_repr": "datetime.timezone.utc",
+    }
+    assert arrow_descriptor["parameters"] == {
+        "arrow_type": "pyarrow.lib.DataType",
+        "arrow_str": "int64",
+        "arrow_repr": "DataType(int64)",
+    }
+
+
+def test_stage_b_verifier_rejects_candidate_audit_typed_cell_replacement(
+) -> None:
+    result = select_stage_b_v2_winner(
+        _stage_b_v2_runs(),
+        authority=_authority(),
+    )
+    attacked_audit = result.candidate_audit.copy()
+    attacked_audit["final_winner"] = attacked_audit[
+        "final_winner"
+    ].astype(object)
+    winner_index = attacked_audit.index[
+        attacked_audit["final_winner"].eq(True)
+    ][0]
+    attacked_audit.at[winner_index, "final_winner"] = 1
+    attacked = replace(result, candidate_audit=attacked_audit)
+
+    with pytest.raises(ModelSelectionError, match="candidate audit"):
+        selection_module.verify_stage_b_v2_selection_result(attacked)
 
 
 def _stub_suite_results(
@@ -811,8 +1196,9 @@ def test_stage_b_one_se_rule_selects_simpler_eligible_candidate(
         == 1
     )
     assert result.candidate_audit_sha256 == (
-        selection_module._canonical_sha256(
-            result.candidate_audit.to_dict("records")
+        selection_module._dataframe_evidence_sha256(
+            result.candidate_audit,
+            field="candidate_audit",
         )
     )
     assert result.suite_run_config_sha256 == (
