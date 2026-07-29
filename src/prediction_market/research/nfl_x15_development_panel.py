@@ -24,7 +24,7 @@ import io
 import json
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 from types import MappingProxyType
 from typing import Any, Iterator, Mapping, Sequence
@@ -52,14 +52,23 @@ MARKET_CONTINUITY_SUPPORT = "UNKNOWN"
 VENUE_TICK_SUPPORT = "UNSUPPORTED"
 BUILDER_VERSION = "nfl-x15-development-panel-v2"
 
+_FACTS_BATCH_SCHEMA = "nfl_x13_exact153_fact_batch_index_v4"
+_FACTS_GAME_SCHEMA = "nfl_x13_exact153_single_game_fact_manifest_v4"
+_FACTS_PUBLICATION_ID = "exact-153-facts-v4"
+_FACTS_DATASET_DIRECTORY = "exact-153-facts-v4"
+_FACTS_REGISTRY_SCHEMA = "NFLFactorRegistryV4"
+_FACTS_REGISTRY_VERSION = "v4"
+_FACTS_REGISTRY_STATUS = "AUTHORITATIVE"
+_FACTS_REGISTRY_COUNT = 59
+
 DEFAULT_FACTS_BATCH = Path(
-    "artifacts/market-observation/nfl/x13/exact-153-facts-v3/"
-    "batches/manifests/sha256/db/"
-    "db2fb125ea4d5e7844e22b27d6643e6f1c1ddc48db527d347ca789faacb38acd"
+    "artifacts/market-observation/nfl/x13/exact-153-facts-v4/"
+    "batches/manifests/sha256/5d/"
+    "5d693723e991b7f691dab2826308773a0ce6a30564c37dcb7d4a1cb9e1580757"
     ".batch-index.json"
 )
 DEFAULT_FACTS_BATCH_FILE_SHA256 = (
-    "sha256:db2fb125ea4d5e7844e22b27d6643e6f1c1ddc48db527d347ca789faacb38acd"
+    "sha256:5d693723e991b7f691dab2826308773a0ce6a30564c37dcb7d4a1cb9e1580757"
 )
 DEFAULT_STAGE_A_BATCH = Path(
     "artifacts/market-observation/nfl/x15/stage-a-reference-v1/"
@@ -448,6 +457,54 @@ def _batch_root(path: Path) -> Path:
         raise DevelopmentPanelError("batch path is not under a dataset root") from exc
 
 
+def _v4_factor_registry_is_valid(value: object) -> bool:
+    if type(value) is not dict:
+        return False
+    if (
+        value.get("schema") != _FACTS_REGISTRY_SCHEMA
+        or value.get("version") != _FACTS_REGISTRY_VERSION
+        or value.get("status") != _FACTS_REGISTRY_STATUS
+        or type(value.get("factor_count")) is not int
+        or value.get("factor_count") != _FACTS_REGISTRY_COUNT
+    ):
+        return False
+    return all(
+        type(value.get(field)) is str
+        and _SHA256_RE.fullmatch(str(value[field])) is not None
+        for field in (
+            "factor_identity_sha256",
+            "file_sha256",
+            "semantic_sha256",
+        )
+    )
+
+
+def _require_v4_fact_path(
+    value: object,
+    *,
+    game_id: str,
+    kind: str,
+    expected_sha256: str,
+    label: str,
+) -> None:
+    if type(value) is not str:
+        raise DevelopmentPanelError(f"{label} V4 path contract mismatch")
+    path = PurePosixPath(value)
+    hexadecimal = expected_sha256.removeprefix("sha256:")
+    suffix = ".manifest.json" if kind == "manifests" else ".parquet"
+    expected_parts = (
+        _FACTS_DATASET_DIRECTORY,
+        "single-game",
+        game_id,
+        kind,
+        "sha256",
+        hexadecimal[:2],
+        f"{hexadecimal}{suffix}",
+    )
+    if path.is_absolute() or path.parts != expected_parts:
+        raise DevelopmentPanelError(f"{label} V4 path contract mismatch")
+
+
 def _verify_batch(
     *,
     project_root: Path,
@@ -457,6 +514,7 @@ def _verify_batch(
     expected_game_count: int,
     label: str,
     market_style: bool,
+    facts_v4: bool = False,
 ) -> _VerifiedBatch:
     resolved = _resolve_under(project_root, path, label=f"{label} batch")
     payload = _stable_read(
@@ -471,6 +529,15 @@ def _verify_batch(
         or document.get("cohort") != "development"
         or document.get("game_count") != expected_game_count
         or document.get("publication_gate") != "PASS"
+        or (
+            facts_v4
+            and (
+                document.get("publication_id") != _FACTS_PUBLICATION_ID
+                or not _v4_factor_registry_is_valid(
+                    document.get("factor_registry")
+                )
+            )
+        )
     ):
         raise DevelopmentPanelError(f"{label} batch contract mismatch")
     if market_style:
@@ -501,11 +568,26 @@ def _verify_batch(
         )
         if type(entry.get("manifest_path")) is not str:
             raise DevelopmentPanelError(f"{label}.{game_id}.manifest_path is invalid")
+        if facts_v4:
+            _require_v4_fact_path(
+                entry.get("manifest_path"),
+                game_id=game_id,
+                kind="manifests",
+                expected_sha256=str(entry["manifest_sha256"]),
+                label=f"{label}.{game_id}.manifest_path",
+            )
         by_game[game_id] = MappingProxyType(entry)
+    dataset_root = _batch_root(resolved)
+    if facts_v4:
+        if dataset_root.name != _FACTS_DATASET_DIRECTORY:
+            raise DevelopmentPanelError(f"{label} batch V4 path contract mismatch")
+        descriptor_root = dataset_root.parent
+    else:
+        descriptor_root = dataset_root
     return _VerifiedBatch(
         path=resolved,
         file_sha256=expected_file_sha256,
-        root=_batch_root(resolved),
+        root=descriptor_root,
         document=MappingProxyType(document),
         games=MappingProxyType(by_game),
     )
@@ -621,10 +703,11 @@ def verify_development_sources(
         project_root=project_root,
         path=spec.facts_batch_path,
         expected_file_sha256=spec.facts_batch_file_sha256,
-        expected_schema="nfl_x13_exact153_fact_batch_index_v1",
+        expected_schema=_FACTS_BATCH_SCHEMA,
         expected_game_count=spec.expected_game_count,
         label="X13 facts",
         market_style=False,
+        facts_v4=True,
     )
     stage_a = _verify_batch(
         project_root=project_root,
@@ -688,14 +771,49 @@ def _verify_game_manifest(
         expected_sha256=str(descriptor["manifest_sha256"]),
     )
     manifest = _strict_json(payload, label=f"{label}.{game_id}.manifest")
+    facts_v4 = batch.document.get("schema") == _FACTS_BATCH_SCHEMA
     if (
         manifest.get("game_id") != game_id
         or manifest.get("cohort") != "development"
         or manifest.get("publication_gate") != "PASS"
         or manifest.get("holdout_reaction_accessed") not in {False, None}
         or manifest.get("bundle_sha256") != descriptor.get("bundle_sha256")
+        or (
+            facts_v4
+            and (
+                manifest.get("schema") != _FACTS_GAME_SCHEMA
+                or manifest.get("publication_id") != _FACTS_PUBLICATION_ID
+                or not _v4_factor_registry_is_valid(
+                    manifest.get("factor_registry")
+                )
+                or manifest.get("factor_registry")
+                != batch.document.get("factor_registry")
+            )
+        )
     ):
         raise DevelopmentPanelError(f"{label}.{game_id} manifest contract mismatch")
+    if facts_v4:
+        tables = manifest.get("tables")
+        if type(tables) is not list or any(
+            type(table) is not dict for table in tables
+        ):
+            raise DevelopmentPanelError(
+                f"{label}.{game_id} manifest contract mismatch"
+            )
+        for table in tables:
+            object_sha256 = _require_sha256(
+                table.get("object_sha256"),
+                label=(
+                    f"{label}.{game_id}.{table.get('name')}.object_sha256"
+                ),
+            )
+            _require_v4_fact_path(
+                table.get("object_path"),
+                game_id=game_id,
+                kind="objects",
+                expected_sha256=object_sha256,
+                label=f"{label}.{game_id}.{table.get('name')}.object_path",
+            )
     _verify_semantic_hash(
         manifest,
         field="bundle_sha256",
@@ -1394,6 +1512,24 @@ def _diagnostic_panel(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     all_facts, eligible_facts, _ = _landmarks._validate_facts(facts)
     refs = _landmarks._validate_references(references)
+    eligible_keys = set(
+        zip(
+            eligible_facts["game_id"].astype(str),
+            eligible_facts["atomic_information_episode_id"].astype(str),
+            strict=True,
+        )
+    )
+    reference_keys = set(
+        zip(
+            refs["game_id"].astype(str),
+            refs["atomic_information_episode_id"].astype(str),
+            strict=True,
+        )
+    )
+    if not eligible_keys.issubset(reference_keys):
+        raise DevelopmentPanelError(
+            "Stage A game/episode join is incomplete for eligible facts"
+        )
     hits = _landmarks._validate_factor_hits(factor_hits, all_facts)
     market = _landmarks._validate_market(market_rows)
     cohort_row = cohort.iloc[0]
@@ -2043,6 +2179,19 @@ def _publish_game(
         market_style=False,
         label=f"X13 facts.{game_id}",
     )
+    expected_registry_sha = str(
+        verified.facts.document["factor_registry"]["semantic_sha256"]
+    )
+    if (
+        "registry_sha256" not in hits.columns
+        or not hits["registry_sha256"].map(
+            lambda value: type(value) is str
+            and value == expected_registry_sha
+        ).all()
+    ):
+        raise DevelopmentPanelError(
+            f"{game_id} factor_hits registry binding mismatch"
+        )
     references = _read_verified_table(
         batch=verified.stage_a,
         manifest=stage_a_manifest,

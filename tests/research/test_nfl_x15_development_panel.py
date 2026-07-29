@@ -28,6 +28,15 @@ GAME_ID = "2025_01_AWY_HME"
 AUTHORITY_SHA = "sha256:" + "a" * 64
 SOURCE_SHA = "sha256:" + "b" * 64
 REGISTRY_SHA = "sha256:" + "c" * 64
+FACTOR_REGISTRY = {
+    "factor_count": 59,
+    "factor_identity_sha256": "sha256:" + "e" * 64,
+    "file_sha256": "sha256:" + "f" * 64,
+    "schema": "NFLFactorRegistryV4",
+    "semantic_sha256": REGISTRY_SHA,
+    "status": "AUTHORITATIVE",
+    "version": "v4",
+}
 
 
 def _canonical(value: object) -> bytes:
@@ -60,7 +69,13 @@ def _evidence_frame_sha256(frame: pd.DataFrame) -> str:
     )
 
 
-def _publish_parquet(root: Path, relative_prefix: str, frame: pd.DataFrame) -> dict:
+def _publish_parquet(
+    root: Path,
+    relative_prefix: str,
+    frame: pd.DataFrame,
+    *,
+    descriptor_root: str | None = None,
+) -> dict:
     sink = pa.BufferOutputStream()
     pq.write_table(pa.Table.from_pandas(frame, preserve_index=False), sink)
     payload = sink.getvalue().to_pybytes()
@@ -77,7 +92,9 @@ def _publish_parquet(root: Path, relative_prefix: str, frame: pd.DataFrame) -> d
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(payload)
     return {
-        "object_path": relative.relative_to(relative_prefix).as_posix(),
+        "object_path": relative.relative_to(
+            descriptor_root or relative_prefix
+        ).as_posix(),
         "object_sha256": digest,
         "byte_length": len(payload),
         "row_count": len(frame),
@@ -94,9 +111,18 @@ def _publish_game_manifest(
     schema: str,
     tables: dict[str, pd.DataFrame],
     market_style: bool,
+    descriptor_root: str | None = None,
+    object_descriptor_root: str | None = None,
+    publication_id: str | None = None,
+    factor_registry: dict[str, object] | None = None,
 ) -> dict:
     descriptors = {
-        name: _publish_parquet(root, relative_prefix, frame)
+        name: _publish_parquet(
+            root,
+            relative_prefix,
+            frame,
+            descriptor_root=object_descriptor_root or descriptor_root,
+        )
         for name, frame in tables.items()
     }
     material: dict[str, object] = {
@@ -106,6 +132,11 @@ def _publish_game_manifest(
         "publication_gate": "PASS",
         "holdout_reaction_accessed": False,
     }
+    if publication_id is not None:
+        material["publication_id"] = publication_id
+    if factor_registry is not None:
+        material["factor_registry"] = factor_registry
+        material["counts"] = {"factor_coverage_audit_rows": 59}
     if market_style:
         material["stages"] = descriptors
     else:
@@ -129,9 +160,16 @@ def _publish_game_manifest(
     target.write_bytes(payload)
     return {
         "game_id": game_id,
-        "manifest_path": relative.relative_to(relative_prefix).as_posix(),
+        "manifest_path": relative.relative_to(
+            descriptor_root or relative_prefix
+        ).as_posix(),
         "manifest_sha256": digest,
         "bundle_sha256": material["bundle_sha256"],
+        **(
+            {"counts": {"factor_coverage_audit_rows": 59}}
+            if factor_registry is not None
+            else {}
+        ),
     }
 
 
@@ -142,6 +180,8 @@ def _publish_batch(
     schema: str,
     game: dict,
     market_style: bool,
+    publication_id: str | None = None,
+    factor_registry: dict[str, object] | None = None,
 ) -> tuple[Path, str]:
     material: dict[str, object] = {
         "schema": schema,
@@ -151,6 +191,10 @@ def _publish_batch(
         "games": [game],
         "publication_gate": "PASS",
     }
+    if publication_id is not None:
+        material["publication_id"] = publication_id
+    if factor_registry is not None:
+        material["factor_registry"] = factor_registry
     if market_style:
         material["final_holdout_access"] = "CLOSED"
     else:
@@ -351,23 +395,46 @@ def _source_fixture(
     tmp_path: Path,
     *,
     facts_override: tuple[pd.DataFrame, pd.DataFrame] | None = None,
+    references_override: pd.DataFrame | None = None,
+    facts_batch_schema: str = "nfl_x13_exact153_fact_batch_index_v4",
+    facts_game_schema: str = (
+        "nfl_x13_exact153_single_game_fact_manifest_v4"
+    ),
+    batch_publication_id: str | None = "exact-153-facts-v4",
+    game_publication_id: str | None = "exact-153-facts-v4",
+    batch_factor_registry: dict[str, object] | None = FACTOR_REGISTRY,
+    game_factor_registry: dict[str, object] | None = FACTOR_REGISTRY,
+    facts_descriptor_root: str = "x13",
+    facts_object_descriptor_root: str | None = None,
 ) -> DevelopmentSourceSpec:
     facts, hits = _facts() if facts_override is None else facts_override
     observations, inventory = _market()
+    facts_dataset = "x13/exact-153-facts-v4"
+    facts_game_root = f"{facts_dataset}/single-game/{GAME_ID}"
     facts_game = _publish_game_manifest(
         tmp_path,
-        "facts",
+        facts_game_root,
         game_id=GAME_ID,
-        schema="nfl_x13_exact153_fact_single_game_manifest_v1",
+        schema=facts_game_schema,
         tables={"canonical_factor_events": facts, "factor_hits": hits},
         market_style=False,
+        descriptor_root=facts_descriptor_root,
+        object_descriptor_root=facts_object_descriptor_root,
+        publication_id=game_publication_id,
+        factor_registry=game_factor_registry,
     )
     refs_game = _publish_game_manifest(
         tmp_path,
         "stage-a",
         game_id=GAME_ID,
         schema="nfl_x15_stage_a_single_game_manifest_v1",
-        tables={"reference_observations": _references()},
+        tables={
+            "reference_observations": (
+                _references()
+                if references_override is None
+                else references_override
+            )
+        },
         market_style=False,
     )
     market_game = _publish_game_manifest(
@@ -383,10 +450,12 @@ def _source_fixture(
     )
     facts_batch, facts_sha = _publish_batch(
         tmp_path,
-        "facts",
-        schema="nfl_x13_exact153_fact_batch_index_v1",
+        facts_dataset,
+        schema=facts_batch_schema,
         game=facts_game,
         market_style=False,
+        publication_id=batch_publication_id,
+        factor_registry=batch_factor_registry,
     )
     refs_batch, refs_sha = _publish_batch(
         tmp_path,
@@ -440,6 +509,186 @@ def _source_fixture(
         authority_object_sha256=authority_sha,
         expected_game_count=1,
     )
+
+
+def test_default_facts_source_pins_exact_v4_artifact() -> None:
+    expected_path = (
+        "artifacts/market-observation/nfl/x13/exact-153-facts-v4/"
+        "batches/manifests/sha256/5d/"
+        "5d693723e991b7f691dab2826308773a0ce6a30564c37dcb7d4a1cb9e1580757"
+        ".batch-index.json"
+    )
+    expected_sha = (
+        "sha256:"
+        "5d693723e991b7f691dab2826308773a0ce6a30564c37dcb7d4a1cb9e1580757"
+    )
+
+    assert _development_panel.DEFAULT_FACTS_BATCH.as_posix() == expected_path
+    assert _development_panel.DEFAULT_FACTS_BATCH_FILE_SHA256 == expected_sha
+    default_spec = _development_panel.default_development_source_spec()
+    assert default_spec.facts_batch_path.as_posix() == expected_path
+    assert default_spec.facts_batch_file_sha256 == expected_sha
+
+
+def test_v4_facts_paths_resolve_from_x13_parent_without_changing_v1_roots(
+    tmp_path: Path,
+) -> None:
+    spec = _source_fixture(tmp_path)
+
+    verified = _development_panel.verify_development_sources(
+        project_root=tmp_path,
+        source_spec=spec,
+    )
+    manifest, manifest_path = _development_panel._verify_game_manifest(
+        batch=verified.facts,
+        descriptor=verified.facts.games[GAME_ID],
+        label="X13 facts",
+    )
+    facts = _development_panel._read_verified_table(
+        batch=verified.facts,
+        manifest=manifest,
+        table_name="canonical_factor_events",
+        market_style=False,
+        label=f"X13 facts.{GAME_ID}",
+    )
+
+    assert verified.facts.root == (tmp_path / "x13").resolve()
+    assert manifest_path.is_relative_to(
+        tmp_path / "x13" / "exact-153-facts-v4" / "single-game" / GAME_ID
+    )
+    assert verified.stage_a.root == (tmp_path / "stage-a").resolve()
+    assert verified.market.root == (tmp_path / "market").resolve()
+    assert facts["game_id"].tolist() == [GAME_ID, GAME_ID]
+
+
+def test_v1_facts_batch_fails_closed(tmp_path: Path) -> None:
+    spec = _source_fixture(
+        tmp_path,
+        facts_batch_schema="nfl_x13_exact153_fact_batch_index_v1",
+    )
+
+    with pytest.raises(DevelopmentPanelError, match="X13 facts batch contract"):
+        _development_panel.verify_development_sources(
+            project_root=tmp_path,
+            source_spec=spec,
+        )
+
+
+@pytest.mark.parametrize(
+    "fixture_kwargs",
+    [
+        {"batch_publication_id": "exact-153-facts-v3"},
+        {
+            "batch_factor_registry": {
+                **FACTOR_REGISTRY,
+                "factor_count": 58,
+            }
+        },
+    ],
+)
+def test_v4_facts_batch_rejects_wrong_publication_or_registry(
+    tmp_path: Path,
+    fixture_kwargs: dict[str, object],
+) -> None:
+    spec = _source_fixture(tmp_path, **fixture_kwargs)
+
+    with pytest.raises(DevelopmentPanelError, match="X13 facts batch contract"):
+        _development_panel.verify_development_sources(
+            project_root=tmp_path,
+            source_spec=spec,
+        )
+
+
+@pytest.mark.parametrize(
+    "fixture_kwargs",
+    [
+        {
+            "facts_game_schema": (
+                "nfl_x13_exact153_fact_single_game_manifest_v1"
+            )
+        },
+        {"game_publication_id": "exact-153-facts-v3"},
+        {
+            "game_factor_registry": {
+                **FACTOR_REGISTRY,
+                "semantic_sha256": SOURCE_SHA,
+            }
+        },
+    ],
+)
+def test_v4_game_manifest_rejects_wrong_schema_publication_or_registry_binding(
+    tmp_path: Path,
+    fixture_kwargs: dict[str, object],
+) -> None:
+    spec = _source_fixture(tmp_path, **fixture_kwargs)
+    verified = _development_panel.verify_development_sources(
+        project_root=tmp_path,
+        source_spec=spec,
+    )
+
+    with pytest.raises(DevelopmentPanelError, match="manifest contract"):
+        _development_panel._verify_game_manifest(
+            batch=verified.facts,
+            descriptor=verified.facts.games[GAME_ID],
+            label="X13 facts",
+        )
+
+
+@pytest.mark.parametrize(
+    "fixture_kwargs",
+    [
+        {"facts_descriptor_root": "x13/exact-153-facts-v4"},
+        {"facts_object_descriptor_root": "x13/exact-153-facts-v4"},
+    ],
+)
+def test_v4_facts_rejects_dataset_relative_v1_path_shapes(
+    tmp_path: Path,
+    fixture_kwargs: dict[str, object],
+) -> None:
+    spec = _source_fixture(tmp_path, **fixture_kwargs)
+
+    with pytest.raises(DevelopmentPanelError, match="V4 path contract"):
+        publish_exact153_development_panel(
+            project_root=tmp_path,
+            output_root=tmp_path / "published",
+            source_spec=spec,
+            confirmatory_evidence={},
+        )
+
+
+def test_factor_hits_must_bind_v4_registry_semantic_sha(tmp_path: Path) -> None:
+    facts, hits = _facts()
+    hits["registry_sha256"] = SOURCE_SHA
+    spec = _source_fixture(
+        tmp_path,
+        facts_override=(facts, hits),
+    )
+
+    with pytest.raises(DevelopmentPanelError, match="factor_hits registry binding"):
+        publish_exact153_development_panel(
+            project_root=tmp_path,
+            output_root=tmp_path / "published",
+            source_spec=spec,
+            confirmatory_evidence={},
+        )
+
+
+def test_stage_a_must_join_every_eligible_fact_episode(tmp_path: Path) -> None:
+    references = _references().loc[
+        lambda frame: frame["atomic_information_episode_id"].ne("episode-2")
+    ]
+    spec = _source_fixture(
+        tmp_path,
+        references_override=references,
+    )
+
+    with pytest.raises(DevelopmentPanelError, match="Stage A game/episode join"):
+        publish_exact153_development_panel(
+            project_root=tmp_path,
+            output_root=tmp_path / "published",
+            source_spec=spec,
+            confirmatory_evidence={},
+        )
 
 
 def test_landmark_uses_next_fact_finalized_known_at_boundary(
