@@ -967,6 +967,24 @@ def build_venue_reaction_panel_v3(
     home_contracts = contracts.loc[
         contracts["contract_role"].eq("ACTUAL_HOME_OUTCOME")
     ].sort_values(["game_id", "venue", "contract_id"], kind="mergesort")
+    factor_hits_by_event = {
+        (str(game_id), str(event_id)): group.sort_values(
+            ["factor_id", "factor_version"], kind="mergesort"
+        ).reset_index(drop=True)
+        for (game_id, event_id), group in relevant_hits.groupby(
+            ["game_id", "event_id"],
+            sort=False,
+        )
+    }
+    empty_factor_hits = relevant_hits.iloc[0:0].copy()
+    home_contracts_by_game_home = {
+        (str(game_id), str(home_team)): group.reset_index(drop=True)
+        for (game_id, home_team), group in home_contracts.groupby(
+            ["game_id", "home_team"],
+            sort=False,
+        )
+    }
+    empty_home_contracts = home_contracts.iloc[0:0].copy()
     eligible_games = set(facts["game_id"].astype(str))
     contract_games = set(home_contracts["game_id"].astype(str))
     if not eligible_games.issubset(contract_games):
@@ -1027,12 +1045,9 @@ def build_venue_reaction_panel_v3(
             None if reference is None else reference["post_state_known_at"]
         )
         continuity_row = continuity_index[fact_key]
-        fact_hits = relevant_hits.loc[
-            relevant_hits["game_id"].eq(fact["game_id"])
-            & relevant_hits["event_id"].eq(fact["event_id"])
-        ].sort_values(
-            ["factor_id", "factor_version"],
-            kind="mergesort",
+        fact_hits = factor_hits_by_event.get(
+            (str(fact["game_id"]), str(fact["event_id"])),
+            empty_factor_hits,
         )
         hit_factor_ids = set(fact_hits["factor_id"].astype(str))
         fact_event_tags = set(fact["_event_tags"])
@@ -1072,10 +1087,10 @@ def build_venue_reaction_panel_v3(
             }
             for event_tag in sorted(fact_event_tags)
         ]
-        scoped_contracts = home_contracts.loc[
-            home_contracts["game_id"].eq(fact["game_id"])
-            & home_contracts["home_team"].eq(fact["home_team"])
-        ]
+        scoped_contracts = home_contracts_by_game_home.get(
+            (str(fact["game_id"]), str(fact["home_team"])),
+            empty_home_contracts,
+        )
         for raw_contract in scoped_contracts.to_dict("records"):
             contract = pd.Series(raw_contract)
             trades = observed_trade_slices.get(

@@ -234,6 +234,61 @@ def test_v3_grid_is_stable_unique_and_uses_only_actual_home_contract() -> None:
     assert "sha256:" + "d" * 64 in decision
 
 
+def test_multi_event_factor_membership_is_order_invariant() -> None:
+    inputs = _inputs()
+    second_fact = inputs["episode_facts"].iloc[0].copy()
+    second_fact["event_id"] = "event-2"
+    second_fact["atomic_information_episode_id"] = "episode-2"
+    second_fact["source_interval_start"] = "2025-09-05T00:00:10Z"
+    second_fact["source_interval_end"] = "2025-09-05T00:00:11Z"
+    second_fact["known_at"] = "2025-09-05T00:00:11Z"
+    second_fact["primary_action"] = "RUSH"
+    second_fact["outcome_tags"] = '["RUSH_ATTEMPT"]'
+    inputs["episode_facts"] = pd.concat(
+        [inputs["episode_facts"], second_fact.to_frame().T],
+        ignore_index=True,
+    )
+    second_reference = inputs["stage_a_references"].iloc[0].copy()
+    second_reference["atomic_information_episode_id"] = "episode-2"
+    second_reference["pre_state_known_at"] = "2025-09-05T00:00:10Z"
+    second_reference["post_state_known_at"] = "2025-09-05T00:00:11Z"
+    inputs["stage_a_references"] = pd.concat(
+        [inputs["stage_a_references"], second_reference.to_frame().T],
+        ignore_index=True,
+    )
+    second_hit = inputs["factor_hits"].iloc[0].copy()
+    second_hit["event_id"] = "event-2"
+    second_hit["play_id"] = "play-2"
+    second_hit["factor_id"] = "NFL.RUSH.ATTEMPT"
+    inputs["factor_hits"] = pd.concat(
+        [inputs["factor_hits"], second_hit.to_frame().T],
+        ignore_index=True,
+    )
+    second_continuity = inputs["continuity"].iloc[0].copy()
+    second_continuity["atomic_information_episode_id"] = "episode-2"
+    inputs["continuity"] = pd.concat(
+        [inputs["continuity"], second_continuity.to_frame().T],
+        ignore_index=True,
+    )
+
+    first = _build(**inputs).panel
+    shuffled = {
+        name: frame.sample(frac=1, random_state=11).reset_index(drop=True)
+        for name, frame in inputs.items()
+    }
+    second = _build(**shuffled).panel
+
+    pd.testing.assert_frame_equal(first, second)
+    by_episode = first.loc[
+        first["landmark_seconds"].eq(1)
+        & first["endpoint_seconds"].eq(5)
+    ].set_index("atomic_information_episode_id")
+    assert bool(by_episode.loc["episode-1", "factor__NFL.PASS.COMPLETE"])
+    assert not bool(by_episode.loc["episode-1", "factor__NFL.RUSH.ATTEMPT"])
+    assert bool(by_episode.loc["episode-2", "factor__NFL.RUSH.ATTEMPT"])
+    assert not bool(by_episode.loc["episode-2", "factor__NFL.PASS.COMPLETE"])
+
+
 def test_survival_censor_and_missing_observation_are_distinct_and_never_filled() -> None:
     missing = _inputs()["market_rows"].loc[
         lambda frame: ~frame["trade_id"].isin(["home-H5", "away-derived-H5"])
