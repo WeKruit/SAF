@@ -1,594 +1,530 @@
-# NFL Factor V3 — C1.1 Exact-153 Two-Stage Implementation Plan
+# NFL Factor V4 — Exact-153 Two-Stage Probability Modeling Plan
 
-> Status: approved unanimously on 2026-07-29 by Sports Scientist, Quant Analyst,
-> and Adversarial Reviewer. Execute with `superpowers:subagent-driven-development`.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use
+> `superpowers:executing-plans` to execute this plan task by task.
 
-## 1. Goal
+**Goal:** Select one Stage B probability model on the frozen 153-game
+Polymarket development cohort, validate that frozen winner on Kalshi development
+data, freeze a cross-venue factor shortlist, and only then evaluate the exact
+81-game final holdout once.
 
-Reuse the verified 153-game development corpus to build two distinct models:
+**Architecture:** Stage A is the already-published football reference
+calibration and is consumed without refitting. Stage B models the historical
+market-reaction probability chain on the exact V4/PanelV2 development authority,
+publishes 55 walk-forward OOF cells, scores the realized joint outcome with a
+proper log score, and applies a frozen one-standard-error rule on Polymarket.
+Kalshi is validation only: it receives the frozen Polymarket winner without
+target recalibration. The 81-game holdout remains reaction-unread until a
+content-addressed shortlist lock exists.
 
-1. **Stage A — football reference value**
-   - Apply the frozen no-spread fastrmodels XGBoost model.
-   - Produce auditable home-win probabilities before and after eligible atomic
-     information episodes.
-   - Do not retrain or recalibrate the football model on these 153 games.
+**Tech Stack:** Python 3.12, pandas, NumPy, PyArrow/Parquet, scikit-learn,
+XGBoost, pytest, canonical JSON, SHA-256 content-addressed publication.
 
-2. **Stage B — observed market reaction**
-   - Predict whether a clean future endpoint remains observable.
-   - Conditional on a fresh actual trade, predict direction and magnitude of the
-     home-outcome price change from decision landmark `L` to endpoint `H`.
-   - Train and evaluate Polymarket and Kalshi separately, then run exact-pair and
-     temporal transport diagnostics.
+---
 
-The 81-game final cohort remains unread until every fact, feature, target,
-threshold, model, calibrator, exclusion, and metric is frozen in
-`ShortlistLockV1`.
+## 1. Scope and claim boundary
 
-## 2. Inputs That Must Be Reused
+This plan governs one two-stage pipeline:
 
-- 153 verified X-13 development game bundles.
-- 4,773,299 historical actual-trade observations.
-- 610,932 historical reaction paths.
-- Frozen nflverse play-by-play and participation objects.
-- Frozen no-spread fastrmodels XGBoost asset and SHA-256.
-- Existing X-15 landmark, walk-forward, publication, and S3 hydrate machinery.
-- Existing content-addressed manifests and hashes.
+1. **Stage A — existing football reference calibration**
+   - Reuse the published 153-game Stage A batch.
+   - Consume `p_before_home`, `p_after_home`, reference deltas, and the four
+     published calibration tables by verified hash.
+   - Do not fit, recalibrate, or republish Stage A during Stage B execution.
 
-Do not:
+2. **Stage B — historical market-reaction probabilities**
+   - Fit three conditional probability heads on historical actual-trade data.
+   - Select on Polymarket development OOF evidence only.
+   - Validate the selected identity on Kalshi development evidence only.
+   - Build a factor shortlist from exact shared cross-venue evidence.
 
-- redownload or recapture the 153 games;
-- replay upstream market APIs;
-- edit old immutable artifacts or manifests;
-- read holdout reaction data before the lock;
-- forward-fill missing trades;
-- infer historical L2, bid/ask, OFI, depth, queue, or fill;
-- train on derived home complements as if they were actual home trades;
-- count multiple factor tags as multiple training observations.
+The claim boundary is
+`HISTORICAL_TRADES_ONLY_SOURCE_TIME_PROBABILITY_DIAGNOSTIC`. The target contract
+is `HISTORICAL_TRADES_ONLY_HOME_PROBABILITY`. Historical L2, bid/ask, depth,
+queue, fill, continuity, and venue-tick claims remain unsupported. The fixed
+direction materiality threshold is `0.01` probability, explicitly a research
+threshold rather than a venue tick.
 
-DAL–DET remains a semantic audit fixture. Its validated schema is expanded to the
-frozen 153-game development cohort; it is not silently inserted into that cohort.
+A Polymarket winner may be stated only from a typed
+`StageBModelSelectionResult` returned by
+`verify_stage_b_v2_selection_result()`. The runner's compact selection JSON is
+an audit publication, not that typed result: current code has no public loader
+or manifest verifier that reconstructs the result from the JSON. No Kalshi
+validation outcome, shortlisted factor, or holdout result may be stated before
+its code-authoritative result and required evidence exist and pass their
+implemented invariants.
 
-## 3. Resource Budget
+## 2. Frozen authority inputs
 
-The host has 16 GiB RAM and showed 13.22 GiB of swap already in use. Current
-memory pressure is healthy, but the implementation must avoid a second spike.
+All paths are relative to the repository root.
 
-- Default heavy batch workers: `1`.
-- Process one game at a time.
-- Write per-game Parquet/JSON artifacts before releasing DataFrames.
-- Do not hold the full 153-game sports and market panels in pandas simultaneously.
-- Aggregate through DuckDB/Arrow scans of published per-game objects.
-- Model training must set explicit thread limits.
-- Increase worker count only after measured peak RSS leaves at least 4 GiB headroom.
+| Authority | Frozen path or identity | Required SHA-256 |
+|---|---|---|
+| Factor registry | `registries/factors/nfl_factor_registry_v4.json` | file `sha256:92e5001d92afa0748731b5310dae8289ff6930b26a141e981ed910d2c761575f`; semantic `sha256:527a084317ec4a728e5567feea756c1541b65bb814fcf96900b6cfbfd223ead8` |
+| Exact-153 V4 facts | `artifacts/market-observation/nfl/x13/exact-153-facts-v4/batches/manifests/sha256/5d/5d693723e991b7f691dab2826308773a0ce6a30564c37dcb7d4a1cb9e1580757.batch-index.json` | file `sha256:5d693723e991b7f691dab2826308773a0ce6a30564c37dcb7d4a1cb9e1580757`; batch `sha256:b097f35c30312068ca46e43a0d97e692f30f51a9dcdb89fc1ee604d1be98a082` |
+| Exact-153 market batch | `artifacts/market-observation/nfl/x13/factor-lab/v2/expansion-development-market/kalshi-native-time-v3/exact-153/batches/manifests/sha256/b2/b21640b8a50bd92e2f7ed3dac07e641059f8fba9375c1dce0a47a881d655e341.batch-index.json` | file `sha256:b21640b8a50bd92e2f7ed3dac07e641059f8fba9375c1dce0a47a881d655e341` |
+| Cohort authority object | `artifacts/market-observation/nfl/x13/factor-lab/v2/expansion-registry/objects/sha256/22/226b796358426185609cd3c6f18f5ab67828d465f194f5403a56a397ed77493d.json` | object `sha256:226b796358426185609cd3c6f18f5ab67828d465f194f5403a56a397ed77493d` |
+| Existing Stage A | `artifacts/market-observation/nfl/x15/stage-a-reference-v1/batches/manifests/sha256/50/50040cc83d44f5a62d70cbac92d2aa4d8064bbd4b9c3b36f79fe578bd72a2182.batch-index.json` | file `sha256:50040cc83d44f5a62d70cbac92d2aa4d8064bbd4b9c3b36f79fe578bd72a2182`; batch `sha256:4e3c48222e30589cd932e8ad958aec4bd20e92d2afde7e1f12ca3406f05f8956` |
+| Exact-153 PanelV2 | `artifacts/market-observation/nfl/x15/historical-trades-only-development-panel-v2/batches/manifests/sha256/39/39e9f1490a1adcb693c29b9f9fe2f94ec72f1f2d3eafe748ba09e37c7fc750c3.batch-index.json` | file `sha256:39e9f1490a1adcb693c29b9f9fe2f94ec72f1f2d3eafe748ba09e37c7fc750c3`; batch `sha256:d0cb73d381eeb39a7cf5d4cb2ebf24f05037be3e25905ac5e24977c72b3baba8` |
+| PanelV2 cohort mapping | PanelV2 batch field | `sha256:f8866ca15ad30f3ab787921aec29db2d700f3df62014de813f5836396d887332` |
+| Factor membership rows | Rebuilt only from verified PanelV2 game objects | `sha256:d2fc72c3d81720bcf2bf2a7550272f734544923abbfec72d2165e12cc634a874` |
+| Membership artifact bindings | Registry + facts + panel descriptors | `sha256:0725380c27e0353a0f6c92bef482b72b757970981cf6c31102f93fb6c64047c4` |
 
-## 4. Canonical Data Model
+PanelV2 is `HistoricalTradesOnlyProbabilityPanelV2` and binds exactly:
 
-### 4.1 Sports fact grain
+- 153 development games;
+- 25,408 distinct `game_id × atomic_information_episode_id` pairs;
+- 83,659 factor-membership rows;
+- cohort authority
+  `sha256:226b796358426185609cd3c6f18f5ab67828d465f194f5403a56a397ed77493d`;
+- `holdout_reaction_accessed=false`.
 
-`EpisodeFactV3` grain:
+Any mismatch in path, byte hash, semantic hash, count, schema, cohort authority,
+or holdout-access declaration is a hard failure.
+
+## 3. Inputs, outputs, and hash lifecycle
+
+| Step | Verified inputs | Output | Hash rule |
+|---|---|---|---|
+| Authority assembly | V4 registry, V4 facts, market batch, cohort object, existing Stage A | Exact-153 PanelV2 | Verify the fixed file, batch, semantic, cohort, and mapping hashes above before yielding any partition. |
+| Stage B OOF | Verified PanelV2 partitions, frozen folds, 11-cell design matrix | 55 immutable shard manifests plus one selection-ready batch index under `artifacts/market-observation/nfl/x15/stage-b-probability-oof-v2` | Every Parquet object binds byte SHA, schema fingerprint, and semantic-row SHA; every shard and batch is content addressed. |
+| Polymarket selection | One verified selection-ready exact-55 batch | One public-verifier-checked in-memory `StageBModelSelectionResult`, followed by one compact audit manifest under `artifacts/market-observation/nfl/x15/stage-b-model-selection-v2` | The typed result binds the complete evidence and hashes. The compact manifest records the input batch hashes, eight run-config SHAs, decision/winner fields, candidate audit records, candidate audit SHA, and winner-rule SHA, but is not self-contained and has no public loader/verifier. |
+| Kalshi development validation | The verifier-returned typed `StageBModelSelectionResult`, native/transport Kalshi OOF, frozen cohort metadata | Three exact-pair comparison layers and one development validation result | Kalshi consumes the typed result rather than the compact manifest; bind candidate identity, authority, target/claim contracts, pair grains, training/calibration hashes, and `NO_TARGET_RECALIBRATION`. |
+| Factor shortlist | Verified selection, verified Kalshi validation, verified V4/PanelV2 membership | Cross-venue shortlist evidence and `ShortlistLockV1` | Bind exact shared pair identities, support/attrition, BH q-values, leave-one-game-out stability, single-game concentration, registry/facts/panel hashes, and all upstream result hashes. |
+| Final holdout | Verified shortlist lock and exact 81-game sealed authority | One-time holdout evaluation artifact | Assign result hashes only after the authorized read and atomic publication; before that point, no result hash or result claim exists. |
+
+## 4. Stage A: consume the existing calibration
+
+Stage A output is immutable input, not work to repeat. Its batch contains exactly
+153 game publications and these calibration tables:
+
+| Table | Object SHA-256 | Semantic rows SHA-256 |
+|---|---|---|
+| `calibration_summary` | `sha256:09e1db48377a8437eb646b5d8e176b44c72c854338f61e3610bb1349019e886e` | `sha256:edb1e0c84beaf435d77e7b665bcad45175de81d4204302928fc094aa9f4fcabc` |
+| `calibration_reliability` | `sha256:bc833f156a230754680d732b30fe39f4eed68f468eec2a03e6dc7c4103e50516` | `sha256:0d304e91d95b419fb7f6a1ef746df04af50b18817f3e98b971851cd3126e1043` |
+| `calibration_breakdowns` | `sha256:178fdfc88f5f1539dbcd73028126f0beb4defc6337709bddfa9170808541a73b` | `sha256:18ed85a7fce391ef2a7f5837b2d132c18050b5d6862fc7144e2f2161aa99d290` |
+| `calibration_bootstrap` | `sha256:dbecd7ce82c8b727217752fa37efa5234883956e161005fce11ec93e8fac5d1c` | `sha256:24f6a75b9216e32784b19dd4287e3cd656cf292211649206c8cda93918b26098` |
+
+The calibration uses equal total game weight and a fixed game-cluster bootstrap.
+PanelV2 must verify the Stage A batch file hash before attaching reference
+probabilities. Stage B may use Stage A columns only through the frozen `D4`
+feature block.
+
+## 5. Stage B probability and score contract
+
+For landmark `L` and endpoint `H`, Stage B represents the realized path as:
+
+1. `S_H`: endpoint survival/observability;
+2. `O_H | S_H`: a fresh actual trade at the surviving endpoint;
+3. `D_H | S_H, O_H`: `DOWN`, `NO_MOVE`, or `UP`.
+
+The survival contract is `DISCRETE_INTERVAL_SURVIVAL_PRODUCT_V1`. Ordered
+interval probabilities are multiplied along the at-risk path:
 
 ```text
-game_id × atomic_information_episode_id
+P(S_H = 1 | x_L)
+  = product over intervals (a, b] from L through H
+    P(S_b = 1 | S_a = 1, x_L)
 ```
 
-Required identity and timing:
+Each binary head contributes Bernoulli negative log likelihood when its truth is
+defined. The direction head contributes categorical negative log likelihood
+when its truth is defined. The proper realized-path score is:
+
+```text
+joint_row_nll
+  = nll(S_H)
+  + nll(O_H | S_H), when defined
+  + nll(D_H | S_H, O_H), when defined
+```
+
+This is the negative log of the applicable conditional-chain probability. It is
+the sum of defined conditional terms and is never divided by the number of
+defined terms. Candidate and B0 must have symmetric head availability.
+
+The hierarchy is fixed:
+
+1. pair candidate and B0 on exact source row, game, episode, venue, fold,
+   landmark, endpoint, authority, target, and claim fields;
+2. average rows within `game_id × episode × venue`;
+3. average episodes within game;
+4. give every game equal weight;
+5. bootstrap paired game improvements 10,000 times with seed `20260729`.
+
+Positive improvement means candidate joint loss is lower than B0. The integrated
+gate requires positive mean and positive 95% paired-game-bootstrap lower bound.
+The clean anchor is fixed at `L=3`, `H=30`, requires at least 30 games, and must
+not reverse the integrated sign.
+
+## 6. Frozen Stage B experiment matrix
+
+### Controls
+
+1. `b0_empirical_v1 / D0`
+2. `regularized_logistic_v1 / D0`
+3. `shallow_xgboost_v1 / D0`
+
+### Selectable candidates
+
+1. `regularized_logistic_v1 / D1`
+2. `regularized_logistic_v1 / D2`
+3. `regularized_logistic_v1 / D3`
+4. `regularized_logistic_v1 / D4`
+5. `shallow_xgboost_v1 / D1`
+6. `shallow_xgboost_v1 / D2`
+7. `shallow_xgboost_v1 / D3`
+8. `shallow_xgboost_v1 / D4`
+
+### Expanding time folds
+
+| Fold | Train weeks | Validation weeks |
+|---|---|---|
+| `fold_01` | 1–2 | 3–4 |
+| `fold_02` | 1–4 | 5–6 |
+| `fold_03` | 1–6 | 7–8 |
+| `fold_04` | 1–8 | 9–10 |
+| `fold_05` | 1–10 | 11–12 |
+
+The publication requirement is exactly `11 design cells × 5 folds = 55` unique
+shards. A partial batch is diagnostic only and cannot enter selection.
+
+All fitting, preprocessing, and calibration occur inside the training side of
+each fold. Polymarket selection must never consume Kalshi metrics. Controls
+cannot win. Only the eight selectable candidates enter the winner decision.
+
+## 7. Polymarket one-standard-error selection
+
+For each candidate:
+
+1. verify the exact B0 pairing and frozen contracts;
+2. compute the proper joint loss improvement at row, episode, and game grain;
+3. apply authority, integrated, and clean-anchor gates;
+4. compute the standard error of the per-game improvements.
+
+Among gate-passing candidates, find the highest mean improvement and set:
+
+```text
+one_se_threshold = best_mean_improvement - best_standard_error
+```
+
+Choose the first candidate in the frozen suite order whose mean improvement is
+at least that threshold. If no candidate passes all gates, publish
+`NO_MODEL_ADVANCE`; do not manufacture a winner.
+
+The in-memory `StageBModelSelectionResult` contains:
+
+- `paired_rows`;
+- `episode_losses`;
+- `game_losses`;
+- `anchor_game_losses`;
+- the complete model-selection result;
+- the complete eight-candidate audit.
+
+Each DataFrame commitment uses
+`nfl_x15_typed_dataframe_evidence_v2`: typed row and column Index metadata,
+typed dtypes, typed values, ordered records, and schema identity are all hashed.
+`verify_stage_b_v2_selection_result()` accepts this typed result and rejects
+dtype drift, index drift, row reordering, payload mutation, duplicate identity,
+or hash mismatch.
+
+After that verifier returns, `scripts/research/select_nfl_x15_stage_b_v2.py`
+publishes a compact JSON containing the decision status, optional winner,
+candidate audit records, upstream batch/run-config hashes, audit hash, and
+winner-rule hash. It does not serialize the four evidence DataFrames or the
+complete typed result. The JSON therefore cannot be described as
+self-verifying, cannot be loaded back into `StageBModelSelectionResult` by
+current code, and cannot replace the typed object at the Kalshi boundary.
+
+## 8. Polymarket selection to Kalshi validation
+
+Kalshi validation starts only from a typed `StageBModelSelectionResult` returned
+by `verify_stage_b_v2_selection_result()` with
+`decision_status="MODEL_ADVANCE"` and a non-null Polymarket winner. The compact
+selection manifest is not an accepted input. The model ID, feature block,
+authority, folds, target contract, claim boundary, and score contract remain
+frozen.
+
+The selection and Kalshi steps must retain or rebuild the typed result from the
+verified exact-55 inputs within the controlled execution path. If only the
+compact manifest remains after a process boundary, current code cannot resume
+Kalshi validation from it; stop rather than inventing a manifest verification
+path.
+
+Run the winner and B0 on Kalshi development data in two modes:
+
+- **transported:** fitted/calibrated from Polymarket training data and applied to
+  Kalshi, with `NO_TARGET_RECALIBRATION`;
+- **native:** fitted/calibrated from Kalshi training data for a venue-native
+  comparison.
+
+Publish these exact comparison layers:
+
+1. transported candidate versus native Kalshi candidate;
+2. transported candidate versus transported B0;
+3. native Kalshi candidate versus native Kalshi B0.
+
+Every layer must use identical Kalshi truth rows, exact pair identity, and the
+same proper joint score. The transported candidate-versus-transported-B0 layer
+is the Kalshi factor-effect input. Kalshi may validate or reject transport; it
+may not replace the Polymarket selection decision.
+
+## 9. Cross-venue factor shortlist
+
+Build factor membership only from the verified V4 registry, V4 facts, and
+PanelV2 authority. Join both venues at:
 
 ```text
 game_id
-raw_play_id
-atomic_information_episode_id
-score_sequence_id
-adjudication_sequence_id
-source_interval_start
-source_interval_end
-source_resolution
-information_status       PROVISIONAL | FINAL | REVERSED
-stage_b_information_event_eligible
-final_sports_outcome_eligible
-known_at
-source_hashes
-```
-
-Required orientation:
-
-```text
-home_team
-away_team
-actor_team
-beneficiary_team
-actor_is_home
-beneficiary_is_home
-possession_is_home
-beneficiary_resolution_status
-```
-
-`beneficiary_team` may only be derived from finalized sports rules. It may not be
-derived from market movement, reference sign, or final game result. Unresolvable
-beneficiary remains null/`UNRESOLVED`.
-
-Required state and transition facts include:
-
-- period, exact game seconds remaining, score, signed home margin;
-- possession, offense, defense, down, distance, yardline, red zone, goal-to-go;
-- timeouts and drive identity;
-- pass, run, scramble, sack, punt, kickoff, FG, try, kneel, spike;
-- completion, pass depth/location, air yards, YAC;
-- run location/gap, yards, return yards, kick distance;
-- first down, third/fourth conversion/failure;
-- INT, fumble, lost fumble, recovery, turnover on downs, muff;
-- passing/rushing/defensive/return TD, FG, PAT, 2PT, defensive 2PT, safety;
-- touchback, fair catch, inside-20, onside, blocked kick;
-- penalty disposition, review, reversal, timeout, no-play, deleted/admin;
-- stable player IDs and explicit source-supported roles;
-- participation quality and explicit source-supported injury/return evidence.
-
-Pregame injury timeline, official substitution timestamp, routes, coverage,
-tracking, pressure assignment, public betting percentage, and PFF grade remain
-`DATA_GAP`.
-
-### 4.2 Market reaction grain
-
-`VenueReactionPanelV3` grain:
-
-```text
-game_id
+× nfl_week
 × atomic_information_episode_id
-× venue
-× actual_home_outcome_contract
-× decision_landmark_L
-× endpoint_H
+× factor_id
+× factor_version
+× landmark_seconds
+× endpoint_seconds
+× fold_id
+× candidate model/block
+× baseline model/block
 ```
 
-Rules:
+Use only the clean `L=3 → H=30` candidate-versus-B0 evidence shared by both
+venues. Preserve and publish venue-only attrition rather than silently dropping
+it.
 
-- Factor and event tags are multi-hot columns on this row.
-- `factor_id` is never part of the training primary key.
-- H-missing rows remain in the availability panel.
-- Actual home trades and away-derived home complements are separate records.
-- Only actual home-outcome trades enter primary training targets.
-- Derived complements remain non-observed and non-executable diagnostics.
+A factor enters the shortlist only when all of these are true:
 
-## 5. Atomic Event and Adjudication Rules
+- at least 30 shared games and 20 shared episodes;
+- both venues have supported factor evidence;
+- both venue means have confidence intervals excluding zero;
+- both Benjamini–Hochberg q-values are at most `0.05`;
+- both leave-one-game-out same-sign rates are at least `0.80`;
+- both maximum single-game absolute contribution ratios are at most `0.25`;
+- both venue development gates pass;
+- cross-venue signs agree;
+- the global transport gate passes;
+- the upstream Polymarket selection gate passes.
 
-- TD, PAT, and 2PT are separate atomic information episodes.
-- `score_sequence_id` connects TD to its try sequence.
-- Pick-six is one atomic event with both turnover and defensive-TD tags.
-- A retried snap is a new atomic action.
-- A timestamped provisional ruling, review initiation, review decision, and
-  reversal can each be a Stage B information event.
-- `adjudication_sequence_id` connects those information events.
-- The next independent information event censors the previous reaction window.
-- Only a final effective sports result enters the stat ledger and Stage A state
-  transition.
-- Nullified/reversed results do not enter final score, turnover, or player stats.
-- If the historical source lacks an independent revision timestamp, do not invent
-  a provisional/reversal sequence; retain only provable finalized information.
-- Atomic-event and sequence-level aggregates may both be published, but they may
-  not both count as independent samples in one estimate.
+Freeze the resulting identities, versions, gates, statistics, exact pair hashes,
+attrition hashes, registry/facts/panel hashes, selection hash, Kalshi validation
+hash, code hash, and holdout policy into `ShortlistLockV1`. An empty shortlist is
+a valid frozen outcome and does not authorize inventing replacement factors.
 
-## 6. Stage A — Frozen Football Reference
+## 10. Shortlist lock to exact-81 final holdout
 
-### 6.1 Model
+Before the shortlist lock:
 
-Use the existing version-pinned no-spread fastrmodels XGBoost model:
+- all 81 holdout rows must declare
+  `market_reaction_exposure=SEALED_UNREAD`;
+- total holdout `reaction_read_count` must equal `0`;
+- only cohort metadata may be verified;
+- no holdout prediction, metric, factor ranking, or reaction summary may be
+  computed.
 
-```text
-model asset SHA-256: frozen existing registry value
-runtime: xgboost 3.3
-orientation: home-win probability
-training in this phase: none
-recalibration in this phase: none
-formal support: regulation
-OT: MODEL_SUPPORT_UNPROVEN
+After the lock passes its public verifier:
+
+1. authorize one exact read of the 81 frozen holdout games;
+2. evaluate only the frozen winner, B0, shortlist identities, factor versions,
+   landmarks, endpoints, thresholds, score, and metrics;
+3. prohibit refitting, target recalibration, threshold changes, factor
+   substitution, or a second selection pass;
+4. publish one atomic content-addressed holdout artifact with the shortlist-lock
+   SHA, exact 81-game authority SHA, read ledger, object byte hashes, semantic
+   hashes, code hash, and all reported metrics;
+5. close the read ledger and report the result exactly as published, including
+   failure or an empty evaluable set.
+
+The current development-only validation module intentionally has no holdout
+reaction-read API. The holdout executor must be a separate lock-gated entry
+point so development code cannot open the sealed cohort.
+
+## 11. Current status as of 2026-07-29
+
+### Completed and hash-verifiable
+
+- [x] V4 factor registry and exact-153 V4 facts authority are published.
+- [x] The existing 153-game Stage A batch and four calibration tables are
+  published.
+- [x] Exact-153 `HistoricalTradesOnlyProbabilityPanelV2` is published and binds
+  the frozen authorities and closed holdout declaration.
+- [x] Stage B survival, fitting, fold-local calibration, exact pairing,
+  proper-joint-score, hierarchical weighting, bootstrap, clean-anchor gate, and
+  one-standard-error selection contracts are implemented.
+- [x] The 3-control/8-candidate design matrix, five folds, resumable shard
+  publication, and exact-55 selection-readiness gate are implemented.
+- [x] Typed DataFrame evidence V2 and the public selection verifier are
+  implemented.
+- [x] Polymarket-to-Kalshi development validation, exact comparison layers,
+  frozen membership verification, and cross-venue shortlist gates are
+  implemented and test-covered.
+
+### Currently executing
+
+- [ ] Produce the exact-55 Stage B OOF batch under
+  `artifacts/market-observation/nfl/x15/stage-b-probability-oof-v2` with
+  `scripts/research/run_nfl_x15_exact153_oof.py`.
+
+At this snapshot, no selection-ready V2 batch hash is recorded in this plan, no
+typed Stage B selection result has been produced, and no compact Stage B
+selection manifest exists. The execution may publish only progress artifacts
+until all 55 cells verify. This section records pipeline state, not a model
+result.
+
+### Blocked on upstream artifacts, not yet executed
+
+- [ ] Run and publish Polymarket one-standard-error selection from the verified
+  exact-55 batch.
+- [ ] Run and publish Kalshi development validation for the verified winner.
+- [ ] Build and freeze the cross-venue factor shortlist.
+- [ ] Open and evaluate the exact-81 holdout once after shortlist-lock
+  verification.
+
+No downstream result is implied by implemented code or passing unit tests.
+
+## 12. Execution tasks and verification
+
+### Task 1: Verify frozen authorities before resuming OOF
+
+**Files:**
+
+- Verify: `src/prediction_market/research/nfl_x15_development_panel.py`
+- Verify: `tests/research/test_nfl_x15_development_panel.py`
+- Verify: the exact authority paths in Section 2
+
+- [ ] Run:
+
+```bash
+pytest -q tests/research/test_nfl_x15_development_panel.py
 ```
 
-Every model input must publish:
+- [ ] Verify the PanelV2 batch file hash, batch hash, 153 game count, cohort
+  authority, cohort mapping, and `holdout_reaction_accessed=false`.
+- [ ] Stop on any mismatch; do not regenerate an authority in place.
 
-```text
-feature_name
-feature_value
-feature_known_at
-source_row_id
-source_hash
-PIT_status
+### Task 2: Complete and verify the exact-55 OOF batch
+
+**Files:**
+
+- Execute: `scripts/research/run_nfl_x15_exact153_oof.py`
+- Verify: `src/prediction_market/research/nfl_x15_oof_publication.py`
+- Test: `tests/research/test_nfl_x15_oof_publication.py`
+- Output: `artifacts/market-observation/nfl/x15/stage-b-probability-oof-v2`
+
+- [ ] Resume the runner against the fixed PanelV2 manifest and its exact file
+  SHA.
+- [ ] Require exactly 55 unique fold/model/block shard manifests.
+- [ ] Require the batch publication status to be selection-ready.
+- [ ] Record the final batch manifest path, file SHA, and batch SHA only after
+  public verification.
+- [ ] Run:
+
+```bash
+pytest -q \
+  tests/research/test_nfl_x15_models.py \
+  tests/research/test_nfl_x15_oof_publication.py
 ```
 
-`receive_2h_ko` is fail-closed:
+### Task 3: Publish the Polymarket selection decision
 
-- use only evidence known before the decision state;
-- never fill first-half states by looking at the Q3 receiving team;
-- if no auditable as-of source exists, the reference row is unsupported.
+**Files:**
 
-### 6.2 Pre/post purity
+- Execute: `scripts/research/select_nfl_x15_stage_b_v2.py`
+- Verify: `src/prediction_market/research/nfl_x15_model_selection.py`
+- Test: `tests/research/test_nfl_x15_model_selection.py`
+- Output: `artifacts/market-observation/nfl/x15/stage-b-model-selection-v2`
 
-```text
-p_before_home = P(home wins | pure state before episode)
-p_after_home  = P(home wins | pure state after episode)
-reference_delta_home = p_after_home - p_before_home
+- [ ] Pass the verified exact-55 batch manifest and its observed file SHA.
+- [ ] Verify all eight candidate projections share the frozen authority and run
+  contract.
+- [ ] Apply the authority, integrated, clean-anchor, and one-standard-error
+  rules without reading Kalshi selection metrics.
+- [ ] Call `verify_stage_b_v2_selection_result()` on the typed
+  `StageBModelSelectionResult`.
+- [ ] Publish the compact audit manifest with either `MODEL_ADVANCE` and its
+  winner fields or `NO_MODEL_ADVANCE` and a null winner.
+- [ ] Do not claim the compact manifest is self-contained or publicly loadable.
+- [ ] Run:
+
+```bash
+pytest -q tests/research/test_nfl_x15_model_selection.py
 ```
 
-An atomic reference delta is eligible only when no independent PAT, 2PT, kickoff,
-return, review decision, or next snap lies between the pre/post model states.
+### Task 4: Validate the frozen winner on Kalshi development data
 
-Otherwise publish:
+**Files:**
 
-```text
-reference_status = COMPOSITE_TRANSITION
-intervening_episode_ids
-bridge_delta_home       optional diagnostic only
+- Verify: `src/prediction_market/research/nfl_x16_kalshi_validation.py`
+- Test: `tests/research/test_nfl_x16_kalshi_validation.py`
+
+- [ ] Pass the typed `StageBModelSelectionResult` to
+  `verify_stage_b_v2_selection_result()` and then into Kalshi validation; do not
+  pass or reload the compact manifest.
+- [ ] If the decision is `NO_MODEL_ADVANCE`, publish no Kalshi winner claim and
+  do not continue to factor shortlisting.
+- [ ] Otherwise build transported and native Kalshi development OOF evidence
+  without target recalibration.
+- [ ] Publish and verify all three exact comparison layers.
+- [ ] Run:
+
+```bash
+pytest -q tests/research/test_nfl_x16_kalshi_validation.py
 ```
 
-Composite bridge deltas must not be presented as the atomic event effect.
+### Task 5: Freeze the factor shortlist
 
-### 6.3 Output and evaluation
+**Files:**
 
-`ReferenceValueObservationV1` contains:
+- Execute: `src/prediction_market/research/nfl_x16_kalshi_validation.py`
+- Reuse lock schema: `src/prediction_market/sports/nfl_factor_lab_analysis.py`
+- Test: `tests/research/test_nfl_x16_kalshi_validation.py`
 
-```text
-game_id
-episode_id
-p_before_home
-p_after_home
-reference_delta_home
-reference_status
-pre/post source rows and timestamps
-model/input hashes
-claim_boundary = RETROSPECTIVE_DIAGNOSTIC
+- [ ] Rebuild and hash factor membership from the frozen artifact authorities.
+- [ ] Construct exact shared cross-venue clean-anchor pairs.
+- [ ] Publish support, venue-only attrition, BH, leave-one-game-out, and
+  concentration evidence.
+- [ ] Freeze and publicly verify `ShortlistLockV1`.
+- [ ] Confirm the holdout reaction read count is still zero.
+
+### Task 6: Perform the one-time exact-81 holdout evaluation
+
+**Files:**
+
+- Add: `src/prediction_market/research/nfl_x17_holdout_evaluation.py`
+- Add: `scripts/research/run_nfl_x17_exact81_holdout.py`
+- Add: `tests/research/test_nfl_x17_holdout_evaluation.py`
+- Output: `artifacts/market-observation/nfl/x17/exact-81-holdout-v1`
+
+- [ ] Make verified `ShortlistLockV1` and the exact sealed 81-game authority
+  mandatory constructor inputs.
+- [ ] Open only the 81 reaction objects named by that authority.
+- [ ] Evaluate only frozen identities and metrics.
+- [ ] Atomically publish the result and closed read ledger.
+- [ ] Prove a second invocation cannot select, refit, or alter the frozen
+  specification.
+- [ ] Run:
+
+```bash
+pytest -q tests/research/test_nfl_x17_holdout_evaluation.py
 ```
 
-Evaluate supported regulation states against final game outcome with:
+### Task 7: End-to-end claim audit
 
-- equal total weight per game;
-- Brier score and log loss;
-- calibration slope/intercept and reliability table;
-- quarter/time/probability breakdown;
-- game-cluster bootstrap confidence intervals.
+- [ ] Run:
 
-Tied final games are excluded from binary scoring. These metrics evaluate overall
-state-probability calibration; they do not make each event delta ground truth.
-
-## 7. Stage B — Observability, Direction, and Distribution
-
-### 7.1 Time grid
-
-Event anchors use `[source_interval_start, source_interval_end)`.
-
-```text
-L = 1, 2, 3, 5, 10 seconds after source_interval_end
-H = 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60 seconds
-H > L
+```bash
+pytest -q \
+  tests/research/test_nfl_stage_a_reference.py \
+  tests/research/test_nfl_x15_development_panel.py \
+  tests/research/test_nfl_x15_models.py \
+  tests/research/test_nfl_x15_oof_publication.py \
+  tests/research/test_nfl_x15_model_selection.py \
+  tests/research/test_nfl_x16_kalshi_validation.py \
+  tests/research/test_nfl_x17_holdout_evaluation.py
 ```
 
-- Same-second or overlapping event/market intervals are `order_ambiguous`.
-- Historical source time is not local receive time.
-- All conclusions remain `SOURCE_TIME_ASSOCIATION`.
-
-### 7.2 Three-stage target
-
-For each decision-eligible row:
-
-1. `S_H`: no next salient event, suspension, game end, or continuity censor before H.
-2. `O_H | S_H`: H has an actual home-outcome trade no more than three seconds stale.
-3. Conditional on `S_H & O_H`, model price direction and magnitude.
-
-```text
-delta_L_H = actual_home_price_H - actual_home_price_L
-tick = venue tick from the applicable rule snapshot
-
-UP       delta_L_H >= tick
-DOWN     delta_L_H <= -tick
-NO_MOVE  abs(delta_L_H) < tick
-```
-
-Matched-control P95 noise is not the direction threshold. It may only create an
-auxiliary `ABNORMAL_MOVE` label.
-
-The conditional distribution is:
-
-```text
-P(NO_MOVE)
-+ P(UP)   × F(abs(delta) | UP)
-+ P(DOWN) × F(abs(delta) | DOWN)
-```
-
-No trade remains missing. Do not forward-fill or convert it to `NO_MOVE`.
-
-### 7.3 Locked feature blocks
-
-Feature blocks enter in this fixed order:
-
-```text
-B0  outer-training empirical/hazard baseline
-B1  market time/state/activity
-B2  B1 + football game state
-B3  B2 + atomic event facts
-B4  B3 + Stage A reference/reference gap
-```
-
-Decision features may include:
-
-- venue, L, H, pre-event actual home price;
-- landmark price and staleness;
-- prior 30/60-second actual trade count and size;
-- exact game time, home margin, possession, down/distance, field position;
-- atomic action/outcome tags, yards, return yards, lead/possession change;
-- supported Stage A probability and remaining reference gap.
-
-Exclude endpoint price/activity, future event/revision, final result, unsupported
-injury/substitution, and all unavailable historical L2 fields.
-
-## 8. Minimal Model Suite
-
-1. **B0 empirical baseline**
-   - Outer-training-only constant/stratified hazard, direction rates, and median
-     conditional magnitude.
-
-2. **Regularized logistic**
-   - Discrete-time clean-window survival.
-   - Conditional fresh-trade observation.
-   - Multinomial `DOWN/NO_MOVE/UP`.
-
-3. **Shallow XGBoost challenger**
-   - Same survival, observation, and direction heads.
-   - Captures nonlinear state/event interactions.
-
-4. **Direction-conditional quantile XGBoost**
-   - Separate UP and DOWN magnitude models.
-   - Primary quantiles: q10, q25, q50, q75, q90.
-   - q05/q95 only when the frozen support gate passes.
-
-Do not add GAM, EBM, Cox, neural sequence models, or an unconditional signed
-quantile model as a promotion candidate in this phase.
-
-## 9. Chronological OOF, Calibration, and Weighting
-
-Use complete-game expanding folds:
-
-```text
-weeks 1–2  -> validate 3–4
-weeks 1–4  -> validate 5–6
-weeks 1–6  -> validate 7–8
-weeks 1–8  -> validate 9–10
-weeks 1–10 -> validate 11–12
-```
-
-- Both venues for one game remain in the same fold.
-- All preprocessing is trained inside the outer training fold.
-- Calibration uses only prequential predictions from training games.
-- Direction uses multinomial temperature scaling when supported.
-- Survival/observation uses training-only logistic/Platt recalibration.
-- Unsupported calibration publishes `RAW_UNCALIBRATED`; it never borrows future weeks.
-- Final holdout calibrators are frozen from development OOF only.
-
-Weights:
-
-```text
-each game has equal total weight
--> episodes divide that game weight equally
--> valid L/H rows divide episode weight equally
--> multiple tags do not increase weight
-```
-
-## 10. Metrics and Promotion
-
-### 10.1 Submodel metrics
-
-- Survival/observation: discrete-time NLL, Brier, calibration, coverage/attrition.
-- Direction: multiclass log loss primary, multiclass/classwise Brier co-gate.
-- Magnitude: pinball and approximate CRPS primary; interval coverage/width secondary.
-- All metrics first aggregate per game, then use game-cluster intervals.
-
-### 10.2 Dual confirmatory gate
-
-A model is promotable only if both gates pass:
-
-1. A pre-locked integrated multi-horizon, equal-game loss improves over B0 and
-   its paired game-cluster confidence interval excludes no improvement.
-2. The clean `L=3 -> H=30` anchor does not reverse sign and is not worse than B0.
-
-Integrated weights, normalization, missingness handling, and per-game aggregation
-must be frozen before any OOF run. The dual gate is intersection-union: failure
-of either gate rejects promotion.
-
-If source clock quality cannot support a three-second anchor, all model/factor
-claims are descriptive and cannot be promoted.
-
-### 10.3 Named factor claims
-
-- Promotion headline is only the clean `L=3 -> H=30` estimate.
-- Full L/H paths are secondary trajectories; do not select the best second.
-- Apply BH inside the frozen factor family.
-- Report distinct games, unique episodes, UP/DOWN counts, maximum game
-  contribution, and leave-one-game-out stability.
-- A subtype with inadequate support is `INSUFFICIENT_SUPPORT`; this does not
-  invalidate its parent event family.
-
-Matched controls are non-promotional diagnostics only. They require fold-local
-construction, SMD <= 0.10, overlap, effective sample size, and concentration
-reporting. They cannot define labels, models, or reference truth.
-
-## 11. Kalshi Validation Matrix
-
-Current development evidence includes both venues. Treat validation levels
-precisely:
-
-1. Polymarket venue-specific OOF.
-2. Kalshi venue-specific OOF.
-3. Exact same `game/episode/L/H` paired comparison, clustered by game.
-4. Development-only temporal venue transport with a frozen source-venue model and
-   no target-venue recalibration.
-
-None of these is an independent game holdout.
-
-Before final validation publish:
-
-```text
-153 development IDs, weeks, kickoff times, and batch hashes
-81 candidate holdout IDs, weeks, kickoff times, and batch hashes
-set intersection
-overlap with every old review/holdout/reaction cohort
-prior exposure/read audit
-holdout reaction access counter = 0
-```
-
-After `ShortlistLockV1`, run the eligible pristine holdout once:
-
-- Kalshi-development model -> Kalshi holdout;
-- Polymarket-development model -> Polymarket holdout;
-- frozen Polymarket-development model -> Kalshi holdout.
-
-If a game was previously used to select a factor, horizon, threshold, or claim,
-it cannot be called pristine. After the first holdout read, any model or rule
-change must be validated on a future cohort, never by retrying these games.
-
-## 12. Implementation Tasks
-
-### Task 1 — Freeze contracts and publish exact-153 facts
-
-**Files**
-
-- Modify `src/prediction_market/sports/nfl_x16_fact_extraction.py`
-- Create `src/prediction_market/sports/nfl_x16_exact153.py`
-- Create/modify the focused tests under `tests/sports/`
-
-**Work**
-
-- Implement `EpisodeFactV3`, eligibility fields, orientations, and sequence IDs.
-- Replace the old TD/try and adjudication semantics directly; no compatibility wrapper.
-- Build a deterministic `game/play -> atomic episode` mapping.
-- Publish reconciliation and orphan/duplicate audit.
-- Stream one game at a time with default `workers=1`.
-- Publish per-game content-addressed objects and a verified batch index.
-- Re-run a bounded fixture and compare semantic hashes.
-
-### Task 2 — Publish Stage A reference observations
-
-**Files**
-
-- Modify `src/prediction_market/sports/nfl_reference_value.py`
-- Create `src/prediction_market/research/nfl_stage_a_reference.py`
-- Create/modify focused tests under `tests/research/`
-
-**Work**
-
-- Verify the model asset SHA before inference.
-- Publish every feature's `known_at` and provenance.
-- Fail closed on future-derived `receive_2h_ko`.
-- Enforce pure pre/post transition and composite exclusions.
-- Publish supported and unsupported rows.
-- Publish equal-game calibration metrics.
-
-### Task 3 — Replace the V3 reaction panel
-
-**Files**
-
-- Replace `src/prediction_market/research/nfl_x15_landmarks.py`
-- Update its focused tests
-
-**Work**
-
-- Join facts, Stage A observations, and actual home-outcome trades.
-- Preserve H-missing rows for availability.
-- Emit `S_H`, `O_H`, direction, and conditional magnitude targets.
-- Apply interval, ambiguity, contamination, and staleness rules.
-- Prove endpoint data is absent from decision features.
-- Publish attrition by venue/L/H/reason.
-
-### Task 4 — Implement OOF models and calibration
-
-**Files**
-
-- Replace `src/prediction_market/research/nfl_x15_models.py`
-- Create `src/prediction_market/research/nfl_x15_calibration.py`
-- Create `src/prediction_market/research/nfl_x15_distribution.py`
-- Update focused tests
-
-**Work**
-
-- Implement B0, logistic, shallow XGBoost, and conditional quantile XGBoost.
-- Implement game-grouped chronological OOF and training-only calibration.
-- Publish raw/calibrated probabilities and conditional quantiles.
-- Publish explicit support failures instead of constant-label models.
-
-### Task 5 — Model selection and Kalshi validation
-
-**Files**
-
-- Create `src/prediction_market/research/nfl_x15_model_selection.py`
-- Create `src/prediction_market/research/nfl_x16_kalshi_validation.py`
-- Update focused tests
-
-**Work**
-
-- Run locked B0->B4 ablations.
-- Apply equal-game integrated and L3/H30 dual gates.
-- Publish Poly/Kalshi venue OOF, exact pairs, and transport diagnostics.
-- Publish factor-family BH, LOO, and support audit.
-- Prove the holdout access path remains unopened.
-
-### Task 6 — Workbench, expert review, and shortlist
-
-**Files**
-
-- Modify `notebooks/nfl-factor-lab/NFL_Factor_Lab_Master.ipynb`
-- Modify `src/prediction_market/workbench/factor_lab_master.py`
-- Create/replace the V3 offline report builder
-- Create `src/prediction_market/research/nfl_x15_shortlist.py`
-
-**Work**
-
-- Show 153-game fact coverage and reconciliation.
-- Show Stage A support/calibration and composite exclusions.
-- Show Stage B availability, direction, distribution, and full time paths.
-- Show Poly/Kalshi paired and transport diagnostics.
-- Show exact positive, negative, reversal, disagreement, and excluded cases.
-- Materialize expert decisions and `ShortlistLockV1`.
-- Render one offline content-addressed Chinese/English report.
-
-### Task 7 — One-time final holdout
-
-**Files**
-
-- Create/replace `src/prediction_market/research/nfl_x15_holdout.py`
-- Update focused tests
-
-**Work**
-
-- Publish cohort and prior-exposure audit without reading reaction data.
-- Verify lock hash and access counter zero.
-- Read the eligible pristine reaction cohort once.
-- Run the three frozen validation paths.
-- Publish replicated, not-replicated, and insufficient-support outcomes.
-- Record the irreversible access event and forbid reuse for tuning.
-
-## 13. Focused Verification
-
-Do not run unrelated legacy test suites. Required checks are:
-
-1. DAL–DET bounded raw-to-`EpisodeFactV3` fixture.
-2. TD/PAT/2PT, pick-six, retry, review/reversal, no-play, safety, and OT fixtures.
-3. Actor/beneficiary/home orientation and actual-home-leg invariants.
-4. Exact-153 zero orphan/duplicate/silent-loss mapping audit.
-5. Stage A feature-known-at and pure-transition audit.
-6. H-missing preservation and no endpoint leakage.
-7. Same-second ambiguity and next-event censoring.
-8. One-tick direction boundary.
-9. Game-grouped OOF and training-only calibration.
-10. Equal-game weights and no multi-tag sample explosion.
-11. Kalshi exact-pair referential integrity.
-12. Holdout access counter remains zero before lock.
-13. Master Notebook/report loads only published content-addressed artifacts.
-
-## 14. Completion
-
-The phase is complete only when:
-
-- all 153 games have verified `EpisodeFactV3` bundles;
-- Stage A publishes reproducible supported/unsupported reference rows;
-- Stage B publishes OOF availability, direction, and distribution for both venues;
-- the dual promotion gate and named-factor audits are published;
-- Kalshi venue-specific, paired, and transport results are complete;
-- the expert shortlist is locked;
-- the eligible pristine holdout is read once and reported;
-- every row and conclusion traces back to source, model, fold, and lock hashes;
-- historical results remain explicitly non-executable source-time research.
+- [ ] Verify every reported input and output hash against bytes on disk.
+- [ ] Verify Polymarket was the only selection venue and Kalshi was validation
+  only.
+- [ ] Verify the shortlist lock predates the first holdout reaction read.
+- [ ] Verify every holdout statement is derived from the single published
+  exact-81 artifact.
+- [ ] Report missing, rejected, empty, or failed evidence as such; never convert
+  it into a success claim.
