@@ -1,15 +1,17 @@
-"""Pure X-15 landmark-to-endpoint targets from observed moneyline trades.
+"""Pure construction of the NFL VenueReactionPanelV3.
 
-The event anchor is the end of the finalized information-event interval.
-Every mark is independently selected from an actual post-event trade no more
-than three seconds old.  This module has no artifact, network, holdout, model,
-or order-execution dependency.
+The builder consumes verified sports facts, Stage A observations, actual market
+trades, contract/rule metadata, and explicit continuity evidence.  It does not
+read artifacts, train models, infer clean windows, or treat a derived away
+complement as an observed home-outcome trade.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import hashlib
+import json
 import math
+from dataclasses import dataclass
 from typing import Final
 
 import numpy as np
@@ -19,717 +21,937 @@ import pandas as pd
 LANDMARK_SECONDS: Final[tuple[int, ...]] = (1, 2, 3, 5, 10)
 ENDPOINT_SECONDS: Final[tuple[int, ...]] = tuple(range(5, 61, 5))
 MAX_STALENESS_SECONDS: Final[float] = 3.0
+SCHEMA_VERSION: Final[str] = "VenueReactionPanelV3"
 CLAIM_BOUNDARY: Final[str] = (
-    "HISTORICAL_ACTUAL_TRADE_LANDMARK_TARGET_NOT_EXECUTION"
-)
-MODEL_PASSTHROUGH_COLUMNS: Final[tuple[str, ...]] = (
-    "nfl_week",
-    "is_matched_control",
-    "factor_id",
-    "reference_gap_at_landmark",
-    "game_seconds_remaining",
-    "score_margin",
-    "pit_strength",
+    "SOURCE_TIME_ASSOCIATION_ACTUAL_HOME_TRADES_ONLY_NOT_EXECUTION"
 )
 
-_TRADE_REQUIRED = {
+_FACT_IDENTITY = ("game_id", "atomic_information_episode_id")
+_PANEL_GRAIN = (
+    "game_id",
+    "atomic_information_episode_id",
+    "venue",
+    "actual_home_contract_id",
+    "landmark_seconds",
+    "endpoint_seconds",
+)
+_FACT_REQUIRED = {
+    *_FACT_IDENTITY,
+    "source_interval_start",
+    "source_interval_end",
+    "source_resolution",
+    "stage_b_information_event_eligible",
+    "home_team",
+    "away_team",
+}
+_REFERENCE_REQUIRED = {
+    *_FACT_IDENTITY,
+    "support_status",
+    "known_at",
+    "p_before_home",
+    "p_after_home",
+    "reference_delta_home",
+}
+_MARKET_REQUIRED = {
     "trade_id",
     "game_id",
     "venue",
-    "logical_market_id",
-    "market_family",
-    "outcome_team",
+    "contract_id",
     "source_time_utc",
     "price",
+    "size",
     "kind",
     "provenance",
-    "orientation_resolved",
 }
-_EPISODE_REQUIRED = {
+_CONTRACT_REQUIRED = {
     "game_id",
-    "episode_id",
-    "beneficiary_team",
-    "finalized_interval_end_utc",
-    "event_type",
-    "game_seconds_remaining",
-    "score_margin",
-    "reference_delta",
-    "p_after_ref",
-    "nfl_week",
-    "is_matched_control",
-    "factor_id",
-    "game_seconds_remaining",
-    "score_margin",
-    "pit_strength",
-    "orientation_resolved",
-    "contaminated",
-    "contamination_time_utc",
-    "censored",
-    "censor_time_utc",
-}
-_GRAIN = [
-    "game_id",
-    "episode_id",
     "venue",
-    "logical_market_id",
-    "beneficiary_team",
-    "landmark_seconds",
-    "endpoint_seconds",
-]
-_OUTPUT_COLUMNS = [
-    "game_id",
-    "episode_id",
-    "venue",
-    "logical_market_id",
-    "beneficiary_team",
+    "contract_id",
+    "outcome_team",
+    "home_team",
     "market_family",
-    "event_type",
-    "event_anchor_semantics",
-    "event_anchor_utc",
-    "nfl_week",
-    "is_matched_control",
-    "factor_id",
-    "reference_gap_at_landmark",
-    "game_seconds_remaining",
-    "score_margin",
-    "pit_strength",
-    "reference_delta",
+    "contract_role",
+    "tick_rule_id",
+}
+_RULE_REQUIRED = {
+    "venue",
+    "tick_rule_id",
+    "effective_start_utc",
+    "effective_end_utc",
+    "tick_size",
+}
+_CONTINUITY_REQUIRED = {
+    *_FACT_IDENTITY,
+    "next_salient_event_time_utc",
+    "suspension_time_utc",
+    "game_end_time_utc",
+    "continuity_gap_time_utc",
+    "continuity_verified_until_utc",
+}
+_NOISE_REQUIRED = {
+    "venue",
     "landmark_seconds",
     "endpoint_seconds",
-    "landmark_utc",
-    "endpoint_utc",
-    "mark_landmark_trade_id",
-    "mark_landmark_source_time_utc",
-    "mark_landmark_price",
-    "landmark_staleness_seconds",
-    "mark_endpoint_trade_id",
-    "mark_endpoint_source_time_utc",
-    "mark_endpoint_price",
-    "endpoint_staleness_seconds",
-    "target_delta",
-    "target_orientation",
-    "price_basis",
-    "max_staleness_seconds",
-    "decision_eligible",
-    "target_observed",
-    "target_eligible",
-    "eligible",
-    "exclusion_reasons",
-    "claim_boundary",
-]
+    "matched_control_p95",
+}
+_FACT_FEATURE_COLUMNS = (
+    "source_resolution",
+    "game_seconds_remaining",
+    "score_margin_home",
+    "possession_is_home",
+    "down",
+    "distance",
+    "yardline_100",
+    "primary_action",
+    "outcome_tags",
+    "yards_gained",
+    "return_yards",
+    "actor_is_home",
+    "beneficiary_is_home",
+)
+_CONTINUITY_REASONS = (
+    ("next_salient_event_time_utc", "NEXT_SALIENT_EVENT_BEFORE_H"),
+    ("suspension_time_utc", "SUSPENSION_BEFORE_H"),
+    ("game_end_time_utc", "GAME_END_BEFORE_H"),
+    ("continuity_gap_time_utc", "CONTINUITY_GAP_BEFORE_H"),
+)
 
 
-class NFLX15LandmarkError(ValueError):
-    """Inputs cannot support an auditable X-15 landmark target."""
+class VenueReactionPanelError(ValueError):
+    """Inputs cannot support a deterministic VenueReactionPanelV3."""
 
 
 @dataclass(frozen=True, slots=True)
-class NFLX15LandmarkSpecV1:
-    landmarks_seconds: tuple[int, ...] = LANDMARK_SECONDS
-    endpoints_seconds: tuple[int, ...] = ENDPOINT_SECONDS
-    max_staleness_seconds: float = MAX_STALENESS_SECONDS
-    event_anchor: str = "FINALIZED_EVENT_INTERVAL_END"
-    price_basis: str = "LATEST_UNIQUE_ACTUAL_TRADE"
-    target_orientation: str = "BENEFICIARY_OUTCOME"
-    claim_boundary: str = CLAIM_BOUNDARY
+class VenueReactionPanelV3:
+    """Primary home-outcome rows and their two audit tables."""
 
-
-SPEC_V1: Final[NFLX15LandmarkSpecV1] = NFLX15LandmarkSpecV1()
+    panel: pd.DataFrame
+    attrition: pd.DataFrame
+    complement_diagnostics: pd.DataFrame
 
 
 @dataclass(frozen=True, slots=True)
 class _Mark:
+    status: str
     trade_id: str | None
     source_time: pd.Timestamp | None
     price: float
     staleness_seconds: float
-    orientation_resolved: bool | None
-    exclusion_reason: str | None
+
+    @property
+    def observed(self) -> bool:
+        return self.status == "OBSERVED"
 
 
-@dataclass(frozen=True, slots=True)
-class _MarketIndex:
-    times_ns: np.ndarray
-    trade_ids: np.ndarray
-    prices: np.ndarray
-    orientations_resolved: np.ndarray
+def _require_frame(
+    frame: pd.DataFrame,
+    *,
+    label: str,
+    required: set[str],
+    allow_empty: bool = False,
+) -> pd.DataFrame:
+    if not isinstance(frame, pd.DataFrame):
+        raise VenueReactionPanelError(f"{label} must be a DataFrame")
+    missing = sorted(required.difference(frame.columns))
+    if missing:
+        raise VenueReactionPanelError(f"{label} missing columns: {missing}")
+    if frame.empty and not allow_empty:
+        raise VenueReactionPanelError(f"{label} must be nonempty")
+    return frame.copy(deep=True)
 
 
-def _missing_columns(frame: pd.DataFrame, required: set[str]) -> list[str]:
-    return sorted(required.difference(frame.columns))
-
-
-def _nonempty_strings(frame: pd.DataFrame, columns: tuple[str, ...], name: str) -> None:
+def _strings(frame: pd.DataFrame, columns: tuple[str, ...], *, label: str) -> None:
     for column in columns:
         values = frame[column]
         if values.isna().any() or values.astype(str).str.strip().eq("").any():
-            raise NFLX15LandmarkError(f"{name}.{column} must be non-empty")
+            raise VenueReactionPanelError(f"{label}.{column} must be nonempty")
         frame[column] = values.astype(str)
 
 
-def _strict_bool(frame: pd.DataFrame, columns: tuple[str, ...], name: str) -> None:
-    for column in columns:
-        if not frame[column].map(
-            lambda value: isinstance(value, (bool, np.bool_))
-        ).all():
-            raise NFLX15LandmarkError(f"{name}.{column} must contain booleans")
-        frame[column] = frame[column].astype(bool)
-
-
-def _utc_series(
+def _utc(
     values: pd.Series,
     *,
-    field: str,
+    label: str,
     nullable: bool,
 ) -> pd.Series:
-    try:
-        parsed = pd.to_datetime(values, utc=True, errors="coerce", format="mixed")
-    except (TypeError, ValueError) as exc:
-        raise NFLX15LandmarkError(f"{field} must contain UTC timestamps") from exc
-    invalid = parsed.isna() & (values.notna() if nullable else True)
-    if bool(invalid.any()) or (not nullable and bool(parsed.isna().any())):
-        raise NFLX15LandmarkError(f"{field} must contain UTC timestamps")
+    parsed = pd.to_datetime(values, utc=True, errors="coerce", format="mixed")
+    supplied = values.notna()
+    if ((parsed.isna() & supplied).any()) or (not nullable and parsed.isna().any()):
+        raise VenueReactionPanelError(f"{label} must contain UTC timestamps")
     return parsed
 
 
-def _validate_trades(actual_trades: pd.DataFrame) -> pd.DataFrame:
-    if not isinstance(actual_trades, pd.DataFrame) or actual_trades.empty:
-        raise NFLX15LandmarkError("actual_trades must be a non-empty DataFrame")
-    missing = _missing_columns(actual_trades, _TRADE_REQUIRED)
-    if missing:
-        raise NFLX15LandmarkError(
-            "actual_trades missing columns: " + ", ".join(missing)
+def _strict_bool(frame: pd.DataFrame, column: str, *, label: str) -> None:
+    if not frame[column].map(lambda value: isinstance(value, (bool, np.bool_))).all():
+        raise VenueReactionPanelError(f"{label}.{column} must contain booleans")
+    frame[column] = frame[column].astype(bool)
+
+
+def _finite_numeric(
+    values: pd.Series,
+    *,
+    label: str,
+    lower: float | None = None,
+    upper: float | None = None,
+) -> pd.Series:
+    numeric = pd.to_numeric(values, errors="coerce")
+    if numeric.isna().any() or not np.isfinite(numeric.to_numpy(dtype=float)).all():
+        raise VenueReactionPanelError(f"{label} must be finite")
+    if lower is not None and numeric.lt(lower).any():
+        raise VenueReactionPanelError(f"{label} is below its lower bound")
+    if upper is not None and numeric.gt(upper).any():
+        raise VenueReactionPanelError(f"{label} is above its upper bound")
+    return numeric
+
+
+def _canonical_value(value: object) -> object:
+    if value is None or value is pd.NA:
+        return None
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    if isinstance(value, (float, np.floating)):
+        return float(value) if math.isfinite(float(value)) else None
+    if isinstance(value, dict):
+        return {
+            str(key): _canonical_value(child)
+            for key, child in sorted(value.items(), key=lambda item: str(item[0]))
+        }
+    if isinstance(value, set):
+        return [_canonical_value(child) for child in sorted(value, key=repr)]
+    if isinstance(value, (list, tuple)):
+        return [_canonical_value(child) for child in value]
+    missing = pd.isna(value)
+    if isinstance(missing, (bool, np.bool_)) and missing:
+        return None
+    return str(value)
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(
+        _canonical_value(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
+def _sha256_text(value: str) -> str:
+    return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _validate_facts(frame: pd.DataFrame) -> pd.DataFrame:
+    facts = _require_frame(frame, label="episode_facts", required=_FACT_REQUIRED)
+    _strings(
+        facts,
+        (*_FACT_IDENTITY, "source_resolution", "home_team", "away_team"),
+        label="episode_facts",
+    )
+    if facts.duplicated(list(_FACT_IDENTITY)).any():
+        raise VenueReactionPanelError("episode_facts identity is not unique")
+    _strict_bool(
+        facts,
+        "stage_b_information_event_eligible",
+        label="episode_facts",
+    )
+    facts["source_interval_start"] = _utc(
+        facts["source_interval_start"],
+        label="episode_facts.source_interval_start",
+        nullable=False,
+    )
+    facts["source_interval_end"] = _utc(
+        facts["source_interval_end"],
+        label="episode_facts.source_interval_end",
+        nullable=False,
+    )
+    if (facts["source_interval_end"] <= facts["source_interval_start"]).any():
+        raise VenueReactionPanelError("episode source interval must be nonempty")
+    if facts["home_team"].eq(facts["away_team"]).any():
+        raise VenueReactionPanelError("episode home and away teams must differ")
+    return facts
+
+
+def _validate_references(frame: pd.DataFrame) -> pd.DataFrame:
+    references = _require_frame(
+        frame,
+        label="stage_a_references",
+        required=_REFERENCE_REQUIRED,
+        allow_empty=True,
+    )
+    if references.empty:
+        return references
+    _strings(
+        references,
+        (*_FACT_IDENTITY, "support_status"),
+        label="stage_a_references",
+    )
+    if references.duplicated(list(_FACT_IDENTITY)).any():
+        raise VenueReactionPanelError("stage_a_references identity is not unique")
+    references["known_at"] = _utc(
+        references["known_at"],
+        label="stage_a_references.known_at",
+        nullable=False,
+    )
+    for column in ("p_before_home", "p_after_home"):
+        references[column] = _finite_numeric(
+            references[column],
+            label=f"stage_a_references.{column}",
+            lower=0,
+            upper=1,
         )
-    trades = actual_trades.copy(deep=True)
-    _nonempty_strings(
-        trades,
+    references["reference_delta_home"] = _finite_numeric(
+        references["reference_delta_home"],
+        label="stage_a_references.reference_delta_home",
+    )
+    return references
+
+
+def _validate_market(frame: pd.DataFrame) -> pd.DataFrame:
+    market = _require_frame(frame, label="market_rows", required=_MARKET_REQUIRED)
+    _strings(
+        market,
         (
             "trade_id",
             "game_id",
             "venue",
-            "logical_market_id",
-            "market_family",
-            "outcome_team",
+            "contract_id",
             "kind",
             "provenance",
         ),
-        "actual_trades",
+        label="market_rows",
     )
-    if trades["trade_id"].duplicated().any():
-        raise NFLX15LandmarkError("actual_trades.trade_id must be unique")
-    if not (
-        trades["kind"].eq("trade") & trades["provenance"].eq("observed")
+    if market["trade_id"].duplicated().any():
+        raise VenueReactionPanelError("market_rows.trade_id must be unique")
+    market["source_time_utc"] = _utc(
+        market["source_time_utc"],
+        label="market_rows.source_time_utc",
+        nullable=False,
+    )
+    market["price"] = _finite_numeric(
+        market["price"], label="market_rows.price", lower=0, upper=1
+    )
+    market["size"] = _finite_numeric(
+        market["size"], label="market_rows.size", lower=0
+    )
+    return market
+
+
+def _validate_contracts(frame: pd.DataFrame) -> pd.DataFrame:
+    contracts = _require_frame(
+        frame, label="contract_metadata", required=_CONTRACT_REQUIRED
+    )
+    _strings(
+        contracts,
+        tuple(sorted(_CONTRACT_REQUIRED)),
+        label="contract_metadata",
+    )
+    identity = ["game_id", "venue", "contract_id"]
+    if contracts.duplicated(identity).any():
+        raise VenueReactionPanelError("contract_metadata identity is not unique")
+    roles = {"ACTUAL_HOME_OUTCOME", "DERIVED_AWAY_COMPLEMENT"}
+    if not set(contracts["contract_role"]).issubset(roles):
+        raise VenueReactionPanelError("contract_metadata has an unknown contract_role")
+    if not contracts["market_family"].eq("moneyline").all():
+        raise VenueReactionPanelError("contract_metadata must be moneyline")
+    home = contracts["contract_role"].eq("ACTUAL_HOME_OUTCOME")
+    if not contracts.loc[home, "outcome_team"].eq(
+        contracts.loc[home, "home_team"]
     ).all():
-        raise NFLX15LandmarkError(
-            "actual_trades must contain only actual observed trades"
-        )
-    _strict_bool(trades, ("orientation_resolved",), "actual_trades")
-    trades["source_time_utc"] = _utc_series(
-        trades["source_time_utc"],
-        field="actual_trades.source_time_utc",
-        nullable=False,
-    )
-    trades["price"] = pd.to_numeric(trades["price"], errors="coerce")
-    if (
-        trades["price"].isna().any()
-        or not np.isfinite(trades["price"]).all()
-        or not trades["price"].between(0, 1).all()
-    ):
-        raise NFLX15LandmarkError("actual_trades.price must be finite in [0, 1]")
-    return trades
+        raise VenueReactionPanelError("actual home contract orientation is invalid")
+    return contracts
 
 
-def _validate_episodes(finalized_episode_state: pd.DataFrame) -> pd.DataFrame:
-    if (
-        not isinstance(finalized_episode_state, pd.DataFrame)
-        or finalized_episode_state.empty
-    ):
-        raise NFLX15LandmarkError(
-            "finalized_episode_state must be a non-empty DataFrame"
-        )
-    missing = _missing_columns(finalized_episode_state, _EPISODE_REQUIRED)
-    if missing:
-        raise NFLX15LandmarkError(
-            "finalized_episode_state missing columns: " + ", ".join(missing)
-        )
-    episodes = finalized_episode_state.copy(deep=True)
-    _nonempty_strings(
-        episodes,
-        (
-            "game_id",
-            "episode_id",
-            "beneficiary_team",
-            "event_type",
-            "factor_id",
-        ),
-        "finalized_episode_state",
-    )
-    if episodes.duplicated(["game_id", "episode_id"]).any():
-        raise NFLX15LandmarkError(
-            "finalized_episode_state episode grain must be unique"
-        )
-    _strict_bool(
-        episodes,
-        (
-            "orientation_resolved",
-            "contaminated",
-            "censored",
-            "is_matched_control",
-        ),
-        "finalized_episode_state",
-    )
-    episodes["finalized_interval_end_utc"] = _utc_series(
-        episodes["finalized_interval_end_utc"],
-        field="finalized_episode_state.finalized_interval_end_utc",
+def _validate_rules(frame: pd.DataFrame) -> pd.DataFrame:
+    rules = _require_frame(frame, label="tick_rules", required=_RULE_REQUIRED)
+    _strings(rules, ("venue", "tick_rule_id"), label="tick_rules")
+    rules["effective_start_utc"] = _utc(
+        rules["effective_start_utc"],
+        label="tick_rules.effective_start_utc",
         nullable=False,
     )
-    for field in ("contamination_time_utc", "censor_time_utc"):
-        episodes[field] = _utc_series(
-            episodes[field],
-            field=f"finalized_episode_state.{field}",
+    rules["effective_end_utc"] = _utc(
+        rules["effective_end_utc"],
+        label="tick_rules.effective_end_utc",
+        nullable=False,
+    )
+    if (rules["effective_end_utc"] <= rules["effective_start_utc"]).any():
+        raise VenueReactionPanelError("tick rule interval must be nonempty")
+    rules["tick_size"] = _finite_numeric(
+        rules["tick_size"], label="tick_rules.tick_size", lower=np.nextafter(0, 1)
+    )
+    identity = ["venue", "tick_rule_id", "effective_start_utc"]
+    if rules.duplicated(identity).any():
+        raise VenueReactionPanelError("tick rule identity is not unique")
+    return rules
+
+
+def _validate_continuity(frame: pd.DataFrame, facts: pd.DataFrame) -> pd.DataFrame:
+    continuity = _require_frame(
+        frame, label="continuity", required=_CONTINUITY_REQUIRED
+    )
+    _strings(continuity, _FACT_IDENTITY, label="continuity")
+    if continuity.duplicated(list(_FACT_IDENTITY)).any():
+        raise VenueReactionPanelError("continuity identity is not unique")
+    for column in (
+        "next_salient_event_time_utc",
+        "suspension_time_utc",
+        "game_end_time_utc",
+        "continuity_gap_time_utc",
+    ):
+        continuity[column] = _utc(
+            continuity[column],
+            label=f"continuity.{column}",
             nullable=True,
         )
-    for field in ("game_seconds_remaining", "score_margin"):
-        episodes[field] = pd.to_numeric(episodes[field], errors="coerce")
-        if episodes[field].isna().any() or not np.isfinite(episodes[field]).all():
-            raise NFLX15LandmarkError(
-                f"finalized_episode_state.{field} must be finite"
+    continuity["continuity_verified_until_utc"] = _utc(
+        continuity["continuity_verified_until_utc"],
+        label="continuity.continuity_verified_until_utc",
+        nullable=False,
+    )
+    expected = set(map(tuple, facts.loc[:, list(_FACT_IDENTITY)].to_numpy()))
+    observed = set(map(tuple, continuity.loc[:, list(_FACT_IDENTITY)].to_numpy()))
+    if expected != observed:
+        raise VenueReactionPanelError(
+            "continuity must contain exactly one row per episode fact"
+        )
+    return continuity
+
+
+def _validate_noise(frame: pd.DataFrame | None) -> pd.DataFrame:
+    if frame is None:
+        return pd.DataFrame(columns=sorted(_NOISE_REQUIRED))
+    noise = _require_frame(
+        frame,
+        label="matched_control_noise",
+        required=_NOISE_REQUIRED,
+        allow_empty=True,
+    )
+    if noise.empty:
+        return noise
+    _strings(noise, ("venue",), label="matched_control_noise")
+    for column in ("landmark_seconds", "endpoint_seconds"):
+        numeric = _finite_numeric(
+            noise[column], label=f"matched_control_noise.{column}"
+        )
+        if not np.equal(numeric.to_numpy(), numeric.astype(int).to_numpy()).all():
+            raise VenueReactionPanelError(
+                f"matched_control_noise.{column} must be integral"
             )
-    week = pd.to_numeric(episodes["nfl_week"], errors="coerce")
-    if (
-        week.isna().any()
-        or not np.equal(
-            week.to_numpy(dtype=float),
-            week.to_numpy(dtype="int64"),
-        ).all()
-    ):
-        raise NFLX15LandmarkError(
-            "finalized_episode_state.nfl_week must contain integer weeks"
-        )
-    episodes["nfl_week"] = week.astype("int64")
-    if not episodes["nfl_week"].between(1, 12).all():
-        raise NFLX15LandmarkError(
-            "finalized_episode_state only accepts NFL weeks 1 through 12"
-        )
-    episodes["p_after_ref"] = pd.to_numeric(
-        episodes["p_after_ref"], errors="coerce"
+        noise[column] = numeric.astype(int)
+    noise["matched_control_p95"] = _finite_numeric(
+        noise["matched_control_p95"],
+        label="matched_control_noise.matched_control_p95",
+        lower=0,
     )
-    if (
-        episodes["p_after_ref"].isna().any()
-        or not np.isfinite(episodes["p_after_ref"]).all()
-        or not episodes["p_after_ref"].between(0, 1).all()
-    ):
-        raise NFLX15LandmarkError(
-            "finalized_episode_state.p_after_ref must be finite in [0, 1]"
-        )
-    raw_pit_strength = episodes["pit_strength"]
-    episodes["pit_strength"] = pd.to_numeric(
-        raw_pit_strength, errors="coerce"
-    )
-    invalid_pit = raw_pit_strength.notna() & episodes["pit_strength"].isna()
-    if bool(invalid_pit.any()):
-        raise NFLX15LandmarkError(
-            "finalized_episode_state.pit_strength must be numeric or null"
-        )
-    nonnull_pit = episodes["pit_strength"].dropna()
-    if not np.isfinite(nonnull_pit).all():
-        raise NFLX15LandmarkError(
-            "finalized_episode_state.pit_strength must be numeric or null"
-        )
-    episodes["reference_delta"] = pd.to_numeric(
-        episodes["reference_delta"], errors="coerce"
-    )
-    nonnull_reference = episodes["reference_delta"].dropna()
-    if not np.isfinite(nonnull_reference).all():
-        raise NFLX15LandmarkError(
-            "finalized_episode_state.reference_delta must be finite or null"
-        )
-    return episodes
+    key = ["venue", "landmark_seconds", "endpoint_seconds"]
+    if noise.duplicated(key).any():
+        raise VenueReactionPanelError("matched_control_noise identity is not unique")
+    return noise
 
 
 def _select_mark(
     trades: pd.DataFrame,
     *,
-    anchor: pd.Timestamp,
-    offset_seconds: int,
-    role: str,
+    interval_start: pd.Timestamp,
+    interval_end: pd.Timestamp,
+    target_time: pd.Timestamp,
 ) -> _Mark:
-    target_time = anchor + pd.Timedelta(seconds=offset_seconds)
-    candidates = trades[
-        trades["source_time_utc"].gt(anchor)
+    candidates = trades.loc[
+        trades["source_time_utc"].ge(interval_end)
         & trades["source_time_utc"].le(target_time)
     ]
     if candidates.empty:
-        return _Mark(
-            trade_id=None,
-            source_time=None,
-            price=math.nan,
-            staleness_seconds=math.nan,
-            orientation_resolved=None,
-            exclusion_reason=f"{role}_no_actual_trade",
-        )
-    latest = candidates["source_time_utc"].max()
-    latest_rows = candidates[candidates["source_time_utc"].eq(latest)]
-    staleness = float((target_time - latest).total_seconds())
-    if len(latest_rows) != 1:
-        return _Mark(
-            trade_id=None,
-            source_time=latest,
-            price=math.nan,
-            staleness_seconds=staleness,
-            orientation_resolved=None,
-            exclusion_reason=f"{role}_order_ambiguous",
-        )
-    row = latest_rows.iloc[0]
+        overlap = trades["source_time_utc"].ge(interval_start) & trades[
+            "source_time_utc"
+        ].lt(interval_end)
+        status = "ORDER_AMBIGUOUS" if overlap.any() else "NO_ACTUAL_TRADE"
+        return _Mark(status, None, None, math.nan, math.nan)
+    latest_time = candidates["source_time_utc"].max()
+    latest = candidates.loc[candidates["source_time_utc"].eq(latest_time)]
+    staleness = float((target_time - latest_time).total_seconds())
+    if len(latest) != 1:
+        return _Mark("ORDER_AMBIGUOUS", None, latest_time, math.nan, staleness)
+    row = latest.iloc[0]
     if staleness > MAX_STALENESS_SECONDS:
-        return _Mark(
-            trade_id=None,
-            source_time=latest,
-            price=math.nan,
-            staleness_seconds=staleness,
-            orientation_resolved=bool(row["orientation_resolved"]),
-            exclusion_reason=f"{role}_stale",
-        )
+        return _Mark("STALE", None, latest_time, math.nan, staleness)
     return _Mark(
-        trade_id=str(row["trade_id"]),
-        source_time=latest,
-        price=float(row["price"]),
-        staleness_seconds=staleness,
-        orientation_resolved=bool(row["orientation_resolved"]),
-        exclusion_reason=None,
+        "OBSERVED",
+        str(row["trade_id"]),
+        latest_time,
+        float(row["price"]),
+        staleness,
     )
 
 
-def _market_index(trades: pd.DataFrame) -> _MarketIndex:
-    ordered = trades.sort_values(
-        ["source_time_utc", "trade_id"], kind="mergesort"
-    )
-    return _MarketIndex(
-        times_ns=ordered["source_time_utc"]
-        .dt.as_unit("ns")
-        .astype("int64")
-        .to_numpy(),
-        trade_ids=ordered["trade_id"].astype(str).to_numpy(),
-        prices=ordered["price"].to_numpy(dtype=float),
-        orientations_resolved=ordered["orientation_resolved"].to_numpy(
-            dtype=bool
-        ),
-    )
-
-
-def _select_mark_indexed(
-    market: _MarketIndex,
+def _survival_at_h(
+    continuity: pd.Series,
     *,
-    anchor: pd.Timestamp,
-    offset_seconds: int,
-    role: str,
-) -> _Mark:
-    anchor_ns = int(anchor.value)
-    target_ns = anchor_ns + offset_seconds * 1_000_000_000
-    position = int(np.searchsorted(market.times_ns, target_ns, side="right")) - 1
-    if position < 0 or int(market.times_ns[position]) <= anchor_ns:
-        return _Mark(
-            trade_id=None,
-            source_time=None,
-            price=math.nan,
-            staleness_seconds=math.nan,
-            orientation_resolved=None,
-            exclusion_reason=f"{role}_no_actual_trade",
-        )
-    latest_ns = int(market.times_ns[position])
-    duplicate_before = (
-        position > 0 and int(market.times_ns[position - 1]) == latest_ns
-    )
-    duplicate_after = (
-        position + 1 < len(market.times_ns)
-        and int(market.times_ns[position + 1]) == latest_ns
-    )
-    latest = pd.Timestamp(latest_ns, tz="UTC")
-    staleness = float((target_ns - latest_ns) / 1_000_000_000)
-    if duplicate_before or duplicate_after:
-        return _Mark(
-            trade_id=None,
-            source_time=latest,
-            price=math.nan,
-            staleness_seconds=staleness,
-            orientation_resolved=None,
-            exclusion_reason=f"{role}_order_ambiguous",
-        )
-    if staleness > MAX_STALENESS_SECONDS:
-        return _Mark(
-            trade_id=None,
-            source_time=latest,
-            price=math.nan,
-            staleness_seconds=staleness,
-            orientation_resolved=bool(
-                market.orientations_resolved[position]
-            ),
-            exclusion_reason=f"{role}_stale",
-        )
-    return _Mark(
-        trade_id=str(market.trade_ids[position]),
-        source_time=latest,
-        price=float(market.prices[position]),
-        staleness_seconds=staleness,
-        orientation_resolved=bool(market.orientations_resolved[position]),
-        exclusion_reason=None,
-    )
-
-
-def _append_once(reasons: list[str], reason: str | None) -> None:
-    if reason is not None and reason not in reasons:
-        reasons.append(reason)
-
-
-def _decision_exclusions(
-    episode: pd.Series,
-    landmark_mark: _Mark,
-    *,
-    landmark_time: pd.Timestamp,
-) -> list[str]:
-    reasons: list[str] = []
-    if (
-        not bool(episode["orientation_resolved"])
-        or (
-            landmark_mark.exclusion_reason is None
-            and landmark_mark.orientation_resolved is not True
-        )
-    ):
-        reasons.append("orientation_unresolved")
-    if bool(episode["contaminated"]):
-        reasons.append("episode_contaminated")
-    contamination_time = episode["contamination_time_utc"]
-    if pd.notna(contamination_time) and contamination_time <= landmark_time:
-        reasons.append("contaminated_before_landmark")
-    if bool(episode["censored"]):
-        reasons.append("episode_censored")
-    censor_time = episode["censor_time_utc"]
-    if pd.notna(censor_time) and censor_time <= landmark_time:
-        reasons.append("censored_before_landmark")
-    _append_once(reasons, landmark_mark.exclusion_reason)
-    return reasons
-
-
-def _target_exclusions(
-    episode: pd.Series,
-    endpoint_mark: _Mark,
-    *,
-    landmark_time: pd.Timestamp,
     endpoint_time: pd.Timestamp,
-    decision_reasons: list[str],
-) -> list[str]:
-    reasons = list(decision_reasons)
-    if (
-        endpoint_mark.exclusion_reason is None
-        and endpoint_mark.orientation_resolved is not True
-    ):
-        _append_once(reasons, "orientation_unresolved")
-    contamination_time = episode["contamination_time_utc"]
-    if (
-        pd.notna(contamination_time)
-        and landmark_time < contamination_time <= endpoint_time
-    ):
-        _append_once(reasons, "contaminated_before_endpoint")
-    censor_time = episode["censor_time_utc"]
-    if (
-        pd.notna(censor_time)
-        and landmark_time < censor_time <= endpoint_time
-    ):
-        _append_once(reasons, "censored_before_endpoint")
-    _append_once(reasons, endpoint_mark.exclusion_reason)
-    return reasons
+) -> tuple[object, str | None]:
+    if continuity["continuity_verified_until_utc"] < endpoint_time:
+        return pd.NA, "CONTINUITY_UNVERIFIED_BEFORE_H"
+    observed_censors = [
+        (timestamp, reason)
+        for column, reason in _CONTINUITY_REASONS
+        if pd.notna(timestamp := continuity[column]) and timestamp <= endpoint_time
+    ]
+    if observed_censors:
+        _, reason = min(observed_censors, key=lambda item: (item[0], item[1]))
+        return False, reason
+    return True, None
 
 
-def build_nfl_x15_landmark_panel(
-    actual_trades: pd.DataFrame,
-    finalized_episode_state: pd.DataFrame,
-) -> pd.DataFrame:
-    """Build the frozen beneficiary-moneyline landmark target panel.
-
-    Output grain:
-    ``game × episode × venue × beneficiary moneyline × landmark × endpoint``.
-    ``decision_eligible`` uses only information observable by the landmark.
-    ``target_observed`` records whether both actual trade marks exist, while
-    ``target_eligible`` also applies endpoint contamination/censoring rules.
-    ``eligible`` is the internal alias for ``target_eligible``.  Combinations
-    without an eligible future target remain in the audit panel with a null
-    target and explicit ``exclusion_reasons``.
-    """
-
-    trades = _validate_trades(actual_trades)
-    episodes = _validate_episodes(finalized_episode_state)
-    moneyline = trades[trades["market_family"].eq("moneyline")].copy()
-    markets_by_game: dict[
-        str,
-        list[
-            tuple[
-                str,
-                str,
-                pd.DataFrame,
-                dict[str, _MarketIndex],
-            ]
-        ],
-    ] = {}
-    for (game_id, venue, logical_market_id), market in moneyline.groupby(
-        ["game_id", "venue", "logical_market_id"],
-        sort=True,
-        dropna=False,
-    ):
-        indexes = {
-            str(outcome): _market_index(group)
-            for outcome, group in market.groupby(
-                "outcome_team", sort=True, dropna=False
-            )
-        }
-        markets_by_game.setdefault(str(game_id), []).append(
-            (str(venue), str(logical_market_id), market, indexes)
+def _tick_at(
+    rules: pd.DataFrame,
+    contract: pd.Series,
+    *,
+    landmark_time: pd.Timestamp,
+) -> tuple[float, str]:
+    selected = rules.loc[
+        rules["venue"].eq(contract["venue"])
+        & rules["tick_rule_id"].eq(contract["tick_rule_id"])
+        & rules["effective_start_utc"].le(landmark_time)
+        & rules["effective_end_utc"].gt(landmark_time)
+    ]
+    if len(selected) != 1:
+        raise VenueReactionPanelError(
+            "exactly one applicable tick rule is required at each landmark"
         )
-    rows: list[dict[str, object]] = []
-    for episode in episodes.sort_values(
-        ["game_id", "finalized_interval_end_utc", "episode_id"],
+    row = selected.iloc[0]
+    return float(row["tick_size"]), str(row["tick_rule_id"])
+
+
+def _reference_at_l(
+    reference: pd.Series | None,
+    *,
+    landmark_time: pd.Timestamp,
+) -> tuple[str, dict[str, float | None]]:
+    unavailable = {
+        "p_before_home": None,
+        "p_after_home": None,
+        "reference_delta_home": None,
+    }
+    if reference is None:
+        return "MISSING", unavailable
+    if str(reference["support_status"]) != "SUPPORTED":
+        return "UNSUPPORTED", unavailable
+    if reference["known_at"] > landmark_time:
+        return "NOT_KNOWN_AT_L", unavailable
+    return (
+        "AVAILABLE",
+        {
+            "p_before_home": float(reference["p_before_home"]),
+            "p_after_home": float(reference["p_after_home"]),
+            "reference_delta_home": float(reference["reference_delta_home"]),
+        },
+    )
+
+
+def _activity(
+    trades: pd.DataFrame,
+    *,
+    landmark_time: pd.Timestamp,
+    seconds: int,
+) -> tuple[int, float]:
+    lower = landmark_time - pd.Timedelta(seconds=seconds)
+    selected = trades.loc[
+        trades["source_time_utc"].gt(lower)
+        & trades["source_time_utc"].le(landmark_time)
+    ]
+    return len(selected), float(selected["size"].sum())
+
+
+def _noise_threshold(
+    noise: pd.DataFrame,
+    *,
+    venue: str,
+    landmark: int,
+    endpoint: int,
+) -> float | None:
+    selected = noise.loc[
+        noise["venue"].eq(venue)
+        & noise["landmark_seconds"].eq(landmark)
+        & noise["endpoint_seconds"].eq(endpoint)
+    ]
+    if selected.empty:
+        return None
+    return float(selected.iloc[0]["matched_control_p95"])
+
+
+def _direction(delta: float, tick: float) -> str:
+    if delta > tick or math.isclose(delta, tick, rel_tol=0, abs_tol=1e-12):
+        return "UP"
+    if delta < -tick or math.isclose(delta, -tick, rel_tol=0, abs_tol=1e-12):
+        return "DOWN"
+    return "NO_MOVE"
+
+
+def _complement_diagnostics(
+    market: pd.DataFrame,
+    contracts: pd.DataFrame,
+) -> pd.DataFrame:
+    complements = contracts.loc[
+        contracts["contract_role"].eq("DERIVED_AWAY_COMPLEMENT")
+    ]
+    if complements.empty:
+        return pd.DataFrame(
+            columns=[
+                "game_id",
+                "venue",
+                "contract_id",
+                "trade_id",
+                "source_time_utc",
+                "price",
+                "kind",
+                "provenance",
+                "primary_target_eligible",
+                "diagnostic_reason",
+            ]
+        )
+    diagnostics = market.merge(
+        complements[["game_id", "venue", "contract_id"]],
+        on=["game_id", "venue", "contract_id"],
+        how="inner",
+        validate="many_to_one",
+    )
+    diagnostics["primary_target_eligible"] = False
+    diagnostics["diagnostic_reason"] = "DERIVED_AWAY_COMPLEMENT_DIAGNOSTIC_ONLY"
+    columns = [
+        "game_id",
+        "venue",
+        "contract_id",
+        "trade_id",
+        "source_time_utc",
+        "price",
+        "kind",
+        "provenance",
+        "primary_target_eligible",
+        "diagnostic_reason",
+    ]
+    return diagnostics.loc[:, columns].sort_values(
+        ["game_id", "venue", "contract_id", "source_time_utc", "trade_id"],
         kind="mergesort",
-    ).itertuples(index=False):
-        episode_row = pd.Series(episode._asdict())
-        anchor = episode_row["finalized_interval_end_utc"]
-        beneficiary = str(episode_row["beneficiary_team"])
-        scoped_markets = markets_by_game.get(str(episode_row["game_id"]), [])
-        for venue, logical_market_id, market, outcome_indexes in scoped_markets:
-            market_index = outcome_indexes.get(
-                beneficiary,
-                _MarketIndex(
-                    times_ns=np.asarray([], dtype=np.int64),
-                    trade_ids=np.asarray([], dtype=object),
-                    prices=np.asarray([], dtype=float),
-                    orientations_resolved=np.asarray([], dtype=bool),
-                ),
-            )
-            landmark_marks = {
-                offset: _select_mark_indexed(
-                    market_index,
-                    anchor=anchor,
-                    offset_seconds=offset,
-                    role="landmark",
+    ).reset_index(drop=True)
+
+
+def build_venue_reaction_panel_v3(
+    *,
+    episode_facts: pd.DataFrame,
+    stage_a_references: pd.DataFrame,
+    market_rows: pd.DataFrame,
+    contract_metadata: pd.DataFrame,
+    tick_rules: pd.DataFrame,
+    continuity: pd.DataFrame,
+    matched_control_noise: pd.DataFrame | None = None,
+) -> VenueReactionPanelV3:
+    """Build the complete actual-home VenueReactionPanelV3 and attrition audit."""
+
+    facts = _validate_facts(episode_facts)
+    references = _validate_references(stage_a_references)
+    market = _validate_market(market_rows)
+    contracts = _validate_contracts(contract_metadata)
+    rules = _validate_rules(tick_rules)
+    continuity_rows = _validate_continuity(continuity, facts)
+    noise = _validate_noise(matched_control_noise)
+
+    reference_index = {
+        (str(row["game_id"]), str(row["atomic_information_episode_id"])): pd.Series(
+            row
+        )
+        for row in references.to_dict("records")
+    }
+    continuity_index = {
+        (str(row["game_id"]), str(row["atomic_information_episode_id"])): pd.Series(
+            row
+        )
+        for row in continuity_rows.to_dict("records")
+    }
+    home_contracts = contracts.loc[
+        contracts["contract_role"].eq("ACTUAL_HOME_OUTCOME")
+    ].sort_values(["game_id", "venue", "contract_id"], kind="mergesort")
+    observed_trades = market.loc[
+        market["kind"].eq("trade") & market["provenance"].eq("observed")
+    ].copy()
+    rows: list[dict[str, object]] = []
+
+    ordered_facts = facts.sort_values(
+        ["game_id", "source_interval_start", "atomic_information_episode_id"],
+        kind="mergesort",
+    )
+    for raw_fact in ordered_facts.to_dict("records"):
+        fact = pd.Series(raw_fact)
+        fact_key = (
+            str(fact["game_id"]),
+            str(fact["atomic_information_episode_id"]),
+        )
+        reference = reference_index.get(fact_key)
+        continuity_row = continuity_index[fact_key]
+        scoped_contracts = home_contracts.loc[
+            home_contracts["game_id"].eq(fact["game_id"])
+            & home_contracts["home_team"].eq(fact["home_team"])
+        ]
+        for raw_contract in scoped_contracts.to_dict("records"):
+            contract = pd.Series(raw_contract)
+            trades = observed_trades.loc[
+                observed_trades["game_id"].eq(fact["game_id"])
+                & observed_trades["venue"].eq(contract["venue"])
+                & observed_trades["contract_id"].eq(contract["contract_id"])
+            ].sort_values(["source_time_utc", "trade_id"], kind="mergesort")
+            interval_start = fact["source_interval_start"]
+            interval_end = fact["source_interval_end"]
+            marks_l = {
+                offset: _select_mark(
+                    trades,
+                    interval_start=interval_start,
+                    interval_end=interval_end,
+                    target_time=interval_end + pd.Timedelta(seconds=offset),
                 )
                 for offset in LANDMARK_SECONDS
             }
-            endpoint_marks = {
-                offset: _select_mark_indexed(
-                    market_index,
-                    anchor=anchor,
-                    offset_seconds=offset,
-                    role="endpoint",
+            marks_h = {
+                offset: _select_mark(
+                    trades,
+                    interval_start=interval_start,
+                    interval_end=interval_end,
+                    target_time=interval_end + pd.Timedelta(seconds=offset),
                 )
                 for offset in ENDPOINT_SECONDS
             }
             for landmark in LANDMARK_SECONDS:
-                landmark_mark = landmark_marks[landmark]
+                landmark_time = interval_end + pd.Timedelta(seconds=landmark)
+                mark_l = marks_l[landmark]
+                tick, tick_rule_id = _tick_at(
+                    rules, contract, landmark_time=landmark_time
+                )
+                stage_a_status, stage_a = _reference_at_l(
+                    reference, landmark_time=landmark_time
+                )
+                count_30, size_30 = _activity(
+                    trades, landmark_time=landmark_time, seconds=30
+                )
+                count_60, size_60 = _activity(
+                    trades, landmark_time=landmark_time, seconds=60
+                )
                 for endpoint in ENDPOINT_SECONDS:
                     if endpoint <= landmark:
                         continue
-                    landmark_time = anchor + pd.Timedelta(seconds=landmark)
-                    endpoint_time = anchor + pd.Timedelta(seconds=endpoint)
-                    endpoint_mark = endpoint_marks[endpoint]
-                    decision_reasons = _decision_exclusions(
-                        episode_row,
-                        landmark_mark,
-                        landmark_time=landmark_time,
+                    endpoint_time = interval_end + pd.Timedelta(seconds=endpoint)
+                    mark_h = marks_h[endpoint]
+                    s_h, survival_reason = _survival_at_h(
+                        continuity_row, endpoint_time=endpoint_time
                     )
-                    reasons = _target_exclusions(
-                        episode_row,
-                        endpoint_mark,
-                        landmark_time=landmark_time,
-                        endpoint_time=endpoint_time,
-                        decision_reasons=decision_reasons,
+                    decision_eligible = bool(
+                        fact["stage_b_information_event_eligible"]
+                    ) and mark_l.observed
+                    if s_h is True:
+                        if mark_h.status == "ORDER_AMBIGUOUS":
+                            o_h: object = pd.NA
+                        else:
+                            o_h = mark_h.observed
+                    else:
+                        o_h = pd.NA
+                    target_eligible = (
+                        decision_eligible and s_h is True and o_h is True
                     )
-                    decision_eligible = not decision_reasons
-                    target_observed = (
-                        landmark_mark.exclusion_reason is None
-                        and endpoint_mark.exclusion_reason is None
+                    delta = (
+                        mark_h.price - mark_l.price
+                        if target_eligible
+                        else math.nan
                     )
-                    target_eligible = not reasons
+                    direction = (
+                        _direction(delta, tick)
+                        if target_eligible
+                        else "UNOBSERVED"
+                    )
+                    magnitude = (
+                        abs(delta)
+                        if direction in {"UP", "DOWN"}
+                        else math.nan
+                    )
+                    p95 = _noise_threshold(
+                        noise,
+                        venue=str(contract["venue"]),
+                        landmark=landmark,
+                        endpoint=endpoint,
+                    )
+                    abnormal: object = pd.NA
+                    if target_eligible and p95 is not None:
+                        magnitude_at_h = abs(delta)
+                        abnormal = magnitude_at_h > p95 or math.isclose(
+                            magnitude_at_h,
+                            p95,
+                            rel_tol=0,
+                            abs_tol=1e-12,
+                        )
+                    if not bool(fact["stage_b_information_event_eligible"]):
+                        attrition_reason = "FACT_NOT_STAGE_B_ELIGIBLE"
+                    elif not mark_l.observed:
+                        attrition_reason = f"LANDMARK_{mark_l.status}"
+                    elif survival_reason is not None:
+                        attrition_reason = survival_reason
+                    elif mark_h.status != "OBSERVED":
+                        attrition_reason = f"ENDPOINT_{mark_h.status}"
+                    else:
+                        attrition_reason = "ELIGIBLE"
+
+                    reference_gap = (
+                        mark_l.price - float(stage_a["p_after_home"])
+                        if mark_l.observed
+                        and stage_a_status == "AVAILABLE"
+                        and stage_a["p_after_home"] is not None
+                        else math.nan
+                    )
+                    decision_features = {
+                        "schema_version": SCHEMA_VERSION,
+                        "game_id": str(fact["game_id"]),
+                        "atomic_information_episode_id": str(
+                            fact["atomic_information_episode_id"]
+                        ),
+                        "venue": str(contract["venue"]),
+                        "actual_home_contract_id": str(contract["contract_id"]),
+                        "landmark_seconds": landmark,
+                        "endpoint_seconds": endpoint,
+                        "event_interval_start": interval_start,
+                        "event_interval_end": interval_end,
+                        "tick_rule_id": tick_rule_id,
+                        "tick_size": tick,
+                        "mark_l_trade_id": mark_l.trade_id,
+                        "mark_l_source_time_utc": mark_l.source_time,
+                        "mark_l_price": (
+                            mark_l.price if mark_l.observed else None
+                        ),
+                        "mark_l_staleness_seconds": (
+                            mark_l.staleness_seconds if mark_l.observed else None
+                        ),
+                        "prior_30s_actual_trade_count": count_30,
+                        "prior_30s_actual_trade_size": size_30,
+                        "prior_60s_actual_trade_count": count_60,
+                        "prior_60s_actual_trade_size": size_60,
+                        "stage_a_status": stage_a_status,
+                        **stage_a,
+                        "reference_gap_at_landmark": reference_gap,
+                        "fact_features": {
+                            column: fact.get(column)
+                            for column in _FACT_FEATURE_COLUMNS
+                        },
+                    }
+                    decision_json = _canonical_json(decision_features)
                     rows.append(
                         {
-                            "game_id": str(episode_row["game_id"]),
-                            "episode_id": str(episode_row["episode_id"]),
-                            "venue": str(venue),
-                            "logical_market_id": str(logical_market_id),
-                            "beneficiary_team": beneficiary,
-                            "market_family": "moneyline",
-                            "event_type": str(episode_row["event_type"]),
-                            "event_anchor_semantics": (
-                                "FINALIZED_EVENT_INTERVAL_END"
+                            "schema_version": SCHEMA_VERSION,
+                            "claim_boundary": CLAIM_BOUNDARY,
+                            "game_id": str(fact["game_id"]),
+                            "atomic_information_episode_id": str(
+                                fact["atomic_information_episode_id"]
                             ),
-                            "event_anchor_utc": anchor,
-                            "nfl_week": int(episode_row["nfl_week"]),
-                            "is_matched_control": bool(
-                                episode_row["is_matched_control"]
+                            "venue": str(contract["venue"]),
+                            "actual_home_contract_id": str(
+                                contract["contract_id"]
                             ),
-                            "factor_id": str(episode_row["factor_id"]),
-                            "reference_gap_at_landmark": (
-                                landmark_mark.price
-                                - float(episode_row["p_after_ref"])
-                                if landmark_mark.exclusion_reason is None
-                                else math.nan
-                            ),
-                            "game_seconds_remaining": float(
-                                episode_row["game_seconds_remaining"]
-                            ),
-                            "score_margin": float(episode_row["score_margin"]),
-                            "pit_strength": (
-                                float(episode_row["pit_strength"])
-                                if pd.notna(episode_row["pit_strength"])
-                                else math.nan
-                            ),
-                            "reference_delta": (
-                                float(episode_row["reference_delta"])
-                                if pd.notna(episode_row["reference_delta"])
-                                else math.nan
-                            ),
+                            "home_team": str(fact["home_team"]),
+                            "away_team": str(fact["away_team"]),
+                            "target_orientation": "ACTUAL_HOME_OUTCOME",
+                            "source_interval_start": interval_start,
+                            "source_interval_end": interval_end,
+                            "source_interval_semantics": "[START,END)",
                             "landmark_seconds": landmark,
                             "endpoint_seconds": endpoint,
                             "landmark_utc": landmark_time,
                             "endpoint_utc": endpoint_time,
-                            "mark_landmark_trade_id": landmark_mark.trade_id,
-                            "mark_landmark_source_time_utc": (
-                                landmark_mark.source_time
+                            "tick_rule_id": tick_rule_id,
+                            "tick_size": tick,
+                            "mark_l_trade_id": mark_l.trade_id,
+                            "mark_l_source_time_utc": mark_l.source_time,
+                            "mark_l_price": (
+                                mark_l.price if mark_l.observed else math.nan
                             ),
-                            "mark_landmark_price": landmark_mark.price,
-                            "landmark_staleness_seconds": (
-                                landmark_mark.staleness_seconds
-                            ),
-                            "mark_endpoint_trade_id": endpoint_mark.trade_id,
-                            "mark_endpoint_source_time_utc": (
-                                endpoint_mark.source_time
-                            ),
-                            "mark_endpoint_price": endpoint_mark.price,
-                            "endpoint_staleness_seconds": (
-                                endpoint_mark.staleness_seconds
-                            ),
-                            "target_delta": (
-                                endpoint_mark.price - landmark_mark.price
-                                if target_eligible
+                            "mark_l_staleness_seconds": (
+                                mark_l.staleness_seconds
+                                if mark_l.observed
                                 else math.nan
                             ),
-                            "target_orientation": "BENEFICIARY_OUTCOME",
-                            "price_basis": "LATEST_UNIQUE_ACTUAL_TRADE",
-                            "max_staleness_seconds": MAX_STALENESS_SECONDS,
+                            "mark_h_trade_id": mark_h.trade_id,
+                            "mark_h_source_time_utc": mark_h.source_time,
+                            "mark_h_price": (
+                                mark_h.price if mark_h.observed else math.nan
+                            ),
+                            "mark_h_staleness_seconds": (
+                                mark_h.staleness_seconds
+                                if mark_h.observed
+                                else math.nan
+                            ),
+                            "s_h": s_h,
+                            "o_h_given_s": o_h,
                             "decision_eligible": decision_eligible,
-                            "target_observed": target_observed,
                             "target_eligible": target_eligible,
-                            "eligible": target_eligible,
-                            "exclusion_reasons": tuple(reasons),
-                            "claim_boundary": CLAIM_BOUNDARY,
+                            "delta_l_h": delta,
+                            "direction": direction,
+                            "conditional_magnitude": magnitude,
+                            "matched_control_p95": (
+                                p95 if p95 is not None else math.nan
+                            ),
+                            "abnormal_move": abnormal,
+                            "stage_a_status": stage_a_status,
+                            "p_before_home": stage_a["p_before_home"],
+                            "p_after_home": stage_a["p_after_home"],
+                            "reference_delta_home": stage_a[
+                                "reference_delta_home"
+                            ],
+                            "reference_gap_at_landmark": reference_gap,
+                            "prior_30s_actual_trade_count": count_30,
+                            "prior_30s_actual_trade_size": size_30,
+                            "prior_60s_actual_trade_count": count_60,
+                            "prior_60s_actual_trade_size": size_60,
+                            "decision_features_json": decision_json,
+                            "decision_feature_sha256": _sha256_text(decision_json),
+                            "attrition_reason": attrition_reason,
                         }
                     )
+
     panel = pd.DataFrame(rows)
     if panel.empty:
-        return pd.DataFrame(columns=_OUTPUT_COLUMNS)
-    if panel.duplicated(_GRAIN).any():
-        raise NFLX15LandmarkError("landmark panel grain is not unique")
-    return (
-        panel.sort_values(_GRAIN, kind="mergesort")
+        raise VenueReactionPanelError(
+            "no actual home-outcome contracts joined the episode facts"
+        )
+    if panel.duplicated(list(_PANEL_GRAIN)).any():
+        raise VenueReactionPanelError("VenueReactionPanelV3 grain is not unique")
+    panel = panel.sort_values(list(_PANEL_GRAIN), kind="mergesort").reset_index(
+        drop=True
+    )
+    attrition = (
+        panel.groupby(
+            [
+                "venue",
+                "landmark_seconds",
+                "endpoint_seconds",
+                "attrition_reason",
+            ],
+            dropna=False,
+            as_index=False,
+        )
+        .agg(
+            row_count=("atomic_information_episode_id", "size"),
+            game_count=("game_id", "nunique"),
+            episode_count=("atomic_information_episode_id", "nunique"),
+        )
+        .sort_values(
+            [
+                "venue",
+                "landmark_seconds",
+                "endpoint_seconds",
+                "attrition_reason",
+            ],
+            kind="mergesort",
+        )
         .reset_index(drop=True)
-        .reindex(columns=_OUTPUT_COLUMNS)
+    )
+    return VenueReactionPanelV3(
+        panel=panel,
+        attrition=attrition,
+        complement_diagnostics=_complement_diagnostics(market, contracts),
     )
 
 
@@ -738,9 +960,8 @@ __all__ = [
     "ENDPOINT_SECONDS",
     "LANDMARK_SECONDS",
     "MAX_STALENESS_SECONDS",
-    "MODEL_PASSTHROUGH_COLUMNS",
-    "NFLX15LandmarkError",
-    "NFLX15LandmarkSpecV1",
-    "SPEC_V1",
-    "build_nfl_x15_landmark_panel",
+    "SCHEMA_VERSION",
+    "VenueReactionPanelError",
+    "VenueReactionPanelV3",
+    "build_venue_reaction_panel_v3",
 ]
