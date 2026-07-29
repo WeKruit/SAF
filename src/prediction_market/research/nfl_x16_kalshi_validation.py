@@ -38,9 +38,13 @@ from prediction_market.research.nfl_x15_model_selection import (
     HISTORICAL_TARGET_CONTRACT,
     LOSS_IMPROVEMENT_SIGN_SEMANTICS,
     MARKET_CONTINUITY_SUPPORT,
+    ModelSelectionError,
     ModelSelectionResult,
+    SURVIVAL_PROBABILITY_CONTRACT,
+    StageBModelSelectionResult,
     VENUE_TICK_SUPPORT,
     bind_frozen_development_authority,
+    verify_stage_b_v2_selection_result,
 )
 from prediction_market.research.nfl_x15_statistics import (
     DEFAULT_MAX_GAME_CONTRIBUTION,
@@ -85,37 +89,51 @@ _REACTION_EXPOSURE_ARTIFACT_SHA256: Final[str] = (
     "sha256:a2aa20c764523d9c117e0087eb319cc50bbf736924009c9f7b8850fb471a3ea4"
 )
 _FACTOR_REGISTRY_PATH: Final[str] = (
-    "registries/factors/nfl_factor_registry_v3_draft.json"
+    "registries/factors/nfl_factor_registry_v4.json"
 )
 _FACTOR_REGISTRY_FILE_SHA256: Final[str] = (
-    "sha256:b0993b1c4a3bd5698620d29f1d28fa23db2040e29414eeb6ce038499511ce545"
+    "sha256:92e5001d92afa0748731b5310dae8289ff6930b26a141e981ed910d2c761575f"
 )
 _FACTOR_REGISTRY_SEMANTIC_SHA256: Final[str] = (
-    "sha256:1083c2772efef5f1067ae1fe6f37728d5c0fb734e67e5616308fa9cda23c7320"
+    "sha256:527a084317ec4a728e5567feea756c1541b65bb814fcf96900b6cfbfd223ead8"
+)
+_FACTOR_FACTS_AUTHORITY_MANIFEST_PATH: Final[str] = (
+    "artifacts/market-observation/nfl/x13/exact-153-facts-v4/"
+    "batches/manifests/sha256/5d/"
+    "5d693723e991b7f691dab2826308773a0ce6a30564c37dcb7d4a1cb9e1580757"
+    ".batch-index.json"
+)
+_FACTOR_FACTS_AUTHORITY_MANIFEST_FILE_SHA256: Final[str] = (
+    "sha256:5d693723e991b7f691dab2826308773a0ce6a30564c37dcb7d4a1cb9e1580757"
+)
+_FACTOR_FACTS_AUTHORITY_BATCH_SHA256: Final[str] = (
+    "sha256:b097f35c30312068ca46e43a0d97e692f30f51a9dcdb89fc1ee604d1be98a082"
 )
 _FACTOR_MEMBERSHIP_ROOT: Final[str] = (
     "artifacts/market-observation/nfl/x15/"
-    "historical-trades-only-development-panel-v1"
+    "historical-trades-only-development-panel-v2"
 )
 _FACTOR_MEMBERSHIP_AUTHORITY_MANIFEST_PATH: Final[str] = (
-    f"{_FACTOR_MEMBERSHIP_ROOT}/batches/manifests/sha256/3d/"
-    "3d2247c8b075748ccfa219daaf760e1681e85cb8fe0601bc2c9657381c7a969e"
+    f"{_FACTOR_MEMBERSHIP_ROOT}/batches/manifests/sha256/39/"
+    "39e9f1490a1adcb693c29b9f9fe2f94ec72f1f2d3eafe748ba09e37c7fc750c3"
     ".batch-index.json"
 )
 _FACTOR_MEMBERSHIP_AUTHORITY_MANIFEST_FILE_SHA256: Final[str] = (
-    "sha256:3d2247c8b075748ccfa219daaf760e1681e85cb8fe0601bc2c9657381c7a969e"
+    "sha256:39e9f1490a1adcb693c29b9f9fe2f94ec72f1f2d3eafe748ba09e37c7fc750c3"
 )
 _FACTOR_MEMBERSHIP_AUTHORITY_BATCH_SHA256: Final[str] = (
-    "sha256:621239ed42b648b94b9648b8d0507f82d08c19e61932d272598340b0043cb67d"
+    "sha256:d0cb73d381eeb39a7cf5d4cb2ebf24f05037be3e25905ac5e24977c72b3baba8"
 )
 _FACTOR_MEMBERSHIP_COHORT_AUTHORITY_SHA256: Final[str] = (
     "sha256:226b796358426185609cd3c6f18f5ab67828d465f194f5403a56a397ed77493d"
 )
+_FACTOR_MEMBERSHIP_EPISODE_COUNT: Final[int] = 25_408
+_FACTOR_MEMBERSHIP_ROW_COUNT: Final[int] = 83_659
 _FACTOR_MEMBERSHIP_ROWS_SHA256: Final[str] = (
-    "sha256:953a1f47d7ade9517744234b72660fc9070953b11bf975b5aaf4f5d919301111"
+    "sha256:d2fc72c3d81720bcf2bf2a7550272f734544923abbfec72d2165e12cc634a874"
 )
 _FACTOR_MEMBERSHIP_ARTIFACT_BINDINGS_SHA256: Final[str] = (
-    "sha256:3254d7366b16048ccad176109126dfe9723372be461518e8ff9e08108c351f2a"
+    "sha256:0725380c27e0353a0f6c92bef482b72b757970981cf6c31102f93fb6c64047c4"
 )
 _FACTOR_MEMBERSHIP_COLUMNS: Final[tuple[str, ...]] = (
     "game_id",
@@ -284,6 +302,9 @@ class FrozenFactorMembershipEvidence:
     authority_manifest_path: str
     authority_manifest_file_sha256: str
     authority_batch_sha256: str
+    facts_authority_manifest_path: str
+    facts_authority_manifest_file_sha256: str
+    facts_authority_batch_sha256: str
     cohort_authority_sha256: str
     registry_path: str
     registry_file_sha256: str
@@ -308,12 +329,45 @@ def _require_sha256(value: object, *, field: str) -> str:
     return str(value)
 
 
+def _canonical(value: object) -> object:
+    if value is None or value is pd.NA:
+        return None
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    if isinstance(value, (float, np.floating)):
+        number = float(value)
+        return number if np.isfinite(number) else None
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    if isinstance(value, Mapping):
+        return {
+            str(key): _canonical(child)
+            for key, child in sorted(
+                value.items(), key=lambda item: str(item[0])
+            )
+        }
+    if isinstance(value, (list, tuple, set, np.ndarray)):
+        children = list(value)
+        if isinstance(value, set):
+            children = sorted(children, key=repr)
+        return [_canonical(child) for child in children]
+    try:
+        missing = pd.isna(value)
+    except (TypeError, ValueError):
+        missing = False
+    if isinstance(missing, (bool, np.bool_)) and missing:
+        return None
+    return str(value)
+
+
 def _canonical_sha256(value: object) -> str:
     payload = json.dumps(
-        value,
+        _canonical(value),
         sort_keys=True,
         separators=(",", ":"),
-        ensure_ascii=True,
+        allow_nan=False,
     )
     return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -490,17 +544,137 @@ def _sha256_file_bytes(path: Path, *, label: str) -> bytes:
     return payload
 
 
+def _validate_factor_registry_contract(
+    registry: object,
+) -> None:
+    if (
+        not isinstance(registry, Mapping)
+        or registry.get("schema") != "NFLFactorRegistryV4"
+        or registry.get("version") != "v4"
+        or registry.get("status") != "AUTHORITATIVE"
+        or _canonical_sha256(registry)
+        != _FACTOR_REGISTRY_SEMANTIC_SHA256
+    ):
+        raise KalshiValidationError(
+            "frozen factor registry semantic contract drifted"
+        )
+    definitions = registry.get("factors")
+    if (
+        not isinstance(definitions, list)
+        or len(definitions) != 59
+        or any(
+            not isinstance(definition, dict)
+            or definition.get("status") not in {"ACTIVE", "DATA_GAP"}
+            for definition in definitions
+        )
+    ):
+        raise KalshiValidationError(
+            "frozen factor registry definitions are invalid"
+        )
+
+
+def _validate_factor_facts_authority_contract(
+    authority: object,
+) -> None:
+    if not isinstance(authority, Mapping):
+        raise KalshiValidationError(
+            "frozen V4 facts authority contract drifted"
+        )
+    games = authority.get("games")
+    registry = authority.get("factor_registry")
+    cohort_authority = authority.get("authority")
+    if (
+        authority.get("schema")
+        != "nfl_x13_exact153_fact_batch_index_v4"
+        or authority.get("builder_version")
+        != "nfl_x13_exact153_fact_publication_v4"
+        or authority.get("publication_id") != "exact-153-facts-v4"
+        or authority.get("experiment_id") != "X-13"
+        or authority.get("cohort") != "development"
+        or authority.get("game_count") != EXPECTED_DEVELOPMENT_GAMES
+        or authority.get("holdout_reaction_accessed") is not False
+        or authority.get("market_data_read") is not False
+        or authority.get("publication_gate") != "PASS"
+        or authority.get("batch_sha256")
+        != _FACTOR_FACTS_AUTHORITY_BATCH_SHA256
+        or not isinstance(games, list)
+        or len(games) != EXPECTED_DEVELOPMENT_GAMES
+        or not isinstance(registry, Mapping)
+        or registry.get("schema") != "NFLFactorRegistryV4"
+        or registry.get("version") != "v4"
+        or registry.get("status") != "AUTHORITATIVE"
+        or registry.get("factor_count") != 59
+        or registry.get("file_sha256")
+        != _FACTOR_REGISTRY_FILE_SHA256
+        or registry.get("semantic_sha256")
+        != _FACTOR_REGISTRY_SEMANTIC_SHA256
+        or not isinstance(cohort_authority, Mapping)
+        or cohort_authority.get("development_game_count")
+        != EXPECTED_DEVELOPMENT_GAMES
+        or cohort_authority.get("final_holdout_game_count")
+        != EXPECTED_HOLDOUT_GAMES
+        or cohort_authority.get("object_sha256")
+        != _FACTOR_MEMBERSHIP_COHORT_AUTHORITY_SHA256
+    ):
+        raise KalshiValidationError(
+            "frozen V4 facts authority contract drifted"
+        )
+
+
+def _validate_factor_membership_authority_contract(
+    authority: object,
+) -> None:
+    if not isinstance(authority, Mapping):
+        raise KalshiValidationError(
+            "frozen factor membership authority contract drifted"
+        )
+    games = authority.get("games")
+    source_batches = authority.get("source_batch_file_sha256s")
+    if (
+        authority.get("schema")
+        != "nfl_x15_development_panel_batch_index_v1"
+        or authority.get("builder_version")
+        != "nfl-x15-development-panel-v2"
+        or authority.get("cohort") != "development"
+        or authority.get("verified_development_game_count")
+        != EXPECTED_DEVELOPMENT_GAMES
+        or authority.get("published_game_count")
+        != EXPECTED_DEVELOPMENT_GAMES
+        or authority.get("partial_publication") is not False
+        or authority.get("holdout_reaction_accessed") is not False
+        or authority.get("publication_gate") != "PASS"
+        or authority.get("cohort_authority_sha256")
+        != _FACTOR_MEMBERSHIP_COHORT_AUTHORITY_SHA256
+        or authority.get("batch_sha256")
+        != _FACTOR_MEMBERSHIP_AUTHORITY_BATCH_SHA256
+        or not isinstance(source_batches, Mapping)
+        or source_batches.get("facts")
+        != _FACTOR_FACTS_AUTHORITY_MANIFEST_FILE_SHA256
+        or not isinstance(games, list)
+        or len(games) != EXPECTED_DEVELOPMENT_GAMES
+    ):
+        raise KalshiValidationError(
+            "frozen factor membership authority contract drifted"
+        )
+
+
 def load_frozen_factor_membership_evidence(
 ) -> FrozenFactorMembershipEvidence:
     """Decode exact factor tags from the fixed complete X15 batch only."""
 
     repository_root = Path(__file__).resolve().parents[3]
     registry_path = repository_root / _FACTOR_REGISTRY_PATH
+    facts_authority_path = (
+        repository_root / _FACTOR_FACTS_AUTHORITY_MANIFEST_PATH
+    )
     authority_path = (
         repository_root / _FACTOR_MEMBERSHIP_AUTHORITY_MANIFEST_PATH
     )
     registry_bytes = _sha256_file_bytes(
         registry_path, label="frozen factor registry"
+    )
+    facts_authority_bytes = _sha256_file_bytes(
+        facts_authority_path, label="frozen V4 facts authority"
     )
     authority_bytes = _sha256_file_bytes(
         authority_path, label="frozen factor membership authority"
@@ -508,12 +682,22 @@ def load_frozen_factor_membership_evidence(
     registry_file_sha256 = (
         "sha256:" + hashlib.sha256(registry_bytes).hexdigest()
     )
+    facts_authority_file_sha256 = (
+        "sha256:" + hashlib.sha256(facts_authority_bytes).hexdigest()
+    )
     authority_file_sha256 = (
         "sha256:" + hashlib.sha256(authority_bytes).hexdigest()
     )
     if registry_file_sha256 != _FACTOR_REGISTRY_FILE_SHA256:
         raise KalshiValidationError(
             "frozen factor registry file SHA-256 mismatch"
+        )
+    if (
+        facts_authority_file_sha256
+        != _FACTOR_FACTS_AUTHORITY_MANIFEST_FILE_SHA256
+    ):
+        raise KalshiValidationError(
+            "frozen V4 facts authority SHA-256 mismatch"
         )
     if (
         authority_file_sha256
@@ -524,39 +708,16 @@ def load_frozen_factor_membership_evidence(
         )
     try:
         registry = json.loads(registry_bytes)
+        facts_authority = json.loads(facts_authority_bytes)
         authority = json.loads(authority_bytes)
     except json.JSONDecodeError as exc:
         raise KalshiValidationError(
-            "frozen factor registry/membership authority is invalid JSON"
+            "frozen factor registry/facts/membership authority is invalid JSON"
         ) from exc
-    if (
-        registry.get("schema") != "NFLFactorRegistryV3"
-        or registry.get("version") != "v3-draft-single-game-review"
-        or registry.get("status") != "DRAFT_EXPERT_REVIEW"
-        or _canonical_sha256(registry)
-        != _FACTOR_REGISTRY_SEMANTIC_SHA256
-    ):
-        raise KalshiValidationError(
-            "frozen factor registry semantic contract drifted"
-        )
+    _validate_factor_registry_contract(registry)
+    _validate_factor_facts_authority_contract(facts_authority)
+    _validate_factor_membership_authority_contract(authority)
     games = authority.get("games")
-    if (
-        authority.get("schema")
-        != "nfl_x15_development_panel_batch_index_v1"
-        or authority.get("builder_version")
-        != "nfl-x15-development-panel-v1"
-        or authority.get("cohort") != "development"
-        or authority.get("verified_development_game_count") != 153
-        or authority.get("published_game_count") != 153
-        or authority.get("partial_publication") is not False
-        or authority.get("holdout_reaction_accessed") is not False
-        or authority.get("publication_gate") != "PASS"
-        or not isinstance(games, list)
-        or len(games) != 153
-    ):
-        raise KalshiValidationError(
-            "frozen factor membership authority contract drifted"
-        )
     cohort_authority_sha256 = _require_sha256(
         authority.get("cohort_authority_sha256"),
         field="factor membership cohort_authority_sha256",
@@ -573,6 +734,30 @@ def load_frozen_factor_membership_evidence(
     ):
         raise KalshiValidationError(
             "frozen factor membership embedded authority drifted"
+        )
+    facts_games = facts_authority.get("games")
+    if not isinstance(facts_games, list):
+        raise KalshiValidationError(
+            "frozen V4 facts authority game descriptors are invalid"
+        )
+    facts_manifest_sha256_by_game: dict[str, str] = {}
+    for facts_game in facts_games:
+        if not isinstance(facts_game, Mapping):
+            raise KalshiValidationError(
+                "frozen V4 facts authority game descriptor is invalid"
+            )
+        facts_game_id = facts_game.get("game_id")
+        if (
+            not isinstance(facts_game_id, str)
+            or not facts_game_id.strip()
+            or facts_game_id in facts_manifest_sha256_by_game
+        ):
+            raise KalshiValidationError(
+                "frozen V4 facts authority game identity is invalid"
+            )
+        facts_manifest_sha256_by_game[facts_game_id] = _require_sha256(
+            facts_game.get("manifest_sha256"),
+            field=f"V4 facts {facts_game_id} manifest_sha256",
         )
     fixed_root = repository_root / _FACTOR_MEMBERSHIP_ROOT
     frames: list[pd.DataFrame] = []
@@ -640,6 +825,8 @@ def load_frozen_factor_membership_evidence(
             or not isinstance(sources, dict)
             or sources.get("cohort_authority_sha256")
             != cohort_authority_sha256
+            or sources.get("facts_manifest_sha256")
+            != facts_manifest_sha256_by_game.get(game_id)
         ):
             raise KalshiValidationError(
                 f"factor membership {game_id} manifest contract drifted"
@@ -710,6 +897,10 @@ def load_frozen_factor_membership_evidence(
                 ),
             }
         )
+    if observed_game_ids != set(facts_manifest_sha256_by_game):
+        raise KalshiValidationError(
+            "factor membership game set differs from frozen V4 facts"
+        )
     membership = pd.concat(frames, ignore_index=True)
     for column in _FACTOR_MEMBERSHIP_COLUMNS:
         if not membership[column].map(
@@ -763,10 +954,6 @@ def load_frozen_factor_membership_evidence(
     membership_rows_sha256 = _factor_membership_rows_sha256(
         membership
     )
-    if membership_rows_sha256 != _FACTOR_MEMBERSHIP_ROWS_SHA256:
-        raise KalshiValidationError(
-            "frozen factor membership row artifact SHA-256 mismatch"
-        )
     bindings_sha256 = _canonical_sha256(
         {
             "schema": "nfl_x15_factor_membership_artifact_bindings_v1",
@@ -774,12 +961,19 @@ def load_frozen_factor_membership_evidence(
             "tables": artifact_bindings,
         }
     )
+    episode_count = membership[
+        ["game_id", "atomic_information_episode_id"]
+    ].drop_duplicates().shape[0]
     if (
-        bindings_sha256
+        membership["game_id"].nunique() != EXPECTED_DEVELOPMENT_GAMES
+        or episode_count != _FACTOR_MEMBERSHIP_EPISODE_COUNT
+        or len(membership) != _FACTOR_MEMBERSHIP_ROW_COUNT
+        or membership_rows_sha256 != _FACTOR_MEMBERSHIP_ROWS_SHA256
+        or bindings_sha256
         != _FACTOR_MEMBERSHIP_ARTIFACT_BINDINGS_SHA256
     ):
         raise KalshiValidationError(
-            "frozen factor membership artifact bindings drifted"
+            "frozen factor membership complete authority drifted"
         )
     return FrozenFactorMembershipEvidence(
         authority_manifest_path=(
@@ -787,6 +981,15 @@ def load_frozen_factor_membership_evidence(
         ),
         authority_manifest_file_sha256=authority_file_sha256,
         authority_batch_sha256=authority_batch_sha256,
+        facts_authority_manifest_path=(
+            _FACTOR_FACTS_AUTHORITY_MANIFEST_PATH
+        ),
+        facts_authority_manifest_file_sha256=(
+            facts_authority_file_sha256
+        ),
+        facts_authority_batch_sha256=(
+            _FACTOR_FACTS_AUTHORITY_BATCH_SHA256
+        ),
         cohort_authority_sha256=cohort_authority_sha256,
         registry_path=_FACTOR_REGISTRY_PATH,
         registry_file_sha256=registry_file_sha256,
@@ -1416,8 +1619,19 @@ def _validate_task4_transport_run(
             "transport validation requires the stamped Task4 "
             "diagnostic run_config"
         )
+    if (
+        _canonical_sha256(model_run.run_config)
+        != model_run.run_config_sha256
+    ):
+        raise KalshiValidationError(
+            "run_config_sha256 does not bind the canonical Task4 "
+            "diagnostic run_config"
+        )
     expected_config = {
         "schema_version": HISTORICAL_SCHEMA_VERSION,
+        "survival_probability_contract": (
+            SURVIVAL_PROBABILITY_CONTRACT
+        ),
         "target_contract": HISTORICAL_TARGET_CONTRACT,
         "claim_boundary": HISTORICAL_CLAIM_BOUNDARY,
         "analysis_scope": HISTORICAL_ANALYSIS_SCOPE,
@@ -1512,7 +1726,7 @@ def _validate_task4_transport_run(
         HISTORICAL_SCHEMA_VERSION
     ).all():
         raise KalshiValidationError(
-            "transport requires HistoricalTradesOnlyProbabilityPanelV1"
+            "transport requires HistoricalTradesOnlyProbabilityPanelV2"
         )
     if not predictions["analysis_scope"].eq(
         HISTORICAL_ANALYSIS_SCOPE
@@ -2194,18 +2408,26 @@ def validate_development_venue_transport(
     model_run: X15ModelRun,
     *,
     authority_metadata: FrozenAuthorityMetadata,
-    spec: FrozenSelectionSpec,
+    stage_b_selection: StageBModelSelectionResult,
 ) -> DevelopmentVenueValidation:
-    """Validate Task4 Poly-trained -> Kalshi development OOF transport."""
+    """Validate the frozen Stage-B Poly winner on Kalshi development OOF."""
 
     if not isinstance(authority_metadata, FrozenAuthorityMetadata):
         raise KalshiValidationError(
             "authority_metadata must be FrozenAuthorityMetadata"
         )
-    if not isinstance(spec, FrozenSelectionSpec):
+    selection = _require_frozen_stage_b_v2_winner(
+        stage_b_selection
+    )
+    if (
+        selection.cohort_authority_sha256
+        != authority_metadata.cohort_authority_sha256
+    ):
         raise KalshiValidationError(
-            "spec must be the frozen candidate/B0 selection spec"
+            "Stage-B winner authority differs from Kalshi development "
+            "authority"
         )
+    spec = selection.spec
     all_source, all_target, all_native_kalshi = (
         _validate_task4_transport_run(
             model_run, authority_metadata=authority_metadata
@@ -2732,8 +2954,34 @@ def validate_development_venue_transport(
     )
 
 
+def _require_frozen_stage_b_v2_winner(
+    stage_b_selection: object,
+) -> ModelSelectionResult:
+    try:
+        verified = verify_stage_b_v2_selection_result(
+            stage_b_selection
+        )
+    except ModelSelectionError as exc:
+        raise KalshiValidationError(
+            "Stage-B V2 selection evidence failed complete "
+            "authoritative verification"
+        ) from exc
+    winner = verified.winner
+    if (
+        verified.decision_status != "MODEL_ADVANCE"
+        or not isinstance(winner, ModelSelectionResult)
+        or not winner.selected
+        or winner.spec.selection_venue != SOURCE_VENUE
+    ):
+        raise KalshiValidationError(
+            "Stage-B V2 selection evidence is not one frozen "
+            "Polymarket winner"
+        )
+    return winner
+
+
 def build_cross_venue_factor_shortlist(
-    selection: ModelSelectionResult,
+    stage_b_selection: StageBModelSelectionResult,
     *,
     transport_validation: DevelopmentVenueValidation,
     factor_membership_evidence: FrozenFactorMembershipEvidence,
@@ -2748,10 +2996,9 @@ def build_cross_venue_factor_shortlist(
     cannot stand in for either factor-specific venue gate.
     """
 
-    if not isinstance(selection, ModelSelectionResult):
-        raise KalshiValidationError(
-            "selection must be a ModelSelectionResult"
-        )
+    selection = _require_frozen_stage_b_v2_winner(
+        stage_b_selection
+    )
     if not isinstance(
         transport_validation, DevelopmentVenueValidation
     ):
@@ -2771,6 +3018,15 @@ def build_cross_venue_factor_shortlist(
         != _FACTOR_MEMBERSHIP_AUTHORITY_MANIFEST_FILE_SHA256
         or factor_membership_evidence.authority_batch_sha256
         != _FACTOR_MEMBERSHIP_AUTHORITY_BATCH_SHA256
+        or factor_membership_evidence.facts_authority_manifest_path
+        != _FACTOR_FACTS_AUTHORITY_MANIFEST_PATH
+        or (
+            factor_membership_evidence
+            .facts_authority_manifest_file_sha256
+            != _FACTOR_FACTS_AUTHORITY_MANIFEST_FILE_SHA256
+        )
+        or factor_membership_evidence.facts_authority_batch_sha256
+        != _FACTOR_FACTS_AUTHORITY_BATCH_SHA256
         or factor_membership_evidence.cohort_authority_sha256
         != _FACTOR_MEMBERSHIP_COHORT_AUTHORITY_SHA256
         or factor_membership_evidence.registry_path
@@ -2786,6 +3042,16 @@ def build_cross_venue_factor_shortlist(
             .membership_artifact_bindings_sha256
             != _FACTOR_MEMBERSHIP_ARTIFACT_BINDINGS_SHA256
         )
+        or len(factor_membership_evidence.membership_rows)
+        != _FACTOR_MEMBERSHIP_ROW_COUNT
+        or factor_membership_evidence.membership_rows[
+            "game_id"
+        ].nunique()
+        != EXPECTED_DEVELOPMENT_GAMES
+        or factor_membership_evidence.membership_rows[
+            ["game_id", "atomic_information_episode_id"]
+        ].drop_duplicates().shape[0]
+        != _FACTOR_MEMBERSHIP_EPISODE_COUNT
         or _factor_membership_rows_sha256(
             factor_membership_evidence.membership_rows
         )
@@ -3359,6 +3625,16 @@ def build_cross_venue_factor_shortlist(
         )
         record["factor_membership_authority_batch_sha256"] = (
             factor_membership_evidence.authority_batch_sha256
+        )
+        record["factor_facts_authority_manifest_path"] = (
+            factor_membership_evidence.facts_authority_manifest_path
+        )
+        record["factor_facts_authority_manifest_file_sha256"] = (
+            factor_membership_evidence
+            .facts_authority_manifest_file_sha256
+        )
+        record["factor_facts_authority_batch_sha256"] = (
+            factor_membership_evidence.facts_authority_batch_sha256
         )
         record["factor_membership_cohort_authority_sha256"] = (
             factor_membership_evidence.cohort_authority_sha256

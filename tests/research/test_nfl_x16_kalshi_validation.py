@@ -4,6 +4,7 @@ from dataclasses import replace
 import inspect
 import json
 import math
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -11,7 +12,9 @@ import pytest
 from prediction_market.research import nfl_x16_kalshi_validation as validation
 from prediction_market.research.nfl_x15_model_selection import (
     FrozenSelectionSpec,
+    bind_frozen_development_authority,
     select_candidate_against_b0,
+    select_stage_b_v2_winner,
 )
 from prediction_market.research.nfl_x15_models import (
     X15ModelRun,
@@ -34,6 +37,7 @@ from test_nfl_x15_model_selection import (
     _authority as _complete_selection_authority,
     _run as _complete_selection_run,
     _spec as _complete_selection_spec,
+    _stage_b_v2_runs,
 )
 
 
@@ -64,7 +68,7 @@ def test_kalshi_validation_uses_proper_joint_log_score() -> None:
         ),
         "venue_tick_support": "UNSUPPORTED",
         "market_continuity_support": "UNKNOWN",
-        "schema_version": "HistoricalTradesOnlyProbabilityPanelV1",
+        "schema_version": "HistoricalTradesOnlyProbabilityPanelV2",
         "analysis_scope": "HISTORICAL_TRADES_ONLY_SOURCE_TIME_DIAGNOSTIC",
         "claim_eligible": False,
     }
@@ -115,15 +119,66 @@ X11_HOLDOUT_DRIVE_OUTCOME_COUNT = 1_683
 def _selection_spec() -> FrozenSelectionSpec:
     return FrozenSelectionSpec(
         candidate_model_id="regularized_logistic_v1",
-        candidate_feature_block_id="D4",
+        candidate_feature_block_id="D1",
     )
+
+
+def _stage_b_selection(*, authority=None):
+    source_authority = _complete_selection_authority()
+    if authority is None:
+        authority = source_authority
+    if authority is source_authority:
+        runs = _stage_b_v2_runs()
+    else:
+        target_cohort = authority.cohort_authority_sha256
+        authority = bind_frozen_development_authority(
+            pd.DataFrame(
+                [
+                    {
+                        "game_id": game_id,
+                        "nfl_week": nfl_week,
+                        "kickoff_utc": kickoff_utc,
+                        "batch_sha256": batch_sha256,
+                        "cohort_authority_sha256": target_cohort,
+                    }
+                    for (
+                        game_id,
+                        nfl_week,
+                        kickoff_utc,
+                        batch_sha256,
+                    ) in source_authority.development_games
+                ]
+            ),
+            cohort_authority_sha256=target_cohort,
+        )
+        remapped_runs: list[X15ModelRun] = []
+        for run in _stage_b_v2_runs():
+            predictions = run.oof_predictions.copy()
+            predictions["cohort_authority_sha256"] = target_cohort
+            run_config = dict(run.run_config)
+            run_config["cohort_authority_sha256"] = target_cohort
+            remapped_runs.append(
+                replace(
+                    run,
+                    oof_predictions=predictions,
+                    run_config=run_config,
+                    run_config_sha256=validation._canonical_sha256(
+                        run_config
+                    ),
+                )
+            )
+        runs = tuple(remapped_runs)
+    return select_stage_b_v2_winner(runs, authority=authority)
 
 
 def _run_config(
     *, fold_ids: tuple[str, ...] = ("fold_01", "fold_02")
 ) -> dict[str, object]:
     return {
-        "schema_version": "HistoricalTradesOnlyProbabilityPanelV1",
+        "schema_version": "HistoricalTradesOnlyProbabilityPanelV2",
+        "survival_probability_contract": (
+            "DISCRETE_INTERVAL_SURVIVAL_PRODUCT_V1"
+        ),
         "target_contract": TARGET_CONTRACT,
         "claim_boundary": CLAIM_BOUNDARY,
         "analysis_scope": (
@@ -436,10 +491,10 @@ def _source_and_transport(
             "calibrator_fit_game_ids_o_h_given_s": training_ids,
             "calibrator_fit_game_ids_direction": training_ids,
             "model_id": "regularized_logistic_v1",
-            "feature_block_id": "D4",
+            "feature_block_id": "D1",
             "target_contract": TARGET_CONTRACT,
             "claim_boundary": CLAIM_BOUNDARY,
-            "schema_version": "HistoricalTradesOnlyProbabilityPanelV1",
+            "schema_version": "HistoricalTradesOnlyProbabilityPanelV2",
             "analysis_scope": (
                 "HISTORICAL_TRADES_ONLY_SOURCE_TIME_DIAGNOSTIC"
             ),
@@ -611,7 +666,7 @@ def _source_and_transport(
         fold_metrics=pd.DataFrame(),
         support_audit=pd.DataFrame(),
         weight_audit=pd.DataFrame(),
-        run_config_sha256="sha256:" + "f" * 64,
+        run_config_sha256=validation._canonical_sha256(_run_config()),
         run_config=_run_config(),
     )
 
@@ -709,7 +764,7 @@ def test_transport_scores_kalshi_truth_against_native_kalshi_oof() -> None:
     result = validate_development_venue_transport(
         _source_and_transport(),
         authority_metadata=_bind_authority(),
-        spec=_selection_spec(),
+        stage_b_selection=_stage_b_selection(),
     )
 
     assert result.target_recalibration_applied is False
@@ -742,11 +797,80 @@ def test_transport_scores_kalshi_truth_against_native_kalshi_oof() -> None:
     assert not result.calibration_summary.empty
 
 
+def test_transport_rejects_self_reported_noncanonical_run_config_sha() -> None:
+    run = _source_and_transport()
+    drifted_config = dict(run.run_config)
+    drifted_config["unbound_extra_field"] = "MUTATED"
+    drifted = replace(run, run_config=drifted_config)
+
+    with pytest.raises(
+        KalshiValidationError,
+        match="run_config_sha256 does not bind",
+    ):
+        validate_development_venue_transport(
+            drifted,
+            authority_metadata=_bind_authority(),
+            stage_b_selection=_stage_b_selection(),
+        )
+
+
+def test_transport_requires_frozen_survival_probability_contract() -> None:
+    run = _source_and_transport()
+    drifted_config = dict(run.run_config)
+    drifted_config.pop("survival_probability_contract")
+    drifted = replace(
+        run,
+        run_config=drifted_config,
+        run_config_sha256=validation._canonical_sha256(drifted_config),
+    )
+
+    with pytest.raises(
+        KalshiValidationError,
+        match="survival_probability_contract",
+    ):
+        validate_development_venue_transport(
+            drifted,
+            authority_metadata=_bind_authority(),
+            stage_b_selection=_stage_b_selection(),
+        )
+
+
+def test_transport_rejects_legacy_probability_panel_v1() -> None:
+    run = _source_and_transport()
+    legacy_predictions = run.oof_predictions.copy()
+    legacy_predictions["schema_version"] = (
+        "HistoricalTradesOnlyProbabilityPanelV1"
+    )
+    legacy_config = dict(run.run_config)
+    legacy_config["schema_version"] = (
+        "HistoricalTradesOnlyProbabilityPanelV1"
+    )
+    legacy_run = X15ModelRun(
+        oof_predictions=legacy_predictions,
+        conditional_quantiles=run.conditional_quantiles,
+        fold_metrics=run.fold_metrics,
+        support_audit=run.support_audit,
+        weight_audit=run.weight_audit,
+        run_config_sha256=validation._canonical_sha256(legacy_config),
+        run_config=legacy_config,
+    )
+
+    with pytest.raises(
+        KalshiValidationError,
+        match="run_config drifted on schema_version",
+    ):
+        validate_development_venue_transport(
+            legacy_run,
+            authority_metadata=_bind_authority(),
+            stage_b_selection=_stage_b_selection(),
+        )
+
+
 def test_catastrophic_transport_degradation_fails_candidate_gate() -> None:
     result = validate_development_venue_transport(
         _source_and_transport(catastrophic=True),
         authority_metadata=_bind_authority(),
-        spec=_selection_spec(),
+        stage_b_selection=_stage_b_selection(),
     )
 
     assert result.score_gate_passed is True
@@ -759,7 +883,7 @@ def test_jointly_bad_transport_and_native_cannot_beat_frozen_b0() -> None:
     result = validate_development_venue_transport(
         _source_and_transport(jointly_bad=True),
         authority_metadata=_bind_authority(),
-        spec=_selection_spec(),
+        stage_b_selection=_stage_b_selection(),
     )
 
     assert result.score_gate_passed is True
@@ -782,17 +906,11 @@ def _exact_factor_inputs(
     validation.FrozenFactorMembershipEvidence,
 ]:
     evidence = validation.load_frozen_factor_membership_evidence()
-    selection = select_candidate_against_b0(
-        _complete_selection_run(),
-        spec=_complete_selection_spec(),
-        authority=_complete_selection_authority(),
+    original_authority = _complete_selection_authority()
+    original_game_ids = tuple(
+        game[0] for game in original_authority.development_games
     )
-    transport = validate_development_venue_transport(
-        transport_run or _source_and_transport(),
-        authority_metadata=_bind_authority(),
-        spec=_selection_spec(),
-    )
-    identities = (
+    complete_pass = (
         evidence.membership_rows.loc[
             lambda frame: frame["factor_id"].eq(
                 "NFL.EVENT.COMPLETE_PASS"
@@ -804,20 +922,136 @@ def _exact_factor_inputs(
             ["game_id", "atomic_information_episode_id"],
             kind="mergesort",
         )
-        .drop_duplicates("game_id")
-        .reset_index(drop=True)
+        .drop_duplicates()
     )
-    required_identities = pair_count if shared else pair_count * 2
-    assert len(identities) >= required_identities
-    poly_identities = identities.iloc[:pair_count].reset_index(
-        drop=True
+    real_game_ids = tuple(
+        sorted(complete_pass["game_id"].unique().tolist())
     )
-    kalshi_identities = (
-        poly_identities
-        if shared
-        else identities.iloc[
-            pair_count : pair_count * 2
-        ].reset_index(drop=True)
+    assert len(real_game_ids) == len(original_game_ids) == 153
+    game_id_map = dict(
+        zip(original_game_ids, real_game_ids, strict=True)
+    )
+    episodes_by_game = {
+        str(game_id): tuple(
+            frame["atomic_information_episode_id"].head(2).astype(str)
+        )
+        for game_id, frame in complete_pass.groupby(
+            "game_id", sort=True
+        )
+    }
+    assert all(
+        len(episodes) == 2
+        for episodes in episodes_by_game.values()
+    )
+    episode_id_map = {
+        (original_game_id, f"{original_game_id}:episode-{position}"): (
+            episodes_by_game[real_game_id][position]
+        )
+        for original_game_id, real_game_id in game_id_map.items()
+        for position in (0, 1)
+    }
+    authority_frame = pd.DataFrame(
+        [
+            {
+                "game_id": game_id_map[game_id],
+                "nfl_week": nfl_week,
+                "kickoff_utc": kickoff_utc,
+                "batch_sha256": batch_sha256,
+                "cohort_authority_sha256": (
+                    evidence.cohort_authority_sha256
+                ),
+            }
+            for (
+                game_id,
+                nfl_week,
+                kickoff_utc,
+                batch_sha256,
+            ) in original_authority.development_games
+        ]
+    )
+    membership_authority = bind_frozen_development_authority(
+        authority_frame,
+        cohort_authority_sha256=evidence.cohort_authority_sha256,
+    )
+    provenance_columns = (
+        "training_game_ids",
+        "validation_game_ids",
+        "preprocessor_fit_game_ids",
+    )
+    membership_runs: list[X15ModelRun] = []
+    for run in _stage_b_v2_runs():
+        predictions = run.oof_predictions.copy()
+        original_prediction_game_ids = predictions["game_id"].astype(
+            str
+        )
+        original_episode_ids = predictions[
+            "atomic_information_episode_id"
+        ].astype(str)
+        predictions["game_id"] = original_prediction_game_ids.map(
+            game_id_map
+        )
+        predictions["atomic_information_episode_id"] = [
+            episode_id_map[(game_id, episode_id)]
+            for game_id, episode_id in zip(
+                original_prediction_game_ids,
+                original_episode_ids,
+                strict=True,
+            )
+        ]
+        predictions["cohort_authority_sha256"] = (
+            evidence.cohort_authority_sha256
+        )
+        for column in provenance_columns:
+            predictions[column] = predictions[column].map(
+                lambda game_ids: tuple(
+                    sorted(game_id_map[str(game_id)] for game_id in game_ids)
+                )
+            )
+        run_config = dict(run.run_config)
+        run_config["cohort_authority_sha256"] = (
+            evidence.cohort_authority_sha256
+        )
+        membership_runs.append(
+            replace(
+                run,
+                oof_predictions=predictions,
+                run_config=run_config,
+                run_config_sha256=validation._canonical_sha256(
+                    run_config
+                ),
+            )
+        )
+    stage_b_selection = select_stage_b_v2_winner(
+        tuple(membership_runs),
+        authority=membership_authority,
+    )
+    selection = stage_b_selection.winner
+    assert selection is not None
+    raw_transport_run = transport_run or _source_and_transport()
+    transport_predictions = raw_transport_run.oof_predictions.copy()
+    candidate_mask = ~(
+        transport_predictions["model_id"].eq("b0_empirical_v1")
+        & transport_predictions["feature_block_id"].eq("D0")
+    )
+    transport_predictions.loc[candidate_mask, "model_id"] = (
+        selection.spec.candidate_model_id
+    )
+    transport_predictions.loc[candidate_mask, "feature_block_id"] = (
+        selection.spec.candidate_feature_block_id
+    )
+    stage_b_transport_run = X15ModelRun(
+        oof_predictions=transport_predictions,
+        conditional_quantiles=raw_transport_run.conditional_quantiles,
+        fold_metrics=raw_transport_run.fold_metrics,
+        support_audit=raw_transport_run.support_audit,
+        weight_audit=raw_transport_run.weight_audit,
+        run_config_sha256=raw_transport_run.run_config_sha256,
+        run_config=raw_transport_run.run_config,
+    )
+    transport = validate_development_venue_transport(
+        stage_b_transport_run,
+        authority_metadata=_bind_authority(),
+        stage_b_selection=_stage_b_selection(),
     )
     poly_rows = (
         selection.paired_rows.loc[
@@ -832,11 +1066,34 @@ def _exact_factor_inputs(
         .head(pair_count)
         .reset_index(drop=True)
     )
+    poly_identities = poly_rows[
+        ["game_id", "atomic_information_episode_id"]
+    ].copy()
+    available_kalshi_identities = (
+        complete_pass.loc[
+            ~complete_pass["game_id"].isin(poly_rows["game_id"]),
+            ["game_id", "atomic_information_episode_id"],
+        ]
+        .drop_duplicates("game_id")
+        .head(pair_count)
+        .reset_index(drop=True)
+    )
+    kalshi_identities = (
+        poly_identities
+        if shared
+        else available_kalshi_identities
+    )
     target_rows = (
         transport.transport_b0_pair_diagnostics.head(pair_count)
         if kalshi_rows is None
         else kalshi_rows.copy()
     ).reset_index(drop=True)
+    target_rows["candidate_model_id"] = (
+        selection.spec.candidate_model_id
+    )
+    target_rows["candidate_feature_block_id"] = (
+        selection.spec.candidate_feature_block_id
+    )
     assert len(poly_rows) == pair_count
     assert len(target_rows) == pair_count
     poly_rows["game_id"] = poly_identities["game_id"]
@@ -847,19 +1104,15 @@ def _exact_factor_inputs(
     target_rows["atomic_information_episode_id"] = kalshi_identities[
         "atomic_information_episode_id"
     ]
-    poly_rows["nfl_week"] = target_rows["nfl_week"]
-    poly_rows["fold_id"] = target_rows["fold_id"]
-    selection = replace(
-        selection,
-        cohort_authority_sha256=evidence.cohort_authority_sha256,
-        paired_rows=poly_rows,
-    )
+    if shared:
+        target_rows["nfl_week"] = poly_rows["nfl_week"]
+        target_rows["fold_id"] = poly_rows["fold_id"]
     transport = replace(
         transport,
         cohort_authority_sha256=evidence.cohort_authority_sha256,
         transport_b0_pair_diagnostics=target_rows,
     )
-    return selection, transport, evidence
+    return stage_b_selection, transport, evidence
 
 
 def test_factor_membership_is_bound_to_fixed_registry_and_artifact() -> None:
@@ -867,21 +1120,43 @@ def test_factor_membership_is_bound_to_fixed_registry_and_artifact() -> None:
 
     assert evidence.authority_manifest_file_sha256 == (
         "sha256:"
-        "3d2247c8b075748ccfa219daaf760e1681e85cb8fe0601bc2c9657381c7a969e"
+        "39e9f1490a1adcb693c29b9f9fe2f94ec72f1f2d3eafe748ba09e37c7fc750c3"
+    )
+    assert evidence.facts_authority_manifest_file_sha256 == (
+        "sha256:"
+        "5d693723e991b7f691dab2826308773a0ce6a30564c37dcb7d4a1cb9e1580757"
     )
     assert evidence.registry_file_sha256 == (
         "sha256:"
-        "b0993b1c4a3bd5698620d29f1d28fa23db2040e29414eeb6ce038499511ce545"
+        "92e5001d92afa0748731b5310dae8289ff6930b26a141e981ed910d2c761575f"
     )
     assert evidence.registry_semantic_sha256 == (
         "sha256:"
-        "1083c2772efef5f1067ae1fe6f37728d5c0fb734e67e5616308fa9cda23c7320"
+        "527a084317ec4a728e5567feea756c1541b65bb814fcf96900b6cfbfd223ead8"
     )
     assert evidence.membership_rows_sha256 == (
-        "sha256:"
-        "953a1f47d7ade9517744234b72660fc9070953b11bf975b5aaf4f5d919301111"
+        validation._factor_membership_rows_sha256(
+            evidence.membership_rows
+        )
     )
-    assert len(evidence.membership_rows) == 79_547
+    assert evidence.membership_rows["game_id"].nunique() == 153
+    assert (
+        evidence.membership_rows[
+            ["game_id", "atomic_information_episode_id"]
+        ]
+        .drop_duplicates()
+        .shape[0]
+        == 25_408
+    )
+    assert len(evidence.membership_rows) == 83_659
+    assert evidence.membership_rows_sha256 == (
+        "sha256:"
+        "d2fc72c3d81720bcf2bf2a7550272f734544923abbfec72d2165e12cc634a874"
+    )
+    assert evidence.membership_artifact_bindings_sha256 == (
+        "sha256:"
+        "0725380c27e0353a0f6c92bef482b72b757970981cf6c31102f93fb6c64047c4"
+    )
     parameters = inspect.signature(
         validation.build_cross_venue_factor_shortlist
     ).parameters
@@ -903,6 +1178,169 @@ def test_factor_membership_is_bound_to_fixed_registry_and_artifact() -> None:
             factor_membership_evidence=tampered,
         )
 
+    dropped_rows = evidence.membership_rows.iloc[:-1].copy()
+    self_reported = replace(
+        evidence,
+        membership_rows=dropped_rows,
+        membership_rows_sha256=(
+            validation._factor_membership_rows_sha256(dropped_rows)
+        ),
+    )
+    with pytest.raises(
+        KalshiValidationError,
+        match="does not bind the frozen artifacts",
+    ):
+        validation.build_cross_venue_factor_shortlist(
+            selection,
+            transport_validation=transport,
+            factor_membership_evidence=self_reported,
+        )
+
+
+def test_factor_authority_contracts_reject_v3_registry_and_v1_panel() -> None:
+    project_root = Path(__file__).resolve().parents[2]
+    legacy_registry = json.loads(
+        (
+            project_root
+            / "registries/factors/nfl_factor_registry_v3_draft.json"
+        ).read_text(encoding="utf-8")
+    )
+    legacy_panel = json.loads(
+        (
+            project_root
+            / "artifacts/market-observation/nfl/x15/"
+            "historical-trades-only-development-panel-v1/batches/"
+            "manifests/sha256/3d/"
+            "3d2247c8b075748ccfa219daaf760e1681e85cb8fe0601bc2c9657381c7a969e"
+            ".batch-index.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    with pytest.raises(
+        KalshiValidationError,
+        match="registry semantic contract drifted",
+    ):
+        validation._validate_factor_registry_contract(legacy_registry)
+    with pytest.raises(
+        KalshiValidationError,
+        match="membership authority contract drifted",
+    ):
+        validation._validate_factor_membership_authority_contract(
+            legacy_panel
+        )
+
+
+def test_factor_authority_contracts_bind_exact_v4_facts_and_v2_panel() -> None:
+    project_root = Path(__file__).resolve().parents[2]
+    registry = json.loads(
+        (
+            project_root / "registries/factors/nfl_factor_registry_v4.json"
+        ).read_text(encoding="utf-8")
+    )
+    facts = json.loads(
+        (
+            project_root
+            / "artifacts/market-observation/nfl/x13/exact-153-facts-v4/"
+            "batches/manifests/sha256/5d/"
+            "5d693723e991b7f691dab2826308773a0ce6a30564c37dcb7d4a1cb9e1580757"
+            ".batch-index.json"
+        ).read_text(encoding="utf-8")
+    )
+    panel = json.loads(
+        (
+            project_root
+            / "artifacts/market-observation/nfl/x15/"
+            "historical-trades-only-development-panel-v2/batches/"
+            "manifests/sha256/39/"
+            "39e9f1490a1adcb693c29b9f9fe2f94ec72f1f2d3eafe748ba09e37c7fc750c3"
+            ".batch-index.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    validation._validate_factor_registry_contract(registry)
+    validation._validate_factor_facts_authority_contract(facts)
+    validation._validate_factor_membership_authority_contract(panel)
+    assert panel["source_batch_file_sha256s"]["facts"] == (
+        "sha256:"
+        "5d693723e991b7f691dab2826308773a0ce6a30564c37dcb7d4a1cb9e1580757"
+    )
+    assert facts["factor_registry"]["semantic_sha256"] == (
+        "sha256:"
+        "527a084317ec4a728e5567feea756c1541b65bb814fcf96900b6cfbfd223ead8"
+    )
+
+
+def test_kalshi_factor_validation_accepts_only_stage_b_v2_winner() -> None:
+    transport_parameters = inspect.signature(
+        validate_development_venue_transport
+    ).parameters
+    assert "stage_b_selection" in transport_parameters
+    assert "spec" not in transport_parameters
+
+    legacy_single_candidate = select_candidate_against_b0(
+        _complete_selection_run(),
+        spec=_complete_selection_spec(),
+        authority=_complete_selection_authority(),
+    )
+    with pytest.raises(
+        KalshiValidationError,
+        match="Stage-B V2",
+    ):
+        validation._require_frozen_stage_b_v2_winner(
+            legacy_single_candidate
+        )
+
+    stage_b = select_stage_b_v2_winner(
+        _stage_b_v2_runs(),
+        authority=_complete_selection_authority(),
+    )
+    assert stage_b.winner is not None
+    assert (
+        validation._require_frozen_stage_b_v2_winner(stage_b)
+        is stage_b.winner
+    )
+    assert stage_b.winner.spec.selection_venue == "polymarket"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("paired_rows", "promotion_metric"),
+)
+def test_kalshi_rejects_stage_b_candidate_evidence_mutation(
+    mutation: str,
+) -> None:
+    stage_b = select_stage_b_v2_winner(
+        _stage_b_v2_runs(),
+        authority=_complete_selection_authority(),
+    )
+    winner = stage_b.winner
+    assert winner is not None
+    mutated_winner = (
+        replace(
+            winner,
+            paired_rows=winner.paired_rows.iloc[:-1].copy(),
+        )
+        if mutation == "paired_rows"
+        else replace(
+            winner,
+            integrated_mean_improvement=(
+                winner.integrated_mean_improvement + 1.0
+            ),
+        )
+    )
+    mutated_results = tuple(
+        mutated_winner if result is winner else result
+        for result in stage_b.candidate_results
+    )
+    mutated = replace(
+        stage_b,
+        winner=mutated_winner,
+        candidate_results=mutated_results,
+    )
+
+    with pytest.raises(KalshiValidationError, match="Stage-B V2"):
+        validation._require_frozen_stage_b_v2_winner(mutated)
+
 
 def test_exact_paired_factor_rows_pass_dual_venue_gate() -> None:
     selection, transport, evidence = _exact_factor_inputs(shared=True)
@@ -921,7 +1359,7 @@ def test_exact_paired_factor_rows_pass_dual_venue_gate() -> None:
     assert row["shared_pair_row_count"] == 36
     assert row["shared_game_count"] == 36
     assert row["shared_episode_count"] == 36
-    assert row["polymarket_only_pair_row_count"] == 0
+    assert row["polymarket_only_pair_row_count"] == 218
     assert row["kalshi_only_pair_row_count"] == 0
     assert bool(row["polymarket_individual_statistical_gate"]) is True
     assert bool(row["kalshi_individual_statistical_gate"]) is True
@@ -949,7 +1387,7 @@ def test_disjoint_positive_factor_samples_cannot_enter_shortlist() -> None:
     assert row["shared_pair_row_count"] == 0
     assert row["shared_game_count"] == 0
     assert row["shared_episode_count"] == 0
-    assert row["polymarket_only_pair_row_count"] == 36
+    assert row["polymarket_only_pair_row_count"] == 254
     assert row["kalshi_only_pair_row_count"] == 36
     assert bool(row["factor_specific_dual_venue_gate_passed"]) is False
 
@@ -959,7 +1397,7 @@ def test_global_transport_gate_cannot_replace_bad_kalshi_factor_gate() -> None:
     initial_transport = validate_development_venue_transport(
         mixed_run,
         authority_metadata=_bind_authority(),
-        spec=_selection_spec(),
+        stage_b_selection=_stage_b_selection(),
     )
     negative_rows = (
         initial_transport.transport_b0_pair_diagnostics.loc[
@@ -1019,7 +1457,7 @@ def test_transport_rejects_target_recalibration_and_provenance_drift() -> None:
         validate_development_venue_transport(
             recalibrated_run,
             authority_metadata=metadata,
-            spec=_selection_spec(),
+            stage_b_selection=_stage_b_selection(),
         )
 
     drifted = run.oof_predictions.copy()
@@ -1043,7 +1481,7 @@ def test_transport_rejects_target_recalibration_and_provenance_drift() -> None:
         validate_development_venue_transport(
             drifted_run,
             authority_metadata=metadata,
-            spec=_selection_spec(),
+            stage_b_selection=_stage_b_selection(),
         )
 
 
@@ -1081,7 +1519,14 @@ def test_prelock_ledger_remains_metadata_only() -> None:
 
 
 def test_genuine_fold_slice_scores_but_cannot_select() -> None:
-    panel = _diagnostic_panel()
+    base_panel = _diagnostic_panel()
+    panel = pd.concat(
+        [
+            base_panel.assign(endpoint_seconds=endpoint_seconds)
+            for endpoint_seconds in range(5, 31, 5)
+        ],
+        ignore_index=True,
+    )
     panel["landmark_seconds"] = 3
     for index in panel.index:
         decision = json.loads(panel.loc[index, "decision_features_json"])
@@ -1096,7 +1541,7 @@ def test_genuine_fold_slice_scores_but_cannot_select() -> None:
     run = run_x15_historical_trades_diagnostic_walk_forward(
         panel,
         model_ids=("b0_empirical_v1", "regularized_logistic_v1"),
-        feature_block_ids=("D0", "D4"),
+        feature_block_ids=("D0", "D1"),
         fold_ids=("fold_01",),
         transport_pairs=(("polymarket", "kalshi"),),
         include_magnitude=False,
@@ -1146,14 +1591,16 @@ def test_genuine_fold_slice_scores_but_cannot_select() -> None:
         run,
         spec=FrozenSelectionSpec(
             candidate_model_id="regularized_logistic_v1",
-            candidate_feature_block_id="D4",
+            candidate_feature_block_id="D1",
         ),
         authority=metadata.selection_authority,
     )
     transport = validate_development_venue_transport(
         run,
         authority_metadata=metadata,
-        spec=_selection_spec(),
+        stage_b_selection=_stage_b_selection(
+            authority=metadata.selection_authority,
+        ),
     )
 
     assert selection.authority_gate_passed is False
