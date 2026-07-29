@@ -500,15 +500,6 @@ def _is_home(team: str | None, *, home_team: str, away_team: str) -> bool | None
     return None
 
 
-def _information_status(row: Mapping[str, object]) -> str:
-    status = (_text(row.get("information_status")) or "FINAL").upper()
-    if status not in {"PROVISIONAL", "FINAL", "REVERSED"}:
-        raise NFLFactExtractionError(
-            "information_status must be PROVISIONAL, FINAL, or REVERSED"
-        )
-    return status
-
-
 def _canonical_utc(value: object, field: str) -> pd.Timestamp:
     text = _text(value)
     if text is None:
@@ -529,81 +520,27 @@ def _timestamp_text(timestamp: pd.Timestamp) -> str:
 def _source_interval(
     row: Mapping[str, object],
 ) -> tuple[str | None, str | None, str, str | None]:
-    explicit_start = _text(row.get("source_interval_start"))
-    explicit_end = _text(row.get("source_interval_end"))
-    if (explicit_start is None) != (explicit_end is None):
-        raise NFLFactExtractionError(
-            "source_interval_start and source_interval_end must be provided together"
-        )
-    if explicit_start is not None and explicit_end is not None:
-        start = _canonical_utc(explicit_start, "source_interval_start")
-        end = _canonical_utc(explicit_end, "source_interval_end")
-        resolution = _text(row.get("source_resolution")) or "EXPLICIT_INTERVAL"
+    source_time = _text(row.get("time_of_day"))
+    if source_time is None:
+        return None, None, "UNAVAILABLE", None
+    start = _canonical_utc(source_time, "time_of_day")
+    fractional = re.search(r"\.(\d+)(?:Z|[+-]\d{2}:?\d{2})\Z", source_time)
+    digits = 0 if fractional is None else len(fractional.group(1))
+    if digits == 0:
+        resolution, width = "SECOND", pd.Timedelta(seconds=1)
+    elif digits <= 3:
+        resolution, width = "MILLISECOND", pd.Timedelta(milliseconds=1)
+    elif digits <= 6:
+        resolution, width = "MICROSECOND", pd.Timedelta(microseconds=1)
     else:
-        source_time = _text(row.get("time_of_day"))
-        if source_time is None:
-            return None, None, "UNAVAILABLE", None
-        start = _canonical_utc(source_time, "time_of_day")
-        fractional = re.search(r"\.(\d+)(?:Z|[+-]\d{2}:?\d{2})\Z", source_time)
-        digits = 0 if fractional is None else len(fractional.group(1))
-        if digits == 0:
-            resolution, width = "SECOND", pd.Timedelta(seconds=1)
-        elif digits <= 3:
-            resolution, width = "MILLISECOND", pd.Timedelta(milliseconds=1)
-        elif digits <= 6:
-            resolution, width = "MICROSECOND", pd.Timedelta(microseconds=1)
-        else:
-            resolution, width = "NANOSECOND", pd.Timedelta(nanoseconds=1)
-        end = start + width
-    if start >= end:
-        raise NFLFactExtractionError(
-            "source interval must use positive-width [start,end) semantics"
-        )
-    known_at_value = _text(row.get("known_at"))
-    known_at = (
-        end
-        if known_at_value is None
-        else _canonical_utc(known_at_value, "known_at")
-    )
-    if known_at < end:
-        raise NFLFactExtractionError(
-            "known_at cannot precede source_interval_end"
-        )
+        resolution, width = "NANOSECOND", pd.Timedelta(nanoseconds=1)
+    end = start + width
     return (
         _timestamp_text(start),
         _timestamp_text(end),
         resolution,
-        _timestamp_text(known_at),
+        _timestamp_text(end),
     )
-
-
-def _adjudication_sequence_id(
-    row: Mapping[str, object],
-    *,
-    game_id: str,
-    play_id: str,
-) -> str | None:
-    key = next(
-        (
-            value
-            for field in (
-                "adjudication_sequence_key",
-                "adjudication_sequence_id",
-                "adjudication_play_id",
-                "review_of_play_id",
-            )
-            if (value := _text(row.get(field))) is not None
-        ),
-        None,
-    )
-    if key is None and _indicator(row.get("replay_or_challenge")):
-        key = play_id
-    if key is None:
-        return None
-    digest = hashlib.sha256(
-        _canonical_bytes({"game_id": game_id, "source_adjudication_key": key})
-    ).hexdigest()
-    return f"{game_id}:adjudication:{digest[:24]}"
 
 
 _EXPLICIT_ROLES = (
@@ -838,16 +775,20 @@ def build_game_fact_tables(
         tags = _outcome_tags(row, next_possession=next_possession[index])
         no_play = _text(row.get("play_type")) == "no_play"
         deleted = _indicator(row.get("play_deleted"))
-        information_status = _information_status(row)
+        information_status = "FINAL"
         (
             source_interval_start,
             source_interval_end,
             source_resolution,
             known_at,
         ) = _source_interval(row)
-        adjudication_sequence_id = _adjudication_sequence_id(
-            row, game_id=game_id, play_id=play_id
+        consolidated_adjudication = (
+            _indicator(row.get("replay_or_challenge"))
+            or _text(row.get("replay_or_challenge_result")) is not None
         )
+        adjudication_sequence_id = None
+        if consolidated_adjudication:
+            known_at = None
         score_sequence_id: str | None = None
         if "TOUCHDOWN" in tags and not (no_play or deleted):
             score_sequence_id = f"{game_id}:score:{play_id}"
@@ -861,8 +802,7 @@ def build_game_fact_tables(
             pending_score_sequence = None
         admin = action in {"ADMIN", "TIMEOUT", "PENALTY"}
         final_sports_outcome_eligible = (
-            information_status == "FINAL"
-            and not (no_play or deleted or admin)
+            not (no_play or deleted or admin)
         )
         factor_eligible = final_sports_outcome_eligible
         stage_b_information_event_eligible = (

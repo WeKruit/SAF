@@ -514,48 +514,26 @@ def test_turnover_on_downs_benefits_defense_without_reorienting_actor() -> None:
     assert bool(row["beneficiary_is_home"])
 
 
-def test_adjudication_status_is_stage_b_eligible_only_with_independent_time() -> None:
+def test_unsupported_columns_cannot_create_adjudication_evidence() -> None:
     tables = _build_episode_rows(
         {
             "play_id": 40,
             "order_sequence": 40,
             "time_of_day": "2025-12-05T01:35:00.000Z",
-            "play_type": "pass",
-            "play_type_nfl": "INTERCEPTION",
+            "play_type": "run",
+            "play_type_nfl": "RUSH",
             "posteam": "DAL",
             "defteam": "DET",
-            "interception": 1,
             "information_status": "PROVISIONAL",
             "adjudication_sequence_key": "reviewed-snap-40",
         },
-        {
-            "play_id": 41,
-            "order_sequence": 41,
-            "time_of_day": None,
-            "play_type": "pass",
-            "play_type_nfl": "INTERCEPTION",
-            "posteam": "DAL",
-            "defteam": "DET",
-            "interception": 1,
-            "information_status": "REVERSED",
-            "adjudication_sequence_key": "reviewed-snap-40",
-        },
     )
-    rows = tables.events.set_index("raw_play_id")
-    provisional = rows.loc["40"]
-    reversed_row = rows.loc["41"]
+    row = tables.events.iloc[0]
 
-    assert provisional["information_status"] == "PROVISIONAL"
-    assert reversed_row["information_status"] == "REVERSED"
-    assert bool(provisional["stage_b_information_event_eligible"])
-    assert not bool(reversed_row["stage_b_information_event_eligible"])
-    assert not bool(provisional["final_sports_outcome_eligible"])
-    assert not bool(reversed_row["final_sports_outcome_eligible"])
-    assert (
-        provisional["adjudication_sequence_id"]
-        == reversed_row["adjudication_sequence_id"]
-    )
-    assert pd.notna(provisional["adjudication_sequence_id"])
+    assert row["information_status"] == "FINAL"
+    assert pd.isna(row["adjudication_sequence_id"])
+    assert bool(row["stage_b_information_event_eligible"])
+    assert bool(row["final_sports_outcome_eligible"])
 
 
 def test_nullified_final_ruling_is_not_a_final_sports_outcome() -> None:
@@ -569,7 +547,6 @@ def test_nullified_final_ruling_is_not_a_final_sports_outcome() -> None:
             "posteam": "DAL",
             "defteam": "DET",
             "penalty": 1,
-            "information_status": "FINAL",
             "desc": "Penalty, no play.",
         }
     )
@@ -585,18 +562,6 @@ def test_nullified_final_ruling_is_not_a_final_sports_outcome() -> None:
 def test_source_intervals_are_left_closed_right_open_at_source_resolution() -> None:
     tables = _build_episode_rows(
         {
-            "play_id": 50,
-            "order_sequence": 50,
-            "time_of_day": None,
-            "source_interval_start": "2025-12-05T01:40:00Z",
-            "source_interval_end": "2025-12-05T01:40:01Z",
-            "source_resolution": "SECOND",
-            "play_type": "run",
-            "play_type_nfl": "RUSH",
-            "posteam": "DAL",
-            "defteam": "DET",
-        },
-        {
             "play_id": 51,
             "order_sequence": 51,
             "time_of_day": "2025-12-05T01:40:02.123Z",
@@ -606,25 +571,19 @@ def test_source_intervals_are_left_closed_right_open_at_source_resolution() -> N
             "defteam": "DET",
         },
     )
-    rows = tables.events.set_index("raw_play_id")
-    explicit = rows.loc["50"]
-    point = rows.loc["51"]
+    point = tables.events.iloc[0]
 
-    assert pd.Timestamp(explicit["source_interval_start"]) < pd.Timestamp(
-        explicit["source_interval_end"]
-    )
-    assert explicit["known_at"] == explicit["source_interval_end"]
-    assert explicit["source_resolution"] == "SECOND"
-    assert explicit["source_interval_semantics"] == "[START,END)"
     assert (
         pd.Timestamp(point["source_interval_end"])
         - pd.Timestamp(point["source_interval_start"])
         == pd.Timedelta(milliseconds=1)
     )
     assert point["source_resolution"] == "MILLISECOND"
+    assert point["known_at"] == point["source_interval_end"]
+    assert point["source_interval_semantics"] == "[START,END)"
 
 
-def test_retried_snap_is_a_new_episode_in_the_same_adjudication_sequence() -> None:
+def test_retried_snap_is_new_episode_without_an_invented_sequence() -> None:
     tables = _build_episode_rows(
         {
             "play_id": 60,
@@ -635,7 +594,6 @@ def test_retried_snap_is_a_new_episode_in_the_same_adjudication_sequence() -> No
             "posteam": "DAL",
             "defteam": "DET",
             "penalty": 1,
-            "adjudication_sequence_key": "retried-snap-60",
         },
         {
             "play_id": 61,
@@ -645,7 +603,6 @@ def test_retried_snap_is_a_new_episode_in_the_same_adjudication_sequence() -> No
             "play_type_nfl": "RUSH",
             "posteam": "DAL",
             "defteam": "DET",
-            "adjudication_sequence_key": "retried-snap-60",
         },
     )
     rows = tables.events.set_index("raw_play_id")
@@ -656,10 +613,8 @@ def test_retried_snap_is_a_new_episode_in_the_same_adjudication_sequence() -> No
         nullified["atomic_information_episode_id"]
         != retry["atomic_information_episode_id"]
     )
-    assert (
-        nullified["adjudication_sequence_id"]
-        == retry["adjudication_sequence_id"]
-    )
+    assert pd.isna(nullified["adjudication_sequence_id"])
+    assert pd.isna(retry["adjudication_sequence_id"])
     assert not bool(nullified["final_sports_outcome_eligible"])
     assert bool(retry["final_sports_outcome_eligible"])
 
@@ -722,7 +677,9 @@ def test_reversed_safety_keeps_review_fact_but_not_safety_outcome() -> None:
     assert "SAFETY" not in tags
     assert row["information_status"] == "FINAL"
     assert bool(row["final_sports_outcome_eligible"])
-    assert bool(row["stage_b_information_event_eligible"])
+    assert not bool(row["stage_b_information_event_eligible"])
+    assert pd.isna(row["adjudication_sequence_id"])
+    assert pd.isna(row["known_at"])
 
 
 def test_no_play_is_visible_but_not_factor_eligible() -> None:
