@@ -260,8 +260,9 @@ def _tiny_game_tables() -> GameReferenceTables:
                 "feature_known_at": "2025-09-07T17:00:00Z",
                 "source_event_id": "event-1",
                 "source_raw_play_id": "1",
+                "source_row_id": "event-1",
                 "source_hash": "sha256:" + "c" * 64,
-                "pit_status": "PIT_VERIFIED",
+                "PIT_status": "PIT_VERIFIED",
             }
         ]
     )

@@ -36,6 +36,7 @@ ReferenceStatus = Literal[
     "MISSING_AS_OF_RECEIVER",
     "COMPOSITE_TRANSITION",
     "FUTURE_FEATURE_REJECTED",
+    "ORDER_AMBIGUOUS",
 ]
 
 _REFERENCE_STATUSES: Final[frozenset[str]] = frozenset(
@@ -48,6 +49,7 @@ _REFERENCE_STATUSES: Final[frozenset[str]] = frozenset(
         "MISSING_AS_OF_RECEIVER",
         "COMPOSITE_TRANSITION",
         "FUTURE_FEATURE_REJECTED",
+        "ORDER_AMBIGUOUS",
     }
 )
 _SHA256_RE: Final[re.Pattern[str]] = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -121,8 +123,9 @@ FEATURE_PROVENANCE_COLUMNS: Final[tuple[str, ...]] = (
     "feature_known_at",
     "source_event_id",
     "source_raw_play_id",
+    "source_row_id",
     "source_hash",
-    "pit_status",
+    "PIT_status",
 )
 REFERENCE_OBSERVATION_COLUMNS: Final[tuple[str, ...]] = (
     "schema_version",
@@ -301,8 +304,9 @@ class ReferenceFeatureProvenanceV1:
     feature_known_at: str
     source_event_id: str
     source_raw_play_id: str
+    source_row_id: str
     source_hash: str
-    pit_status: Literal["PIT_VERIFIED"] = "PIT_VERIFIED"
+    PIT_status: Literal["PIT_VERIFIED"] = "PIT_VERIFIED"
     schema_version: Literal["ReferenceFeatureProvenanceV1"] = (
         "ReferenceFeatureProvenanceV1"
     )
@@ -315,6 +319,7 @@ class ReferenceFeatureProvenanceV1:
             "state_raw_play_id",
             "source_event_id",
             "source_raw_play_id",
+            "source_row_id",
         ):
             _require_text(getattr(self, field), field=field)
         if self.feature_name not in FEATURE_NAMES:
@@ -333,8 +338,8 @@ class ReferenceFeatureProvenanceV1:
                 "feature_known_at cannot be after state_known_at"
             )
         _require_sha(self.source_hash, field="source_hash")
-        if self.pit_status != "PIT_VERIFIED":
-            raise ReferenceValueBuildError("pit_status must be PIT_VERIFIED")
+        if self.PIT_status != "PIT_VERIFIED":
+            raise ReferenceValueBuildError("PIT_status must be PIT_VERIFIED")
 
     def to_record(self) -> dict[str, object]:
         return asdict(self)
@@ -428,6 +433,22 @@ class ReferenceValueObservationV1:
             raise ReferenceValueBuildError(
                 "supported reference requires probabilities and input hashes"
             )
+        if self.reference_status == "SUPPORTED":
+            if (
+                self.pre_state_known_at is None
+                or self.post_state_known_at is None
+                or _timestamp(
+                    self.post_state_known_at,
+                    field="post_state_known_at",
+                )
+                < _timestamp(
+                    self.pre_state_known_at,
+                    field="pre_state_known_at",
+                )
+            ):
+                raise ReferenceValueBuildError(
+                    "supported reference requires monotonic state known_at"
+                )
         if self.reference_status == "COMPOSITE_TRANSITION" and (
             self.p_after_home is not None
             or self.reference_delta_home is not None
@@ -435,6 +456,18 @@ class ReferenceValueObservationV1:
         ):
             raise ReferenceValueBuildError(
                 "composite transition cannot publish an atomic delta"
+            )
+        if self.reference_status == "ORDER_AMBIGUOUS" and any(
+            value is not None
+            for value in (
+                self.p_after_home,
+                self.reference_delta_home,
+                self.bridge_p_after_home,
+                self.bridge_delta_home,
+            )
+        ):
+            raise ReferenceValueBuildError(
+                "order-ambiguous reference cannot publish a post-state delta"
             )
         if (
             self.p_before_home is not None
@@ -741,6 +774,7 @@ def _state_projection(
                 ),
                 source_event_id=str(source["event_id"]),
                 source_raw_play_id=str(source["raw_play_id"]),
+                source_row_id=str(source["event_id"]),
                 source_hash=(
                     expected_pbp_source_sha256
                     if name == "receive_2h_ko"
@@ -901,16 +935,30 @@ def build_game_reference_tables(
             p_before = float(pre_state["p_home"])
         else:
             p_before = float(pre_state["p_home"])
-            bridge_after = float(post_state["p_home"])
-            bridge_delta = bridge_after - p_before
-            if intervening:
-                status = "COMPOSITE_TRANSITION"
-                reasons = ("INDEPENDENT_INFORMATION_EVENT_BETWEEN_STATES",)
+            pre_known = _timestamp(
+                str(pre_state["state_known_at"]),
+                field="pre_state_known_at",
+            )
+            post_known = _timestamp(
+                str(post_state["state_known_at"]),
+                field="post_state_known_at",
+            )
+            if post_known < pre_known:
+                status = "ORDER_AMBIGUOUS"
+                reasons = ("POST_STATE_KNOWN_BEFORE_PRE_STATE",)
             else:
-                status = "SUPPORTED"
-                reasons = ()
-                p_after = bridge_after
-                delta = bridge_delta
+                bridge_after = float(post_state["p_home"])
+                bridge_delta = bridge_after - p_before
+                if intervening:
+                    status = "COMPOSITE_TRANSITION"
+                    reasons = (
+                        "INDEPENDENT_INFORMATION_EVENT_BETWEEN_STATES",
+                    )
+                else:
+                    status = "SUPPORTED"
+                    reasons = ()
+                    p_after = bridge_after
+                    delta = bridge_delta
         observation = ReferenceValueObservationV1(
             game_id=game_id,
             event_id=str(event["event_id"]),

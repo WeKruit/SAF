@@ -213,12 +213,31 @@ def test_builds_sorted_pit_states_and_ignores_precomputed_diagnostics() -> None:
         first.feature_provenance["state_raw_play_id"].eq("30")
     ]
     assert len(feature_rows) == 11
+    supported_state_ids = set(
+        first.state_predictions.loc[
+            first.state_predictions["reference_status"].eq("SUPPORTED"),
+            "state_event_id",
+        ]
+    )
+    supported_provenance = first.feature_provenance.loc[
+        first.feature_provenance["state_event_id"].isin(supported_state_ids)
+    ]
+    assert (
+        supported_provenance.groupby("state_event_id").size().eq(11).all()
+    )
+    assert supported_provenance[
+        ["source_row_id", "source_hash", "feature_known_at", "PIT_status"]
+    ].notna().all().all()
+    assert supported_provenance["source_row_id"].ne("").all()
+    assert set(supported_provenance["PIT_status"]) == {"PIT_VERIFIED"}
     kickoff_feature = feature_rows.loc[
         feature_rows["feature_name"].eq("receive_2h_ko")
     ].iloc[0]
     assert kickoff_feature["feature_known_at"] == "2025-09-07T17:02:00Z"
     assert kickoff_feature["source_raw_play_id"] == "10"
-    assert set(feature_rows["pit_status"]) == {"PIT_VERIFIED"}
+    assert kickoff_feature["source_row_id"] == (
+        "2025_01_AWY_HME:event:10"
+    )
 
 
 def test_composite_transition_keeps_bridge_separate_from_atomic_delta() -> None:
@@ -296,6 +315,37 @@ def test_event_ineligibility_ot_and_missing_post_are_explicit() -> None:
     assert pd.isna(ineligible["p_after_home"])
 
 
+def test_post_state_known_before_pre_state_never_publishes_atomic_delta() -> None:
+    events = _base_events()
+    events.loc[events["raw_play_id"].eq("20"), "known_at"] = (
+        "2025-09-07T17:04:00Z"
+    )
+    events.loc[events["raw_play_id"].eq("30"), "known_at"] = (
+        "2025-09-07T17:03:00Z"
+    )
+
+    result = build_game_reference_tables(
+        events,
+        predictor=_RecordingPredictor(),
+        model=_model(),
+        expected_pbp_source_sha256=_sha("c"),
+    )
+    observation = result.reference_observations.loc[
+        result.reference_observations["raw_play_id"].eq("20")
+    ].iloc[0]
+
+    assert observation["reference_status"] == "ORDER_AMBIGUOUS"
+    assert json.loads(observation["exclusion_reasons"]) == [
+        "POST_STATE_KNOWN_BEFORE_PRE_STATE"
+    ]
+    assert observation["pre_state_known_at"] == "2025-09-07T17:04:00Z"
+    assert observation["post_state_known_at"] == "2025-09-07T17:03:00Z"
+    assert pd.isna(observation["p_after_home"])
+    assert pd.isna(observation["reference_delta_home"])
+    assert pd.isna(observation["bridge_p_after_home"])
+    assert pd.isna(observation["bridge_delta_home"])
+
+
 def test_missing_or_future_opening_kickoff_evidence_fails_closed() -> None:
     no_kickoff = _base_events().loc[
         ~_base_events()["primary_action"].eq("KICKOFF")
@@ -336,8 +386,9 @@ def test_contracts_reject_hash_or_supported_null_probability() -> None:
         feature_known_at="2025-09-07T17:00:00Z",
         source_event_id="event-1",
         source_raw_play_id="1",
+        source_row_id="event-1",
         source_hash=_sha("c"),
-        pit_status="PIT_VERIFIED",
+        PIT_status="PIT_VERIFIED",
     )
     assert provenance.schema_version == "ReferenceFeatureProvenanceV1"
     with pytest.raises(ReferenceValueBuildError, match="source_hash"):
