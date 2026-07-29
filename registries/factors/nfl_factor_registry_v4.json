@@ -1,0 +1,591 @@
+{
+  "schema": "NFLFactorRegistryV4",
+  "version": "v4",
+  "status": "AUTHORITATIVE",
+  "sport": "NFL",
+  "claim_boundary": "SPORTS_FACT_DESCRIPTION_ONLY_NO_MARKET_REACTION",
+  "activation_rule": "Only definitions marked ACTIVE run. DATA_GAP definitions remain visible and never evaluate as false.",
+  "excluded_from_this_registry": [
+    "rolling_team_or_player_efficiency",
+    "formation_or_personnel_strategy",
+    "route_coverage_blitz_or_pressure",
+    "injury_inference_from_participation_change",
+    "market_price_or_reaction"
+  ],
+  "factors": [
+    {
+      "factor_id": "NFL.ACTION.PASS",
+      "version": "v1",
+      "family": "ACTION",
+      "meaning": "A statistical pass attempt, including spikes recorded as passes and passes ending in an interception; sacks and tries are separate.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "primary_action", "operator": "EQ", "value": "PASS"}
+    },
+    {
+      "factor_id": "NFL.ACTION.RUN",
+      "version": "v1",
+      "family": "ACTION",
+      "meaning": "A non-kneel rushing attempt, including quarterback scrambles.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "primary_action", "operator": "EQ", "value": "RUN"}
+    },
+    {
+      "factor_id": "NFL.ACTION.QB_KNEEL",
+      "version": "v1",
+      "family": "ACTION",
+      "meaning": "A source-identified quarterback kneel, kept separate from rushing attempts.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "primary_action", "operator": "EQ", "value": "KNEEL"}
+    },
+    {
+      "factor_id": "NFL.ACTION.QB_SCRAMBLE",
+      "version": "v1",
+      "family": "ACTION",
+      "meaning": "A source-identified quarterback scramble within the non-kneel rushing-attempt population.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "QB_SCRAMBLE"}
+    },
+    {
+      "factor_id": "NFL.ACTION.SACK",
+      "version": "v1",
+      "family": "ACTION",
+      "meaning": "A finalized quarterback sack.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "primary_action", "operator": "EQ", "value": "SACK"}
+    },
+    {
+      "factor_id": "NFL.ACTION.PUNT",
+      "version": "v1",
+      "family": "ACTION",
+      "meaning": "A live punt attempt, including blocked punts.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "primary_action", "operator": "EQ", "value": "PUNT"}
+    },
+    {
+      "factor_id": "NFL.ACTION.KICKOFF",
+      "version": "v1",
+      "family": "ACTION",
+      "meaning": "A live kickoff play.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "primary_action", "operator": "EQ", "value": "KICKOFF"}
+    },
+    {
+      "factor_id": "NFL.ACTION.FIELD_GOAL",
+      "version": "v1",
+      "family": "ACTION",
+      "meaning": "A field-goal attempt.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "primary_action", "operator": "EQ", "value": "FIELD_GOAL"}
+    },
+    {
+      "factor_id": "NFL.ACTION.TRY",
+      "version": "v1",
+      "family": "ACTION",
+      "meaning": "An extra-point or two-point try, distinct from an ordinary pass or rush.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "primary_action", "operator": "EQ", "value": "TRY"}
+    },
+    {
+      "factor_id": "NFL.EVENT.COMPLETE_PASS",
+      "version": "v1",
+      "family": "PASS",
+      "meaning": "A completed, non-nullified pass.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "COMPLETE_PASS"}
+    },
+    {
+      "factor_id": "NFL.EVENT.INCOMPLETE_PASS",
+      "version": "v1",
+      "family": "PASS",
+      "meaning": "An incomplete, non-nullified pass.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "INCOMPLETE_PASS"}
+    },
+    {
+      "factor_id": "NFL.EVENT.FIRST_DOWN",
+      "version": "v1",
+      "family": "OUTCOME",
+      "meaning": "A live play awarded a first down.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "FIRST_DOWN"}
+    },
+    {
+      "factor_id": "NFL.EVENT.THIRD_DOWN_CONVERTED",
+      "version": "v1",
+      "family": "DOWN_OUTCOME",
+      "meaning": "A live third-down play recorded as converted.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "THIRD_DOWN_CONVERTED"}
+    },
+    {
+      "factor_id": "NFL.EVENT.THIRD_DOWN_FAILED",
+      "version": "v1",
+      "family": "DOWN_OUTCOME",
+      "meaning": "A live third-down play recorded as failed.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "THIRD_DOWN_FAILED"}
+    },
+    {
+      "factor_id": "NFL.EVENT.FOURTH_DOWN_CONVERTED",
+      "version": "v1",
+      "family": "DOWN_OUTCOME",
+      "meaning": "A live fourth-down play recorded as converted.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "FOURTH_DOWN_CONVERTED"}
+    },
+    {
+      "factor_id": "NFL.EVENT.INTERCEPTION",
+      "version": "v1",
+      "family": "TURNOVER",
+      "meaning": "A finalized interception, retaining return yards and the next observed structured field state.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "INTERCEPTION"}
+    },
+    {
+      "factor_id": "NFL.EVENT.FUMBLE_LOST",
+      "version": "v1",
+      "family": "TURNOVER",
+      "meaning": "A finalized lost fumble.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "FUMBLE_LOST"}
+    },
+    {
+      "factor_id": "NFL.EVENT.FUMBLE_NOT_LOST",
+      "version": "v1",
+      "family": "OUTCOME",
+      "meaning": "A live fumble that was not recorded as lost.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "FUMBLE_NOT_LOST"}
+    },
+    {
+      "factor_id": "NFL.EVENT.TURNOVER_ON_DOWNS",
+      "version": "v2",
+      "family": "TURNOVER",
+      "meaning": "A failed fourth-down scrimmage play after which possession is awarded to the defense by downs; interceptions, lost fumbles, nullified plays, and expiration without a possession award are excluded.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "TURNOVER_ON_DOWNS"}
+    },
+    {
+      "factor_id": "NFL.SCORE.PASS_TOUCHDOWN",
+      "version": "v1",
+      "family": "SCORE",
+      "meaning": "A passing touchdown.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "PASS_TOUCHDOWN"}
+    },
+    {
+      "factor_id": "NFL.SCORE.RUSH_TOUCHDOWN",
+      "version": "v1",
+      "family": "SCORE",
+      "meaning": "A rushing touchdown.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "RUSH_TOUCHDOWN"}
+    },
+    {
+      "factor_id": "NFL.SCORE.RETURN_TOUCHDOWN",
+      "version": "v1",
+      "family": "SCORE",
+      "meaning": "A credited defensive or special-teams return touchdown.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "RETURN_TOUCHDOWN"}
+    },
+    {
+      "factor_id": "NFL.SCORE.FIELD_GOAL_MADE",
+      "version": "v1",
+      "family": "SCORE",
+      "meaning": "A made field goal.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "FIELD_GOAL_MADE"}
+    },
+    {
+      "factor_id": "NFL.SCORE.EXTRA_POINT_GOOD",
+      "version": "v1",
+      "family": "SCORE",
+      "meaning": "A successful extra-point kick.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "EXTRA_POINT_GOOD"}
+    },
+    {
+      "factor_id": "NFL.SCORE.TWO_POINT_SUCCESS",
+      "version": "v1",
+      "family": "SCORE",
+      "meaning": "A successful two-point try, distinct from an ordinary pass or rush.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "TWO_POINT_SUCCESS"}
+    },
+    {
+      "factor_id": "NFL.SCORE.EXTRA_POINT_FAILED",
+      "version": "v2",
+      "family": "SCORE",
+      "meaning": "An unsuccessful extra-point kick, including a blocked extra-point attempt.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {
+        "any": [
+          {"field": "outcome_tags", "operator": "CONTAINS", "value": "EXTRA_POINT_FAILED"},
+          {"field": "outcome_tags", "operator": "CONTAINS", "value": "EXTRA_POINT_BLOCKED"}
+        ]
+      }
+    },
+    {
+      "factor_id": "NFL.SCORE.TWO_POINT_FAILURE",
+      "version": "v1",
+      "family": "SCORE",
+      "meaning": "An unsuccessful two-point try, distinct from an ordinary pass or rush.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "TWO_POINT_FAILURE"}
+    },
+    {
+      "factor_id": "NFL.SCORE.SAFETY",
+      "version": "v1",
+      "family": "SCORE",
+      "meaning": "A finalized safety; nullified safety rulings do not match.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "SAFETY"}
+    },
+    {
+      "factor_id": "NFL.SPECIAL.BLOCKED_PUNT",
+      "version": "v1",
+      "family": "SPECIAL_TEAMS",
+      "meaning": "A source-confirmed blocked punt.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "BLOCKED_PUNT"}
+    },
+    {
+      "factor_id": "NFL.SPECIAL.FIELD_GOAL_MISSED",
+      "version": "v2",
+      "family": "SPECIAL_TEAMS",
+      "meaning": "An unblocked field-goal attempt recorded as missed; blocked attempts are classified separately.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {
+        "all": [
+          {"field": "outcome_tags", "operator": "CONTAINS", "value": "FIELD_GOAL_MISSED"},
+          {"not": {"field": "outcome_tags", "operator": "CONTAINS", "value": "FIELD_GOAL_BLOCKED"}}
+        ]
+      }
+    },
+    {
+      "factor_id": "NFL.SPECIAL.FIELD_GOAL_BLOCKED",
+      "version": "v1",
+      "family": "SPECIAL_TEAMS",
+      "meaning": "A blocked field-goal attempt.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "FIELD_GOAL_BLOCKED"}
+    },
+    {
+      "factor_id": "NFL.SPECIAL.BLOCKED_EXTRA_POINT",
+      "version": "v1",
+      "family": "SPECIAL_TEAMS",
+      "meaning": "A blocked extra-point kick.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "EXTRA_POINT_BLOCKED"}
+    },
+    {
+      "factor_id": "NFL.SPECIAL.PUNT_INSIDE_20",
+      "version": "v1",
+      "family": "SPECIAL_TEAMS",
+      "meaning": "A punt officially recorded inside the receiving team's 20; it may overlap a terminal punt outcome.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "PUNT_INSIDE_20"}
+    },
+    {
+      "factor_id": "NFL.SPECIAL.TOUCHBACK",
+      "version": "v2",
+      "family": "SPECIAL_TEAMS",
+      "meaning": "A kickoff or punt ending in a touchback; scrimmage-play touchbacks are excluded.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {
+        "all": [
+          {"field": "primary_action", "operator": "IN", "value": ["KICKOFF", "PUNT"]},
+          {"field": "outcome_tags", "operator": "CONTAINS", "value": "TOUCHBACK"}
+        ]
+      }
+    },
+    {
+      "factor_id": "NFL.SPECIAL.PUNT_RETURN",
+      "version": "v1",
+      "family": "SPECIAL_TEAMS",
+      "meaning": "A punt with a credited return-yard result; terminal non-return endings are excluded.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "PUNT_RETURN"}
+    },
+    {
+      "factor_id": "NFL.SPECIAL.PUNT_FAIR_CATCH",
+      "version": "v1",
+      "family": "SPECIAL_TEAMS",
+      "meaning": "A punt ending in a fair catch.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "PUNT_FAIR_CATCH"}
+    },
+    {
+      "factor_id": "NFL.SPECIAL.PUNT_TOUCHBACK",
+      "version": "v1",
+      "family": "SPECIAL_TEAMS",
+      "meaning": "A punt ending in a touchback.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "PUNT_TOUCHBACK"}
+    },
+    {
+      "factor_id": "NFL.SPECIAL.PUNT_OUT_OF_BOUNDS",
+      "version": "v1",
+      "family": "SPECIAL_TEAMS",
+      "meaning": "A punt ending out of bounds.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "PUNT_OUT_OF_BOUNDS"}
+    },
+    {
+      "factor_id": "NFL.SPECIAL.PUNT_DOWNED",
+      "version": "v1",
+      "family": "SPECIAL_TEAMS",
+      "meaning": "A punt downed by the kicking team.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "PUNT_DOWNED"}
+    },
+    {
+      "factor_id": "NFL.SPECIAL.KICKOFF_RETURN",
+      "version": "v2",
+      "family": "SPECIAL_TEAMS",
+      "meaning": "A kickoff with an explicit credited returner and a recorded return-yard result; touchbacks, fair catches, out-of-bounds kicks, downed kicks, and kicking-team recoveries are excluded.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "KICKOFF_RETURN"}
+    },
+    {
+      "factor_id": "NFL.SPECIAL.KICKOFF_TOUCHBACK",
+      "version": "v1",
+      "family": "SPECIAL_TEAMS",
+      "meaning": "A kickoff ending in a touchback.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "KICKOFF_TOUCHBACK"}
+    },
+    {
+      "factor_id": "NFL.SPECIAL.KICKING_TEAM_KICKOFF_RECOVERY",
+      "version": "v1",
+      "family": "SPECIAL_TEAMS",
+      "meaning": "A recorded recovery by the kicking team on a kickoff; no onside-kick intent is inferred.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "KICKING_TEAM_KICKOFF_RECOVERY"}
+    },
+    {
+      "factor_id": "NFL.ADMIN.PENALTY",
+      "version": "v1",
+      "family": "ADMIN",
+      "meaning": "A row containing a source penalty disposition, including accepted, declined, offsetting, and no-play penalties.",
+      "status": "ACTIVE",
+      "scope": "ALL_FACTS",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "PENALTY"}
+    },
+    {
+      "factor_id": "NFL.ADMIN.REVIEW",
+      "version": "v1",
+      "family": "ADMIN",
+      "meaning": "A reviewed or challenged ruling.",
+      "status": "ACTIVE",
+      "scope": "ALL_FACTS",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "REVIEWED"}
+    },
+    {
+      "factor_id": "NFL.ADMIN.REVERSAL",
+      "version": "v1",
+      "family": "ADMIN",
+      "meaning": "A review whose final ruling was reversed.",
+      "status": "ACTIVE",
+      "scope": "ALL_FACTS",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "REVERSED"}
+    },
+    {
+      "factor_id": "NFL.ADMIN.REVIEW_UPHELD",
+      "version": "v1",
+      "family": "ADMIN",
+      "meaning": "A reviewed or challenged ruling whose source result was upheld.",
+      "status": "ACTIVE",
+      "scope": "ALL_FACTS",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "REVIEW_UPHELD"}
+    },
+    {
+      "factor_id": "NFL.ADMIN.TIMEOUT",
+      "version": "v1",
+      "family": "ADMIN",
+      "meaning": "A timeout information event.",
+      "status": "ACTIVE",
+      "scope": "ALL_FACTS",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "TIMEOUT"}
+    },
+    {
+      "factor_id": "NFL.ADMIN.NO_PLAY",
+      "version": "v1",
+      "family": "ADMIN",
+      "meaning": "A nullified no-play row retained for audit.",
+      "status": "ACTIVE",
+      "scope": "ALL_FACTS",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "NO_PLAY"}
+    },
+    {
+      "factor_id": "NFL.AVAILABILITY.CONFIRMED_IN_GAME_INJURY",
+      "version": "v1",
+      "family": "PLAYER_AVAILABILITY",
+      "meaning": "The source PBP explicitly states that a player was injured during the play.",
+      "status": "ACTIVE",
+      "scope": "ALL_FACTS",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "CONFIRMED_IN_GAME_INJURY"}
+    },
+    {
+      "factor_id": "NFL.AVAILABILITY.CONFIRMED_RETURN",
+      "version": "v1",
+      "family": "PLAYER_AVAILABILITY",
+      "meaning": "The source PBP explicitly reports that a player returned to the game.",
+      "status": "ACTIVE",
+      "scope": "ALL_FACTS",
+      "predicate": {"field": "outcome_tags", "operator": "CONTAINS", "value": "CONFIRMED_RETURN_TO_GAME"}
+    },
+    {
+      "factor_id": "NFL.STATE.RED_ZONE",
+      "version": "v2",
+      "family": "STATE",
+      "meaning": "The offense has a source pre-play scrimmage down from one through four at or inside the opponent 20.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {
+        "all": [
+          {"field": "pre_red_zone", "operator": "EQ", "value": true},
+          {"field": "down", "operator": "IN", "value": [1, 2, 3, 4]}
+        ]
+      }
+    },
+    {
+      "factor_id": "NFL.STATE.TIED",
+      "version": "v1",
+      "family": "STATE",
+      "meaning": "The score is tied before the play.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "tied", "operator": "EQ", "value": true}
+    },
+    {
+      "factor_id": "NFL.STATE.ONE_SCORE",
+      "version": "v1",
+      "family": "STATE",
+      "meaning": "The absolute pre-play score margin is eight points or fewer; tied events are an intentional subset.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "one_score_game", "operator": "EQ", "value": true}
+    },
+    {
+      "factor_id": "NFL.STATE.DISTANCE_GT_10",
+      "version": "v2",
+      "family": "STATE",
+      "meaning": "The source pre-play yards-to-go value exceeds ten; on goal-to-go plays it is distance to the goal line.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {"field": "distance", "operator": "GT", "value": 10}
+    },
+    {
+      "factor_id": "NFL.STATE.Q4_FINAL_5M",
+      "version": "v1",
+      "family": "TIME",
+      "meaning": "A live fourth-quarter play with regulation time in the inclusive zero-to-300-second interval; overtime is excluded.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {
+        "all": [
+          {"field": "quarter", "operator": "EQ", "value": 4},
+          {"field": "game_seconds_remaining", "operator": "LTE", "value": 300}
+        ]
+      }
+    },
+    {
+      "factor_id": "NFL.COMBO.RED_ZONE_TURNOVER",
+      "version": "v2",
+      "family": "COMBINATION",
+      "meaning": "A possession-losing interception, lost fumble, or strict turnover on downs from a source pre-play red-zone scrimmage down.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {
+        "all": [
+          {"field": "pre_red_zone", "operator": "EQ", "value": true},
+          {"field": "down", "operator": "IN", "value": [1, 2, 3, 4]},
+          {
+            "any": [
+              {"field": "outcome_tags", "operator": "CONTAINS", "value": "INTERCEPTION"},
+              {"field": "outcome_tags", "operator": "CONTAINS", "value": "FUMBLE_LOST"},
+              {"field": "outcome_tags", "operator": "CONTAINS", "value": "TURNOVER_ON_DOWNS"}
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "factor_id": "NFL.COMBO.LATE_SCORE",
+      "version": "v1",
+      "family": "COMBINATION",
+      "meaning": "A scoring play in the final five minutes of regulation; a touchdown and its subsequent try remain separate events.",
+      "status": "ACTIVE",
+      "scope": "LIVE_ONLY",
+      "predicate": {
+        "all": [
+          {"field": "quarter", "operator": "EQ", "value": 4},
+          {"field": "game_seconds_remaining", "operator": "LTE", "value": 300},
+          {"field": "outcome_tags", "operator": "CONTAINS", "value": "SCORE"}
+        ]
+      }
+    },
+    {
+      "factor_id": "NFL.DATA_GAP.PREGAME_INJURY_TIMELINE",
+      "version": "v1",
+      "family": "PLAYER_AVAILABILITY",
+      "meaning": "Pregame injury status with a verified publication timestamp.",
+      "status": "DATA_GAP",
+      "scope": "ALL_FACTS",
+      "predicate": {"field": "event_id", "operator": "EQ", "value": "__UNAVAILABLE__"}
+    },
+    {
+      "factor_id": "NFL.DATA_GAP.EXACT_SUBSTITUTION_TIME",
+      "version": "v1",
+      "family": "PLAYER_AVAILABILITY",
+      "meaning": "An official exact substitution timestamp rather than a between-snap set difference.",
+      "status": "DATA_GAP",
+      "scope": "ALL_FACTS",
+      "predicate": {"field": "event_id", "operator": "EQ", "value": "__UNAVAILABLE__"}
+    }
+  ]
+}

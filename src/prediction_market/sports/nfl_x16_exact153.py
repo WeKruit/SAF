@@ -48,9 +48,17 @@ DEFAULT_GOVERNANCE_MANIFEST: Final[Path] = Path(
     ".manifest.json"
 )
 DEFAULT_FACTOR_REGISTRY: Final[Path] = Path(
-    "registries/factors/nfl_factor_registry_v3_draft.json"
+    "registries/factors/nfl_factor_registry_v4.json"
 )
-BUILDER_VERSION: Final[str] = "nfl_x13_exact153_fact_publication_v1"
+EXPECTED_FACTOR_COUNT: Final[int] = 59
+LEGACY_PUBLICATION_ID: Final[str] = "exact-153-facts-v3"
+PUBLICATION_ID: Final[str] = "exact-153-facts-v4"
+BUILDER_VERSION: Final[str] = "nfl_x13_exact153_fact_publication_v4"
+SINGLE_GAME_MANIFEST_SCHEMA: Final[str] = (
+    "nfl_x13_exact153_single_game_fact_manifest_v4"
+)
+SEMANTIC_BATCH_SCHEMA: Final[str] = "nfl_x13_exact153_semantic_batch_v4"
+BATCH_INDEX_SCHEMA: Final[str] = "nfl_x13_exact153_fact_batch_index_v4"
 CLAIM_BOUNDARY: Final[str] = (
     "DEVELOPMENT_SPORTS_FACTS_ONLY; no market reaction, holdout reaction, "
     "causality, execution, or alpha claim"
@@ -92,6 +100,7 @@ _CANONICAL_EVENT_COLUMNS: Final[tuple[str, ...]] = (
     "posteam_semantics",
     "defense_team",
     "next_observed_possession",
+    "next_observed_possession_semantics",
     "offense_direction",
     "transition_direction_semantics",
     "field_orientation_semantics",
@@ -496,6 +505,27 @@ def _resolve_under(root: Path, relative: str | Path, *, label: str) -> Path:
     return candidate
 
 
+def _require_v4_publication_path(
+    *,
+    output_root: Path,
+    candidate: str | Path,
+    expected_prefix: tuple[str, ...],
+    label: str,
+    require_relative: bool = False,
+) -> Path:
+    declared = Path(candidate)
+    if require_relative and declared.is_absolute():
+        raise NFLExact153PublicationError(f"{label} is not a V4 publication path")
+    resolved = _resolve_under(output_root, declared, label=label)
+    relative = resolved.relative_to(output_root.resolve())
+    if (
+        relative.parts[: len(expected_prefix)] != expected_prefix
+        or (require_relative and declared.parts != relative.parts)
+    ):
+        raise NFLExact153PublicationError(f"{label} is not a V4 publication path")
+    return resolved
+
+
 def verify_exact153_authority(
     *,
     project_root: str | Path,
@@ -631,17 +661,45 @@ def _verify_factor_registry(
         else Path(factor_registry_path).resolve()
     )
     registry, encoded = _read_json_object(path, label="factor registry")
+    factors = registry.get("factors")
     if (
-        registry.get("schema") != "NFLFactorRegistryV3"
-        or registry.get("status") != "DRAFT_EXPERT_REVIEW"
-        or type(registry.get("version")) is not str
-        or type(registry.get("factors")) is not list
+        registry.get("schema") != "NFLFactorRegistryV4"
+        or registry.get("status") != "AUTHORITATIVE"
+        or registry.get("version") != "v4"
+        or type(factors) is not list
     ):
-        raise NFLExact153PublicationError("factor registry schema/status mismatch")
+        raise NFLExact153PublicationError(
+            "factor registry schema/status/version mismatch"
+        )
+    identities: list[dict[str, str]] = []
+    seen_factor_ids: set[str] = set()
+    for factor in factors:
+        if type(factor) is not dict:
+            raise NFLExact153PublicationError("factor registry identity is malformed")
+        factor_id = factor.get("factor_id")
+        factor_version = factor.get("version")
+        if (
+            type(factor_id) is not str
+            or not factor_id
+            or factor_id in seen_factor_ids
+            or type(factor_version) is not str
+            or not factor_version
+        ):
+            raise NFLExact153PublicationError("factor registry identity is malformed")
+        seen_factor_ids.add(factor_id)
+        identities.append(
+            {"factor_id": factor_id, "version": factor_version}
+        )
+    if len(identities) != EXPECTED_FACTOR_COUNT:
+        raise NFLExact153PublicationError(
+            f"factor registry must bind exactly {EXPECTED_FACTOR_COUNT} identities"
+        )
     return registry, {
         "schema": registry["schema"],
         "status": registry["status"],
         "version": registry["version"],
+        "factor_count": len(identities),
+        "factor_identity_sha256": _extractor_semantic_sha256(identities),
         "file_sha256": _sha256_bytes(encoded),
         "semantic_sha256": _extractor_semantic_sha256(registry),
     }
@@ -1105,7 +1163,8 @@ def _publish_table(
     object_sha = _sha256_bytes(payload)
     digest = object_sha.removeprefix("sha256:")
     relative = (
-        Path("single-game")
+        Path(PUBLICATION_ID)
+        / "single-game"
         / game_id
         / "objects"
         / "sha256"
@@ -1193,7 +1252,8 @@ def _publish_game_bundle(
     }
     table_semantic_sha = _canonical_sha256(table_semantics)
     material: dict[str, object] = {
-        "schema": "nfl_x13_exact153_single_game_fact_manifest_v1",
+        "schema": SINGLE_GAME_MANIFEST_SCHEMA,
+        "publication_id": PUBLICATION_ID,
         "experiment_id": EXPERIMENT_ID,
         "cohort": "development",
         "game_id": game_id,
@@ -1217,7 +1277,8 @@ def _publish_game_bundle(
     manifest_sha = _sha256_bytes(manifest_bytes)
     digest = manifest_sha.removeprefix("sha256:")
     relative = (
-        Path("single-game")
+        Path(PUBLICATION_ID)
+        / "single-game"
         / game_id
         / "manifests"
         / "sha256"
@@ -1251,6 +1312,17 @@ def _verify_game_bundle(
     registry_binding: Mapping[str, object],
     builder_code_sha256: str,
 ) -> PublishedGameFactBundle:
+    manifest_path = _require_v4_publication_path(
+        output_root=output_root,
+        candidate=manifest_path,
+        expected_prefix=(
+            PUBLICATION_ID,
+            "single-game",
+            expected_game_id,
+            "manifests",
+        ),
+        label=f"{expected_game_id} fact manifest",
+    )
     manifest, encoded = _read_json_object(
         manifest_path, label=f"{expected_game_id} fact manifest"
     )
@@ -1263,7 +1335,8 @@ def _verify_game_bundle(
     material.pop("bundle_sha256", None)
     if (
         manifest.get("schema")
-        != "nfl_x13_exact153_single_game_fact_manifest_v1"
+        != SINGLE_GAME_MANIFEST_SCHEMA
+        or manifest.get("publication_id") != PUBLICATION_ID
         or manifest.get("experiment_id") != EXPERIMENT_ID
         or manifest.get("game_id") != expected_game_id
         or manifest.get("cohort") != "development"
@@ -1297,10 +1370,17 @@ def _verify_game_bundle(
     for descriptor in descriptors:
         assert type(descriptor) is dict
         name = str(descriptor["name"])
-        object_path = _resolve_under(
-            output_root,
-            str(descriptor.get("object_path", "")),
+        object_path = _require_v4_publication_path(
+            output_root=output_root,
+            candidate=str(descriptor.get("object_path", "")),
+            expected_prefix=(
+                PUBLICATION_ID,
+                "single-game",
+                expected_game_id,
+                "objects",
+            ),
             label=f"{expected_game_id}.{name}",
+            require_relative=True,
         )
         if (
             not object_path.is_file()
@@ -1384,9 +1464,26 @@ def _publish_batch_index(
         raise NFLExact153PublicationError(
             "batch publication requires the exact development set in authority order"
         )
+    manifest_paths = tuple(
+        _require_v4_publication_path(
+            output_root=output_root,
+            candidate=game.manifest_path,
+            expected_prefix=(
+                PUBLICATION_ID,
+                "single-game",
+                game.game_id,
+                "manifests",
+            ),
+            label=f"{game.game_id} batch child manifest",
+        )
+        .relative_to(output_root.resolve())
+        .as_posix()
+        for game in games
+    )
     aggregate = _aggregate_counts(games)
     semantic_material = {
-        "schema": "nfl_x13_exact153_semantic_batch_v1",
+        "schema": SEMANTIC_BATCH_SCHEMA,
+        "publication_id": PUBLICATION_ID,
         "experiment_id": EXPERIMENT_ID,
         "authority": _authority_binding(authority),
         "sources": dict(source_bindings),
@@ -1402,7 +1499,8 @@ def _publish_batch_index(
     }
     semantic_batch_sha = _canonical_sha256(semantic_material)
     material: dict[str, object] = {
-        "schema": "nfl_x13_exact153_fact_batch_index_v1",
+        "schema": BATCH_INDEX_SCHEMA,
+        "publication_id": PUBLICATION_ID,
         "experiment_id": EXPERIMENT_ID,
         "cohort": "development",
         "game_count": len(games),
@@ -1420,14 +1518,12 @@ def _publish_batch_index(
             {
                 "game_id": game.game_id,
                 "bundle_sha256": game.bundle_sha256,
-                "manifest_path": game.manifest_path.relative_to(
-                    output_root
-                ).as_posix(),
+                "manifest_path": manifest_path,
                 "manifest_sha256": game.manifest_sha256,
                 "counts": dict(game.counts),
                 "table_semantic_sha256": dict(game.table_semantic_sha256),
             }
-            for game in games
+            for game, manifest_path in zip(games, manifest_paths, strict=True)
         ],
         "publication_gate": "PASS",
     }
@@ -1437,7 +1533,8 @@ def _publish_batch_index(
     index_sha = _sha256_bytes(encoded)
     digest = index_sha.removeprefix("sha256:")
     relative = (
-        Path("batches")
+        Path(PUBLICATION_ID)
+        / "batches"
         / "manifests"
         / "sha256"
         / digest[:2]
@@ -1468,6 +1565,11 @@ def publish_exact153_fact_batch(
 
     if type(workers) is not int or workers != 1:
         raise NFLExact153PublicationError("workers must equal 1")
+    destination = Path(output_root).resolve()
+    if LEGACY_PUBLICATION_ID in destination.parts:
+        raise NFLExact153PublicationError(
+            f"output_root cannot be the legacy {LEGACY_PUBLICATION_ID} namespace"
+        )
     root = Path(project_root).resolve()
     authority = verify_exact153_authority(
         project_root=root,
@@ -1488,7 +1590,6 @@ def publish_exact153_fact_batch(
         "participation": _source_binding(participation_source),
     }
     builder_code_sha = _builder_code_sha256()
-    destination = Path(output_root).resolve()
     games: list[PublishedGameFactBundle] = []
     for game_id in authority.development_game_ids:
         authority.require_development(game_id)
@@ -1543,9 +1644,13 @@ def publish_exact153_fact_batch(
 
 
 __all__ = [
+    "BATCH_INDEX_SCHEMA",
     "BUILDER_VERSION",
     "CLAIM_BOUNDARY",
     "EXPERIMENT_ID",
+    "PUBLICATION_ID",
+    "SEMANTIC_BATCH_SCHEMA",
+    "SINGLE_GAME_MANIFEST_SCHEMA",
     "Exact153Authority",
     "NFLExact153PublicationError",
     "PublishedExact153FactBatch",

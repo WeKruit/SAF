@@ -166,6 +166,16 @@ def _pre_scores(row: Mapping[str, object]) -> tuple[int | None, int | None]:
     )
 
 
+def _possession_continuity_segment(quarter: int | None) -> str | None:
+    if quarter in {1, 2}:
+        return "FIRST_HALF"
+    if quarter in {3, 4}:
+        return "SECOND_HALF"
+    if quarter is not None and quarter >= 5:
+        return f"EXTRA_PERIOD_PAIR_{(quarter - 5) // 2}"
+    return None if quarter is None else f"PERIOD_{quarter}"
+
+
 def _primary_action(row: Mapping[str, object]) -> str:
     native = (_text(row.get("play_type_nfl")) or "").upper()
     play_type = (_text(row.get("play_type")) or "").lower()
@@ -331,15 +341,32 @@ def _outcome_tags(
         if _indicator(row.get(field)) and not no_play:
             tags.add(tag)
     turnover = False
-    if _indicator(row.get("interception")) and not no_play:
+    interception = _indicator(row.get("interception")) and not no_play
+    fumble = _indicator(row.get("fumble")) and not no_play
+    fumble_lost = _indicator(row.get("fumble_lost")) and not no_play
+    if interception:
         tags.add("INTERCEPTION")
         turnover = True
-    if _indicator(row.get("fumble")) and not no_play:
+    if fumble:
         tags.add("FUMBLE")
-    if _indicator(row.get("fumble_lost")) and not no_play:
+        if not fumble_lost:
+            tags.add("FUMBLE_NOT_LOST")
+    if fumble_lost:
         tags.add("FUMBLE_LOST")
         turnover = True
-    if _indicator(row.get("fourth_down_failed")) and not no_play:
+    posteam = _text(row.get("posteam"))
+    possession_awarded_by_downs = (
+        _indicator(row.get("fourth_down_failed"))
+        and _integer(row.get("down")) == 4
+        and action in {"PASS", "RUN", "SACK", "KNEEL", "SPIKE"}
+        and not no_play
+        and not interception
+        and not fumble_lost
+        and posteam is not None
+        and next_possession is not None
+        and next_possession != posteam
+    )
+    if possession_awarded_by_downs:
         tags.add("TURNOVER_ON_DOWNS")
         turnover = True
     if turnover:
@@ -381,7 +408,7 @@ def _outcome_tags(
         ("kickoff_out_of_bounds", "KICKOFF_OUT_OF_BOUNDS"),
         ("kickoff_downed", "KICKOFF_DOWNED"),
         ("kickoff_fair_catch", "KICKOFF_FAIR_CATCH"),
-        ("own_kickoff_recovery", "ONSIDE_RECOVERY"),
+        ("own_kickoff_recovery", "KICKING_TEAM_KICKOFF_RECOVERY"),
     ):
         if _indicator(row.get(field)):
             tags.add(tag)
@@ -400,10 +427,21 @@ def _outcome_tags(
         if "TOUCHBACK" in tags:
             tags.add("PUNT_TOUCHBACK")
     if action == "KICKOFF":
+        non_return_endings = {
+            "TOUCHBACK",
+            "KICKOFF_FAIR_CATCH",
+            "KICKOFF_OUT_OF_BOUNDS",
+            "KICKOFF_DOWNED",
+            "KICKING_TEAM_KICKOFF_RECOVERY",
+        }
+        explicit_returner = (
+            _text(row.get("kickoff_returner_player_id")) is not None
+            or _text(row.get("kickoff_returner_player_name")) is not None
+        )
         if (
             _number(row.get("return_yards")) is not None
-            and "TOUCHBACK" not in tags
-            and "KICKOFF_FAIR_CATCH" not in tags
+            and explicit_returner
+            and not non_return_endings.intersection(tags)
         ):
             tags.add("KICKOFF_RETURN")
         if "TOUCHBACK" in tags:
@@ -424,7 +462,6 @@ def _outcome_tags(
         tags.add("CONFIRMED_IN_GAME_INJURY")
     if _RETURN_RE.search(description):
         tags.add("CONFIRMED_RETURN_TO_GAME")
-    posteam = _text(row.get("posteam"))
     if turnover or (
         posteam is not None
         and next_possession is not None
@@ -703,17 +740,36 @@ def build_game_fact_tables(
 
     records = raw.to_dict("records")
     next_possession: list[str | None] = [None] * len(records)
+    next_contiguous_possession: list[str | None] = [None] * len(records)
     next_structured_state: list[dict[str, object] | None] = [None] * len(records)
     future: str | None = None
+    future_play_possession: str | None = None
+    future_play_segment: str | None = None
     future_state: dict[str, object] | None = None
     for index in range(len(records) - 1, -1, -1):
         next_possession[index] = future
+        current_segment = _possession_continuity_segment(
+            _integer(records[index].get("qtr"))
+        )
+        if (
+            current_segment is not None
+            and current_segment == future_play_segment
+        ):
+            next_contiguous_possession[index] = future_play_possession
         next_structured_state[index] = future_state
         current = _text(records[index].get("posteam"))
         if current is not None:
             future = current
+        current_is_play = _primary_action(records[index]) != "ADMIN"
+        if current is not None and current_is_play:
+            future_play_possession = current
+            future_play_segment = current_segment
         current_yardline = _text(records[index].get("yrdln"))
-        if current is not None and current_yardline is not None:
+        if (
+            current is not None
+            and current_yardline is not None
+            and current_is_play
+        ):
             future_state = {
                 "play_id": _stable_play_id(records[index].get("play_id")),
                 "possession": current,
@@ -769,7 +825,10 @@ def build_game_fact_tables(
         post_home = _integer(row.get("total_home_score"))
         post_away = _integer(row.get("total_away_score"))
         action = _primary_action(row)
-        tags = _outcome_tags(row, next_possession=next_possession[index])
+        tags = _outcome_tags(
+            row,
+            next_possession=next_contiguous_possession[index],
+        )
         no_play = _text(row.get("play_type")) == "no_play"
         deleted = _indicator(row.get("play_deleted"))
         information_status = "FINAL"
@@ -914,6 +973,10 @@ def build_game_fact_tables(
             "posteam_semantics": posteam_semantics,
             "defense_team": defteam,
             "next_observed_possession": next_possession[index],
+            "next_observed_possession_semantics": (
+                "NEXT_LATER_SOURCE_ROW_WITH_NON_NULL_POSTEAM_AUDIT_ONLY_"
+                "NOT_DOWNS_AWARD_EVIDENCE"
+            ),
             "offense_direction": transition_direction,
             "transition_direction_semantics": transition_direction_semantics,
             "field_orientation_semantics": (

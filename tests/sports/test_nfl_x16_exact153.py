@@ -264,6 +264,29 @@ def _write_sources(
 
 def _write_registry(root: Path) -> Path:
     path = root / "registry.json"
+    factors = [
+        {
+            "factor_id": f"NFL.TEST.FACTOR_{index:02d}",
+            "version": "v1",
+            "status": "DATA_GAP",
+        }
+        for index in range(59)
+    ]
+    path.write_bytes(
+        _canonical_bytes(
+            {
+                "schema": "NFLFactorRegistryV4",
+                "version": "v4",
+                "status": "AUTHORITATIVE",
+                "factors": factors,
+            }
+        )
+    )
+    return path
+
+
+def _write_v3_registry(root: Path) -> Path:
+    path = root / "registry-v3.json"
     path.write_bytes(
         _canonical_bytes(
             {
@@ -403,6 +426,79 @@ def test_workers_default_to_one_and_parallel_values_fail_closed() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "relative_output_root",
+    [
+        Path("exact-153-facts-v3"),
+        Path("exact-153-facts-v3") / "nested",
+    ],
+)
+def test_publish_rejects_legacy_v3_output_namespace(
+    tmp_path: Path,
+    relative_output_root: Path,
+) -> None:
+    with pytest.raises(
+        publication.NFLExact153PublicationError,
+        match="legacy exact-153-facts-v3",
+    ):
+        publication.publish_exact153_fact_batch(
+            project_root=tmp_path,
+            output_root=tmp_path / relative_output_root,
+        )
+
+
+def test_authoritative_v4_registry_binds_all_59_factor_identities(
+    tmp_path: Path,
+) -> None:
+    registry_path = _write_registry(tmp_path)
+
+    registry, binding = publication._verify_factor_registry(
+        tmp_path,
+        registry_path,
+    )
+
+    assert binding["schema"] == "NFLFactorRegistryV4"
+    assert binding["version"] == "v4"
+    assert binding["status"] == "AUTHORITATIVE"
+    assert binding["factor_count"] == 59
+    assert binding["factor_identity_sha256"] == _sha_bytes(
+        _canonical_bytes(
+            [
+                {
+                    "factor_id": factor["factor_id"],
+                    "version": factor["version"],
+                }
+                for factor in registry["factors"]
+            ]
+        ).rstrip(b"\n")
+    )
+
+
+def test_default_registry_is_authoritative_v4_path(tmp_path: Path) -> None:
+    assert publication.DEFAULT_FACTOR_REGISTRY == Path(
+        "registries/factors/nfl_factor_registry_v4.json"
+    )
+    staged_registry = _write_registry(tmp_path)
+    default_registry = tmp_path / publication.DEFAULT_FACTOR_REGISTRY
+    default_registry.parent.mkdir(parents=True)
+    default_registry.write_bytes(staged_registry.read_bytes())
+
+    _, binding = publication._verify_factor_registry(tmp_path, None)
+
+    assert binding["schema"] == "NFLFactorRegistryV4"
+    assert binding["factor_count"] == 59
+
+
+def test_v3_registry_is_rejected_fail_closed(tmp_path: Path) -> None:
+    registry_path = _write_v3_registry(tmp_path)
+
+    with pytest.raises(
+        publication.NFLExact153PublicationError,
+        match="schema/status/version",
+    ):
+        publication._verify_factor_registry(tmp_path, registry_path)
+
+
 def test_streams_one_game_at_a_time_and_verifies_frozen_sources_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -463,12 +559,29 @@ def test_per_game_publication_preserves_td_pat_ids_and_fixed_empty_schemas(
     ]
     assert events["score_sequence_id"].nunique() == 1
     assert events["score_sequence_id"].notna().all()
+    semantics_column = "next_observed_possession_semantics"
+    next_possession_index = publication.TABLE_SCHEMAS[
+        "canonical_factor_events"
+    ].index("next_observed_possession")
+    assert publication.TABLE_SCHEMAS["canonical_factor_events"][
+        next_possession_index + 1
+    ] == semantics_column
+    assert events[semantics_column].tolist() == [
+        "NEXT_LATER_SOURCE_ROW_WITH_NON_NULL_POSTEAM_AUDIT_ONLY_"
+        "NOT_DOWNS_AWARD_EVIDENCE"
+    ] * len(events)
+    event_schema = pq.read_schema(
+        output_root / descriptors["canonical_factor_events"]["object_path"]
+    )
+    assert str(event_schema.field(semantics_column).type) == "string"
+    assert descriptors["canonical_factor_events"]["schema_columns"] == list(
+        publication.TABLE_SCHEMAS["canonical_factor_events"]
+    )
     for name in (
         "factor_event_players",
         "player_availability_events",
         "injury_evidence",
         "factor_hits",
-        "factor_coverage_audit",
     ):
         frame = pd.read_parquet(output_root / descriptors[name]["object_path"])
         assert frame.empty
@@ -476,6 +589,18 @@ def test_per_game_publication_preserves_td_pat_ids_and_fixed_empty_schemas(
         assert descriptors[name]["schema_columns"] == list(
             publication.TABLE_SCHEMAS[name]
         )
+    coverage = pd.read_parquet(
+        output_root / descriptors["factor_coverage_audit"]["object_path"]
+    )
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    assert len(coverage) == 59
+    assert coverage[["factor_id", "factor_version"]].to_dict("records") == [
+        {
+            "factor_id": factor["factor_id"],
+            "factor_version": factor["version"],
+        }
+        for factor in registry["factors"]
+    ]
 
 
 def test_fixed_player_schema_preserves_nonempty_participation_unit(
@@ -587,6 +712,88 @@ def test_zero_orphan_duplicate_and_silent_loss_audits_are_bound(
         assert audit["raw_rows_silently_dropped"] == 0
         assert audit["event_fk_orphan_rows"] == 0
         assert audit["publication_gate"] == "PASS"
+
+
+@pytest.mark.parametrize("legacy_path_kind", ["manifest", "object"])
+def test_game_bundle_verification_rejects_legacy_v3_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    legacy_path_kind: str,
+) -> None:
+    governance_path, _, _, registry_path, _ = _configure_inputs(
+        tmp_path, monkeypatch
+    )
+    output_root = tmp_path / "published"
+    batch = publication.publish_exact153_fact_batch(
+        project_root=tmp_path,
+        governance_manifest_path=governance_path,
+        factor_registry_path=registry_path,
+        output_root=output_root,
+    )
+    game = batch.games[0]
+    manifest = json.loads(game.manifest_path.read_text(encoding="utf-8"))
+    expected_manifest_sha256 = game.manifest_sha256
+    candidate_manifest_path = game.manifest_path
+
+    if legacy_path_kind == "manifest":
+        candidate_manifest_path = (
+            output_root
+            / "exact-153-facts-v3"
+            / "single-game"
+            / game.game_id
+            / "manifests"
+            / game.manifest_path.name
+        )
+        candidate_manifest_path.parent.mkdir(parents=True)
+        candidate_manifest_path.write_bytes(game.manifest_path.read_bytes())
+    else:
+        descriptor = manifest["tables"][0]
+        original_object_path = output_root / descriptor["object_path"]
+        legacy_object_path = (
+            Path("exact-153-facts-v3")
+            / "single-game"
+            / game.game_id
+            / "objects"
+            / original_object_path.name
+        )
+        copied_object_path = output_root / legacy_object_path
+        copied_object_path.parent.mkdir(parents=True)
+        copied_object_path.write_bytes(original_object_path.read_bytes())
+        descriptor["object_path"] = legacy_object_path.as_posix()
+        material = dict(manifest)
+        material.pop("bundle_sha256")
+        manifest["bundle_sha256"] = publication._canonical_sha256(material)
+        encoded = _canonical_bytes(manifest)
+        expected_manifest_sha256 = _sha_bytes(encoded)
+        candidate_manifest_path = (
+            output_root
+            / publication.PUBLICATION_ID
+            / "single-game"
+            / game.game_id
+            / "manifests"
+            / "legacy-object.manifest.json"
+        )
+        candidate_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        candidate_manifest_path.write_bytes(encoded)
+
+    authority = publication.verify_exact153_authority(
+        project_root=tmp_path,
+        governance_manifest_path=governance_path,
+    )
+    with pytest.raises(
+        publication.NFLExact153PublicationError,
+        match="V4 publication path",
+    ):
+        publication._verify_game_bundle(
+            output_root=output_root,
+            manifest_path=candidate_manifest_path,
+            expected_manifest_sha256=expected_manifest_sha256,
+            expected_game_id=game.game_id,
+            authority=authority,
+            source_bindings=manifest["sources"],
+            registry_binding=manifest["factor_registry"],
+            builder_code_sha256=str(manifest["builder_code_sha256"]),
+        )
 
 
 @pytest.mark.parametrize("failure", ["duplicate_pbp", "participation_orphan"])
@@ -805,6 +1012,52 @@ def test_exact_set_mismatch_blocks_pass_batch_index(
     assert not list(output_root.rglob("*.batch-index.json"))
 
 
+def test_batch_index_rejects_legacy_v3_child_manifests(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path, development, _ = _write_authority(tmp_path, monkeypatch)
+    authority = publication.verify_exact153_authority(
+        project_root=tmp_path,
+        governance_manifest_path=manifest_path,
+    )
+    games = tuple(
+        publication.PublishedGameFactBundle(
+            game_id=game_id,
+            bundle_sha256="sha256:" + "a" * 64,
+            manifest_path=(
+                tmp_path
+                / "exact-153-facts-v3"
+                / "single-game"
+                / game_id
+                / "manifests"
+                / f"{game_id}.manifest.json"
+            ),
+            manifest_sha256="sha256:" + "b" * 64,
+            counts={"canonical_factor_events_rows": 1},
+            table_semantic_sha256={
+                "canonical_factor_events": "sha256:" + "c" * 64
+            },
+        )
+        for game_id in development
+    )
+
+    with pytest.raises(
+        publication.NFLExact153PublicationError,
+        match="V4 publication path",
+    ):
+        publication._publish_batch_index(
+            output_root=tmp_path,
+            authority=authority,
+            games=games,
+            source_bindings={},
+            registry_binding={},
+            builder_code_sha256="sha256:" + "d" * 64,
+        )
+
+    assert not list(tmp_path.rglob("*.batch-index.json"))
+
+
 def test_semantic_batch_identity_ignores_physical_bundle_hashes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -820,7 +1073,14 @@ def test_semantic_batch_identity_ignores_physical_bundle_hashes(
         publication.PublishedGameFactBundle(
             game_id=game_id,
             bundle_sha256="sha256:" + "a" * 64,
-            manifest_path=tmp_path / f"{game_id}.manifest.json",
+            manifest_path=(
+                tmp_path
+                / publication.PUBLICATION_ID
+                / "single-game"
+                / game_id
+                / "manifests"
+                / f"{game_id}.manifest.json"
+            ),
             manifest_sha256="sha256:" + "b" * 64,
             counts={"canonical_factor_events_rows": 1},
             table_semantic_sha256={
@@ -920,6 +1180,9 @@ def test_published_contracts_use_x13_experiment_identity_only(
         tmp_path, monkeypatch
     )
     output_root = tmp_path / "published"
+    legacy_v3_artifact = output_root / "single-game" / "legacy-v3-artifact"
+    legacy_v3_artifact.parent.mkdir(parents=True)
+    legacy_v3_artifact.write_text("immutable-v3", encoding="utf-8")
 
     batch = publication.publish_exact153_fact_batch(
         project_root=tmp_path,
@@ -929,21 +1192,37 @@ def test_published_contracts_use_x13_experiment_identity_only(
     )
 
     assert publication.EXPERIMENT_ID == "X-13"
-    assert publication.BUILDER_VERSION == "nfl_x13_exact153_fact_publication_v1"
+    assert publication.PUBLICATION_ID == "exact-153-facts-v4"
+    assert publication.BUILDER_VERSION == "nfl_x13_exact153_fact_publication_v4"
+    assert batch.index_path.is_relative_to(
+        output_root / publication.PUBLICATION_ID
+    )
+    assert legacy_v3_artifact.read_text(encoding="utf-8") == "immutable-v3"
     batch_payload = json.loads(batch.index_path.read_text(encoding="utf-8"))
     assert batch_payload["experiment_id"] == "X-13"
-    assert batch_payload["schema"] == "nfl_x13_exact153_fact_batch_index_v1"
+    assert batch_payload["publication_id"] == publication.PUBLICATION_ID
+    assert batch_payload["schema"] == "nfl_x13_exact153_fact_batch_index_v4"
     assert batch_payload["builder_version"] == publication.BUILDER_VERSION
     assert batch_payload["authority"]["experiment_id"] == "X-13"
+    assert batch_payload["factor_registry"]["factor_count"] == 59
     for game in batch.games:
+        assert game.manifest_path.is_relative_to(
+            output_root / publication.PUBLICATION_ID
+        )
         game_material = game.manifest_path.read_text(encoding="utf-8")
         game_payload = json.loads(game_material)
         assert game_payload["experiment_id"] == "X-13"
         assert (
             game_payload["schema"]
-            == "nfl_x13_exact153_single_game_fact_manifest_v1"
+            == "nfl_x13_exact153_single_game_fact_manifest_v4"
         )
+        assert game_payload["publication_id"] == publication.PUBLICATION_ID
         assert game_payload["builder_version"] == publication.BUILDER_VERSION
         assert game_payload["authority"]["experiment_id"] == "X-13"
+        assert game_payload["factor_registry"]["factor_count"] == 59
+        assert all(
+            Path(table["object_path"]).parts[0] == publication.PUBLICATION_ID
+            for table in game_payload["tables"]
+        )
         assert "x16" not in game_material.casefold()
     assert "x16" not in batch.index_path.read_text(encoding="utf-8").casefold()

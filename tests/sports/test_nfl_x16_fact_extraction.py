@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pandas as pd
 
@@ -14,6 +15,10 @@ from prediction_market.sports.nfl_x16_fact_extraction import (
 
 PBP_SHA = "sha256:" + "a" * 64
 PARTICIPATION_SHA = "sha256:" + "b" * 64
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+V4_REGISTRY = (
+    PROJECT_ROOT / "registries/factors/nfl_factor_registry_v4.json"
+)
 
 
 def _pbp_rows() -> pd.DataFrame:
@@ -558,6 +563,8 @@ def test_turnover_on_downs_benefits_defense_without_reorienting_actor() -> None:
         {
             "play_id": 30,
             "order_sequence": 30,
+            "qtr": 1,
+            "time": "00:01",
             "time_of_day": "2025-12-05T01:30:00.000Z",
             "play_type": "run",
             "play_type_nfl": "RUSH",
@@ -567,9 +574,20 @@ def test_turnover_on_downs_benefits_defense_without_reorienting_actor() -> None:
             "down": 4,
             "ydstogo": 2,
             "yards_gained": 1,
-        }
+        },
+        {
+            "play_id": 31,
+            "order_sequence": 31,
+            "qtr": 2,
+            "time": "15:00",
+            "time_of_day": "2025-12-05T01:31:00.000Z",
+            "play_type": "run",
+            "play_type_nfl": "RUSH",
+            "posteam": "DET",
+            "defteam": "DAL",
+        },
     )
-    row = tables.events.iloc[0]
+    row = tables.events.set_index("play_id").loc["30"]
 
     assert "TURNOVER_ON_DOWNS" in json.loads(row["outcome_tags"])
     assert row["actor_team"] == "DAL"
@@ -1016,3 +1034,519 @@ def test_fair_catch_and_touchback_are_not_mislabeled_as_returns() -> None:
     assert "PUNT_RETURN" not in punt_tags
     assert "KICKOFF_TOUCHBACK" in kickoff_tags
     assert "KICKOFF_RETURN" not in kickoff_tags
+
+
+def _v4_registry() -> dict[str, object]:
+    return json.loads(V4_REGISTRY.read_text(encoding="utf-8"))
+
+
+def _v4_factor(factor_id: str) -> dict[str, object]:
+    factors = _v4_registry()["factors"]
+    assert isinstance(factors, list)
+    matches = [
+        factor
+        for factor in factors
+        if isinstance(factor, dict) and factor.get("factor_id") == factor_id
+    ]
+    assert len(matches) == 1
+    return matches[0]
+
+
+def _tag_predicate(tag: str) -> dict[str, object]:
+    return {
+        "field": "outcome_tags",
+        "operator": "CONTAINS",
+        "value": tag,
+    }
+
+
+def test_turnover_on_downs_requires_a_clean_fourth_down_possession_award() -> None:
+    failed_fourth_down = {
+        "play_type": "pass",
+        "play_type_nfl": "PASS",
+        "posteam": "DAL",
+        "down": 4,
+        "fourth_down_failed": 1,
+    }
+
+    strict_tags = _outcome_tags(
+        failed_fourth_down,
+        next_possession="DET",
+    )
+    interception_tags = _outcome_tags(
+        {**failed_fourth_down, "interception": 1},
+        next_possession="DET",
+    )
+    lost_fumble_tags = _outcome_tags(
+        {
+            **failed_fourth_down,
+            "fumble": 1,
+            "fumble_lost": 1,
+        },
+        next_possession="DET",
+    )
+    no_award_tags = _outcome_tags(
+        failed_fourth_down,
+        next_possession=None,
+    )
+
+    assert {"FOURTH_DOWN_FAILED", "TURNOVER_ON_DOWNS", "TURNOVER"}.issubset(
+        strict_tags
+    )
+    assert "TURNOVER_ON_DOWNS" not in interception_tags
+    assert "TURNOVER_ON_DOWNS" not in lost_fumble_tags
+    assert "TURNOVER_ON_DOWNS" not in no_award_tags
+
+
+def test_turnover_on_downs_does_not_borrow_next_half_kickoff_possession() -> None:
+    tables = _build_episode_rows(
+        {
+            "game_id": "2025_07_NE_TEN",
+            "home_team": "TEN",
+            "away_team": "NE",
+            "play_id": 1860,
+            "order_sequence": 1860,
+            "qtr": 2,
+            "time": "00:03",
+            "game_seconds_remaining": 1803,
+            "time_of_day": "2025-10-19T19:05:00.000Z",
+            "play_type": "pass",
+            "play_type_nfl": "PASS",
+            "posteam": "NE",
+            "defteam": "TEN",
+            "down": 4,
+            "ydstogo": 15,
+            "pass_attempt": 1,
+            "incomplete_pass": 1,
+            "fourth_down_failed": 1,
+        },
+        {
+            "game_id": "2025_07_NE_TEN",
+            "home_team": "TEN",
+            "away_team": "NE",
+            "play_id": 1861,
+            "order_sequence": 1861,
+            "qtr": 3,
+            "time": "15:00",
+            "game_seconds_remaining": 1800,
+            "time_of_day": "2025-10-19T19:20:00.000Z",
+            "play_type": "kickoff",
+            "play_type_nfl": "KICK_OFF",
+            "posteam": "TEN",
+            "defteam": "NE",
+            "touchback": 1,
+        },
+    )
+    row = tables.events.set_index("play_id").loc["1860"]
+    tags = set(json.loads(row["outcome_tags"]))
+
+    assert row["primary_action"] == "PASS"
+    assert "FOURTH_DOWN_FAILED" in tags
+    assert "TURNOVER_ON_DOWNS" not in tags
+
+
+def _terminal_end_game_case(
+    *,
+    game_id: str,
+    home_team: str,
+    away_team: str,
+    play_id: int,
+    quarter: int,
+    posteam: str,
+    play_fields: dict[str, object],
+) -> pd.Series:
+    defteam = home_team if posteam == away_team else away_team
+    tables = _build_episode_rows(
+        {
+            "game_id": game_id,
+            "home_team": home_team,
+            "away_team": away_team,
+            "play_id": play_id,
+            "order_sequence": play_id,
+            "qtr": quarter,
+            "time": "00:02",
+            "game_seconds_remaining": 2,
+            "time_of_day": "2025-12-01T04:00:00.000Z",
+            "posteam": posteam,
+            "defteam": defteam,
+            "down": 4,
+            "ydstogo": 10,
+            "fourth_down_failed": 1,
+            **play_fields,
+        },
+        {
+            "game_id": game_id,
+            "home_team": home_team,
+            "away_team": away_team,
+            "play_id": play_id + 1,
+            "order_sequence": play_id + 1,
+            "qtr": quarter,
+            "time": "00:00",
+            "game_seconds_remaining": 0,
+            "time_of_day": "2025-12-01T04:00:02.000Z",
+            "play_type_nfl": "END_GAME",
+            "posteam": defteam,
+            "defteam": posteam,
+        },
+    )
+    return tables.events.set_index("play_id").loc[str(play_id)]
+
+
+def test_terminal_admin_rows_never_supply_downs_award_evidence() -> None:
+    cases = {
+        "2025_17_LA_ATL:3874:q4_incomplete": _terminal_end_game_case(
+            game_id="2025_17_LA_ATL",
+            home_team="ATL",
+            away_team="LA",
+            play_id=3874,
+            quarter=4,
+            posteam="LA",
+            play_fields={
+                "play_type": "pass",
+                "play_type_nfl": "PASS",
+                "pass_attempt": 1,
+                "incomplete_pass": 1,
+            },
+        ),
+        "2025_07_PHI_MIN:4065:q4_kneel": _terminal_end_game_case(
+            game_id="2025_07_PHI_MIN",
+            home_team="MIN",
+            away_team="PHI",
+            play_id=4065,
+            quarter=4,
+            posteam="PHI",
+            play_fields={
+                "play_type": "qb_kneel",
+                "play_type_nfl": "RUSH",
+                "qb_kneel": 1,
+            },
+        ),
+        "2025_12_NYG_DET:4958:q5_incomplete": _terminal_end_game_case(
+            game_id="2025_12_NYG_DET",
+            home_team="DET",
+            away_team="NYG",
+            play_id=4958,
+            quarter=5,
+            posteam="NYG",
+            play_fields={
+                "play_type": "pass",
+                "play_type_nfl": "PASS",
+                "pass_attempt": 1,
+                "incomplete_pass": 1,
+            },
+        ),
+    }
+
+    false_positives = {
+        case_id
+        for case_id, row in cases.items()
+        if "TURNOVER_ON_DOWNS" in json.loads(row["outcome_tags"])
+    }
+    assert false_positives == set()
+
+
+def test_terminal_posteam_remains_raw_audit_data_not_award_evidence() -> None:
+    row = _terminal_end_game_case(
+        game_id="2025_17_LA_ATL",
+        home_team="ATL",
+        away_team="LA",
+        play_id=3874,
+        quarter=4,
+        posteam="LA",
+        play_fields={
+            "play_type": "pass",
+            "play_type_nfl": "PASS",
+            "pass_attempt": 1,
+            "incomplete_pass": 1,
+        },
+    )
+
+    assert row["next_observed_possession"] == "ATL"
+    assert "next_observed_possession_semantics" in row.index
+    assert (
+        row["next_observed_possession_semantics"]
+        == "NEXT_LATER_SOURCE_ROW_WITH_NON_NULL_POSTEAM_AUDIT_ONLY_"
+        "NOT_DOWNS_AWARD_EVIDENCE"
+    )
+
+
+def test_turnover_on_downs_accepts_q3_to_q4_actual_possession_award() -> None:
+    tables = _build_episode_rows(
+        {
+            "play_id": 70,
+            "order_sequence": 70,
+            "qtr": 3,
+            "time": "00:01",
+            "time_of_day": "2025-12-05T03:00:00.000Z",
+            "play_type": "pass",
+            "play_type_nfl": "PASS",
+            "posteam": "DAL",
+            "defteam": "DET",
+            "down": 4,
+            "fourth_down_failed": 1,
+            "incomplete_pass": 1,
+        },
+        {
+            "play_id": 71,
+            "order_sequence": 71,
+            "qtr": 4,
+            "time": "15:00",
+            "time_of_day": "2025-12-05T03:01:00.000Z",
+            "play_type": "run",
+            "play_type_nfl": "RUSH",
+            "posteam": "DET",
+            "defteam": "DAL",
+        },
+    )
+    row = tables.events.set_index("play_id").loc["70"]
+
+    assert "TURNOVER_ON_DOWNS" in json.loads(row["outcome_tags"])
+
+
+def _cross_period_fourth_down_row(
+    start_quarter: int,
+    next_quarter: int,
+) -> pd.Series:
+    tables = _build_episode_rows(
+        {
+            "play_id": 80,
+            "order_sequence": 80,
+            "qtr": start_quarter,
+            "time": "00:01",
+            "time_of_day": "2025-12-05T04:00:00.000Z",
+            "play_type": "pass",
+            "play_type_nfl": "PASS",
+            "posteam": "DAL",
+            "defteam": "DET",
+            "down": 4,
+            "fourth_down_failed": 1,
+            "incomplete_pass": 1,
+        },
+        {
+            "play_id": 81,
+            "order_sequence": 81,
+            "qtr": next_quarter,
+            "time": "15:00",
+            "time_of_day": "2025-12-05T04:01:00.000Z",
+            "play_type": "run",
+            "play_type_nfl": "RUSH",
+            "posteam": "DET",
+            "defteam": "DAL",
+        },
+    )
+    return tables.events.set_index("play_id").loc["80"]
+
+
+def test_postseason_odd_to_even_extra_period_keeps_possession_continuity() -> None:
+    missing_turnovers = {
+        (start_quarter, next_quarter)
+        for start_quarter, next_quarter in ((5, 6), (7, 8))
+        if "TURNOVER_ON_DOWNS"
+        not in json.loads(
+            _cross_period_fourth_down_row(
+                start_quarter,
+                next_quarter,
+            )["outcome_tags"]
+        )
+    }
+
+    assert missing_turnovers == set()
+
+
+def test_postseason_even_to_odd_extra_period_breaks_possession_continuity() -> None:
+    row = _cross_period_fourth_down_row(6, 7)
+
+    assert "TURNOVER_ON_DOWNS" not in json.loads(row["outcome_tags"])
+
+
+def test_regulation_to_overtime_breaks_possession_continuity() -> None:
+    row = _cross_period_fourth_down_row(4, 5)
+
+    assert "TURNOVER_ON_DOWNS" not in json.loads(row["outcome_tags"])
+
+
+def test_kickoff_return_requires_a_returner_and_excludes_terminal_endings() -> None:
+    credited_return = {
+        "play_type": "kickoff",
+        "play_type_nfl": "KICK_OFF",
+        "posteam": "DET",
+        "return_yards": 12,
+        "kickoff_returner_player_id": "00-returner",
+    }
+
+    assert "KICKOFF_RETURN" in _outcome_tags(
+        credited_return,
+        next_possession="DET",
+    )
+    assert "KICKOFF_RETURN" not in _outcome_tags(
+        {
+            "play_type": "kickoff",
+            "play_type_nfl": "KICK_OFF",
+            "posteam": "DET",
+            "return_yards": 0,
+        },
+        next_possession="DET",
+    )
+    for terminal_field in (
+        "touchback",
+        "kickoff_fair_catch",
+        "kickoff_out_of_bounds",
+        "kickoff_downed",
+        "own_kickoff_recovery",
+    ):
+        tags = _outcome_tags(
+            {**credited_return, terminal_field: 1},
+            next_possession="DET",
+        )
+        assert "KICKOFF_RETURN" not in tags
+
+
+def test_kicking_team_recovery_is_not_labeled_as_onside_intent() -> None:
+    tags = _outcome_tags(
+        {
+            "play_type": "kickoff",
+            "play_type_nfl": "KICK_OFF",
+            "posteam": "DET",
+            "own_kickoff_recovery": 1,
+        },
+        next_possession="DAL",
+    )
+
+    assert "KICKING_TEAM_KICKOFF_RECOVERY" in tags
+    assert "ONSIDE_RECOVERY" not in tags
+
+
+def test_fumble_not_lost_is_an_explicit_atomic_tag() -> None:
+    retained = _outcome_tags(
+        {
+            "play_type": "run",
+            "play_type_nfl": "RUSH",
+            "fumble": 1,
+            "fumble_lost": 0,
+        },
+        next_possession="DAL",
+    )
+    lost = _outcome_tags(
+        {
+            "play_type": "run",
+            "play_type_nfl": "RUSH",
+            "fumble": 1,
+            "fumble_lost": 1,
+        },
+        next_possession="DET",
+    )
+
+    assert "FUMBLE_NOT_LOST" in retained
+    assert "FUMBLE_NOT_LOST" not in lost
+
+
+def test_v4_registry_is_direct_authoritative_and_removes_rejected_aliases() -> None:
+    registry = _v4_registry()
+    factors = registry["factors"]
+    assert isinstance(factors, list)
+    factor_ids = {
+        factor["factor_id"]
+        for factor in factors
+        if isinstance(factor, dict)
+    }
+
+    assert registry["schema"] == "NFLFactorRegistryV4"
+    assert registry["version"] == "v4"
+    assert registry["status"] == "AUTHORITATIVE"
+    assert len(factors) == 59
+    assert "NFL.COMBO.FOURTH_DOWN_FAILURE" not in factor_ids
+    assert "NFL.SPECIAL.ONSIDE_RECOVERY" not in factor_ids
+    assert "NFL.SPECIAL.KICKING_TEAM_KICKOFF_RECOVERY" in factor_ids
+
+
+def test_v4_registry_encodes_the_reviewed_semantic_boundaries() -> None:
+    assert _v4_factor("NFL.SCORE.EXTRA_POINT_FAILED")["predicate"] == {
+        "any": [
+            _tag_predicate("EXTRA_POINT_FAILED"),
+            _tag_predicate("EXTRA_POINT_BLOCKED"),
+        ]
+    }
+    assert _v4_factor("NFL.SPECIAL.FIELD_GOAL_MISSED")["predicate"] == {
+        "all": [
+            _tag_predicate("FIELD_GOAL_MISSED"),
+            {"not": _tag_predicate("FIELD_GOAL_BLOCKED")},
+        ]
+    }
+    assert _v4_factor("NFL.SPECIAL.TOUCHBACK")["predicate"] == {
+        "all": [
+            {
+                "field": "primary_action",
+                "operator": "IN",
+                "value": ["KICKOFF", "PUNT"],
+            },
+            _tag_predicate("TOUCHBACK"),
+        ]
+    }
+    assert _v4_factor("NFL.STATE.RED_ZONE")["predicate"] == {
+        "all": [
+            {
+                "field": "pre_red_zone",
+                "operator": "EQ",
+                "value": True,
+            },
+            {
+                "field": "down",
+                "operator": "IN",
+                "value": [1, 2, 3, 4],
+            },
+        ]
+    }
+    assert (
+        _v4_factor("NFL.STATE.DISTANCE_GT_10")["meaning"]
+        == "The source pre-play yards-to-go value exceeds ten; on "
+        "goal-to-go plays it is distance to the goal line."
+    )
+    assert _v4_factor("NFL.COMBO.RED_ZONE_TURNOVER")["predicate"] == {
+        "all": [
+            {
+                "field": "pre_red_zone",
+                "operator": "EQ",
+                "value": True,
+            },
+            {
+                "field": "down",
+                "operator": "IN",
+                "value": [1, 2, 3, 4],
+            },
+            {
+                "any": [
+                    _tag_predicate("INTERCEPTION"),
+                    _tag_predicate("FUMBLE_LOST"),
+                    _tag_predicate("TURNOVER_ON_DOWNS"),
+                ]
+            },
+        ]
+    }
+
+
+def test_v4_registry_adds_available_atomic_factors() -> None:
+    expected_predicates = {
+        "NFL.ACTION.QB_KNEEL": {
+            "field": "primary_action",
+            "operator": "EQ",
+            "value": "KNEEL",
+        },
+        "NFL.ACTION.QB_SCRAMBLE": _tag_predicate("QB_SCRAMBLE"),
+        "NFL.EVENT.THIRD_DOWN_CONVERTED": _tag_predicate(
+            "THIRD_DOWN_CONVERTED"
+        ),
+        "NFL.EVENT.THIRD_DOWN_FAILED": _tag_predicate("THIRD_DOWN_FAILED"),
+        "NFL.EVENT.FOURTH_DOWN_CONVERTED": _tag_predicate(
+            "FOURTH_DOWN_CONVERTED"
+        ),
+        "NFL.EVENT.FUMBLE_NOT_LOST": _tag_predicate("FUMBLE_NOT_LOST"),
+        "NFL.ADMIN.REVIEW_UPHELD": _tag_predicate("REVIEW_UPHELD"),
+        "NFL.SPECIAL.BLOCKED_EXTRA_POINT": _tag_predicate(
+            "EXTRA_POINT_BLOCKED"
+        ),
+    }
+
+    assert {
+        factor_id: _v4_factor(factor_id)["predicate"]
+        for factor_id in expected_predicates
+    } == expected_predicates
