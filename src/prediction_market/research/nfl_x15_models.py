@@ -521,24 +521,53 @@ def hierarchical_sample_weights(
         raise X15ModelInputError(
             "weight input requires game_id and atomic_information_episode_id"
         )
-    eligible = pd.Series(eligibility, index=frame.index, dtype="boolean")
+    if frame.index.has_duplicates:
+        raise X15ModelInputError("weight input index must be unique")
+    if len(eligibility) != len(frame):
+        raise X15ModelInputError(
+            "weight eligibility requires one value per row"
+        )
+    try:
+        eligible = pd.Series(
+            eligibility, index=frame.index, dtype="boolean"
+        )
+    except (TypeError, ValueError) as error:
+        raise X15ModelInputError(
+            "weight eligibility must contain booleans"
+        ) from error
     if eligible.isna().any():
         raise X15ModelInputError("weight eligibility must not be missing")
-    result = pd.Series(0.0, index=frame.index, dtype=float)
-    selected = frame.loc[eligible.astype(bool)]
-    for _, game in selected.groupby("game_id", sort=True):
-        episodes = tuple(
-            sorted(game["atomic_information_episode_id"].astype(str).unique())
+    eligible_positions = np.flatnonzero(
+        eligible.to_numpy(dtype=bool)
+    )
+    result = np.zeros(len(frame), dtype=float)
+    if not len(eligible_positions):
+        return pd.Series(result, index=frame.index, dtype=float)
+
+    selected = frame.iloc[eligible_positions][
+        ["game_id", "atomic_information_episode_id"]
+    ].reset_index(drop=True)
+    if selected.isna().any(axis=None):
+        raise X15ModelInputError(
+            "eligible weight identity must not be missing"
         )
-        if not episodes:
-            continue
-        episode_share = 1.0 / len(episodes)
-        for episode in episodes:
-            indexes = game.index[
-                game["atomic_information_episode_id"].astype(str).eq(episode)
-            ]
-            result.loc[indexes] = episode_share / len(indexes)
-    return result
+    selected["_episode_id"] = selected[
+        "atomic_information_episode_id"
+    ].astype(str)
+    episode_counts = selected.groupby(
+        "game_id", sort=True, observed=True
+    )["_episode_id"].transform("nunique")
+    row_counts = selected.groupby(
+        ["game_id", "_episode_id"],
+        sort=True,
+        observed=True,
+    )["_episode_id"].transform("size")
+    result[eligible_positions] = (
+        1.0
+        / episode_counts.to_numpy(dtype=float)
+        / row_counts.to_numpy(dtype=float)
+    )
+    return pd.Series(result, index=frame.index, dtype=float)
 
 
 def _walk_keys(value: object) -> Iterable[str]:

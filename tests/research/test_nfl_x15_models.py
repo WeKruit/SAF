@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import ast
 import hashlib
+import inspect
 import json
+import textwrap
 
 import numpy as np
 import pandas as pd
@@ -991,6 +994,173 @@ def test_hierarchical_weights_equalize_game_then_episode_then_rows() -> None:
     assert a_weights.iloc[:2].sum() == pytest.approx(0.5)
     assert a_weights.iloc[2] == pytest.approx(0.5)
     assert weights.iloc[4] == 0
+
+
+def _slow_hierarchical_sample_weights(
+    frame: pd.DataFrame,
+    eligibility: pd.Series,
+) -> pd.Series:
+    result = pd.Series(0.0, index=frame.index, dtype=float)
+    selected = frame.loc[eligibility.astype(bool)]
+    for _, game in selected.groupby("game_id", sort=True):
+        episodes = tuple(
+            sorted(
+                game["atomic_information_episode_id"]
+                .astype(str)
+                .unique()
+            )
+        )
+        episode_share = 1.0 / len(episodes)
+        for episode in episodes:
+            indexes = game.index[
+                game["atomic_information_episode_id"]
+                .astype(str)
+                .eq(episode)
+            ]
+            result.loc[indexes] = episode_share / len(indexes)
+    return result
+
+
+@pytest.mark.parametrize(
+    ("frame", "eligibility"),
+    [
+        (
+            pd.DataFrame(
+                {
+                    "game_id": [
+                        "g2",
+                        "g1",
+                        "g1",
+                        "g2",
+                        "g1",
+                        "g3",
+                        "g2",
+                    ],
+                    "atomic_information_episode_id": [
+                        "e1",
+                        "e1",
+                        "e1",
+                        "e2",
+                        "e2",
+                        "only",
+                        "e2",
+                    ],
+                },
+                index=[91, 7, 42, 18, 105, 3, 64],
+            ),
+            pd.Series(
+                [True, True, False, True, True, False, True],
+                index=[91, 7, 42, 18, 105, 3, 64],
+                dtype="boolean",
+            ),
+        ),
+        (
+            pd.DataFrame(
+                {
+                    "game_id": ["g1", "g1", "g1", "g2", "g2", "g2"],
+                    "atomic_information_episode_id": [
+                        1,
+                        "1",
+                        2,
+                        1,
+                        2,
+                        2,
+                    ],
+                },
+                index=[1001, 15, 82, 701, 9, 333],
+            ),
+            pd.Series(
+                [True, True, True, True, True, False],
+                index=[1001, 15, 82, 701, 9, 333],
+                dtype="boolean",
+            ),
+        ),
+    ],
+)
+def test_hierarchical_weights_match_slow_reference_on_ragged_fixtures(
+    frame: pd.DataFrame,
+    eligibility: pd.Series,
+) -> None:
+    expected = _slow_hierarchical_sample_weights(frame, eligibility)
+
+    actual = hierarchical_sample_weights(frame, eligibility)
+
+    pd.testing.assert_series_equal(actual, expected)
+    assert actual.loc[~eligibility.astype(bool)].eq(0.0).all()
+    selected = actual.loc[eligibility.astype(bool)]
+    selected_games = frame.loc[eligibility.astype(bool), "game_id"]
+    assert selected.groupby(selected_games).sum().eq(1.0).all()
+
+
+@pytest.mark.parametrize(
+    "column",
+    ["game_id", "atomic_information_episode_id"],
+)
+def test_hierarchical_weights_reject_missing_eligible_identity(
+    column: str,
+) -> None:
+    frame = pd.DataFrame(
+        {
+            "game_id": ["g1", "unused"],
+            "atomic_information_episode_id": ["e1", "unused"],
+        }
+    )
+    frame.loc[0, column] = None
+
+    with pytest.raises(X15ModelInputError, match="identity.*missing"):
+        hierarchical_sample_weights(frame, [True, False])
+
+
+def test_hierarchical_weights_ignore_ineligible_missing_identity() -> None:
+    frame = pd.DataFrame(
+        {
+            "game_id": [None, "g1"],
+            "atomic_information_episode_id": [None, "e1"],
+        },
+        index=[99, 4],
+    )
+
+    weights = hierarchical_sample_weights(frame, [False, True])
+
+    assert weights.to_dict() == {99: 0.0, 4: 1.0}
+
+
+def test_hierarchical_weights_reject_wrong_eligibility_length() -> None:
+    frame = pd.DataFrame(
+        {
+            "game_id": ["g1", "g1"],
+            "atomic_information_episode_id": ["e1", "e2"],
+        }
+    )
+
+    with pytest.raises(X15ModelInputError, match="one value per row"):
+        hierarchical_sample_weights(frame, [True])
+
+
+def test_hierarchical_weights_reject_duplicate_index_before_weighting() -> None:
+    frame = pd.DataFrame(
+        {
+            "game_id": ["g1", "g2"],
+            "atomic_information_episode_id": ["e1", "e2"],
+        },
+        index=[7, 7],
+    )
+
+    with pytest.raises(X15ModelInputError, match="index must be unique"):
+        hierarchical_sample_weights(frame, [True, False])
+
+
+def test_hierarchical_weights_core_contains_no_python_loop() -> None:
+    tree = ast.parse(
+        textwrap.dedent(
+            inspect.getsource(hierarchical_sample_weights)
+        )
+    )
+
+    assert not any(
+        isinstance(node, (ast.For, ast.AsyncFor, ast.While))
+        for node in ast.walk(tree)
+    )
 
 
 def _small_run(frame: pd.DataFrame, **kwargs: object) -> X15ModelRun:
