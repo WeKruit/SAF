@@ -1078,6 +1078,20 @@ def test_single_class_head_publishes_support_failure_without_fake_model() -> Non
     assert support["support_reason"].str.contains("single class").all()
 
 
+def test_support_audit_training_classes_use_one_text_schema() -> None:
+    result = run_x15_historical_trades_diagnostic_walk_forward(
+        _diagnostic_panel(),
+        model_ids=("b0_empirical_v1",),
+        feature_block_ids=("D0",),
+        fold_ids=("fold_01",),
+        include_magnitude=False,
+    )
+
+    assert result.support_audit["training_classes"].map(
+        lambda values: all(isinstance(value, str) for value in values)
+    ).all()
+
+
 def test_rejects_endpoint_leakage_inside_decision_features() -> None:
     frame = _panel()
     decoded = json.loads(frame.loc[0, "decision_features_json"])

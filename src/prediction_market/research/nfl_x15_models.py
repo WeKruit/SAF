@@ -1494,7 +1494,7 @@ def _support_row(
         "training_game_ids": tuple(
             sorted(train["game_id"].astype(str).unique())
         ),
-        "training_classes": fitted.classes,
+        "training_classes": tuple(str(value) for value in fitted.classes),
         "binary_min_games": _BINARY_MIN_GAMES,
         "direction_min_games": _DIRECTION_MIN_GAMES,
         "training_sha256": fitted.training_sha256,
