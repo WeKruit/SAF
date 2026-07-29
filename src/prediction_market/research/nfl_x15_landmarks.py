@@ -192,11 +192,41 @@ def _utc(
     label: str,
     nullable: bool,
 ) -> pd.Series:
-    parsed = pd.to_datetime(values, utc=True, errors="coerce", format="mixed")
-    supplied = values.notna()
-    if ((parsed.isna() & supplied).any()) or (not nullable and parsed.isna().any()):
-        raise VenueReactionPanelError(f"{label} must contain UTC timestamps")
-    return parsed
+    parsed_values: list[pd.Timestamp | pd.NaTType] = []
+    for value in values:
+        missing = value is None or value is pd.NA
+        if not missing:
+            try:
+                missing = bool(pd.isna(value))
+            except (TypeError, ValueError):
+                missing = False
+        if missing:
+            if not nullable:
+                raise VenueReactionPanelError(
+                    f"{label} must contain UTC timestamps"
+                )
+            parsed_values.append(pd.NaT)
+            continue
+        try:
+            timestamp = pd.Timestamp(value)
+        except (TypeError, ValueError) as exc:
+            raise VenueReactionPanelError(
+                f"{label} must contain UTC timestamps"
+            ) from exc
+        if (
+            timestamp.tzinfo is None
+            or timestamp.utcoffset() is None
+            or timestamp.utcoffset().total_seconds() != 0
+        ):
+            raise VenueReactionPanelError(
+                f"{label} must contain explicit UTC timestamps"
+            )
+        parsed_values.append(timestamp.tz_convert("UTC"))
+    return pd.Series(
+        parsed_values,
+        index=values.index,
+        dtype="datetime64[ns, UTC]",
+    )
 
 
 def _strict_bool(frame: pd.DataFrame, column: str, *, label: str) -> None:
@@ -327,11 +357,10 @@ def _validate_facts(
         for value in facts["outcome_tags"]
     ]
     for column in ("source_interval_start", "source_interval_end", "known_at"):
-        facts[column] = pd.to_datetime(
+        facts[column] = _utc(
             facts[column],
-            utc=True,
-            errors="coerce",
-            format="mixed",
+            label=f"episode_facts.{column}",
+            nullable=True,
         )
 
     audit_rows: list[dict[str, object]] = []
@@ -963,6 +992,16 @@ def build_venue_reaction_panel_v3(
     observed_trades = market.loc[
         market["kind"].eq("trade") & market["provenance"].eq("observed")
     ].copy()
+    observed_trade_slices = {
+        (str(game_id), str(venue), str(contract_id)): group.sort_values(
+            ["source_time_utc", "trade_id"], kind="mergesort"
+        ).reset_index(drop=True)
+        for (game_id, venue, contract_id), group in observed_trades.groupby(
+            ["game_id", "venue", "contract_id"],
+            sort=False,
+        )
+    }
+    empty_observed_trades = observed_trades.iloc[0:0].copy()
     rows: list[dict[str, object]] = []
 
     ordered_facts = facts.sort_values(
@@ -1039,11 +1078,14 @@ def build_venue_reaction_panel_v3(
         ]
         for raw_contract in scoped_contracts.to_dict("records"):
             contract = pd.Series(raw_contract)
-            trades = observed_trades.loc[
-                observed_trades["game_id"].eq(fact["game_id"])
-                & observed_trades["venue"].eq(contract["venue"])
-                & observed_trades["contract_id"].eq(contract["contract_id"])
-            ].sort_values(["source_time_utc", "trade_id"], kind="mergesort")
+            trades = observed_trade_slices.get(
+                (
+                    str(fact["game_id"]),
+                    str(contract["venue"]),
+                    str(contract["contract_id"]),
+                ),
+                empty_observed_trades,
+            )
             interval_start = fact["source_interval_start"]
             interval_end = fact["source_interval_end"]
             marks_l = {

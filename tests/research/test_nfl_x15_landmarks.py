@@ -512,3 +512,28 @@ def test_censor_at_exact_h_is_explicitly_order_ambiguous_and_not_clean() -> None
     assert row["attrition_reason"] == (
         "NEXT_SALIENT_EVENT_AT_H_ORDER_AMBIGUOUS"
     )
+
+
+@pytest.mark.parametrize(
+    ("input_name", "column", "value"),
+    (
+        ("episode_facts", "source_interval_start", "2025-09-05T00:00:00"),
+        ("episode_facts", "known_at", "2025-09-05T02:00:01+02:00"),
+        ("stage_a_references", "pre_state_known_at", "2025-09-05T00:00:00"),
+        ("market_rows", "source_time_utc", "2025-09-05T00:00:01.500"),
+        ("market_rows", "source_time_utc", "2025-09-05T01:00:01.500+01:00"),
+        ("tick_rules", "effective_start_utc", "2025-01-01T00:00:00"),
+        ("continuity", "continuity_verified_until_utc", "2025-09-05T00:01:05"),
+    ),
+)
+def test_all_supplied_times_require_explicit_utc_offset(
+    input_name: str,
+    column: str,
+    value: str,
+) -> None:
+    changed = _inputs()[input_name].copy()
+    changed.loc[0, column] = value
+
+    error = getattr(landmarks, "VenueReactionPanelError")
+    with pytest.raises(error, match="UTC"):
+        _build(**{input_name: changed})
