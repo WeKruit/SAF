@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import inspect
 import json
 
@@ -704,39 +705,159 @@ def test_jointly_bad_transport_and_native_cannot_beat_frozen_b0() -> None:
     assert result.diagnostic_status == "HISTORICAL_SIGNAL_REJECTED"
 
 
-def test_factor_shortlist_requires_factor_specific_dual_venue_gate() -> None:
+def _exact_factor_inputs(
+    *,
+    shared: bool,
+    transport_run: X15ModelRun | None = None,
+    pair_count: int = 36,
+    kalshi_rows: pd.DataFrame | None = None,
+) -> tuple[
+    object,
+    object,
+    validation.FrozenFactorMembershipEvidence,
+]:
+    evidence = validation.load_frozen_factor_membership_evidence()
     selection = select_candidate_against_b0(
         _complete_selection_run(),
         spec=_complete_selection_spec(),
         authority=_complete_selection_authority(),
     )
     transport = validate_development_venue_transport(
-        _source_and_transport(),
+        transport_run or _source_and_transport(),
         authority_metadata=_bind_authority(),
         spec=_selection_spec(),
     )
-    polymarket_membership = selection.paired_rows[
-        ["game_id", "atomic_information_episode_id"]
-    ].drop_duplicates()
-    kalshi_membership = transport.transport_b0_pair_diagnostics[
-        ["game_id", "atomic_information_episode_id"]
-    ].drop_duplicates()
-    membership = pd.concat(
-        [polymarket_membership, kalshi_membership],
-        ignore_index=True,
-    ).drop_duplicates()
-    membership["factor_id"] = "NFL.PASS.COMPLETE"
-    membership["factor_version"] = "v1"
+    identities = (
+        evidence.membership_rows.loc[
+            lambda frame: frame["factor_id"].eq(
+                "NFL.EVENT.COMPLETE_PASS"
+            )
+            & frame["factor_version"].eq("v1"),
+            ["game_id", "atomic_information_episode_id"],
+        ]
+        .sort_values(
+            ["game_id", "atomic_information_episode_id"],
+            kind="mergesort",
+        )
+        .drop_duplicates("game_id")
+        .reset_index(drop=True)
+    )
+    required_identities = pair_count if shared else pair_count * 2
+    assert len(identities) >= required_identities
+    poly_identities = identities.iloc[:pair_count].reset_index(
+        drop=True
+    )
+    kalshi_identities = (
+        poly_identities
+        if shared
+        else identities.iloc[
+            pair_count : pair_count * 2
+        ].reset_index(drop=True)
+    )
+    poly_rows = (
+        selection.paired_rows.loc[
+            lambda frame: frame["landmark_seconds"].eq(3)
+            & frame["endpoint_seconds"].eq(30)
+        ]
+        .sort_values(
+            ["game_id", "atomic_information_episode_id"],
+            kind="mergesort",
+        )
+        .drop_duplicates("game_id")
+        .head(pair_count)
+        .reset_index(drop=True)
+    )
+    target_rows = (
+        transport.transport_b0_pair_diagnostics.head(pair_count)
+        if kalshi_rows is None
+        else kalshi_rows.copy()
+    ).reset_index(drop=True)
+    assert len(poly_rows) == pair_count
+    assert len(target_rows) == pair_count
+    poly_rows["game_id"] = poly_identities["game_id"]
+    poly_rows["atomic_information_episode_id"] = poly_identities[
+        "atomic_information_episode_id"
+    ]
+    target_rows["game_id"] = kalshi_identities["game_id"]
+    target_rows["atomic_information_episode_id"] = kalshi_identities[
+        "atomic_information_episode_id"
+    ]
+    poly_rows["nfl_week"] = target_rows["nfl_week"]
+    poly_rows["fold_id"] = target_rows["fold_id"]
+    selection = replace(
+        selection,
+        cohort_authority_sha256=evidence.cohort_authority_sha256,
+        paired_rows=poly_rows,
+    )
+    transport = replace(
+        transport,
+        cohort_authority_sha256=evidence.cohort_authority_sha256,
+        transport_b0_pair_diagnostics=target_rows,
+    )
+    return selection, transport, evidence
+
+
+def test_factor_membership_is_bound_to_fixed_registry_and_artifact() -> None:
+    evidence = validation.load_frozen_factor_membership_evidence()
+
+    assert evidence.authority_manifest_file_sha256 == (
+        "sha256:"
+        "3d2247c8b075748ccfa219daaf760e1681e85cb8fe0601bc2c9657381c7a969e"
+    )
+    assert evidence.registry_file_sha256 == (
+        "sha256:"
+        "b0993b1c4a3bd5698620d29f1d28fa23db2040e29414eeb6ce038499511ce545"
+    )
+    assert evidence.registry_semantic_sha256 == (
+        "sha256:"
+        "1083c2772efef5f1067ae1fe6f37728d5c0fb734e67e5616308fa9cda23c7320"
+    )
+    assert evidence.membership_rows_sha256 == (
+        "sha256:"
+        "953a1f47d7ade9517744234b72660fc9070953b11bf975b5aaf4f5d919301111"
+    )
+    assert len(evidence.membership_rows) == 79_547
+    parameters = inspect.signature(
+        validation.build_cross_venue_factor_shortlist
+    ).parameters
+    assert "factor_membership" not in parameters
+    assert "factor_membership_evidence" in parameters
+
+    selection, transport, _ = _exact_factor_inputs(shared=True)
+    tampered = replace(
+        evidence,
+        authority_batch_sha256="sha256:" + "0" * 64,
+    )
+    with pytest.raises(
+        KalshiValidationError,
+        match="does not bind the frozen artifacts",
+    ):
+        validation.build_cross_venue_factor_shortlist(
+            selection,
+            transport_validation=transport,
+            factor_membership_evidence=tampered,
+        )
+
+
+def test_exact_paired_factor_rows_pass_dual_venue_gate() -> None:
+    selection, transport, evidence = _exact_factor_inputs(shared=True)
 
     shortlist = validation.build_cross_venue_factor_shortlist(
         selection,
         transport_validation=transport,
-        factor_membership=membership,
+        factor_membership_evidence=evidence,
         min_support_games=30,
         min_support_episodes=30,
     )
 
-    row = shortlist.iloc[0]
+    row = shortlist.loc[
+        shortlist["factor_id"].eq("NFL.EVENT.COMPLETE_PASS")
+    ].iloc[0]
+    assert row["shared_pair_row_count"] == 36
+    assert row["shared_game_count"] == 36
+    assert row["shared_episode_count"] == 36
+    assert row["polymarket_only_pair_row_count"] == 0
+    assert row["kalshi_only_pair_row_count"] == 0
     assert bool(row["polymarket_individual_statistical_gate"]) is True
     assert bool(row["kalshi_individual_statistical_gate"]) is True
     assert bool(row["cross_venue_same_sign"]) is True
@@ -744,56 +865,65 @@ def test_factor_shortlist_requires_factor_specific_dual_venue_gate() -> None:
     assert row["diagnostic_status"] == "HISTORICAL_SIGNAL_CANDIDATE"
 
 
-def test_global_transport_gate_cannot_replace_bad_kalshi_factor_gate() -> None:
-    selection = select_candidate_against_b0(
-        _complete_selection_run(),
-        spec=_complete_selection_spec(),
-        authority=_complete_selection_authority(),
-    )
-    transport = validate_development_venue_transport(
-        _source_and_transport(mixed_factor_bad_games=5),
-        authority_metadata=_bind_authority(),
-        spec=_selection_spec(),
-    )
-    assert transport.transport_gate_passed is True
-    negative_kalshi_games = set(
-        transport.transport_b0_pair_diagnostics.groupby(
-            "game_id", sort=True
-        )["loss_improvement"]
-        .mean()
-        .loc[lambda values: values.lt(0)]
-        .index.astype(str)
-    )
-    assert len(negative_kalshi_games) == 5
-    polymarket_membership = (
-        selection.paired_rows[
-            ["game_id", "atomic_information_episode_id"]
-        ]
-        .drop_duplicates()
-        .loc[lambda frame: frame["game_id"].isin(
-            sorted(frame["game_id"].unique())[:5]
-        )]
-    )
-    kalshi_membership = transport.transport_b0_pair_diagnostics.loc[
-        lambda frame: frame["game_id"].isin(negative_kalshi_games),
-        ["game_id", "atomic_information_episode_id"],
-    ].drop_duplicates()
-    membership = pd.concat(
-        [polymarket_membership, kalshi_membership],
-        ignore_index=True,
-    ).drop_duplicates()
-    membership["factor_id"] = "NFL.PASS.COMPLETE"
-    membership["factor_version"] = "v1"
+def test_disjoint_positive_factor_samples_cannot_enter_shortlist() -> None:
+    selection, transport, evidence = _exact_factor_inputs(shared=False)
 
     shortlist = validation.build_cross_venue_factor_shortlist(
         selection,
         transport_validation=transport,
-        factor_membership=membership,
+        factor_membership_evidence=evidence,
+        min_support_games=30,
+        min_support_episodes=30,
+    )
+
+    row = shortlist.loc[
+        shortlist["factor_id"].eq("NFL.EVENT.COMPLETE_PASS")
+    ].iloc[0]
+    assert bool(row["global_transport_gate_passed"]) is True
+    assert row["diagnostic_status"] == "HISTORICAL_SIGNAL_REJECTED"
+    assert row["shared_pair_row_count"] == 0
+    assert row["shared_game_count"] == 0
+    assert row["shared_episode_count"] == 0
+    assert row["polymarket_only_pair_row_count"] == 36
+    assert row["kalshi_only_pair_row_count"] == 36
+    assert bool(row["factor_specific_dual_venue_gate_passed"]) is False
+
+
+def test_global_transport_gate_cannot_replace_bad_kalshi_factor_gate() -> None:
+    mixed_run = _source_and_transport(mixed_factor_bad_games=5)
+    initial_transport = validate_development_venue_transport(
+        mixed_run,
+        authority_metadata=_bind_authority(),
+        spec=_selection_spec(),
+    )
+    negative_rows = (
+        initial_transport.transport_b0_pair_diagnostics.loc[
+            lambda frame: frame["loss_improvement"].lt(0)
+        ]
+        .sort_values("game_id", kind="mergesort")
+        .reset_index(drop=True)
+    )
+    assert len(negative_rows) == 5
+    selection, transport, evidence = _exact_factor_inputs(
+        shared=True,
+        transport_run=mixed_run,
+        pair_count=5,
+        kalshi_rows=negative_rows,
+    )
+    assert transport.transport_gate_passed is True
+
+    shortlist = validation.build_cross_venue_factor_shortlist(
+        selection,
+        transport_validation=transport,
+        factor_membership_evidence=evidence,
         min_support_games=5,
         min_support_episodes=5,
     )
 
-    row = shortlist.iloc[0]
+    row = shortlist.loc[
+        shortlist["factor_id"].eq("NFL.EVENT.COMPLETE_PASS")
+    ].iloc[0]
+    assert row["shared_pair_row_count"] == 5
     assert row["kalshi_mean_effect"] < 0.0
     assert bool(row["global_transport_gate_passed"]) is True
     assert bool(row["factor_specific_dual_venue_gate_passed"]) is False

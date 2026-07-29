@@ -84,6 +84,46 @@ _REACTION_EXPOSURE_ARTIFACT_PATH: Final[str] = (
 _REACTION_EXPOSURE_ARTIFACT_SHA256: Final[str] = (
     "sha256:a2aa20c764523d9c117e0087eb319cc50bbf736924009c9f7b8850fb471a3ea4"
 )
+_FACTOR_REGISTRY_PATH: Final[str] = (
+    "registries/factors/nfl_factor_registry_v3_draft.json"
+)
+_FACTOR_REGISTRY_FILE_SHA256: Final[str] = (
+    "sha256:b0993b1c4a3bd5698620d29f1d28fa23db2040e29414eeb6ce038499511ce545"
+)
+_FACTOR_REGISTRY_SEMANTIC_SHA256: Final[str] = (
+    "sha256:1083c2772efef5f1067ae1fe6f37728d5c0fb734e67e5616308fa9cda23c7320"
+)
+_FACTOR_MEMBERSHIP_ROOT: Final[str] = (
+    "artifacts/market-observation/nfl/x15/"
+    "historical-trades-only-development-panel-v1"
+)
+_FACTOR_MEMBERSHIP_AUTHORITY_MANIFEST_PATH: Final[str] = (
+    f"{_FACTOR_MEMBERSHIP_ROOT}/batches/manifests/sha256/3d/"
+    "3d2247c8b075748ccfa219daaf760e1681e85cb8fe0601bc2c9657381c7a969e"
+    ".batch-index.json"
+)
+_FACTOR_MEMBERSHIP_AUTHORITY_MANIFEST_FILE_SHA256: Final[str] = (
+    "sha256:3d2247c8b075748ccfa219daaf760e1681e85cb8fe0601bc2c9657381c7a969e"
+)
+_FACTOR_MEMBERSHIP_AUTHORITY_BATCH_SHA256: Final[str] = (
+    "sha256:621239ed42b648b94b9648b8d0507f82d08c19e61932d272598340b0043cb67d"
+)
+_FACTOR_MEMBERSHIP_COHORT_AUTHORITY_SHA256: Final[str] = (
+    "sha256:226b796358426185609cd3c6f18f5ab67828d465f194f5403a56a397ed77493d"
+)
+_FACTOR_MEMBERSHIP_ROWS_SHA256: Final[str] = (
+    "sha256:953a1f47d7ade9517744234b72660fc9070953b11bf975b5aaf4f5d919301111"
+)
+_FACTOR_MEMBERSHIP_ARTIFACT_BINDINGS_SHA256: Final[str] = (
+    "sha256:3254d7366b16048ccad176109126dfe9723372be461518e8ff9e08108c351f2a"
+)
+_FACTOR_MEMBERSHIP_COLUMNS: Final[tuple[str, ...]] = (
+    "game_id",
+    "atomic_information_episode_id",
+    "factor_id",
+    "factor_version",
+    "registry_sha256",
+)
 
 _AUTHORITY_REQUIRED: Final[frozenset[str]] = frozenset(
     {
@@ -122,6 +162,20 @@ _MODEL_COMPARISON_PAIR_COLUMNS: Final[tuple[str, ...]] = tuple(
     column
     for column in _TRANSPORT_PAIR_COLUMNS
     if column not in {"model_id", "feature_block_id"}
+)
+_CROSS_VENUE_FACTOR_PAIR_GRAIN: Final[tuple[str, ...]] = (
+    "game_id",
+    "nfl_week",
+    "atomic_information_episode_id",
+    "factor_id",
+    "factor_version",
+    "landmark_seconds",
+    "endpoint_seconds",
+    "fold_id",
+    "candidate_model_id",
+    "candidate_feature_block_id",
+    "baseline_model_id",
+    "baseline_feature_block_id",
 )
 _TRANSPORT_REQUIRED: Final[frozenset[str]] = frozenset(
     {
@@ -221,6 +275,22 @@ class FrozenHistoricalExposureEvidence:
     reaction_artifact_sha256: str
     reaction_game_ids: tuple[str, ...]
     reaction_game_ids_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class FrozenFactorMembershipEvidence:
+    """Membership decoded from one fixed, fully hash-bound 153-game batch."""
+
+    authority_manifest_path: str
+    authority_manifest_file_sha256: str
+    authority_batch_sha256: str
+    cohort_authority_sha256: str
+    registry_path: str
+    registry_file_sha256: str
+    registry_semantic_sha256: str
+    membership_rows_sha256: str
+    membership_artifact_bindings_sha256: str
+    membership_rows: pd.DataFrame
 
 
 def _is_sha256(value: object) -> bool:
@@ -368,6 +438,364 @@ def load_frozen_historical_exposure_evidence(
         reaction_artifact_sha256=reaction_file_hash,
         reaction_game_ids=reaction_ids,
         reaction_game_ids_sha256=hash_game_id_evidence(reaction_ids),
+    )
+
+
+def _factor_membership_rows_sha256(frame: pd.DataFrame) -> str:
+    ordered = frame.loc[:, list(_FACTOR_MEMBERSHIP_COLUMNS)].sort_values(
+        [
+            "game_id",
+            "atomic_information_episode_id",
+            "factor_id",
+            "factor_version",
+        ],
+        kind="mergesort",
+    )
+    records = [
+        {
+            column: str(row[column])
+            for column in _FACTOR_MEMBERSHIP_COLUMNS
+        }
+        for row in ordered.to_dict("records")
+    ]
+    return _canonical_sha256(
+        {
+            "schema": "nfl_x15_frozen_factor_membership_v1",
+            "rows": records,
+        }
+    )
+
+
+def _path_under(root: Path, relative_path: object, *, label: str) -> Path:
+    if not isinstance(relative_path, str) or not relative_path.strip():
+        raise KalshiValidationError(f"{label} path is invalid")
+    resolved_root = root.resolve()
+    resolved = (resolved_root / relative_path).resolve()
+    try:
+        resolved.relative_to(resolved_root)
+    except ValueError as exc:
+        raise KalshiValidationError(
+            f"{label} path escapes its fixed artifact root"
+        ) from exc
+    if resolved.is_symlink() or not resolved.is_file():
+        raise KalshiValidationError(f"{label} artifact is not a regular file")
+    return resolved
+
+
+def _sha256_file_bytes(path: Path, *, label: str) -> bytes:
+    try:
+        payload = path.read_bytes()
+    except OSError as exc:
+        raise KalshiValidationError(f"{label} artifact is unreadable") from exc
+    return payload
+
+
+def load_frozen_factor_membership_evidence(
+) -> FrozenFactorMembershipEvidence:
+    """Decode exact factor tags from the fixed complete X15 batch only."""
+
+    repository_root = Path(__file__).resolve().parents[3]
+    registry_path = repository_root / _FACTOR_REGISTRY_PATH
+    authority_path = (
+        repository_root / _FACTOR_MEMBERSHIP_AUTHORITY_MANIFEST_PATH
+    )
+    registry_bytes = _sha256_file_bytes(
+        registry_path, label="frozen factor registry"
+    )
+    authority_bytes = _sha256_file_bytes(
+        authority_path, label="frozen factor membership authority"
+    )
+    registry_file_sha256 = (
+        "sha256:" + hashlib.sha256(registry_bytes).hexdigest()
+    )
+    authority_file_sha256 = (
+        "sha256:" + hashlib.sha256(authority_bytes).hexdigest()
+    )
+    if registry_file_sha256 != _FACTOR_REGISTRY_FILE_SHA256:
+        raise KalshiValidationError(
+            "frozen factor registry file SHA-256 mismatch"
+        )
+    if (
+        authority_file_sha256
+        != _FACTOR_MEMBERSHIP_AUTHORITY_MANIFEST_FILE_SHA256
+    ):
+        raise KalshiValidationError(
+            "frozen factor membership authority SHA-256 mismatch"
+        )
+    try:
+        registry = json.loads(registry_bytes)
+        authority = json.loads(authority_bytes)
+    except json.JSONDecodeError as exc:
+        raise KalshiValidationError(
+            "frozen factor registry/membership authority is invalid JSON"
+        ) from exc
+    if (
+        registry.get("schema") != "NFLFactorRegistryV3"
+        or registry.get("version") != "v3-draft-single-game-review"
+        or registry.get("status") != "DRAFT_EXPERT_REVIEW"
+        or _canonical_sha256(registry)
+        != _FACTOR_REGISTRY_SEMANTIC_SHA256
+    ):
+        raise KalshiValidationError(
+            "frozen factor registry semantic contract drifted"
+        )
+    games = authority.get("games")
+    if (
+        authority.get("schema")
+        != "nfl_x15_development_panel_batch_index_v1"
+        or authority.get("builder_version")
+        != "nfl-x15-development-panel-v1"
+        or authority.get("cohort") != "development"
+        or authority.get("verified_development_game_count") != 153
+        or authority.get("published_game_count") != 153
+        or authority.get("partial_publication") is not False
+        or authority.get("holdout_reaction_accessed") is not False
+        or authority.get("publication_gate") != "PASS"
+        or not isinstance(games, list)
+        or len(games) != 153
+    ):
+        raise KalshiValidationError(
+            "frozen factor membership authority contract drifted"
+        )
+    cohort_authority_sha256 = _require_sha256(
+        authority.get("cohort_authority_sha256"),
+        field="factor membership cohort_authority_sha256",
+    )
+    authority_batch_sha256 = _require_sha256(
+        authority.get("batch_sha256"),
+        field="factor membership authority batch_sha256",
+    )
+    if (
+        cohort_authority_sha256
+        != _FACTOR_MEMBERSHIP_COHORT_AUTHORITY_SHA256
+        or authority_batch_sha256
+        != _FACTOR_MEMBERSHIP_AUTHORITY_BATCH_SHA256
+    ):
+        raise KalshiValidationError(
+            "frozen factor membership embedded authority drifted"
+        )
+    fixed_root = repository_root / _FACTOR_MEMBERSHIP_ROOT
+    frames: list[pd.DataFrame] = []
+    artifact_bindings: list[dict[str, str]] = []
+    observed_game_ids: set[str] = set()
+    expected_schema_columns = [
+        "game_id",
+        "atomic_information_episode_id",
+        "factor_id",
+        "factor_version",
+        "registry_sha256",
+        "pbp_source_sha256",
+        "predicate_evidence",
+    ]
+    for game in games:
+        if not isinstance(game, dict):
+            raise KalshiValidationError(
+                "factor membership game descriptor is invalid"
+            )
+        game_id = game.get("game_id")
+        if (
+            not isinstance(game_id, str)
+            or not game_id.strip()
+            or game_id in observed_game_ids
+        ):
+            raise KalshiValidationError(
+                "factor membership game identity is invalid"
+            )
+        observed_game_ids.add(game_id)
+        manifest_sha256 = _require_sha256(
+            game.get("manifest_sha256"),
+            field=f"factor membership {game_id} manifest_sha256",
+        )
+        manifest_path = _path_under(
+            fixed_root,
+            game.get("manifest_path"),
+            label=f"factor membership {game_id} manifest",
+        )
+        manifest_bytes = _sha256_file_bytes(
+            manifest_path,
+            label=f"factor membership {game_id} manifest",
+        )
+        if (
+            "sha256:" + hashlib.sha256(manifest_bytes).hexdigest()
+            != manifest_sha256
+        ):
+            raise KalshiValidationError(
+                f"factor membership {game_id} manifest SHA-256 mismatch"
+            )
+        try:
+            manifest = json.loads(manifest_bytes)
+        except json.JSONDecodeError as exc:
+            raise KalshiValidationError(
+                f"factor membership {game_id} manifest is invalid JSON"
+            ) from exc
+        tables = manifest.get("tables")
+        sources = manifest.get("sources")
+        if (
+            manifest.get("schema")
+            != "nfl_x15_development_game_panel_manifest_v1"
+            or manifest.get("game_id") != game_id
+            or manifest.get("cohort") != "development"
+            or manifest.get("holdout_reaction_accessed") is not False
+            or not isinstance(tables, list)
+            or not isinstance(sources, dict)
+            or sources.get("cohort_authority_sha256")
+            != cohort_authority_sha256
+        ):
+            raise KalshiValidationError(
+                f"factor membership {game_id} manifest contract drifted"
+            )
+        membership_tables = [
+            table
+            for table in tables
+            if isinstance(table, dict)
+            and table.get("name") == "factor_membership"
+        ]
+        if len(membership_tables) != 1:
+            raise KalshiValidationError(
+                f"factor membership {game_id} table binding is ambiguous"
+            )
+        descriptor = membership_tables[0]
+        object_sha256 = _require_sha256(
+            descriptor.get("object_sha256"),
+            field=f"factor membership {game_id} object_sha256",
+        )
+        semantic_rows_sha256 = _require_sha256(
+            descriptor.get("semantic_rows_sha256"),
+            field=f"factor membership {game_id} semantic_rows_sha256",
+        )
+        if descriptor.get("schema_columns") != expected_schema_columns:
+            raise KalshiValidationError(
+                f"factor membership {game_id} schema drifted"
+            )
+        object_path = _path_under(
+            fixed_root,
+            descriptor.get("object_path"),
+            label=f"factor membership {game_id} object",
+        )
+        object_bytes = _sha256_file_bytes(
+            object_path,
+            label=f"factor membership {game_id} object",
+        )
+        if (
+            "sha256:" + hashlib.sha256(object_bytes).hexdigest()
+            != object_sha256
+        ):
+            raise KalshiValidationError(
+                f"factor membership {game_id} object SHA-256 mismatch"
+            )
+        try:
+            frame = pd.read_parquet(object_path)
+        except (OSError, ValueError) as exc:
+            raise KalshiValidationError(
+                f"factor membership {game_id} object is unreadable"
+            ) from exc
+        if (
+            list(frame.columns) != expected_schema_columns
+            or len(frame) != descriptor.get("row_count")
+            or not frame["game_id"].eq(game_id).all()
+        ):
+            raise KalshiValidationError(
+                f"factor membership {game_id} object contract drifted"
+            )
+        frames.append(
+            frame.loc[:, list(_FACTOR_MEMBERSHIP_COLUMNS)].copy()
+        )
+        artifact_bindings.append(
+            {
+                "game_id": game_id,
+                "game_manifest_sha256": manifest_sha256,
+                "membership_object_sha256": object_sha256,
+                "membership_semantic_rows_sha256": (
+                    semantic_rows_sha256
+                ),
+            }
+        )
+    membership = pd.concat(frames, ignore_index=True)
+    for column in _FACTOR_MEMBERSHIP_COLUMNS:
+        if not membership[column].map(
+            lambda value: isinstance(value, str) and bool(value.strip())
+        ).all():
+            raise KalshiValidationError(
+                f"frozen factor membership {column} is invalid"
+            )
+    grain = [
+        "game_id",
+        "atomic_information_episode_id",
+        "factor_id",
+        "factor_version",
+    ]
+    if membership.duplicated(grain, keep=False).any():
+        raise KalshiValidationError(
+            "frozen factor membership grain is not unique"
+        )
+    if not membership["registry_sha256"].eq(
+        _FACTOR_REGISTRY_SEMANTIC_SHA256
+    ).all():
+        raise KalshiValidationError(
+            "frozen factor membership registry binding drifted"
+        )
+    definitions = registry.get("factors")
+    if not isinstance(definitions, list):
+        raise KalshiValidationError(
+            "frozen factor registry definitions are invalid"
+        )
+    registered = {
+        (definition.get("factor_id"), definition.get("version"))
+        for definition in definitions
+        if isinstance(definition, dict)
+        and definition.get("status") == "ACTIVE"
+    }
+    observed = set(
+        map(
+            tuple,
+            membership[
+                ["factor_id", "factor_version"]
+            ].drop_duplicates().to_numpy(),
+        )
+    )
+    if not observed.issubset(registered):
+        raise KalshiValidationError(
+            "frozen membership contains unregistered factor identities"
+        )
+    membership = membership.sort_values(
+        grain, kind="mergesort"
+    ).reset_index(drop=True)
+    membership_rows_sha256 = _factor_membership_rows_sha256(
+        membership
+    )
+    if membership_rows_sha256 != _FACTOR_MEMBERSHIP_ROWS_SHA256:
+        raise KalshiValidationError(
+            "frozen factor membership row artifact SHA-256 mismatch"
+        )
+    bindings_sha256 = _canonical_sha256(
+        {
+            "schema": "nfl_x15_factor_membership_artifact_bindings_v1",
+            "batch_manifest_file_sha256": authority_file_sha256,
+            "tables": artifact_bindings,
+        }
+    )
+    if (
+        bindings_sha256
+        != _FACTOR_MEMBERSHIP_ARTIFACT_BINDINGS_SHA256
+    ):
+        raise KalshiValidationError(
+            "frozen factor membership artifact bindings drifted"
+        )
+    return FrozenFactorMembershipEvidence(
+        authority_manifest_path=(
+            _FACTOR_MEMBERSHIP_AUTHORITY_MANIFEST_PATH
+        ),
+        authority_manifest_file_sha256=authority_file_sha256,
+        authority_batch_sha256=authority_batch_sha256,
+        cohort_authority_sha256=cohort_authority_sha256,
+        registry_path=_FACTOR_REGISTRY_PATH,
+        registry_file_sha256=registry_file_sha256,
+        registry_semantic_sha256=(
+            _FACTOR_REGISTRY_SEMANTIC_SHA256
+        ),
+        membership_rows_sha256=membership_rows_sha256,
+        membership_artifact_bindings_sha256=bindings_sha256,
+        membership_rows=membership,
     )
 
 
@@ -2308,7 +2736,7 @@ def build_cross_venue_factor_shortlist(
     selection: ModelSelectionResult,
     *,
     transport_validation: DevelopmentVenueValidation,
-    factor_membership: pd.DataFrame,
+    factor_membership_evidence: FrozenFactorMembershipEvidence,
     min_support_games: int = 30,
     min_support_episodes: int = 20,
 ) -> pd.DataFrame:
@@ -2329,6 +2757,42 @@ def build_cross_venue_factor_shortlist(
     ):
         raise KalshiValidationError(
             "transport_validation must be a DevelopmentVenueValidation"
+        )
+    if not isinstance(
+        factor_membership_evidence, FrozenFactorMembershipEvidence
+    ):
+        raise KalshiValidationError(
+            "factor membership must come from the frozen artifact evidence"
+        )
+    if (
+        factor_membership_evidence.authority_manifest_path
+        != _FACTOR_MEMBERSHIP_AUTHORITY_MANIFEST_PATH
+        or factor_membership_evidence.authority_manifest_file_sha256
+        != _FACTOR_MEMBERSHIP_AUTHORITY_MANIFEST_FILE_SHA256
+        or factor_membership_evidence.authority_batch_sha256
+        != _FACTOR_MEMBERSHIP_AUTHORITY_BATCH_SHA256
+        or factor_membership_evidence.cohort_authority_sha256
+        != _FACTOR_MEMBERSHIP_COHORT_AUTHORITY_SHA256
+        or factor_membership_evidence.registry_path
+        != _FACTOR_REGISTRY_PATH
+        or factor_membership_evidence.registry_file_sha256
+        != _FACTOR_REGISTRY_FILE_SHA256
+        or factor_membership_evidence.registry_semantic_sha256
+        != _FACTOR_REGISTRY_SEMANTIC_SHA256
+        or factor_membership_evidence.membership_rows_sha256
+        != _FACTOR_MEMBERSHIP_ROWS_SHA256
+        or (
+            factor_membership_evidence
+            .membership_artifact_bindings_sha256
+            != _FACTOR_MEMBERSHIP_ARTIFACT_BINDINGS_SHA256
+        )
+        or _factor_membership_rows_sha256(
+            factor_membership_evidence.membership_rows
+        )
+        != _FACTOR_MEMBERSHIP_ROWS_SHA256
+    ):
+        raise KalshiValidationError(
+            "factor membership evidence does not bind the frozen artifacts"
         )
     if (
         isinstance(min_support_games, bool)
@@ -2361,6 +2825,8 @@ def build_cross_venue_factor_shortlist(
         != transport_validation.schema_version
         or selection.analysis_scope
         != transport_validation.analysis_scope
+        or selection.cohort_authority_sha256
+        != factor_membership_evidence.cohort_authority_sha256
     ):
         raise KalshiValidationError(
             "Polymarket selection and Kalshi transport authority differ"
@@ -2370,85 +2836,52 @@ def build_cross_venue_factor_shortlist(
             "factor shortlist forbids target recalibration"
         )
 
-    required_membership = {
-        "game_id",
-        "atomic_information_episode_id",
-        "factor_id",
-        "factor_version",
-    }
-    if not isinstance(factor_membership, pd.DataFrame):
-        raise KalshiValidationError(
-            "factor_membership must be a DataFrame"
-        )
-    if factor_membership.columns.duplicated().any():
-        raise KalshiValidationError(
-            "factor_membership has duplicate columns"
-        )
-    missing_membership = sorted(
-        required_membership.difference(factor_membership.columns)
-    )
-    if missing_membership:
-        raise KalshiValidationError(
-            "factor_membership missing required columns: "
-            f"{missing_membership}"
-        )
-    membership = factor_membership.loc[
-        :, sorted(required_membership)
-    ].copy()
-    for column in required_membership:
-        if not membership[column].map(
-            lambda value: isinstance(value, str) and bool(value.strip())
-        ).all():
-            raise KalshiValidationError(
-                f"factor_membership {column} must be a nonempty string"
-            )
-    if membership.duplicated(
+    membership = factor_membership_evidence.membership_rows.loc[
+        :,
         [
             "game_id",
             "atomic_information_episode_id",
             "factor_id",
             "factor_version",
         ],
-        keep=False,
-    ).any():
-        raise KalshiValidationError(
-            "factor_membership contains duplicate episode tags"
-        )
-    if (
-        membership.groupby("factor_id", sort=True)[
-            "factor_version"
-        ].nunique()
-        > 1
-    ).any():
-        raise KalshiValidationError(
-            "each factor_id must bind exactly one factor_version"
-        )
+    ].copy()
 
-    anchor_columns = {
+    poly_required = {
         "game_id",
+        "nfl_week",
+        "atomic_information_episode_id",
+        "venue",
+        "landmark_seconds",
+        "endpoint_seconds",
+        "fold_id",
+        "model_id_candidate",
+        "feature_block_id_candidate",
+        "model_id_b0",
+        "feature_block_id_b0",
+        "loss_improvement",
+    }
+    kalshi_required = {
+        "game_id",
+        "nfl_week",
         "atomic_information_episode_id",
         "landmark_seconds",
         "endpoint_seconds",
+        "fold_id",
+        "comparison_layer",
+        "candidate_model_id",
+        "candidate_feature_block_id",
+        "baseline_model_id",
+        "baseline_feature_block_id",
+        "s_h_truth",
+        "o_h_given_s_truth",
+        "direction_truth",
         "loss_improvement",
     }
     missing_poly = sorted(
-        anchor_columns.union({"venue"}).difference(
-            selection.paired_rows.columns
-        )
+        poly_required.difference(selection.paired_rows.columns)
     )
     missing_kalshi = sorted(
-        anchor_columns.union(
-            {
-                "comparison_layer",
-                "candidate_model_id",
-                "candidate_feature_block_id",
-                "baseline_model_id",
-                "baseline_feature_block_id",
-                "s_h_truth",
-                "o_h_given_s_truth",
-                "direction_truth",
-            }
-        ).difference(
+        kalshi_required.difference(
             transport_validation.transport_b0_pair_diagnostics.columns
         )
     )
@@ -2465,19 +2898,17 @@ def build_cross_venue_factor_shortlist(
         & selection.paired_rows["endpoint_seconds"].eq(
             selection.spec.anchor_endpoint_seconds
         ),
-        [
-            "game_id",
-            "atomic_information_episode_id",
-            "venue",
-            "loss_improvement",
-        ],
-    ].copy()
-    if poly_anchor.empty or not poly_anchor["venue"].eq(
-        SOURCE_VENUE
-    ).all():
-        raise KalshiValidationError(
-            "Polymarket factor evidence must use the clean source anchor"
-        )
+        sorted(poly_required),
+    ].rename(
+        columns={
+            "model_id_candidate": "candidate_model_id",
+            "feature_block_id_candidate": (
+                "candidate_feature_block_id"
+            ),
+            "model_id_b0": "baseline_model_id",
+            "feature_block_id_b0": "baseline_feature_block_id",
+        }
+    )
     kalshi_anchor = (
         transport_validation.transport_b0_pair_diagnostics.loc[
             lambda frame: frame["landmark_seconds"].eq(
@@ -2486,62 +2917,40 @@ def build_cross_venue_factor_shortlist(
             & frame["endpoint_seconds"].eq(
                 selection.spec.anchor_endpoint_seconds
             ),
-            [
-                "game_id",
-                "atomic_information_episode_id",
-                "comparison_layer",
-                "candidate_model_id",
-                "candidate_feature_block_id",
-                "baseline_model_id",
-                "baseline_feature_block_id",
-                "s_h_truth",
-                "o_h_given_s_truth",
-                "direction_truth",
-                "loss_improvement",
-            ],
+            sorted(kalshi_required),
         ].copy()
     )
+    if poly_anchor.empty or not poly_anchor["venue"].eq(
+        SOURCE_VENUE
+    ).all():
+        raise KalshiValidationError(
+            "Polymarket factor evidence must use the clean source anchor"
+        )
     if kalshi_anchor.empty:
         raise KalshiValidationError(
             "Kalshi factor evidence has no exact clean-anchor truth rows"
-        )
-    if (
-        not kalshi_anchor["comparison_layer"].eq(
-            "TRANSPORT_CANDIDATE_VS_TRANSPORT_B0"
-        ).all()
-        or not kalshi_anchor["candidate_model_id"].eq(
-            selection.spec.candidate_model_id
-        ).all()
-        or not kalshi_anchor["candidate_feature_block_id"].eq(
-            selection.spec.candidate_feature_block_id
-        ).all()
-        or not kalshi_anchor["baseline_model_id"].eq(
-            selection.spec.baseline_model_id
-        ).all()
-        or not kalshi_anchor["baseline_feature_block_id"].eq(
-            selection.spec.baseline_feature_block_id
-        ).all()
-    ):
-        raise KalshiValidationError(
-            "Kalshi factor evidence is not the frozen transported "
-            "candidate-vs-B0 comparison"
-        )
-    identity_columns = [
-        "game_id",
-        "atomic_information_episode_id",
-    ]
-    if poly_anchor.duplicated(identity_columns, keep=False).any():
-        raise KalshiValidationError(
-            "Polymarket clean anchor must have one row per episode"
-        )
-    if kalshi_anchor.duplicated(identity_columns, keep=False).any():
-        raise KalshiValidationError(
-            "Kalshi clean anchor must have one exact truth row per episode"
         )
     for frame, label in (
         (poly_anchor, "Polymarket"),
         (kalshi_anchor, "Kalshi"),
     ):
+        if (
+            not frame["candidate_model_id"].eq(
+                selection.spec.candidate_model_id
+            ).all()
+            or not frame["candidate_feature_block_id"].eq(
+                selection.spec.candidate_feature_block_id
+            ).all()
+            or not frame["baseline_model_id"].eq(
+                selection.spec.baseline_model_id
+            ).all()
+            or not frame["baseline_feature_block_id"].eq(
+                selection.spec.baseline_feature_block_id
+            ).all()
+        ):
+            raise KalshiValidationError(
+                f"{label} factor evidence has non-frozen model identity"
+            )
         improvement = pd.to_numeric(
             frame["loss_improvement"], errors="coerce"
         )
@@ -2550,148 +2959,208 @@ def build_cross_venue_factor_shortlist(
                 f"{label} factor loss improvements must be finite"
             )
         frame["loss_improvement"] = improvement.astype(float)
+    if not kalshi_anchor["comparison_layer"].eq(
+        "TRANSPORT_CANDIDATE_VS_TRANSPORT_B0"
+    ).all():
+        raise KalshiValidationError(
+            "Kalshi factor evidence is not transported candidate-vs-B0"
+        )
 
+    episode_identity = [
+        "game_id",
+        "atomic_information_episode_id",
+    ]
     poly_joined = membership.merge(
-        poly_anchor.loc[
-            :,
-            [
-                "game_id",
-                "atomic_information_episode_id",
-                "loss_improvement",
-            ],
-        ],
-        on=identity_columns,
+        poly_anchor,
+        on=episode_identity,
         how="inner",
         validate="many_to_one",
     )
     kalshi_joined = membership.merge(
-        kalshi_anchor.loc[
-            :,
-            [
-                "game_id",
-                "atomic_information_episode_id",
-                "loss_improvement",
-            ],
-        ],
-        on=identity_columns,
+        kalshi_anchor,
+        on=episode_identity,
         how="inner",
         validate="many_to_one",
     )
     if poly_joined.empty and kalshi_joined.empty:
         raise KalshiValidationError(
-            "factor_membership matches no exact clean-anchor evidence"
+            "frozen factor membership matches no clean-anchor evidence"
         )
+    pair_grain = list(_CROSS_VENUE_FACTOR_PAIR_GRAIN)
+    for frame, label in (
+        (poly_joined, "Polymarket"),
+        (kalshi_joined, "Kalshi"),
+    ):
+        if frame.duplicated(pair_grain, keep=False).any():
+            raise KalshiValidationError(
+                f"{label} factor pair grain is not unique"
+            )
+    pair_outer = poly_joined[
+        [*pair_grain, "loss_improvement"]
+    ].merge(
+        kalshi_joined[[*pair_grain, "loss_improvement"]],
+        on=pair_grain,
+        how="outer",
+        suffixes=("_polymarket", "_kalshi"),
+        validate="one_to_one",
+        indicator=True,
+    )
+    shared_pairs = pair_outer.loc[
+        pair_outer["_merge"].eq("both")
+    ].drop(columns="_merge")
+    polymarket_only = pair_outer.loc[
+        pair_outer["_merge"].eq("left_only")
+    ].drop(columns="_merge")
+    kalshi_only = pair_outer.loc[
+        pair_outer["_merge"].eq("right_only")
+    ].drop(columns="_merge")
+    versions = (
+        pd.concat(
+            [
+                poly_joined[["factor_id", "factor_version"]],
+                kalshi_joined[["factor_id", "factor_version"]],
+            ],
+            ignore_index=True,
+        )
+        .drop_duplicates()
+        .sort_values(
+            ["factor_id", "factor_version"], kind="mergesort"
+        )
+        .reset_index(drop=True)
+    )
+
+    shared_support: dict[tuple[str, str], dict[str, object]] = {}
+    for raw_key, group in shared_pairs.groupby(
+        ["factor_id", "factor_version"], sort=True
+    ):
+        key = (str(raw_key[0]), str(raw_key[1]))
+        episode_count = len(
+            group[
+                ["game_id", "atomic_information_episode_id"]
+            ].drop_duplicates()
+        )
+        game_count = int(group["game_id"].nunique())
+        shared_support[key] = {
+            "shared_pair_row_count": len(group),
+            "shared_game_count": game_count,
+            "shared_episode_count": episode_count,
+            "shared_support_status": (
+                "SUPPORTED"
+                if game_count >= int(min_support_games)
+                and episode_count >= int(min_support_episodes)
+                else "INSUFFICIENT_SUPPORT"
+            ),
+        }
 
     signal_frames: list[pd.DataFrame] = []
-    raw_support_frames: list[pd.DataFrame] = []
-    for venue, joined in (
-        (SOURCE_VENUE, poly_joined),
-        (TARGET_VENUE, kalshi_joined),
-    ):
-        if joined.empty:
-            continue
-        raw_support = (
-            joined.groupby(
-                ["factor_id", "factor_version"],
-                sort=True,
-                as_index=False,
+    if not shared_pairs.empty:
+        for venue, improvement_column in (
+            (SOURCE_VENUE, "loss_improvement_polymarket"),
+            (TARGET_VENUE, "loss_improvement_kalshi"),
+        ):
+            equal_game_units = (
+                shared_pairs.groupby(
+                    [
+                        "factor_id",
+                        "factor_version",
+                        "game_id",
+                    ],
+                    sort=True,
+                    as_index=False,
+                )
+                .agg(gross_markout=(improvement_column, "mean"))
+                .reset_index(drop=True)
             )
-            .agg(
-                raw_support_games=("game_id", "nunique"),
-                raw_support_episodes=(
-                    "atomic_information_episode_id",
-                    "nunique",
-                ),
+            equal_game_units["venue"] = venue
+            equal_game_units["model_id"] = (
+                selection.spec.candidate_model_id
             )
-            .reset_index(drop=True)
-        )
-        raw_support["venue"] = venue
-        raw_support_frames.append(raw_support)
-        equal_game_units = (
-            joined.groupby(
-                [
-                    "factor_id",
-                    "factor_version",
-                    "game_id",
+            equal_game_units["episode_id"] = equal_game_units[
+                "game_id"
+            ].map(lambda game_id: f"{game_id}:equal-game-effect-unit")
+            equal_game_units["evaluation_status"] = "EVALUATED"
+            equal_game_units["dataset_partition"] = "development"
+            signal_frames.append(equal_game_units)
+    if signal_frames:
+        signals = pd.concat(signal_frames, ignore_index=True)
+        try:
+            statistics = summarize_development_signals(
+                signals[
+                    [
+                        "factor_id",
+                        "venue",
+                        "model_id",
+                        "game_id",
+                        "episode_id",
+                        "gross_markout",
+                        "evaluation_status",
+                        "dataset_partition",
+                    ]
                 ],
-                sort=True,
-                as_index=False,
+                seed=BOOTSTRAP_SEED,
+                n_bootstrap=BOOTSTRAP_SAMPLES,
+                confidence_level=0.95,
+                min_support_games=int(min_support_games),
+                min_support_signals=int(min_support_games),
             )
-            .agg(gross_markout=("loss_improvement", "mean"))
-            .reset_index(drop=True)
+        except X15StatisticsInputError as exc:
+            raise KalshiValidationError(
+                f"cross-venue factor statistics are invalid: {exc}"
+            ) from exc
+        statistics["raw_support_games"] = statistics.apply(
+            lambda row: shared_support[
+                (str(row["factor_id"]), str(
+                    versions.loc[
+                        versions["factor_id"].eq(row["factor_id"]),
+                        "factor_version",
+                    ].iloc[0]
+                ))
+            ]["shared_game_count"],
+            axis=1,
+        ).astype(int)
+        statistics["raw_support_episodes"] = statistics.apply(
+            lambda row: shared_support[
+                (str(row["factor_id"]), str(
+                    versions.loc[
+                        versions["factor_id"].eq(row["factor_id"]),
+                        "factor_version",
+                    ].iloc[0]
+                ))
+            ]["shared_episode_count"],
+            axis=1,
+        ).astype(int)
+        statistics["factor_support_status"] = statistics[
+            "factor_id"
+        ].map(
+            lambda factor_id: shared_support[
+                (
+                    str(factor_id),
+                    str(
+                        versions.loc[
+                            versions["factor_id"].eq(factor_id),
+                            "factor_version",
+                        ].iloc[0]
+                    ),
+                )
+            ]["shared_support_status"]
         )
-        equal_game_units["venue"] = venue
-        equal_game_units["model_id"] = (
-            selection.spec.candidate_model_id
+        statistics["bh_q_gate_passed"] = statistics[
+            "bh_q_value"
+        ].le(DEFAULT_MAX_Q_VALUE)
+        statistics["loo_sign_gate_passed"] = statistics[
+            "leave_one_game_out_same_sign_rate"
+        ].ge(DEFAULT_MIN_LOO_SAME_SIGN)
+        statistics["max_game_contribution_gate_passed"] = statistics[
+            "max_single_game_absolute_contribution_ratio"
+        ].le(DEFAULT_MAX_GAME_CONTRIBUTION)
+    else:
+        statistics = pd.DataFrame(
+            columns=[
+                "factor_id",
+                "venue",
+                "cross_venue_same_sign",
+            ]
         )
-        equal_game_units["episode_id"] = equal_game_units[
-            "game_id"
-        ].map(lambda game_id: f"{game_id}:equal-game-effect-unit")
-        equal_game_units["evaluation_status"] = "EVALUATED"
-        equal_game_units["dataset_partition"] = "development"
-        signal_frames.append(equal_game_units)
-
-    signals = pd.concat(signal_frames, ignore_index=True)
-    try:
-        statistics = summarize_development_signals(
-            signals[
-                [
-                    "factor_id",
-                    "venue",
-                    "model_id",
-                    "game_id",
-                    "episode_id",
-                    "gross_markout",
-                    "evaluation_status",
-                    "dataset_partition",
-                ]
-            ],
-            seed=BOOTSTRAP_SEED,
-            n_bootstrap=BOOTSTRAP_SAMPLES,
-            confidence_level=0.95,
-            min_support_games=int(min_support_games),
-            min_support_signals=int(min_support_games),
-        )
-    except X15StatisticsInputError as exc:
-        raise KalshiValidationError(
-            f"cross-venue factor statistics are invalid: {exc}"
-        ) from exc
-    raw_support = pd.concat(raw_support_frames, ignore_index=True)
-    statistics = statistics.merge(
-        raw_support,
-        on=["factor_id", "venue"],
-        how="left",
-        validate="one_to_one",
-    )
-    statistics["raw_support_games"] = (
-        statistics["raw_support_games"].fillna(0).astype(int)
-    )
-    statistics["raw_support_episodes"] = (
-        statistics["raw_support_episodes"].fillna(0).astype(int)
-    )
-    statistics["factor_support_status"] = np.where(
-        statistics["raw_support_games"].ge(int(min_support_games))
-        & statistics["raw_support_episodes"].ge(
-            int(min_support_episodes)
-        ),
-        "SUPPORTED",
-        "INSUFFICIENT_SUPPORT",
-    )
-    statistics["bh_q_gate_passed"] = statistics["bh_q_value"].le(
-        DEFAULT_MAX_Q_VALUE
-    )
-    statistics["loo_sign_gate_passed"] = statistics[
-        "leave_one_game_out_same_sign_rate"
-    ].ge(DEFAULT_MIN_LOO_SAME_SIGN)
-    statistics["max_game_contribution_gate_passed"] = statistics[
-        "max_single_game_absolute_contribution_ratio"
-    ].le(DEFAULT_MAX_GAME_CONTRIBUTION)
-
-    versions = (
-        membership[["factor_id", "factor_version"]]
-        .drop_duplicates()
-        .sort_values("factor_id", kind="mergesort")
-    )
     venue_metrics = (
         "support_games",
         "support_signals",
@@ -2715,13 +3184,63 @@ def build_cross_venue_factor_shortlist(
     )
     records: list[dict[str, object]] = []
     for version_row in versions.itertuples(index=False):
+        factor_key = (
+            str(version_row.factor_id),
+            str(version_row.factor_version),
+        )
         factor_rows = statistics.loc[
             statistics["factor_id"].eq(version_row.factor_id)
         ]
+        support = shared_support.get(
+            factor_key,
+            {
+                "shared_pair_row_count": 0,
+                "shared_game_count": 0,
+                "shared_episode_count": 0,
+                "shared_support_status": "NO_EXACT_SHARED_EVIDENCE",
+            },
+        )
         record: dict[str, object] = {
             "factor_id": str(version_row.factor_id),
             "factor_version": str(version_row.factor_version),
+            **support,
         }
+        for attrition_frame, prefix in (
+            (polymarket_only, "polymarket_only"),
+            (kalshi_only, "kalshi_only"),
+        ):
+            attrition_rows = attrition_frame.loc[
+                attrition_frame["factor_id"].eq(
+                    version_row.factor_id
+                )
+                & attrition_frame["factor_version"].eq(
+                    version_row.factor_version
+                )
+            ]
+            identities = tuple(
+                "|".join(
+                    f"{column}={row[column]}"
+                    for column in _CROSS_VENUE_FACTOR_PAIR_GRAIN
+                )
+                for row in attrition_rows.sort_values(
+                    pair_grain, kind="mergesort"
+                ).to_dict("records")
+            )
+            record[f"{prefix}_pair_row_count"] = len(
+                attrition_rows
+            )
+            record[f"{prefix}_game_count"] = int(
+                attrition_rows["game_id"].nunique()
+            )
+            record[f"{prefix}_episode_count"] = len(
+                attrition_rows[
+                    [
+                        "game_id",
+                        "atomic_information_episode_id",
+                    ]
+                ].drop_duplicates()
+            )
+            record[f"{prefix}_pair_identities"] = identities
         for venue, prefix in (
             (SOURCE_VENUE, "polymarket"),
             (TARGET_VENUE, "kalshi"),
@@ -2768,7 +3287,8 @@ def build_cross_venue_factor_shortlist(
             and factor_rows["cross_venue_same_sign"].all()
         )
         factor_gate = bool(
-            record["polymarket_factor_support_status"]
+            record["shared_support_status"] == "SUPPORTED"
+            and record["polymarket_factor_support_status"]
             == "SUPPORTED"
             and record["kalshi_factor_support_status"]
             == "SUPPORTED"
@@ -2825,6 +3345,40 @@ def build_cross_venue_factor_shortlist(
         record["claim_boundary"] = selection.claim_boundary
         record["schema_version"] = selection.schema_version
         record["analysis_scope"] = selection.analysis_scope
+        record["exact_pair_grain"] = (
+            _CROSS_VENUE_FACTOR_PAIR_GRAIN
+        )
+        record["factor_membership_authority_manifest_path"] = (
+            factor_membership_evidence.authority_manifest_path
+        )
+        record[
+            "factor_membership_authority_manifest_file_sha256"
+        ] = (
+            factor_membership_evidence
+            .authority_manifest_file_sha256
+        )
+        record["factor_membership_authority_batch_sha256"] = (
+            factor_membership_evidence.authority_batch_sha256
+        )
+        record["factor_membership_cohort_authority_sha256"] = (
+            factor_membership_evidence.cohort_authority_sha256
+        )
+        record["factor_membership_rows_sha256"] = (
+            factor_membership_evidence.membership_rows_sha256
+        )
+        record["factor_membership_artifact_bindings_sha256"] = (
+            factor_membership_evidence
+            .membership_artifact_bindings_sha256
+        )
+        record["factor_registry_path"] = (
+            factor_membership_evidence.registry_path
+        )
+        record["factor_registry_file_sha256"] = (
+            factor_membership_evidence.registry_file_sha256
+        )
+        record["factor_registry_semantic_sha256"] = (
+            factor_membership_evidence.registry_semantic_sha256
+        )
         record["execution_claim_eligible"] = False
         record["tick_claim_eligible"] = False
         record["continuity_claim_eligible"] = False
@@ -3071,6 +3625,7 @@ __all__ = [
     "EXPECTED_DEVELOPMENT_GAMES",
     "EXPECTED_HOLDOUT_GAMES",
     "FrozenAuthorityMetadata",
+    "FrozenFactorMembershipEvidence",
     "FrozenHistoricalExposureEvidence",
     "KalshiValidationError",
     "MetadataAccessRecord",
@@ -3081,6 +3636,7 @@ __all__ = [
     "bind_frozen_authority_metadata",
     "build_cross_venue_factor_shortlist",
     "lock_preholdout_metadata_audit",
+    "load_frozen_factor_membership_evidence",
     "load_frozen_historical_exposure_evidence",
     "record_metadata_access",
     "validate_development_venue_transport",
