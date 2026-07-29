@@ -1371,16 +1371,14 @@ def _publish_batch_index(
         )
     aggregate = _aggregate_counts(games)
     semantic_material = {
+        "schema": "nfl_x16_exact153_semantic_batch_v1",
         "authority": _authority_binding(authority),
         "sources": dict(source_bindings),
         "factor_registry": dict(registry_binding),
         "builder_version": BUILDER_VERSION,
-        "builder_code_sha256": builder_code_sha256,
-        "aggregate_counts": aggregate,
         "games": [
             {
                 "game_id": game.game_id,
-                "bundle_sha256": game.bundle_sha256,
                 "table_semantic_sha256": dict(game.table_semantic_sha256),
             }
             for game in games

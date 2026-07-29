@@ -770,6 +770,79 @@ def test_exact_set_mismatch_blocks_pass_batch_index(
     assert not list(output_root.rglob("*.batch-index.json"))
 
 
+def test_semantic_batch_identity_ignores_physical_bundle_hashes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path, development, _ = _write_authority(tmp_path, monkeypatch)
+    authority = publication.verify_exact153_authority(
+        project_root=tmp_path,
+        governance_manifest_path=manifest_path,
+    )
+    source_bindings = {"pbp": {"logical_manifest_sha256": "sha256:source"}}
+    registry_binding = {"semantic_sha256": "sha256:registry"}
+    games = tuple(
+        publication.PublishedGameFactBundle(
+            game_id=game_id,
+            bundle_sha256="sha256:" + "a" * 64,
+            manifest_path=tmp_path / f"{game_id}.manifest.json",
+            manifest_sha256="sha256:" + "b" * 64,
+            counts={"canonical_factor_events_rows": 1},
+            table_semantic_sha256={
+                "canonical_factor_events": (
+                    "sha256:" + ("c" if index == 0 else "d") * 64
+                )
+            },
+        )
+        for index, game_id in enumerate(development)
+    )
+    physically_different_games = tuple(
+        replace(
+            game,
+            bundle_sha256="sha256:" + "e" * 64,
+            manifest_sha256="sha256:" + "f" * 64,
+        )
+        for game in games
+    )
+    semantically_different_games = (
+        replace(
+            physically_different_games[0],
+            table_semantic_sha256={
+                "canonical_factor_events": "sha256:" + "9" * 64
+            },
+        ),
+        *physically_different_games[1:],
+    )
+
+    def publish_variant(
+        descriptors: tuple[publication.PublishedGameFactBundle, ...],
+        builder_hash_character: str,
+    ) -> publication.PublishedExact153FactBatch:
+        return publication._publish_batch_index(
+            output_root=tmp_path,
+            authority=authority,
+            games=descriptors,
+            source_bindings=source_bindings,
+            registry_binding=registry_binding,
+            builder_code_sha256="sha256:" + builder_hash_character * 64,
+        )
+
+    first = publish_variant(games, "1")
+    physically_different = publish_variant(physically_different_games, "2")
+    semantically_different = publish_variant(
+        semantically_different_games,
+        "2",
+    )
+
+    assert first.semantic_batch_sha256 == (
+        physically_different.semantic_batch_sha256
+    )
+    assert first.batch_sha256 != physically_different.batch_sha256
+    assert first.semantic_batch_sha256 != (
+        semantically_different.semantic_batch_sha256
+    )
+
+
 def test_bounded_rerun_has_identical_semantic_hashes_and_batch_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
