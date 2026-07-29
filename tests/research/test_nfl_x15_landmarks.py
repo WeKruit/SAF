@@ -11,13 +11,16 @@ def _inputs() -> dict[str, pd.DataFrame]:
         [
             {
                 "game_id": "2025_01_AAA_BBB",
+                "event_id": "event-1",
                 "atomic_information_episode_id": "episode-1",
                 "source_interval_start": "2025-09-05T00:00:00Z",
                 "source_interval_end": "2025-09-05T00:00:01Z",
+                "known_at": "2025-09-05T00:00:01Z",
                 "source_resolution": "SECOND",
                 "stage_b_information_event_eligible": True,
                 "home_team": "BBB",
                 "away_team": "AAA",
+                "pbp_source_sha256": "sha256:" + "c" * 64,
                 "game_seconds_remaining": 900,
                 "score_margin_home": -3,
                 "possession_is_home": False,
@@ -38,11 +41,26 @@ def _inputs() -> dict[str, pd.DataFrame]:
             {
                 "game_id": "2025_01_AAA_BBB",
                 "atomic_information_episode_id": "episode-1",
-                "support_status": "SUPPORTED",
-                "known_at": "2025-09-05T00:00:01Z",
+                "reference_status": "SUPPORTED",
+                "pre_state_known_at": "2025-09-05T00:00:00Z",
+                "post_state_known_at": "2025-09-05T00:00:01Z",
                 "p_before_home": 0.48,
                 "p_after_home": 0.52,
                 "reference_delta_home": 0.04,
+            }
+        ]
+    )
+    factor_hits = pd.DataFrame(
+        [
+            {
+                "game_id": "2025_01_AAA_BBB",
+                "event_id": "event-1",
+                "play_id": "play-1",
+                "factor_id": "NFL.PASS.COMPLETE",
+                "factor_version": "v1",
+                "registry_sha256": "sha256:" + "d" * 64,
+                "pbp_source_sha256": "sha256:" + "c" * 64,
+                "predicate_evidence": '{"primary_action":"PASS"}',
             }
         ]
     )
@@ -155,6 +173,7 @@ def _inputs() -> dict[str, pd.DataFrame]:
     return {
         "episode_facts": facts,
         "stage_a_references": references,
+        "factor_hits": factor_hits,
         "market_rows": trades,
         "contract_metadata": contracts,
         "tick_rules": tick_rules,
@@ -205,6 +224,14 @@ def test_v3_grid_is_stable_unique_and_uses_only_actual_home_contract() -> None:
     row = _row(first.panel, 1, 5)
     assert row["delta_l_h"] == pytest.approx(0.02)
     assert row["target_orientation"] == "ACTUAL_HOME_OUTCOME"
+    assert bool(row["factor__NFL.PASS.COMPLETE"]) is True
+    assert bool(row["event_tag__COMPLETE_PASS"]) is True
+    assert "factor_id" not in first.panel.columns
+    decision = row["decision_features_json"]
+    assert "NFL.PASS.COMPLETE" in decision
+    assert "COMPLETE_PASS" in decision
+    assert "play-1" in decision
+    assert "sha256:" + "d" * 64 in decision
 
 
 def test_survival_censor_and_missing_observation_are_distinct_and_never_filled() -> None:
@@ -345,3 +372,113 @@ def test_attrition_is_complete_and_continuity_is_mandatory() -> None:
     unverified = _row(_build(continuity=continuity).panel, 1, 5)
     assert pd.isna(unverified["s_h"])
     assert unverified["attrition_reason"] == "CONTINUITY_UNVERIFIED_BEFORE_H"
+
+
+def test_real_stage_a_contract_allows_unsupported_nulls_and_gates_b4_at_l() -> None:
+    unsupported = _inputs()["stage_a_references"].copy()
+    unsupported.loc[0, "reference_status"] = "MODEL_SUPPORT_UNPROVEN"
+    unsupported.loc[
+        0,
+        [
+            "post_state_known_at",
+            "p_before_home",
+            "p_after_home",
+            "reference_delta_home",
+        ],
+    ] = None
+    unsupported_row = _row(
+        _build(stage_a_references=unsupported).panel,
+        1,
+        5,
+    )
+    assert unsupported_row["reference_status"] == "MODEL_SUPPORT_UNPROVEN"
+    assert unsupported_row["stage_a_status"] == "MODEL_SUPPORT_UNPROVEN"
+    assert pd.isna(unsupported_row["p_before_home"])
+    assert pd.isna(unsupported_row["p_after_home"])
+
+    future = _inputs()["stage_a_references"].copy()
+    future.loc[0, "post_state_known_at"] = "2025-09-05T00:00:02.500Z"
+    future_row = _row(_build(stage_a_references=future).panel, 1, 5)
+    assert future_row["reference_status"] == "SUPPORTED"
+    assert future_row["stage_a_status"] == "NOT_KNOWN_AT_L"
+    assert pd.isna(future_row["p_after_home"])
+    assert future_row["post_state_known_at"] == pd.Timestamp(
+        "2025-09-05T00:00:02.500Z"
+    )
+    assert "2025-09-05T00:00:02.500000+00:00" not in future_row[
+        "decision_features_json"
+    ]
+
+    invalid = _inputs()["stage_a_references"].copy()
+    invalid.loc[0, "p_after_home"] = None
+    error = getattr(landmarks, "VenueReactionPanelError")
+    with pytest.raises(error, match="SUPPORTED"):
+        _build(stage_a_references=invalid)
+
+
+def test_non_stage_b_and_missing_interval_facts_are_audited_not_panelled() -> None:
+    facts = _inputs()["episode_facts"].copy()
+    excluded = facts.iloc[0].copy()
+    excluded["event_id"] = "event-admin"
+    excluded["atomic_information_episode_id"] = "episode-admin"
+    excluded["stage_b_information_event_eligible"] = False
+    excluded["source_interval_start"] = None
+    excluded["source_interval_end"] = None
+    excluded["known_at"] = None
+    facts = pd.concat([facts, excluded.to_frame().T], ignore_index=True)
+
+    result = _build(episode_facts=facts)
+
+    assert len(result.panel) == 57
+    assert set(result.panel["atomic_information_episode_id"]) == {"episode-1"}
+    audit = result.fact_attrition.set_index("atomic_information_episode_id")
+    assert audit.loc["episode-admin", "fact_attrition_reason"] == (
+        "NOT_STAGE_B_INFORMATION_EVENT"
+    )
+    assert not bool(audit.loc["episode-admin", "included_in_panel"])
+
+
+def test_factor_hits_must_link_and_match_source_and_registry_provenance() -> None:
+    error = getattr(landmarks, "VenueReactionPanelError")
+    unlinked = _inputs()["factor_hits"].copy()
+    unlinked.loc[0, "event_id"] = "event-missing"
+    with pytest.raises(error, match="event_id"):
+        _build(factor_hits=unlinked)
+
+    wrong_source = _inputs()["factor_hits"].copy()
+    wrong_source.loc[0, "pbp_source_sha256"] = "sha256:" + "e" * 64
+    with pytest.raises(error, match="source"):
+        _build(factor_hits=wrong_source)
+
+    bad_registry = _inputs()["factor_hits"].copy()
+    bad_registry.loc[0, "registry_sha256"] = "not-a-sha"
+    with pytest.raises(error, match="registry"):
+        _build(factor_hits=bad_registry)
+
+
+def test_exactly_one_actual_home_contract_is_required_per_game_venue() -> None:
+    contracts = _inputs()["contract_metadata"].copy()
+    duplicate = contracts.loc[
+        contracts["contract_role"].eq("ACTUAL_HOME_OUTCOME")
+    ].copy()
+    duplicate["contract_id"] = "kalshi-home-duplicate"
+    contracts = pd.concat([contracts, duplicate], ignore_index=True)
+
+    error = getattr(landmarks, "VenueReactionPanelError")
+    with pytest.raises(error, match="exactly one actual home"):
+        _build(contract_metadata=contracts)
+
+
+def test_censor_at_exact_h_is_explicitly_order_ambiguous_and_not_clean() -> None:
+    continuity = _inputs()["continuity"].copy()
+    continuity.loc[0, "next_salient_event_time_utc"] = (
+        "2025-09-05T00:00:06Z"
+    )
+
+    row = _row(_build(continuity=continuity).panel, 1, 5)
+
+    assert bool(row["s_h"]) is False
+    assert pd.isna(row["o_h_given_s"])
+    assert row["attrition_reason"] == (
+        "NEXT_SALIENT_EVENT_AT_H_ORDER_AMBIGUOUS"
+    )
