@@ -38,6 +38,7 @@ _PANEL_GRAIN = (
 )
 _FACT_REQUIRED = {
     *_FACT_IDENTITY,
+    "week",
     "event_id",
     "source_interval_start",
     "source_interval_end",
@@ -146,6 +147,7 @@ class VenueReactionPanelV3:
     attrition: pd.DataFrame
     complement_diagnostics: pd.DataFrame
     fact_attrition: pd.DataFrame
+    factor_membership: pd.DataFrame
 
 
 @dataclass(frozen=True, slots=True)
@@ -350,6 +352,12 @@ def _validate_facts(
         axis=None
     ):
         raise VenueReactionPanelError("episode game team identity is inconsistent")
+    week = _finite_numeric(facts["week"], label="episode_facts.week", lower=1)
+    if not np.equal(week.to_numpy(), week.astype(int).to_numpy()).all():
+        raise VenueReactionPanelError("episode_facts.week must be integral")
+    facts["week"] = week.astype(int)
+    if facts.groupby("game_id")["week"].nunique().gt(1).any():
+        raise VenueReactionPanelError("episode game week is inconsistent")
     for source_hash in facts["pbp_source_sha256"]:
         _sha256(source_hash, label="episode_facts.pbp_source_sha256")
     facts["_event_tags"] = [
@@ -930,6 +938,38 @@ def build_venue_reaction_panel_v3(
             for row in hits.to_dict("records")
         ]
     ].copy()
+    factor_membership = relevant_hits.merge(
+        facts.loc[
+            :,
+            ["game_id", "event_id", "atomic_information_episode_id"],
+        ],
+        on=["game_id", "event_id"],
+        how="inner",
+        validate="many_to_one",
+    ).loc[
+        :,
+        [
+            "game_id",
+            "atomic_information_episode_id",
+            "factor_id",
+            "factor_version",
+            "registry_sha256",
+            "pbp_source_sha256",
+            "predicate_evidence",
+        ],
+    ]
+    membership_grain = [
+        "game_id",
+        "atomic_information_episode_id",
+        "factor_id",
+        "factor_version",
+    ]
+    if factor_membership.duplicated(membership_grain).any():
+        raise VenueReactionPanelError("factor membership grain is not unique")
+    factor_membership = factor_membership.sort_values(
+        membership_grain,
+        kind="mergesort",
+    ).reset_index(drop=True)
     factor_ids = tuple(sorted(relevant_hits["factor_id"].astype(str).unique()))
     event_tags = tuple(
         sorted(
@@ -1248,6 +1288,7 @@ def build_venue_reaction_panel_v3(
                             "schema_version": SCHEMA_VERSION,
                             "claim_boundary": CLAIM_BOUNDARY,
                             "game_id": str(fact["game_id"]),
+                            "nfl_week": int(fact["week"]),
                             "atomic_information_episode_id": str(
                                 fact["atomic_information_episode_id"]
                             ),
@@ -1365,6 +1406,7 @@ def build_venue_reaction_panel_v3(
         attrition=attrition,
         complement_diagnostics=_complement_diagnostics(market, contracts),
         fact_attrition=fact_attrition,
+        factor_membership=factor_membership,
     )
 
 

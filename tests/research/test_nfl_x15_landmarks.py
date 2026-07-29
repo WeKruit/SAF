@@ -11,6 +11,7 @@ def _inputs() -> dict[str, pd.DataFrame]:
         [
             {
                 "game_id": "2025_01_AAA_BBB",
+                "week": 1,
                 "event_id": "event-1",
                 "atomic_information_episode_id": "episode-1",
                 "source_interval_start": "2025-09-05T00:00:00Z",
@@ -287,6 +288,31 @@ def test_multi_event_factor_membership_is_order_invariant() -> None:
     assert not bool(by_episode.loc["episode-1", "factor__NFL.RUSH.ATTEMPT"])
     assert bool(by_episode.loc["episode-2", "factor__NFL.RUSH.ATTEMPT"])
     assert not bool(by_episode.loc["episode-2", "factor__NFL.PASS.COMPLETE"])
+
+
+def test_panel_publishes_frozen_week_and_separate_factor_membership() -> None:
+    facts = _inputs()["episode_facts"].copy()
+    facts.loc[0, "week"] = 12
+    result = _build(episode_facts=facts)
+
+    assert set(result.panel["nfl_week"]) == {12}
+    assert len(result.factor_membership) == 1
+    membership = result.factor_membership.iloc[0]
+    assert membership["game_id"] == "2025_01_AAA_BBB"
+    assert membership["atomic_information_episode_id"] == "episode-1"
+    assert membership["factor_id"] == "NFL.PASS.COMPLETE"
+    assert membership["factor_version"] == "v1"
+    assert membership["registry_sha256"] == "sha256:" + "d" * 64
+    assert membership["pbp_source_sha256"] == "sha256:" + "c" * 64
+    assert "factor_id" not in result.panel.columns
+
+    inconsistent = pd.concat([facts, facts.copy()], ignore_index=True)
+    inconsistent.loc[1, "event_id"] = "event-week-mismatch"
+    inconsistent.loc[1, "atomic_information_episode_id"] = "episode-week-mismatch"
+    inconsistent.loc[1, "week"] = 13
+    error = getattr(landmarks, "VenueReactionPanelError")
+    with pytest.raises(error, match="week"):
+        _build(episode_facts=inconsistent)
 
 
 def test_survival_censor_and_missing_observation_are_distinct_and_never_filled() -> None:
