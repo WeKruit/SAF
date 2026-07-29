@@ -382,6 +382,48 @@ def test_interval_overlap_and_same_timestamp_are_ambiguous_but_t_plus_one_is_val
     assert ambiguous["attrition_reason"] == "ENDPOINT_ORDER_AMBIGUOUS"
 
 
+def test_trade_index_preserves_mark_and_activity_boundaries() -> None:
+    market = landmarks._validate_market(_inputs()["market_rows"])
+    actual = market.loc[
+        market["kind"].eq("trade") & market["provenance"].eq("observed")
+    ]
+    index = landmarks._trade_index(actual)
+    start = pd.Timestamp("2025-09-05T00:00:00Z")
+    end = pd.Timestamp("2025-09-05T00:00:01Z")
+    h5 = pd.Timestamp("2025-09-05T00:00:05.500Z")
+
+    mark = landmarks._select_mark(
+        index,
+        interval_start=start,
+        interval_end=end,
+        target_time=h5,
+    )
+    assert mark.status == "OBSERVED"
+    assert mark.trade_id == "home-H5"
+    assert not index.times_ns.flags.writeable
+    assert landmarks._activity(index, landmark_time=h5, seconds=4) == (1, 7.0)
+
+    duplicate = pd.concat([actual, actual.loc[actual["trade_id"].eq("home-H5")]])
+    ambiguous = landmarks._select_mark(
+        landmarks._trade_index(duplicate),
+        interval_start=start,
+        interval_end=end,
+        target_time=h5,
+    )
+    assert ambiguous.status == "ORDER_AMBIGUOUS"
+    assert ambiguous.source_time == h5
+
+    overlap = actual.loc[actual["trade_id"].eq("home-L")].copy()
+    overlap.loc[:, "source_time_utc"] = pd.Timestamp("2025-09-05T00:00:00.500Z")
+    overlap_mark = landmarks._select_mark(
+        landmarks._trade_index(overlap),
+        interval_start=start,
+        interval_end=end,
+        target_time=pd.Timestamp("2025-09-05T00:00:02Z"),
+    )
+    assert overlap_mark.status == "ORDER_AMBIGUOUS"
+
+
 def test_tick_defines_direction_and_p95_only_defines_abnormal_move() -> None:
     rows = _inputs()["market_rows"].copy()
     extra = []

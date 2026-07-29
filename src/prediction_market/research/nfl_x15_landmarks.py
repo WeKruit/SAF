@@ -163,6 +163,15 @@ class _Mark:
         return self.status == "OBSERVED"
 
 
+@dataclass(frozen=True, slots=True)
+class _TradeIndex:
+    times_ns: np.ndarray
+    trade_ids: np.ndarray
+    prices: np.ndarray
+    sizes: np.ndarray
+    prefix_sizes: np.ndarray
+
+
 def _require_frame(
     frame: pd.DataFrame,
     *,
@@ -705,36 +714,74 @@ def _validate_noise(frame: pd.DataFrame | None) -> pd.DataFrame:
     return noise
 
 
+def _trade_index(trades: pd.DataFrame) -> _TradeIndex:
+    ordered = trades.sort_values(["source_time_utc", "trade_id"], kind="mergesort")
+    times_ns = ordered["source_time_utc"].astype("int64").to_numpy(copy=True)
+    trade_ids = ordered["trade_id"].astype(str).to_numpy(copy=True)
+    prices = ordered["price"].to_numpy(dtype=float, copy=True)
+    sizes = ordered["size"].to_numpy(dtype=float, copy=True)
+    prefix_sizes = np.empty(len(sizes) + 1, dtype=float)
+    prefix_sizes[0] = 0.0
+    np.cumsum(sizes, out=prefix_sizes[1:])
+    for array in (times_ns, trade_ids, prices, sizes, prefix_sizes):
+        array.setflags(write=False)
+    return _TradeIndex(
+        times_ns=times_ns,
+        trade_ids=trade_ids,
+        prices=prices,
+        sizes=sizes,
+        prefix_sizes=prefix_sizes,
+    )
+
+
 def _select_mark(
-    trades: pd.DataFrame,
+    trades: _TradeIndex,
     *,
     interval_start: pd.Timestamp,
     interval_end: pd.Timestamp,
     target_time: pd.Timestamp,
 ) -> _Mark:
-    candidates = trades.loc[
-        trades["source_time_utc"].ge(interval_end)
-        & trades["source_time_utc"].le(target_time)
-    ]
-    if candidates.empty:
-        overlap = trades["source_time_utc"].ge(interval_start) & trades[
-            "source_time_utc"
-        ].lt(interval_end)
-        status = "ORDER_AMBIGUOUS" if overlap.any() else "NO_ACTUAL_TRADE"
+    interval_start_ns = interval_start.value
+    interval_end_ns = interval_end.value
+    target_ns = target_time.value
+    first_candidate = int(
+        np.searchsorted(trades.times_ns, interval_end_ns, side="left")
+    )
+    after_target = int(
+        np.searchsorted(trades.times_ns, target_ns, side="right")
+    )
+    if first_candidate == after_target:
+        first_overlap = int(
+            np.searchsorted(trades.times_ns, interval_start_ns, side="left")
+        )
+        after_overlap = int(
+            np.searchsorted(trades.times_ns, interval_end_ns, side="left")
+        )
+        status = (
+            "ORDER_AMBIGUOUS"
+            if first_overlap < after_overlap
+            else "NO_ACTUAL_TRADE"
+        )
         return _Mark(status, None, None, math.nan, math.nan)
-    latest_time = candidates["source_time_utc"].max()
-    latest = candidates.loc[candidates["source_time_utc"].eq(latest_time)]
-    staleness = float((target_time - latest_time).total_seconds())
-    if len(latest) != 1:
+    latest_index = after_target - 1
+    latest_ns = int(trades.times_ns[latest_index])
+    first_latest = int(
+        np.searchsorted(trades.times_ns, latest_ns, side="left")
+    )
+    after_latest = int(
+        np.searchsorted(trades.times_ns, latest_ns, side="right")
+    )
+    latest_time = pd.Timestamp(latest_ns, tz="UTC")
+    staleness = float((target_ns - latest_ns) / 1_000_000_000)
+    if after_latest - first_latest != 1:
         return _Mark("ORDER_AMBIGUOUS", None, latest_time, math.nan, staleness)
-    row = latest.iloc[0]
     if staleness > MAX_STALENESS_SECONDS:
         return _Mark("STALE", None, latest_time, math.nan, staleness)
     return _Mark(
         "OBSERVED",
-        str(row["trade_id"]),
+        str(trades.trade_ids[latest_index]),
         latest_time,
-        float(row["price"]),
+        float(trades.prices[latest_index]),
         staleness,
     )
 
@@ -818,17 +865,16 @@ def _reference_at_l(
 
 
 def _activity(
-    trades: pd.DataFrame,
+    trades: _TradeIndex,
     *,
     landmark_time: pd.Timestamp,
     seconds: int,
 ) -> tuple[int, float]:
-    lower = landmark_time - pd.Timedelta(seconds=seconds)
-    selected = trades.loc[
-        trades["source_time_utc"].gt(lower)
-        & trades["source_time_utc"].le(landmark_time)
-    ]
-    return len(selected), float(selected["size"].sum())
+    landmark_ns = landmark_time.value
+    lower_ns = landmark_ns - seconds * 1_000_000_000
+    first = int(np.searchsorted(trades.times_ns, lower_ns, side="right"))
+    after = int(np.searchsorted(trades.times_ns, landmark_ns, side="right"))
+    return after - first, float(trades.prefix_sizes[after] - trades.prefix_sizes[first])
 
 
 def _noise_threshold(
@@ -1050,16 +1096,14 @@ def build_venue_reaction_panel_v3(
     observed_trades = market.loc[
         market["kind"].eq("trade") & market["provenance"].eq("observed")
     ].copy()
-    observed_trade_slices = {
-        (str(game_id), str(venue), str(contract_id)): group.sort_values(
-            ["source_time_utc", "trade_id"], kind="mergesort"
-        ).reset_index(drop=True)
+    observed_trade_indices = {
+        (str(game_id), str(venue), str(contract_id)): _trade_index(group)
         for (game_id, venue, contract_id), group in observed_trades.groupby(
             ["game_id", "venue", "contract_id"],
             sort=False,
         )
     }
-    empty_observed_trades = observed_trades.iloc[0:0].copy()
+    empty_observed_trades = _trade_index(observed_trades.iloc[0:0])
     rows: list[dict[str, object]] = []
 
     ordered_facts = facts.sort_values(
@@ -1133,7 +1177,7 @@ def build_venue_reaction_panel_v3(
         )
         for raw_contract in scoped_contracts.to_dict("records"):
             contract = pd.Series(raw_contract)
-            trades = observed_trade_slices.get(
+            trades = observed_trade_indices.get(
                 (
                     str(fact["game_id"]),
                     str(contract["venue"]),
