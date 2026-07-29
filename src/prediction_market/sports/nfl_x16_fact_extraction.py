@@ -1108,6 +1108,9 @@ def build_game_fact_tables(
     # Build the full roster map before resolving source-declared injury names.
     for row, event in zip(records, event_rows, strict=True):
         description = _text(row.get("desc")) or ""
+        seen_injury_facts: set[
+            tuple[str, str, str, str, str, str, str, str, str | None]
+        ] = set()
         for pattern, evidence_type, status in (
             (_INJURY_RE, "CONFIRMED_IN_GAME_INJURY", "INJURED"),
             (_RETURN_RE, "CONFIRMED_RETURN_TO_GAME", "RETURNED"),
@@ -1117,6 +1120,21 @@ def build_game_fact_tables(
                 number = match.group("number")
                 source_name = match.group("name").strip()
                 resolved = roster_lookup.get((team, number))
+                player_id = None if resolved is None else resolved[0]
+                identity = (
+                    game_id,
+                    str(event["event_id"]),
+                    str(event["play_id"]),
+                    evidence_type,
+                    status,
+                    team,
+                    number,
+                    source_name,
+                    player_id,
+                )
+                if identity in seen_injury_facts:
+                    continue
+                seen_injury_facts.add(identity)
                 injury_rows.append(
                     {
                         "game_id": game_id,
@@ -1128,7 +1146,7 @@ def build_game_fact_tables(
                         "team": team,
                         "jersey_number": number,
                         "source_player_name": source_name,
-                        "player_id": None if resolved is None else resolved[0],
+                        "player_id": player_id,
                         "player_name": None if resolved is None else resolved[1],
                         "identity_status": (
                             "RESOLVED_FROM_GAME_PARTICIPATION"

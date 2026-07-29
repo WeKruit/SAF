@@ -804,6 +804,133 @@ def test_injury_text_is_evidence_with_player_identity_not_roster_inference() -> 
     ].lower()
 
 
+def test_replay_duplicate_injury_mentions_emit_one_semantic_fact() -> None:
+    pbp = _episode_rows(
+        {
+            "game_id": "2025_04_CAR_NE",
+            "home_team": "NE",
+            "away_team": "CAR",
+            "play_id": 3821,
+            "order_sequence": 3821,
+            "qtr": 4,
+            "time": "02:20",
+            "time_of_day": "2025-09-28T19:50:40.793Z",
+            "play_type": "pass",
+            "play_type_nfl": "PASS",
+            "posteam": "CAR",
+            "defteam": "NE",
+            "desc": (
+                "(2:20) 14-A.Dalton pass short right to 82-T.Tremble for "
+                "6 yards, TOUCHDOWN. CAR-82-T.Tremble was injured during "
+                "the play. The Replay Official reviewed the runner broke "
+                "the plane ruling, and the play was REVERSED. 14-A.Dalton "
+                "pass short right to 82-T.Tremble to NE 1 for 5 yards. "
+                "CAR-82-T.Tremble was injured during the play. "
+                "CAR-85-J.Mitchell was injured during the play."
+            ),
+        },
+        {
+            "game_id": "2025_04_CAR_NE",
+            "home_team": "NE",
+            "away_team": "CAR",
+            "play_id": 3900,
+            "order_sequence": 3900,
+            "qtr": 4,
+            "time": "01:30",
+            "time_of_day": "2025-09-28T19:52:00.000Z",
+            "play_type": "no_play",
+            "play_type_nfl": "GAME_ADVICE",
+            "posteam": "CAR",
+            "defteam": "NE",
+            "desc": (
+                "Injury Update: CAR-82-T.Tremble has returned to the game."
+            ),
+        },
+        {
+            "game_id": "2025_04_CAR_NE",
+            "home_team": "NE",
+            "away_team": "CAR",
+            "play_id": 4000,
+            "order_sequence": 4000,
+            "qtr": 4,
+            "time": "00:45",
+            "time_of_day": "2025-09-28T19:53:00.000Z",
+            "play_type": "run",
+            "play_type_nfl": "RUSH",
+            "posteam": "CAR",
+            "defteam": "NE",
+            "desc": "CAR-82-T.Tremble was injured during the play.",
+        },
+    )
+    participation = pd.DataFrame(
+        [
+            {
+                "nflverse_game_id": "2025_04_CAR_NE",
+                "play_id": play_id,
+                "offense_players": "00-0037005;00-0036290",
+                "offense_names": "Tommy Tremble;James Mitchell",
+                "offense_positions": "TE;TE",
+                "offense_numbers": "82;85",
+                "defense_players": "",
+                "defense_names": "",
+                "defense_positions": "",
+                "defense_numbers": "",
+                "n_offense": 2,
+                "n_defense": 0,
+            }
+            for play_id in (3821, 3900, 4000)
+        ]
+    )
+
+    tables = build_game_fact_tables(
+        pbp,
+        participation,
+        factor_registry=_registry(),
+        pbp_source_sha256=PBP_SHA,
+        participation_source_sha256=PARTICIPATION_SHA,
+    )
+
+    facts = tables.injury_evidence[
+        [
+            "event_id",
+            "evidence_type",
+            "status",
+            "player_id",
+            "player_name",
+        ]
+    ]
+    assert facts.to_records(index=False).tolist() == [
+        (
+            "2025_04_CAR_NE:episode:3821",
+            "CONFIRMED_IN_GAME_INJURY",
+            "INJURED",
+            "00-0037005",
+            "Tommy Tremble",
+        ),
+        (
+            "2025_04_CAR_NE:episode:3821",
+            "CONFIRMED_IN_GAME_INJURY",
+            "INJURED",
+            "00-0036290",
+            "James Mitchell",
+        ),
+        (
+            "2025_04_CAR_NE:episode:3900",
+            "CONFIRMED_RETURN_TO_GAME",
+            "RETURNED",
+            "00-0037005",
+            "Tommy Tremble",
+        ),
+        (
+            "2025_04_CAR_NE:episode:4000",
+            "CONFIRMED_IN_GAME_INJURY",
+            "INJURED",
+            "00-0037005",
+            "Tommy Tremble",
+        ),
+    ]
+
+
 def test_active_registry_predicates_generate_traceable_factor_hits() -> None:
     tables = build_game_fact_tables(
         _pbp_rows(),
