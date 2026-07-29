@@ -314,6 +314,39 @@ def test_resumable_fold_slice_is_diagnostic_only_and_cannot_select() -> None:
     assert result.diagnostic_status == "PARTIAL_DEVELOPMENT_DIAGNOSTIC_ONLY"
 
 
+def test_clean_anchor_requires_thirty_distinct_games() -> None:
+    run = _run()
+    anchor = (
+        run.oof_predictions["landmark_seconds"].eq(3)
+        & run.oof_predictions["endpoint_seconds"].eq(30)
+    )
+    retained_games = set(
+        sorted(run.oof_predictions.loc[anchor, "game_id"].unique())[:29]
+    )
+    trimmed = run.oof_predictions.loc[
+        ~anchor | run.oof_predictions["game_id"].isin(retained_games)
+    ].copy()
+    trimmed_run = X15ModelRun(
+        oof_predictions=trimmed,
+        conditional_quantiles=run.conditional_quantiles,
+        fold_metrics=run.fold_metrics,
+        support_audit=run.support_audit,
+        weight_audit=run.weight_audit,
+        run_config_sha256=run.run_config_sha256,
+        run_config=run.run_config,
+    )
+
+    result = select_candidate_against_b0(
+        trimmed_run, spec=_spec(), authority=_authority()
+    )
+
+    assert result.authority_gate_passed is True
+    assert result.anchor_game_count == 29
+    assert result.anchor_support_status == "INSUFFICIENT_SUPPORT"
+    assert result.anchor_gate_passed is False
+    assert result.selected is False
+
+
 def test_selection_authority_rejects_game_week_identity_drift() -> None:
     run = _run()
     drifted_predictions = run.oof_predictions.copy()

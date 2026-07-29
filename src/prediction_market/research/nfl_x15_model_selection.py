@@ -46,6 +46,7 @@ BOOTSTRAP_SAMPLES: Final[int] = 10_000
 BOOTSTRAP_SEED: Final[int] = 20260729
 ANCHOR_LANDMARK_SECONDS: Final[int] = 3
 ANCHOR_ENDPOINT_SECONDS: Final[int] = 30
+MIN_ANCHOR_GAMES: Final[int] = 30
 LOSS_IMPROVEMENT_SIGN_SEMANTICS: Final[str] = (
     "POSITIVE_MEANS_CANDIDATE_LOSS_IS_LOWER_THAN_B0"
 )
@@ -1114,7 +1115,7 @@ def select_candidate_against_b0(
     anchor_episode_coverage = anchor_episode_count / len(
         episode_losses
     )
-    anchor_supported = anchor_game_count >= 2
+    anchor_supported = anchor_game_count >= MIN_ANCHOR_GAMES
     anchor_mean = float(
         anchor_game_losses["loss_improvement"].mean()
     )
