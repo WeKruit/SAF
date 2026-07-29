@@ -1,15 +1,21 @@
 from __future__ import annotations
 
-import hashlib
+import json
 from dataclasses import replace
 
+import pandas as pd
 import pytest
 
+from prediction_market.models.nfl_fastrmodels import (
+    FEATURE_NAMES,
+    NoSpreadModelInput,
+)
 from prediction_market.sports.nfl_reference_value import (
-    ReferenceModelProvenanceV1,
+    ReferenceFeatureProvenanceV1,
+    ReferenceModelBindingV1,
     ReferenceValueBuildError,
-    build_reference_market_diagnostics,
-    build_reference_value_bundle,
+    ReferenceValueObservationV1,
+    build_game_reference_tables,
 )
 
 
@@ -17,471 +23,355 @@ def _sha(character: str) -> str:
     return "sha256:" + character * 64
 
 
-def _row(
+def _model() -> ReferenceModelBindingV1:
+    return ReferenceModelBindingV1(
+        model_id="MODEL-NFL-FASTRMODELS-NO-SPREAD-CLOCK-V1",
+        model_version="9f2495fdb4943087ca663d96706eb5df7973aff4",
+        model_sha256=_sha("a"),
+        manifest_sha256=_sha("b"),
+        feature_spec_commit="75c7b68bc49535370236c38c9826265da075bd71",
+    )
+
+
+def _event(
     *,
-    game_id: str = "2025_01_AAA_BBB",
-    play_id: str,
-    episode_id: str,
     order_sequence: int,
-    focal_team: str,
-    vegas_wp_focal: float,
+    raw_play_id: str,
+    known_at: str | None,
     quarter: int = 1,
-    **overrides: object,
+    game_seconds_remaining: int = 3500,
+    possession_before: str | None = "AWY",
+    actor_team: str | None = "AWY",
+    primary_action: str = "PASS",
+    down: int | None = 1,
+    distance: int = 10,
+    yardline_100: float | None = 70.0,
+    pre_home_score: int = 0,
+    pre_away_score: int = 0,
+    information_status: str = "FINAL",
+    stage_b_eligible: bool = True,
+    final_eligible: bool = True,
+    row_disposition: str = "LIVE_PLAY",
+    home_wp_before_diagnostic: float = 0.99,
+    home_wp_after_diagnostic: float = 0.01,
 ) -> dict[str, object]:
-    row: dict[str, object] = {
-        "game_id": game_id,
-        "play_id": play_id,
-        "episode_id": episode_id,
+    event_id = f"2025_01_AWY_HME:event:{raw_play_id}"
+    return {
+        "schema_version": "EpisodeFactV3",
+        "game_id": "2025_01_AWY_HME",
+        "event_id": event_id,
+        "raw_play_id": raw_play_id,
+        "play_id": raw_play_id,
+        "atomic_information_episode_id": (
+            f"2025_01_AWY_HME:episode:{raw_play_id}"
+        ),
+        "information_status": information_status,
+        "stage_b_information_event_eligible": stage_b_eligible,
+        "final_sports_outcome_eligible": final_eligible,
+        "source_interval_start": known_at,
+        "source_interval_end": known_at,
+        "known_at": known_at,
         "order_sequence": order_sequence,
-        "home_team": "BBB",
-        "away_team": "AAA",
-        "focal_team": focal_team,
         "quarter": quarter,
-        "vegas_wp_focal": vegas_wp_focal,
-        "event_eligible": True,
-        "episode_nullified": False,
-        "episode_audit_only": False,
-        "event_flags": (),
+        "game_seconds_remaining": game_seconds_remaining,
+        "home_team": "HME",
+        "away_team": "AWY",
+        "actor_team": actor_team,
+        "possession_before": possession_before,
+        "pre_home_score": pre_home_score,
+        "pre_away_score": pre_away_score,
+        "down": down,
+        "distance": distance,
+        "yardline_100": yardline_100,
+        "home_timeouts_remaining": 3,
+        "away_timeouts_remaining": 3,
+        "primary_action": primary_action,
+        "row_disposition": row_disposition,
+        "review_result": None,
+        "pbp_source_sha256": _sha("c"),
+        "source_hashes": json.dumps([_sha("c")]),
+        # These are deliberately nonsense. Stage A must never consume them.
+        "home_wp_before_diagnostic": home_wp_before_diagnostic,
+        "home_wp_after_diagnostic": home_wp_after_diagnostic,
+        "home_wp_delta_diagnostic": (
+            home_wp_after_diagnostic - home_wp_before_diagnostic
+        ),
     }
-    row.update(overrides)
-    return row
 
 
-def _precomputed_provenance() -> ReferenceModelProvenanceV1:
-    return ReferenceModelProvenanceV1.precomputed(
-        model_id="nflfastr-vegas-wp",
-        model_version="fastrmodels-pinned-test",
-        declared_output_model_sha256=_sha("a"),
-        field_name="vegas_wp_focal",
-        source_class="open_model",
-        pit_status="PIT_DIAGNOSTIC",
-        license_status="RESEARCH_ALLOWED",
-        calibration_status="UPSTREAM_DIAGNOSTIC",
-        formal_registry_gate_passed=True,
+class _RecordingPredictor:
+    def __init__(self) -> None:
+        self.inputs: list[NoSpreadModelInput] = []
+
+    def predict_home(self, model_input: NoSpreadModelInput) -> float:
+        self.inputs.append(model_input)
+        return {
+            3500.0: 0.30,
+            3450.0: 0.60,
+            3400.0: 0.55,
+            3350.0: 0.52,
+        }[model_input.feature_values[3]]
+
+
+def _base_events() -> pd.DataFrame:
+    # Deliberately physical-order scrambled. The first chronological kickoff
+    # says AWY received, so HME receives the second half.
+    return pd.DataFrame(
+        [
+            _event(
+                order_sequence=30,
+                raw_play_id="30",
+                known_at="2025-09-07T17:04:00Z",
+                game_seconds_remaining=3450,
+                possession_before="HME",
+                actor_team="HME",
+                pre_home_score=7,
+                pre_away_score=0,
+            ),
+            _event(
+                order_sequence=10,
+                raw_play_id="10",
+                known_at="2025-09-07T17:02:00Z",
+                game_seconds_remaining=3600,
+                possession_before="AWY",
+                actor_team="HME",
+                primary_action="KICKOFF",
+                down=None,
+                yardline_100=35.0,
+            ),
+            _event(
+                order_sequence=20,
+                raw_play_id="20",
+                known_at="2025-09-07T17:03:00Z",
+                game_seconds_remaining=3500,
+                possession_before="AWY",
+                actor_team="AWY",
+            ),
+        ]
     )
 
 
-def test_builds_episode_boundary_reference_with_home_and_focal_orientation() -> None:
-    rows = [
-        _row(
-            play_id="10",
-            episode_id="td-finalized",
-            order_sequence=10,
-            focal_team="AAA",
-            vegas_wp_focal=0.40,
-            event_flags=("touchdown",),
-        ),
-        _row(
-            play_id="11",
-            episode_id="td-finalized",
-            order_sequence=11,
-            focal_team="AAA",
-            vegas_wp_focal=0.75,
-            event_flags=("two_point_attempt",),
-        ),
-        _row(
-            play_id="12",
-            episode_id="td-finalized",
-            order_sequence=12,
-            focal_team="AAA",
-            vegas_wp_focal=0.78,
-            event_flags=("penalty", "review"),
-        ),
-        _row(
-            play_id="20",
-            episode_id="next-live-episode",
-            order_sequence=20,
-            focal_team="BBB",
-            vegas_wp_focal=0.20,
-        ),
-        _row(
-            play_id="30",
-            episode_id="following-live-episode",
-            order_sequence=30,
-            focal_team="AAA",
-            vegas_wp_focal=0.70,
-        ),
+def test_builds_sorted_pit_states_and_ignores_precomputed_diagnostics() -> None:
+    predictor = _RecordingPredictor()
+    first = build_game_reference_tables(
+        _base_events(),
+        predictor=predictor,
+        model=_model(),
+        expected_pbp_source_sha256=_sha("c"),
+    )
+    tampered = _base_events()
+    tampered["home_wp_before_diagnostic"] = [0.02, 0.88, 0.44]
+    tampered["home_wp_after_diagnostic"] = [0.98, 0.12, 0.66]
+    second = build_game_reference_tables(
+        tampered,
+        predictor=_RecordingPredictor(),
+        model=_model(),
+        expected_pbp_source_sha256=_sha("c"),
+    )
+
+    assert first.state_predictions["state_raw_play_id"].tolist() == [
+        "10",
+        "20",
+        "30",
     ]
-
-    bundle = build_reference_value_bundle(
-        rows,
-        model=_precomputed_provenance(),
-        input_source_hashes={"sports_feature_view": _sha("b")},
+    supported = first.state_predictions.query(
+        "reference_status == 'SUPPORTED'"
     )
-
-    td = next(
-        row for row in bundle.observations if row.episode_id == "td-finalized"
-    )
-    assert td.episode_play_ids == ("10", "11", "12")
-    assert td.pre_probability_home == pytest.approx(0.60)
-    assert td.post_probability_home == pytest.approx(0.20)
-    assert td.reference_delta_home == pytest.approx(-0.40)
-    assert td.pre_probability_focal == pytest.approx(0.40)
-    assert td.post_probability_focal == pytest.approx(0.80)
-    assert td.reference_delta_focal == pytest.approx(0.40)
-    assert td.model_input_sha256.startswith("sha256:")
-    assert td.source_hashes == (_sha("b"),)
-    assert td.support_status == "SUPPORTED"
-    assert td.formal_comparison_eligible is True
-    assert bundle.summary.formal_comparison_eligible == 2
-    assert bundle.observations_sha256.startswith("sha256:")
-
-
-def test_rejects_no_play_and_reversal_and_keeps_ot_as_unproven() -> None:
-    rows = [
-        _row(
-            play_id="1",
-            episode_id="no-play",
-            order_sequence=1,
-            focal_team="AAA",
-            vegas_wp_focal=0.50,
-            play_type="no_play",
-        ),
-        _row(
-            play_id="2",
-            episode_id="reversal",
-            order_sequence=2,
-            focal_team="BBB",
-            vegas_wp_focal=0.55,
-            review_result="reversed",
-        ),
-        _row(
-            play_id="3",
-            episode_id="ot-play",
-            order_sequence=3,
-            focal_team="AAA",
-            vegas_wp_focal=0.60,
-            quarter=5,
-        ),
-        _row(
-            play_id="4",
-            episode_id="ot-next",
-            order_sequence=4,
-            focal_team="BBB",
-            vegas_wp_focal=0.30,
-            quarter=5,
-        ),
-        _row(
-            play_id="5",
-            episode_id="regulation-next",
-            order_sequence=5,
-            focal_team="AAA",
-            vegas_wp_focal=0.65,
-            quarter=4,
-        ),
-    ]
-
-    bundle = build_reference_value_bundle(
-        rows,
-        model=_precomputed_provenance(),
-        input_source_hashes={"sports_feature_view": _sha("c")},
-    )
-    by_episode = {row.episode_id: row for row in bundle.observations}
-
-    assert by_episode["no-play"].support_status == "EPISODE_INELIGIBLE"
-    assert by_episode["no-play"].reference_delta_home is None
-    assert by_episode["reversal"].support_status == "EPISODE_INELIGIBLE"
-    assert by_episode["reversal"].reference_delta_home is None
+    assert supported["state_raw_play_id"].tolist() == ["20", "30"]
+    assert supported["p_home"].tolist() == pytest.approx([0.30, 0.60])
     assert (
-        by_episode["ot-play"].support_status
-        == "MODEL_SUPPORT_UNPROVEN"
+        first.state_predictions["state_input_sha256"].tolist()
+        == second.state_predictions["state_input_sha256"].tolist()
     )
-    assert by_episode["ot-play"].formal_comparison_eligible is False
-    assert by_episode["ot-play"].reference_delta_home is not None
-    assert bundle.summary.support_status_counts == (
-        ("EPISODE_INELIGIBLE", 2),
-        ("MODEL_SUPPORT_UNPROVEN", 2),
-        ("MISSING_POST_REFERENCE", 1),
+    pd.testing.assert_series_equal(
+        first.state_predictions["p_home"],
+        second.state_predictions["p_home"],
     )
 
+    input_by_clock = {
+        item.feature_values[3]: item for item in predictor.inputs
+    }
+    assert input_by_clock[3500.0].feature_values[0] == 0.0
+    assert input_by_clock[3450.0].feature_values[0] == 1.0
+    assert input_by_clock[3450.0].feature_values[5] == 7.0
+    assert input_by_clock[3450.0].feature_names == FEATURE_NAMES
 
-def test_precomputed_model_provenance_is_explicit_and_model_bytes_are_verified() -> None:
-    provenance = _precomputed_provenance()
+    play_20 = first.reference_observations.loc[
+        first.reference_observations["raw_play_id"].eq("20")
+    ].iloc[0]
+    assert play_20["reference_status"] == "SUPPORTED"
+    assert play_20["pre_state_raw_play_id"] == "20"
+    assert play_20["post_state_raw_play_id"] == "30"
+    assert play_20["pre_state_known_at"] == "2025-09-07T17:03:00Z"
+    assert play_20["post_state_known_at"] == "2025-09-07T17:04:00Z"
+    assert play_20["p_before_home"] == pytest.approx(0.30)
+    assert play_20["p_after_home"] == pytest.approx(0.60)
+    assert play_20["reference_delta_home"] == pytest.approx(0.30)
+    assert play_20["intervening_episode_ids"] == "[]"
 
-    assert provenance.execution_mode == "PRECOMPUTED_FIELD"
-    assert provenance.precomputed_field == "vegas_wp_focal"
-    assert provenance.model_bytes_verified is False
-    assert provenance.model_sha256 == _sha("a")
-    assert provenance.output_model_bytes_status == (
-        "OUTPUT_MODEL_BYTES_UNVERIFIED"
-    )
-    assert provenance.formal_registry_gate_passed is True
-
-    model_bytes = b"pinned-model-bytes"
-    digest = "sha256:" + hashlib.sha256(model_bytes).hexdigest()
-    verified = ReferenceModelProvenanceV1.from_model_bytes(
-        model_id="nflfastr-vegas-wp",
-        model_version="fastrmodels-pinned-test",
-        model_sha256=digest,
-        model_bytes=model_bytes,
-        source_class="open_model",
-        pit_status="PIT_DIAGNOSTIC",
-        license_status="RESEARCH_ALLOWED",
-        calibration_status="UPSTREAM_DIAGNOSTIC",
-        formal_registry_gate_passed=True,
-    )
-    assert verified.model_bytes_verified is True
-    assert verified.execution_mode == "MODEL_BYTES_VERIFIED"
-    assert verified.output_model_bytes_status == "MODEL_BYTES_VERIFIED"
-    assert verified.formal_registry_gate_passed is True
-    verified_bundle = build_reference_value_bundle(
-        [
-            _row(
-                play_id="1",
-                episode_id="one",
-                order_sequence=1,
-                focal_team="BBB",
-                vegas_wp_focal=0.40,
-            ),
-            _row(
-                play_id="2",
-                episode_id="two",
-                order_sequence=2,
-                focal_team="AAA",
-                vegas_wp_focal=0.50,
-            ),
-        ],
-        model=verified,
-        input_source_hashes={"sports_feature_view": _sha("b")},
-    )
-    assert verified_bundle.observations[0].model_bytes_verified is True
-    assert verified_bundle.observations[0].probability_field == "vegas_wp_focal"
-
-    with pytest.raises(ReferenceValueBuildError, match="model bytes SHA-256"):
-        ReferenceModelProvenanceV1.from_model_bytes(
-            model_id="nflfastr-vegas-wp",
-            model_version="fastrmodels-pinned-test",
-            model_sha256=_sha("f"),
-            model_bytes=model_bytes,
-            source_class="open_model",
-            pit_status="PIT_DIAGNOSTIC",
-            license_status="RESEARCH_ALLOWED",
-            calibration_status="UPSTREAM_DIAGNOSTIC",
-            formal_registry_gate_passed=True,
-        )
-
-
-def test_reference_gap_and_fraction_require_material_reference_and_support() -> None:
-    rows = [
-        _row(
-            play_id="1",
-            episode_id="material",
-            order_sequence=1,
-            focal_team="BBB",
-            vegas_wp_focal=0.40,
-        ),
-        _row(
-            play_id="2",
-            episode_id="small",
-            order_sequence=2,
-            focal_team="AAA",
-            vegas_wp_focal=0.45,
-        ),
-        _row(
-            play_id="3",
-            episode_id="small-next",
-            order_sequence=3,
-            focal_team="BBB",
-            vegas_wp_focal=0.56,
-            quarter=4,
-        ),
-        _row(
-            play_id="4",
-            episode_id="ot",
-            order_sequence=4,
-            focal_team="BBB",
-            vegas_wp_focal=0.44,
-            quarter=5,
-        ),
-        _row(
-            play_id="5",
-            episode_id="terminal",
-            order_sequence=5,
-            focal_team="AAA",
-            vegas_wp_focal=0.50,
-            quarter=5,
-        ),
+    feature_rows = first.feature_provenance.loc[
+        first.feature_provenance["state_raw_play_id"].eq("30")
     ]
-    bundle = build_reference_value_bundle(
-        rows,
-        model=_precomputed_provenance(),
-        input_source_hashes={"sports_feature_view": _sha("d")},
-    )
-    diagnostics = build_reference_market_diagnostics(
-        bundle,
-        [
-            {
-                "game_id": "2025_01_AAA_BBB",
-                "episode_id": "material",
-                "logical_market_id": "winner",
-                "venue": "polymarket",
-                "horizon_seconds": 10,
-                "target_team": "BBB",
-                "market_delta": 0.10,
-                "source_hashes": [_sha("e")],
-            },
-            {
-                "game_id": "2025_01_AAA_BBB",
-                "episode_id": "small",
-                "logical_market_id": "winner",
-                "venue": "kalshi",
-                "horizon_seconds": 10,
-                "target_team": "AAA",
-                "market_delta": 0.02,
-                "source_hashes": [_sha("f")],
-            },
-            {
-                "game_id": "2025_01_AAA_BBB",
-                "episode_id": "ot",
-                "logical_market_id": "winner",
-                "venue": "polymarket",
-                "horizon_seconds": 10,
-                "target_team": "BBB",
-                "market_delta": 0.03,
-                "source_hashes": [_sha("e")],
-            },
-        ],
-        materiality_threshold=0.05,
-    )
-    by_episode = {row.episode_id: row for row in diagnostics.rows}
-
-    assert by_episode["material"].reference_delta_target == pytest.approx(0.15)
-    assert by_episode["material"].reference_gap == pytest.approx(-0.05)
-    assert by_episode["material"].completion_fraction == pytest.approx(2 / 3)
-    assert by_episode["material"].comparison_status == "ELIGIBLE"
-    assert by_episode["small"].reference_delta_target == pytest.approx(-0.01)
-    assert by_episode["small"].reference_gap == pytest.approx(0.03)
-    assert by_episode["small"].completion_fraction is None
-    assert by_episode["small"].comparison_status == "BELOW_MATERIALITY"
-    assert by_episode["ot"].reference_gap is None
-    assert by_episode["ot"].comparison_status == "REFERENCE_NOT_SUPPORTED"
-    assert diagnostics.rows_sha256.startswith("sha256:")
-    small_next = next(
-        row
-        for row in bundle.observations
-        if row.episode_id == "small-next"
-    )
-    assert small_next.support_status == "MODEL_SUPPORT_UNPROVEN"
-    assert small_next.formal_comparison_eligible is False
+    assert len(feature_rows) == 11
+    kickoff_feature = feature_rows.loc[
+        feature_rows["feature_name"].eq("receive_2h_ko")
+    ].iloc[0]
+    assert kickoff_feature["feature_known_at"] == "2025-09-07T17:02:00Z"
+    assert kickoff_feature["source_raw_play_id"] == "10"
+    assert set(feature_rows["pit_status"]) == {"PIT_VERIFIED"}
 
 
-def test_precomputed_formal_eligibility_requires_explicit_registry_gate() -> None:
-    provenance = ReferenceModelProvenanceV1.precomputed(
-        model_id="nflfastr-vegas-wp-output",
-        model_version="published-field-provenance",
-        declared_output_model_sha256=_sha("9"),
-        field_name="vegas_wp_focal",
-        source_class="open_model",
-        pit_status="PIT_DIAGNOSTIC",
-        license_status="RESEARCH_ALLOWED",
-        calibration_status="UPSTREAM_DIAGNOSTIC",
-        formal_registry_gate_passed=False,
+def test_composite_transition_keeps_bridge_separate_from_atomic_delta() -> None:
+    events = _base_events()
+    intermediate = _event(
+        order_sequence=25,
+        raw_play_id="25",
+        known_at="2025-09-07T17:03:30Z",
+        game_seconds_remaining=3480,
+        primary_action="TRY",
+        down=None,
+        yardline_100=None,
     )
-    bundle = build_reference_value_bundle(
-        [
-            _row(
-                play_id="1",
-                episode_id="one",
-                order_sequence=1,
-                focal_team="BBB",
-                vegas_wp_focal=0.40,
-            ),
-            _row(
-                play_id="2",
-                episode_id="two",
-                order_sequence=2,
-                focal_team="AAA",
-                vegas_wp_focal=0.50,
-            ),
-        ],
-        model=provenance,
-        input_source_hashes={"sports_feature_view": _sha("b")},
-    )
-    observation = bundle.observations[0]
-    assert observation.support_status == "SUPPORTED"
-    assert observation.output_model_bytes_status == (
-        "OUTPUT_MODEL_BYTES_UNVERIFIED"
-    )
-    assert observation.formal_registry_gate_passed is False
-    assert observation.formal_comparison_eligible is False
+    events = pd.concat([events, pd.DataFrame([intermediate])], ignore_index=True)
 
-    diagnostic = build_reference_market_diagnostics(
-        bundle,
-        [
-            {
-                "game_id": observation.game_id,
-                "episode_id": observation.episode_id,
-                "logical_market_id": "winner",
-                "venue": "polymarket",
-                "horizon_seconds": 10,
-                "target_team": "BBB",
-                "market_delta": 0.05,
-                "source_hashes": [_sha("e")],
-            }
-        ],
-        materiality_threshold=0.01,
-    ).rows[0]
-    assert diagnostic.reference_gap == pytest.approx(-0.05)
-    assert diagnostic.completion_fraction is None
-    assert diagnostic.comparison_status == "REFERENCE_NOT_SUPPORTED"
+    result = build_game_reference_tables(
+        events,
+        predictor=_RecordingPredictor(),
+        model=_model(),
+        expected_pbp_source_sha256=_sha("c"),
+    )
+    observation = result.reference_observations.loc[
+        result.reference_observations["raw_play_id"].eq("20")
+    ].iloc[0]
+
+    assert observation["reference_status"] == "COMPOSITE_TRANSITION"
+    assert observation["p_before_home"] == pytest.approx(0.30)
+    assert pd.isna(observation["p_after_home"])
+    assert pd.isna(observation["reference_delta_home"])
+    assert observation["bridge_p_after_home"] == pytest.approx(0.60)
+    assert observation["bridge_delta_home"] == pytest.approx(0.30)
+    assert json.loads(observation["intervening_episode_ids"]) == [
+        intermediate["atomic_information_episode_id"]
+    ]
 
 
-def test_observation_contract_rejects_inconsistent_hash_or_support() -> None:
-    bundle = build_reference_value_bundle(
-        [
-            _row(
-                play_id="1",
-                episode_id="one",
-                order_sequence=1,
-                focal_team="BBB",
-                vegas_wp_focal=0.40,
-            ),
-            _row(
-                play_id="2",
-                episode_id="two",
-                order_sequence=2,
-                focal_team="AAA",
-                vegas_wp_focal=0.50,
-            ),
-        ],
-        model=_precomputed_provenance(),
-        input_source_hashes={"sports_feature_view": _sha("a")},
+def test_event_ineligibility_ot_and_missing_post_are_explicit() -> None:
+    events = _base_events()
+    events.loc[events["raw_play_id"].eq("20"), "final_sports_outcome_eligible"] = (
+        False
     )
-    observation = bundle.observations[0]
+    events.loc[events["raw_play_id"].eq("20"), "row_disposition"] = (
+        "NULLIFIED_NO_PLAY"
+    )
+    ot = _event(
+        order_sequence=40,
+        raw_play_id="40",
+        known_at="2025-09-07T17:05:00Z",
+        quarter=5,
+        game_seconds_remaining=600,
+    )
+    events = pd.concat([events, pd.DataFrame([ot])], ignore_index=True)
 
-    with pytest.raises(ReferenceValueBuildError, match="observation_sha256"):
-        replace(observation, observation_sha256=_sha("f"))
+    result = build_game_reference_tables(
+        events,
+        predictor=_RecordingPredictor(),
+        model=_model(),
+        expected_pbp_source_sha256=_sha("c"),
+    )
+    statuses = dict(
+        zip(
+            result.reference_observations["raw_play_id"],
+            result.reference_observations["reference_status"],
+            strict=True,
+        )
+    )
+
+    assert statuses["20"] == "EVENT_INELIGIBLE"
+    assert statuses["30"] == "MISSING_POST_STATE"
+    assert statuses["40"] == "MODEL_SUPPORT_UNPROVEN"
+    ineligible = result.reference_observations.loc[
+        result.reference_observations["raw_play_id"].eq("20")
+    ].iloc[0]
+    assert pd.isna(ineligible["p_before_home"])
+    assert pd.isna(ineligible["p_after_home"])
+
+
+def test_missing_or_future_opening_kickoff_evidence_fails_closed() -> None:
+    no_kickoff = _base_events().loc[
+        ~_base_events()["primary_action"].eq("KICKOFF")
+    ]
+    missing = build_game_reference_tables(
+        no_kickoff,
+        predictor=_RecordingPredictor(),
+        model=_model(),
+        expected_pbp_source_sha256=_sha("c"),
+    )
+    assert set(missing.state_predictions["reference_status"]) == {
+        "MISSING_AS_OF_RECEIVER"
+    }
+
+    future = _base_events()
+    future.loc[future["raw_play_id"].eq("10"), "known_at"] = (
+        "2025-09-07T18:00:00Z"
+    )
+    rejected = build_game_reference_tables(
+        future,
+        predictor=_RecordingPredictor(),
+        model=_model(),
+        expected_pbp_source_sha256=_sha("c"),
+    )
+    by_play = rejected.state_predictions.set_index("state_raw_play_id")
+    assert by_play.loc["20", "reference_status"] == "FUTURE_FEATURE_REJECTED"
+    assert by_play.loc["30", "reference_status"] == "FUTURE_FEATURE_REJECTED"
+
+
+def test_contracts_reject_hash_or_supported_null_probability() -> None:
+    provenance = ReferenceFeatureProvenanceV1(
+        game_id="2025_01_AWY_HME",
+        state_event_id="event-1",
+        state_raw_play_id="1",
+        state_known_at="2025-09-07T17:00:00Z",
+        feature_name="down",
+        feature_value=1.0,
+        feature_known_at="2025-09-07T17:00:00Z",
+        source_event_id="event-1",
+        source_raw_play_id="1",
+        source_hash=_sha("c"),
+        pit_status="PIT_VERIFIED",
+    )
+    assert provenance.schema_version == "ReferenceFeatureProvenanceV1"
+    with pytest.raises(ReferenceValueBuildError, match="source_hash"):
+        replace(provenance, source_hash="not-a-hash")
+
     with pytest.raises(
-        ReferenceValueBuildError, match="formal comparison eligibility"
+        ReferenceValueBuildError,
+        match="supported reference requires",
     ):
-        replace(
-            observation,
-            support_status="MODEL_SUPPORT_UNPROVEN",
-            formal_comparison_eligible=True,
-        )
-
-
-def test_duplicate_play_grain_fails_closed() -> None:
-    rows = [
-        _row(
-            play_id="1",
-            episode_id="one",
-            order_sequence=1,
-            focal_team="BBB",
-            vegas_wp_focal=0.50,
-        ),
-        _row(
-            play_id="1",
-            episode_id="one",
-            order_sequence=1,
-            focal_team="BBB",
-            vegas_wp_focal=0.50,
-        ),
-    ]
-
-    with pytest.raises(ReferenceValueBuildError, match="duplicate game/play grain"):
-        build_reference_value_bundle(
-            rows,
-            model=_precomputed_provenance(),
-            input_source_hashes={"sports_feature_view": _sha("a")},
+        ReferenceValueObservationV1(
+            game_id="2025_01_AWY_HME",
+            event_id="event-1",
+            raw_play_id="1",
+            atomic_information_episode_id="episode-1",
+            source_interval_start="2025-09-07T17:00:00Z",
+            source_interval_end="2025-09-07T17:00:01Z",
+            pre_state_event_id="event-1",
+            pre_state_raw_play_id="1",
+            pre_state_known_at="2025-09-07T17:00:00Z",
+            post_state_event_id="event-2",
+            post_state_raw_play_id="2",
+            post_state_known_at="2025-09-07T17:00:02Z",
+            p_before_home=0.4,
+            p_after_home=None,
+            reference_delta_home=None,
+            bridge_p_after_home=None,
+            bridge_delta_home=None,
+            intervening_episode_ids=(),
+            reference_status="SUPPORTED",
+            exclusion_reasons=(),
+            pre_state_input_sha256=_sha("d"),
+            post_state_input_sha256=_sha("e"),
+            model_id=_model().model_id,
+            model_sha256=_model().model_sha256,
+            model_manifest_sha256=_model().manifest_sha256,
+            pbp_source_sha256=_sha("c"),
         )

@@ -1,9 +1,4 @@
-"""Offline NFL diagnostic reference values from pinned precomputed WP fields.
-
-This module deliberately does not download, train, or ensemble a model.  It
-consumes canonical episode/play feature rows whose ``vegas_wp_focal`` values
-were already produced by a version-pinned nflfastR/fastrmodels asset.
-"""
+"""PIT-audited Stage A NFL reference values from the frozen official model."""
 
 from __future__ import annotations
 
@@ -11,62 +6,237 @@ import hashlib
 import json
 import math
 import re
-from collections import Counter
-from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass, fields, is_dataclass
-from numbers import Integral, Real
-from typing import Any, Literal
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass
+from numbers import Real
+from typing import Final, Literal, Protocol
+
+import numpy as np
+import pandas as pd
+
+from prediction_market.models.nfl_fastrmodels import (
+    FEATURE_NAMES,
+    NoSpreadModelInput,
+    OfficialModelInputError,
+)
 
 
-SourceClass = Literal[
-    "open_model",
-    "provider_probability",
-    "devig_odds",
-    "exchange_reference",
-]
-ExecutionMode = Literal["PRECOMPUTED_FIELD", "MODEL_BYTES_VERIFIED"]
-OutputModelBytesStatus = Literal[
-    "OUTPUT_MODEL_BYTES_UNVERIFIED",
-    "MODEL_BYTES_VERIFIED",
-]
-ReferenceSupportStatus = Literal[
+EXPERIMENT_ID: Final[str] = "X-15"
+CLAIM_BOUNDARY: Final[str] = (
+    "RETROSPECTIVE_DIAGNOSTIC; frozen official no-spread model; "
+    "not live-PIT latency, causality, execution, or alpha evidence"
+)
+
+ReferenceStatus = Literal[
     "SUPPORTED",
-    "EPISODE_INELIGIBLE",
+    "EVENT_INELIGIBLE",
     "MODEL_SUPPORT_UNPROVEN",
-    "MISSING_PRE_REFERENCE",
-    "MISSING_POST_REFERENCE",
-]
-ComparisonStatus = Literal[
-    "ELIGIBLE",
-    "BELOW_MATERIALITY",
-    "REFERENCE_NOT_SUPPORTED",
+    "MISSING_PRE_STATE",
+    "MISSING_POST_STATE",
+    "MISSING_AS_OF_RECEIVER",
+    "COMPOSITE_TRANSITION",
+    "FUTURE_FEATURE_REJECTED",
 ]
 
-_SHA256_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
-_SOURCE_CLASSES = frozenset(
+_REFERENCE_STATUSES: Final[frozenset[str]] = frozenset(
     {
-        "open_model",
-        "provider_probability",
-        "devig_odds",
-        "exchange_reference",
+        "SUPPORTED",
+        "EVENT_INELIGIBLE",
+        "MODEL_SUPPORT_UNPROVEN",
+        "MISSING_PRE_STATE",
+        "MISSING_POST_STATE",
+        "MISSING_AS_OF_RECEIVER",
+        "COMPOSITE_TRANSITION",
+        "FUTURE_FEATURE_REJECTED",
     }
 )
-_SUPPORT_STATUS_ORDER = (
-    "SUPPORTED",
-    "EPISODE_INELIGIBLE",
-    "MODEL_SUPPORT_UNPROVEN",
-    "MISSING_PRE_REFERENCE",
-    "MISSING_POST_REFERENCE",
+_SHA256_RE: Final[re.Pattern[str]] = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_REQUIRED_EVENT_COLUMNS: Final[frozenset[str]] = frozenset(
+    {
+        "game_id",
+        "event_id",
+        "raw_play_id",
+        "atomic_information_episode_id",
+        "information_status",
+        "stage_b_information_event_eligible",
+        "final_sports_outcome_eligible",
+        "source_interval_start",
+        "source_interval_end",
+        "known_at",
+        "order_sequence",
+        "quarter",
+        "game_seconds_remaining",
+        "home_team",
+        "away_team",
+        "actor_team",
+        "possession_before",
+        "pre_home_score",
+        "pre_away_score",
+        "down",
+        "distance",
+        "yardline_100",
+        "home_timeouts_remaining",
+        "away_timeouts_remaining",
+        "primary_action",
+        "row_disposition",
+        "review_result",
+        "pbp_source_sha256",
+    }
+)
+
+STATE_PREDICTION_COLUMNS: Final[tuple[str, ...]] = (
+    "schema_version",
+    "experiment_id",
+    "claim_boundary",
+    "game_id",
+    "state_event_id",
+    "state_raw_play_id",
+    "state_atomic_information_episode_id",
+    "order_sequence",
+    "state_known_at",
+    "quarter",
+    "game_seconds_remaining",
+    "home_team",
+    "away_team",
+    "possession_team",
+    "p_home",
+    "reference_status",
+    "exclusion_reasons",
+    "state_input_sha256",
+    "model_id",
+    "model_version",
+    "model_sha256",
+    "model_manifest_sha256",
+    "pbp_source_sha256",
+)
+FEATURE_PROVENANCE_COLUMNS: Final[tuple[str, ...]] = (
+    "schema_version",
+    "experiment_id",
+    "game_id",
+    "state_event_id",
+    "state_raw_play_id",
+    "state_known_at",
+    "feature_name",
+    "feature_value",
+    "feature_known_at",
+    "source_event_id",
+    "source_raw_play_id",
+    "source_hash",
+    "pit_status",
+)
+REFERENCE_OBSERVATION_COLUMNS: Final[tuple[str, ...]] = (
+    "schema_version",
+    "experiment_id",
+    "claim_boundary",
+    "game_id",
+    "event_id",
+    "raw_play_id",
+    "atomic_information_episode_id",
+    "source_interval_start",
+    "source_interval_end",
+    "pre_state_event_id",
+    "pre_state_raw_play_id",
+    "pre_state_known_at",
+    "post_state_event_id",
+    "post_state_raw_play_id",
+    "post_state_known_at",
+    "p_before_home",
+    "p_after_home",
+    "reference_delta_home",
+    "bridge_p_after_home",
+    "bridge_delta_home",
+    "intervening_episode_ids",
+    "reference_status",
+    "exclusion_reasons",
+    "pre_state_input_sha256",
+    "post_state_input_sha256",
+    "model_id",
+    "model_sha256",
+    "model_manifest_sha256",
+    "pbp_source_sha256",
 )
 
 
 class ReferenceValueBuildError(ValueError):
-    """Canonical inputs cannot produce an auditable reference-value row."""
+    """Canonical facts cannot support a trustworthy Stage A result."""
+
+
+class HomeProbabilityPredictor(Protocol):
+    def predict_home(self, model_input: NoSpreadModelInput) -> float: ...
+
+
+def _require_text(value: object, *, field: str) -> str:
+    if type(value) is not str or not value.strip() or value != value.strip():
+        raise ReferenceValueBuildError(f"{field} must be canonical non-empty text")
+    return value
+
+
+def _require_sha(value: object, *, field: str) -> str:
+    if type(value) is not str or _SHA256_RE.fullmatch(value) is None:
+        raise ReferenceValueBuildError(f"{field} must be a sha256 digest")
+    return value
+
+
+def _optional_text(value: object) -> str | None:
+    if value is None or value is pd.NA or pd.isna(value):
+        return None
+    if type(value) is not str or not value.strip():
+        return None
+    return value.strip()
+
+
+def _finite_number(value: object) -> float | None:
+    if value is None or value is pd.NA or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _integer(value: object) -> int | None:
+    number = _finite_number(value)
+    if number is None or not number.is_integer():
+        return None
+    return int(number)
+
+
+def _strict_bool(value: object) -> bool:
+    return isinstance(value, (bool, np.bool_)) and bool(value)
+
+
+def _timestamp(value: object, *, field: str) -> pd.Timestamp:
+    text = _optional_text(value)
+    if text is None:
+        raise ReferenceValueBuildError(f"{field} must be a timestamp")
+    try:
+        result = pd.Timestamp(text)
+    except (TypeError, ValueError) as exc:
+        raise ReferenceValueBuildError(f"{field} must be a timestamp") from exc
+    if result.tzinfo is None or result.utcoffset().total_seconds() != 0:
+        raise ReferenceValueBuildError(f"{field} must be timezone-aware UTC")
+    return result
 
 
 def _canonical_value(value: object) -> object:
-    if is_dataclass(value) and not isinstance(value, type):
-        value = asdict(value)
+    if value is None or value is pd.NA:
+        return None
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    if isinstance(value, (float, np.floating)):
+        number = float(value)
+        if not math.isfinite(number):
+            raise ReferenceValueBuildError(
+                "canonical material cannot contain non-finite numbers"
+            )
+        return number
+    if isinstance(value, str):
+        return value
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
     if isinstance(value, Mapping):
         return {
             str(key): _canonical_value(child)
@@ -74,1059 +244,752 @@ def _canonical_value(value: object) -> object:
         }
     if isinstance(value, (list, tuple)):
         return [_canonical_value(child) for child in value]
-    if isinstance(value, set):
-        return sorted(_canonical_value(child) for child in value)
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            raise ReferenceValueBuildError(
-                "canonical material cannot contain non-finite numbers"
-            )
-        return value
-    if value is None or isinstance(value, (str, int, bool)):
-        return value
     raise ReferenceValueBuildError(
         f"canonical material contains unsupported {type(value).__name__}"
     )
 
 
 def _canonical_sha256(value: object) -> str:
-    payload = json.dumps(
+    encoded = json.dumps(
         _canonical_value(value),
+        ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
-        ensure_ascii=False,
         allow_nan=False,
     ).encode("utf-8")
-    return "sha256:" + hashlib.sha256(payload).hexdigest()
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
-def _digest(value: object, *, field: str) -> str:
-    if type(value) is not str or _SHA256_RE.fullmatch(value) is None:
-        raise ReferenceValueBuildError(f"{field} must be a sha256 digest")
-    return value
-
-
-def _text(value: object, *, field: str) -> str:
-    if type(value) is not str or not value.strip():
-        raise ReferenceValueBuildError(f"{field} must be non-empty text")
-    return value.strip()
-
-
-def _probability(value: object, *, field: str) -> float | None:
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, Real):
-        raise ReferenceValueBuildError(f"{field} must be a probability or null")
-    number = float(value)
-    if not math.isfinite(number) or not 0.0 <= number <= 1.0:
-        raise ReferenceValueBuildError(f"{field} must be between zero and one")
-    return number
-
-
-def _finite(value: object, *, field: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, Real):
-        raise ReferenceValueBuildError(f"{field} must be finite")
-    number = float(value)
-    if not math.isfinite(number):
-        raise ReferenceValueBuildError(f"{field} must be finite")
-    return number
-
-
-def _integer(value: object, *, field: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, Integral):
-        raise ReferenceValueBuildError(f"{field} must be an integer")
-    return int(value)
-
-
-def _truthy_indicator(value: object) -> bool:
-    if value is None:
-        return False
-    if type(value) is bool:
-        return value
-    if isinstance(value, Real) and not isinstance(value, bool):
-        return float(value) == 1.0
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes"}
-    return False
-
-
-def _record(value: object) -> dict[str, Any]:
-    if isinstance(value, Mapping):
-        return dict(value)
-    to_dict = getattr(value, "to_dict", None)
-    if callable(to_dict):
-        converted = to_dict()
-        if isinstance(converted, Mapping):
-            return dict(converted)
-    if is_dataclass(value) and not isinstance(value, type):
-        return asdict(value)
-    raise ReferenceValueBuildError("every feature row must be mapping-like")
-
-
-def _records(value: object) -> list[dict[str, Any]]:
-    if hasattr(value, "rows") and not isinstance(value, Mapping):
-        rows = getattr(value, "rows")
-        if isinstance(rows, Sequence):
-            value = rows
-    if hasattr(value, "to_dict") and not isinstance(value, Mapping):
-        try:
-            converted = value.to_dict(orient="records")
-        except TypeError:
-            converted = None
-        if isinstance(converted, list):
-            value = converted
-    if not isinstance(value, Sequence) or isinstance(
-        value, (str, bytes, bytearray)
-    ):
-        raise ReferenceValueBuildError("feature rows must be a record sequence")
-    return [_record(row) for row in value]
-
-
-def _source_hash_pairs(
-    source_hashes: Mapping[str, str] | Sequence[tuple[str, str]],
-) -> tuple[tuple[str, str], ...]:
-    pairs = (
-        list(source_hashes.items())
-        if isinstance(source_hashes, Mapping)
-        else list(source_hashes)
+def _json_tuple(values: tuple[str, ...]) -> str:
+    return json.dumps(
+        list(values),
+        ensure_ascii=False,
+        separators=(",", ":"),
     )
-    canonical = tuple(
-        sorted(
-            (
-                _text(name, field="source hash name"),
-                _digest(digest, field="source hash"),
-            )
-            for name, digest in pairs
-        )
-    )
-    if not canonical:
-        raise ReferenceValueBuildError("input source hashes are required")
-    if len({name for name, _digest_value in canonical}) != len(canonical):
-        raise ReferenceValueBuildError("input source hash names must be unique")
-    return canonical
-
-
-def _source_hash_values(
-    source_hashes: Sequence[tuple[str, str]],
-) -> tuple[str, ...]:
-    return tuple(sorted({digest for _name, digest in source_hashes}))
 
 
 @dataclass(frozen=True, slots=True)
-class ReferenceModelProvenanceV1:
-    """Frozen model identity even when only precomputed output is available."""
-
+class ReferenceModelBindingV1:
     model_id: str
     model_version: str
     model_sha256: str
-    source_class: SourceClass
-    pit_status: str
-    license_status: str
-    calibration_status: str
-    execution_mode: ExecutionMode
-    precomputed_field: str | None
-    model_bytes_verified: bool
-    output_model_bytes_status: OutputModelBytesStatus
-    formal_registry_gate_passed: bool
+    manifest_sha256: str
+    feature_spec_commit: str
 
     def __post_init__(self) -> None:
-        _text(self.model_id, field="model_id")
-        _text(self.model_version, field="model_version")
-        _digest(self.model_sha256, field="model_sha256")
-        if self.source_class not in _SOURCE_CLASSES:
-            raise ReferenceValueBuildError("source_class is unsupported")
-        for value, field in (
-            (self.pit_status, "pit_status"),
-            (self.license_status, "license_status"),
-            (self.calibration_status, "calibration_status"),
+        _require_text(self.model_id, field="model_id")
+        _require_text(self.model_version, field="model_version")
+        _require_sha(self.model_sha256, field="model_sha256")
+        _require_sha(self.manifest_sha256, field="manifest_sha256")
+        if (
+            type(self.feature_spec_commit) is not str
+            or re.fullmatch(r"[0-9a-f]{40}", self.feature_spec_commit) is None
         ):
-            _text(value, field=field)
-        if self.execution_mode not in {
-            "PRECOMPUTED_FIELD",
-            "MODEL_BYTES_VERIFIED",
-        }:
-            raise ReferenceValueBuildError("execution_mode is unsupported")
-        if type(self.model_bytes_verified) is not bool:
             raise ReferenceValueBuildError(
-                "model_bytes_verified must be boolean"
+                "feature_spec_commit must be a git commit"
             )
-        if type(self.formal_registry_gate_passed) is not bool:
-            raise ReferenceValueBuildError(
-                "formal_registry_gate_passed must be boolean"
-            )
-        if self.execution_mode == "PRECOMPUTED_FIELD":
-            _text(self.precomputed_field, field="precomputed_field")
-            if self.model_bytes_verified:
-                raise ReferenceValueBuildError(
-                    "precomputed mode cannot claim model bytes were verified"
-                )
-            if (
-                self.output_model_bytes_status
-                != "OUTPUT_MODEL_BYTES_UNVERIFIED"
-            ):
-                raise ReferenceValueBuildError(
-                    "precomputed mode must explicitly mark output model "
-                    "bytes unverified"
-                )
-        else:
-            _text(self.precomputed_field, field="precomputed_field")
-            if not self.model_bytes_verified:
-                raise ReferenceValueBuildError(
-                    "verified model-bytes mode requires verified bytes"
-                )
-            if self.output_model_bytes_status != "MODEL_BYTES_VERIFIED":
-                raise ReferenceValueBuildError(
-                    "verified mode must mark model bytes verified"
-                )
 
-    @classmethod
-    def precomputed(
-        cls,
-        *,
-        model_id: str,
-        model_version: str,
-        declared_output_model_sha256: str,
-        field_name: str,
-        source_class: SourceClass,
-        pit_status: str,
-        license_status: str,
-        calibration_status: str,
-        formal_registry_gate_passed: bool,
-    ) -> ReferenceModelProvenanceV1:
-        return cls(
-            model_id=model_id,
-            model_version=model_version,
-            model_sha256=declared_output_model_sha256,
-            source_class=source_class,
-            pit_status=pit_status,
-            license_status=license_status,
-            calibration_status=calibration_status,
-            execution_mode="PRECOMPUTED_FIELD",
-            precomputed_field=field_name,
-            model_bytes_verified=False,
-            output_model_bytes_status="OUTPUT_MODEL_BYTES_UNVERIFIED",
-            formal_registry_gate_passed=formal_registry_gate_passed,
+
+@dataclass(frozen=True, slots=True)
+class ReferenceFeatureProvenanceV1:
+    game_id: str
+    state_event_id: str
+    state_raw_play_id: str
+    state_known_at: str
+    feature_name: str
+    feature_value: float
+    feature_known_at: str
+    source_event_id: str
+    source_raw_play_id: str
+    source_hash: str
+    pit_status: Literal["PIT_VERIFIED"] = "PIT_VERIFIED"
+    schema_version: Literal["ReferenceFeatureProvenanceV1"] = (
+        "ReferenceFeatureProvenanceV1"
+    )
+    experiment_id: Literal["X-15"] = "X-15"
+
+    def __post_init__(self) -> None:
+        for field in (
+            "game_id",
+            "state_event_id",
+            "state_raw_play_id",
+            "source_event_id",
+            "source_raw_play_id",
+        ):
+            _require_text(getattr(self, field), field=field)
+        if self.feature_name not in FEATURE_NAMES:
+            raise ReferenceValueBuildError("feature_name is not in frozen order")
+        number = _finite_number(self.feature_value)
+        if number is None:
+            raise ReferenceValueBuildError("feature_value must be finite")
+        object.__setattr__(self, "feature_value", number)
+        state_time = _timestamp(self.state_known_at, field="state_known_at")
+        feature_time = _timestamp(
+            self.feature_known_at,
+            field="feature_known_at",
         )
-
-    @classmethod
-    def from_model_bytes(
-        cls,
-        *,
-        model_id: str,
-        model_version: str,
-        model_sha256: str,
-        model_bytes: bytes,
-        source_class: SourceClass,
-        pit_status: str,
-        license_status: str,
-        calibration_status: str,
-        formal_registry_gate_passed: bool,
-        field_name: str = "vegas_wp_focal",
-    ) -> ReferenceModelProvenanceV1:
-        if type(model_bytes) is not bytes or not model_bytes:
-            raise ReferenceValueBuildError("model_bytes must be non-empty bytes")
-        observed = "sha256:" + hashlib.sha256(model_bytes).hexdigest()
-        expected = _digest(model_sha256, field="model_sha256")
-        if observed != expected:
+        if feature_time > state_time:
             raise ReferenceValueBuildError(
-                "model bytes SHA-256 does not match the pinned digest"
+                "feature_known_at cannot be after state_known_at"
             )
-        return cls(
-            model_id=model_id,
-            model_version=model_version,
-            model_sha256=expected,
-            source_class=source_class,
-            pit_status=pit_status,
-            license_status=license_status,
-            calibration_status=calibration_status,
-            execution_mode="MODEL_BYTES_VERIFIED",
-            precomputed_field=field_name,
-            model_bytes_verified=True,
-            output_model_bytes_status="MODEL_BYTES_VERIFIED",
-            formal_registry_gate_passed=formal_registry_gate_passed,
-        )
+        _require_sha(self.source_hash, field="source_hash")
+        if self.pit_status != "PIT_VERIFIED":
+            raise ReferenceValueBuildError("pit_status must be PIT_VERIFIED")
 
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "schema_version": "ReferenceModelProvenanceV1",
-            **{field.name: getattr(self, field.name) for field in fields(self)},
-        }
+    def to_record(self) -> dict[str, object]:
+        return asdict(self)
 
 
 @dataclass(frozen=True, slots=True)
 class ReferenceValueObservationV1:
-    """One finalized episode with pre/post diagnostic win probabilities."""
-
     game_id: str
-    episode_id: str
-    episode_play_ids: tuple[str, ...]
-    pre_reference_play_id: str
-    post_reference_play_id: str | None
-    home_team: str
-    away_team: str
-    focal_team: str
-    quarter: int
-    pre_probability_home: float | None
-    post_probability_home: float | None
+    event_id: str
+    raw_play_id: str
+    atomic_information_episode_id: str
+    source_interval_start: str | None
+    source_interval_end: str | None
+    pre_state_event_id: str | None
+    pre_state_raw_play_id: str | None
+    pre_state_known_at: str | None
+    post_state_event_id: str | None
+    post_state_raw_play_id: str | None
+    post_state_known_at: str | None
+    p_before_home: float | None
+    p_after_home: float | None
     reference_delta_home: float | None
-    pre_probability_focal: float | None
-    post_probability_focal: float | None
-    reference_delta_focal: float | None
-    source_class: SourceClass
-    model_id: str
-    model_version: str
-    model_sha256: str
-    execution_mode: ExecutionMode
-    probability_field: str
-    model_bytes_verified: bool
-    output_model_bytes_status: OutputModelBytesStatus
-    formal_registry_gate_passed: bool
-    model_input_sha256: str
-    pit_status: str
-    license_status: str
-    calibration_status: str
-    support_status: ReferenceSupportStatus
-    formal_comparison_eligible: bool
+    bridge_p_after_home: float | None
+    bridge_delta_home: float | None
+    intervening_episode_ids: tuple[str, ...]
+    reference_status: ReferenceStatus
     exclusion_reasons: tuple[str, ...]
-    source_hashes: tuple[str, ...]
-    observation_sha256: str
-    claim_boundary: str = "DIAGNOSTIC_REFERENCE_NOT_GROUND_TRUTH"
+    pre_state_input_sha256: str | None
+    post_state_input_sha256: str | None
+    model_id: str
+    model_sha256: str
+    model_manifest_sha256: str
+    pbp_source_sha256: str
+    schema_version: Literal["ReferenceValueObservationV1"] = (
+        "ReferenceValueObservationV1"
+    )
+    experiment_id: Literal["X-15"] = "X-15"
+    claim_boundary: str = CLAIM_BOUNDARY
 
     def __post_init__(self) -> None:
-        for value, field_name in (
-            (self.game_id, "game_id"),
-            (self.episode_id, "episode_id"),
-            (self.pre_reference_play_id, "pre_reference_play_id"),
-            (self.home_team, "home_team"),
-            (self.away_team, "away_team"),
-            (self.focal_team, "focal_team"),
-            (self.model_id, "model_id"),
-            (self.model_version, "model_version"),
-            (self.probability_field, "probability_field"),
-            (self.pit_status, "pit_status"),
-            (self.license_status, "license_status"),
-            (self.calibration_status, "calibration_status"),
-            (self.claim_boundary, "claim_boundary"),
+        for field in (
+            "game_id",
+            "event_id",
+            "raw_play_id",
+            "atomic_information_episode_id",
+            "model_id",
         ):
-            _text(value, field=field_name)
-        if self.home_team == self.away_team or self.focal_team not in {
-            self.home_team,
-            self.away_team,
-        }:
-            raise ReferenceValueBuildError(
-                "reference observation team orientation is invalid"
-            )
-        if not self.episode_play_ids or len(set(self.episode_play_ids)) != len(
-            self.episode_play_ids
+            _require_text(getattr(self, field), field=field)
+        if self.reference_status not in _REFERENCE_STATUSES:
+            raise ReferenceValueBuildError("reference_status is unsupported")
+        _require_sha(self.model_sha256, field="model_sha256")
+        _require_sha(self.model_manifest_sha256, field="model_manifest_sha256")
+        _require_sha(self.pbp_source_sha256, field="pbp_source_sha256")
+        for field in ("pre_state_input_sha256", "post_state_input_sha256"):
+            value = getattr(self, field)
+            if value is not None:
+                _require_sha(value, field=field)
+        for field in (
+            "p_before_home",
+            "p_after_home",
+            "bridge_p_after_home",
         ):
-            raise ReferenceValueBuildError(
-                "episode_play_ids must be non-empty and unique"
-            )
-        for play_id in self.episode_play_ids:
-            _text(play_id, field="episode_play_id")
-        if self.post_reference_play_id is not None:
-            _text(
-                self.post_reference_play_id,
-                field="post_reference_play_id",
-            )
-        if (
-            isinstance(self.quarter, bool)
-            or not isinstance(self.quarter, int)
-            or self.quarter <= 0
-        ):
-            raise ReferenceValueBuildError("quarter must be positive")
-        for value, field_name in (
-            (self.pre_probability_home, "pre_probability_home"),
-            (self.post_probability_home, "post_probability_home"),
-            (self.pre_probability_focal, "pre_probability_focal"),
-            (self.post_probability_focal, "post_probability_focal"),
-        ):
-            _probability(value, field=field_name)
-        for before, after, delta, field_name in (
-            (
-                self.pre_probability_home,
-                self.post_probability_home,
-                self.reference_delta_home,
-                "reference_delta_home",
-            ),
-            (
-                self.pre_probability_focal,
-                self.post_probability_focal,
-                self.reference_delta_focal,
-                "reference_delta_focal",
-            ),
-        ):
-            if before is None or after is None:
-                if delta is not None:
-                    raise ReferenceValueBuildError(
-                        f"{field_name} requires pre and post probabilities"
-                    )
-            else:
-                observed_delta = _finite(delta, field=field_name)
-                if not math.isclose(
-                    observed_delta,
-                    after - before,
-                    rel_tol=0.0,
-                    abs_tol=1e-12,
-                ):
-                    raise ReferenceValueBuildError(
-                        f"{field_name} disagrees with pre/post probabilities"
-                    )
-        if self.source_class not in _SOURCE_CLASSES:
-            raise ReferenceValueBuildError("source_class is unsupported")
-        if self.execution_mode not in {
-            "PRECOMPUTED_FIELD",
-            "MODEL_BYTES_VERIFIED",
-        }:
-            raise ReferenceValueBuildError("execution_mode is unsupported")
-        if type(self.model_bytes_verified) is not bool:
-            raise ReferenceValueBuildError(
-                "model_bytes_verified must be boolean"
-            )
-        if self.output_model_bytes_status not in {
-            "OUTPUT_MODEL_BYTES_UNVERIFIED",
-            "MODEL_BYTES_VERIFIED",
-        }:
-            raise ReferenceValueBuildError(
-                "output_model_bytes_status is unsupported"
-            )
-        if self.model_bytes_verified != (
-            self.output_model_bytes_status == "MODEL_BYTES_VERIFIED"
-        ):
-            raise ReferenceValueBuildError(
-                "output model bytes status disagrees with verification flag"
-            )
-        if type(self.formal_registry_gate_passed) is not bool:
-            raise ReferenceValueBuildError(
-                "formal_registry_gate_passed must be boolean"
-            )
-        _digest(self.model_sha256, field="model_sha256")
-        _digest(self.model_input_sha256, field="model_input_sha256")
-        if self.support_status not in _SUPPORT_STATUS_ORDER:
-            raise ReferenceValueBuildError("support_status is unsupported")
-        if type(self.formal_comparison_eligible) is not bool:
-            raise ReferenceValueBuildError(
-                "formal_comparison_eligible must be boolean"
-            )
-        if self.formal_comparison_eligible != (
-            self.support_status == "SUPPORTED"
-            and self.formal_registry_gate_passed
-        ):
-            raise ReferenceValueBuildError(
-                "formal comparison eligibility disagrees with support status"
-            )
-        if self.exclusion_reasons != tuple(sorted(set(self.exclusion_reasons))):
-            raise ReferenceValueBuildError(
-                "exclusion_reasons must be sorted and unique"
-            )
-        for reason in self.exclusion_reasons:
-            _text(reason, field="exclusion_reason")
-        if self.source_hashes != tuple(sorted(set(self.source_hashes))):
-            raise ReferenceValueBuildError(
-                "source_hashes must be sorted and unique"
-            )
-        for digest in self.source_hashes:
-            _digest(digest, field="source_hash")
-        _digest(self.observation_sha256, field="observation_sha256")
-        material = {
-            field.name: getattr(self, field.name)
-            for field in fields(self)
-            if field.name != "observation_sha256"
-        }
-        if self.observation_sha256 != _observation_sha256(material):
-            raise ReferenceValueBuildError(
-                "observation_sha256 does not match canonical material"
-            )
-
-    def to_dict(self) -> dict[str, object]:
-        result = {
-            field.name: getattr(self, field.name) for field in fields(self)
-        }
-        result["schema_version"] = "ReferenceValueObservationV1"
-        result["episode_play_ids"] = list(self.episode_play_ids)
-        result["exclusion_reasons"] = list(self.exclusion_reasons)
-        result["source_hashes"] = list(self.source_hashes)
-        return result
-
-
-@dataclass(frozen=True, slots=True)
-class ReferenceValueSummaryV1:
-    total_episodes: int
-    formal_comparison_eligible: int
-    support_status_counts: tuple[tuple[str, int], ...]
-    game_count: int
-    model_sha256: str
-    input_source_hashes: tuple[tuple[str, str], ...]
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "schema_version": "ReferenceValueSummaryV1",
-            "total_episodes": self.total_episodes,
-            "formal_comparison_eligible": self.formal_comparison_eligible,
-            "support_status_counts": {
-                name: count for name, count in self.support_status_counts
-            },
-            "game_count": self.game_count,
-            "model_sha256": self.model_sha256,
-            "input_source_hashes": {
-                name: digest for name, digest in self.input_source_hashes
-            },
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class ReferenceValueBundleV1:
-    observations: tuple[ReferenceValueObservationV1, ...]
-    summary: ReferenceValueSummaryV1
-    model: ReferenceModelProvenanceV1
-    observations_sha256: str
-
-    def to_records(self) -> list[dict[str, object]]:
-        return [row.to_dict() for row in self.observations]
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "schema_version": "ReferenceValueBundleV1",
-            "model": self.model.to_dict(),
-            "summary": self.summary.to_dict(),
-            "observations_sha256": self.observations_sha256,
-            "observations": self.to_records(),
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class ReferenceMarketDiagnosticV1:
-    game_id: str
-    episode_id: str
-    logical_market_id: str
-    venue: str
-    horizon_seconds: int
-    target_team: str
-    market_delta: float
-    reference_delta_target: float | None
-    reference_gap: float | None
-    completion_fraction: float | None
-    materiality_threshold: float
-    comparison_status: ComparisonStatus
-    reference_observation_sha256: str
-    source_hashes: tuple[str, ...]
-    diagnostic_sha256: str
-    claim_boundary: str = "DIAGNOSTIC_REFERENCE_NOT_GROUND_TRUTH"
-
-    def to_dict(self) -> dict[str, object]:
-        result = {
-            field.name: getattr(self, field.name) for field in fields(self)
-        }
-        result["schema_version"] = "ReferenceMarketDiagnosticV1"
-        result["source_hashes"] = list(self.source_hashes)
-        return result
-
-
-@dataclass(frozen=True, slots=True)
-class ReferenceMarketDiagnosticBundleV1:
-    rows: tuple[ReferenceMarketDiagnosticV1, ...]
-    rows_sha256: str
-    materiality_threshold: float
-
-    def to_records(self) -> list[dict[str, object]]:
-        return [row.to_dict() for row in self.rows]
-
-
-def _row_identity(row: Mapping[str, object]) -> tuple[str, int, str]:
-    return (
-        _text(row.get("game_id"), field="game_id"),
-        _integer(row.get("order_sequence"), field="order_sequence"),
-        _text(row.get("play_id"), field="play_id"),
-    )
-
-
-def _episode_ineligible(rows: Sequence[Mapping[str, object]]) -> tuple[str, ...]:
-    reasons: set[str] = set()
-    for row in rows:
-        event_flags = row.get("event_flags", ())
-        flags = (
-            {str(value).lower() for value in event_flags}
-            if isinstance(event_flags, Sequence)
-            and not isinstance(event_flags, (str, bytes, bytearray))
-            else set()
-        )
-        play_type = str(row.get("play_type") or "").strip().lower()
-        review_result = str(
-            row.get("review_result")
-            or row.get("replay_or_challenge_result")
-            or ""
-        ).strip().lower()
-        if play_type == "no_play" or _truthy_indicator(row.get("no_play")):
-            reasons.add("no_play")
-        if (
-            _truthy_indicator(row.get("episode_nullified"))
-            or _truthy_indicator(row.get("nullified"))
-        ):
-            reasons.add("nullified")
-        if (
-            _truthy_indicator(row.get("episode_audit_only"))
-            or _truthy_indicator(row.get("audit_only"))
-        ):
-            reasons.add("audit_only")
-        if "reversed" in review_result or "reversed" in flags:
-            reasons.add("reversed")
-    return tuple(sorted(reasons))
-
-
-def _home_probability(
-    row: Mapping[str, object],
-    *,
-    field_name: str,
-) -> float | None:
-    probability = _probability(row.get(field_name), field=field_name)
-    if probability is None:
-        return None
-    home = _text(row.get("home_team"), field="home_team")
-    away = _text(row.get("away_team"), field="away_team")
-    focal = _text(row.get("focal_team"), field="focal_team")
-    if home == away or focal not in {home, away}:
-        raise ReferenceValueBuildError("feature row team orientation is invalid")
-    return probability if focal == home else 1.0 - probability
-
-
-def _observation_sha256(material: Mapping[str, object]) -> str:
-    return _canonical_sha256(
-        {
-            "schema_version": "ReferenceValueObservationV1",
-            **dict(material),
-        }
-    )
-
-
-def build_reference_value_bundle(
-    feature_rows: object,
-    *,
-    model: ReferenceModelProvenanceV1,
-    input_source_hashes: Mapping[str, str] | Sequence[tuple[str, str]],
-) -> ReferenceValueBundleV1:
-    """Build episode-boundary reference values without executing a model."""
-
-    if not isinstance(model, ReferenceModelProvenanceV1):
-        raise ReferenceValueBuildError("model provenance must be V1")
-    if model.precomputed_field is None:
-        raise ReferenceValueBuildError(
-            "model provenance must name the frozen probability field"
-        )
-    source_pairs = _source_hash_pairs(input_source_hashes)
-    source_values = _source_hash_values(source_pairs)
-    raw_rows = _records(feature_rows)
-    if not raw_rows:
-        raise ReferenceValueBuildError("feature rows must not be empty")
-    ordered = sorted(raw_rows, key=_row_identity)
-    grains = [
-        (
-            _text(row.get("game_id"), field="game_id"),
-            _text(row.get("play_id"), field="play_id"),
-        )
-        for row in ordered
-    ]
-    if len(set(grains)) != len(grains):
-        raise ReferenceValueBuildError("duplicate game/play grain")
-
-    grouped: list[list[dict[str, Any]]] = []
-    group_keys: list[tuple[str, str]] = []
-    group_index: dict[tuple[str, str], int] = {}
-    for row in ordered:
-        game_id = _text(row.get("game_id"), field="game_id")
-        episode_id = _text(row.get("episode_id"), field="episode_id")
-        key = (game_id, episode_id)
-        index = group_index.get(key)
-        if index is None:
-            index = len(grouped)
-            group_index[key] = index
-            group_keys.append(key)
-            grouped.append([])
-        grouped[index].append(row)
-
-    observations: list[ReferenceValueObservationV1] = []
-    for index, members in enumerate(grouped):
-        game_id, episode_id = group_keys[index]
-        first = members[0]
-        home_team = _text(first.get("home_team"), field="home_team")
-        away_team = _text(first.get("away_team"), field="away_team")
-        focal_team = _text(first.get("focal_team"), field="focal_team")
-        if home_team == away_team or focal_team not in {home_team, away_team}:
-            raise ReferenceValueBuildError("episode team orientation is invalid")
-        for member in members:
-            if (
-                _text(member.get("home_team"), field="home_team") != home_team
-                or _text(member.get("away_team"), field="away_team") != away_team
+            value = getattr(self, field)
+            if value is not None and (
+                isinstance(value, bool)
+                or not isinstance(value, Real)
+                or not math.isfinite(float(value))
+                or not 0.0 <= float(value) <= 1.0
             ):
                 raise ReferenceValueBuildError(
-                    "episode members disagree on game teams"
+                    f"{field} must be a probability or null"
                 )
-        quarter = _integer(first.get("quarter"), field="quarter")
-        if quarter <= 0:
-            raise ReferenceValueBuildError("quarter must be positive")
-        ineligible_reasons = _episode_ineligible(members)
-
-        post_row: Mapping[str, object] | None = None
-        for next_members in grouped[index + 1 :]:
-            if _text(next_members[0].get("game_id"), field="game_id") != game_id:
-                break
-            if _episode_ineligible(next_members):
-                continue
-            candidate = next_members[0]
-            if (
-                _home_probability(candidate, field_name=model.precomputed_field)
-                is not None
+        for field in ("reference_delta_home", "bridge_delta_home"):
+            value = getattr(self, field)
+            if value is not None and (
+                isinstance(value, bool)
+                or not isinstance(value, Real)
+                or not math.isfinite(float(value))
+                or not -1.0 <= float(value) <= 1.0
             ):
-                post_row = candidate
-                break
-
-        pre_home = _home_probability(first, field_name=model.precomputed_field)
-        post_home = (
-            None
-            if post_row is None
-            else _home_probability(post_row, field_name=model.precomputed_field)
-        )
-        post_quarter = (
-            None
-            if post_row is None
-            else _integer(post_row.get("quarter"), field="post quarter")
-        )
-        if ineligible_reasons:
-            support_status: ReferenceSupportStatus = "EPISODE_INELIGIBLE"
-            pre_home = None
-            post_home = None
-        elif quarter > 4 or (post_quarter is not None and post_quarter > 4):
-            support_status = "MODEL_SUPPORT_UNPROVEN"
-        elif pre_home is None:
-            support_status = "MISSING_PRE_REFERENCE"
-        elif post_home is None:
-            support_status = "MISSING_POST_REFERENCE"
-        else:
-            support_status = "SUPPORTED"
-        formal_eligible = (
-            support_status == "SUPPORTED"
-            and model.formal_registry_gate_passed
-        )
-        reference_delta_home = (
-            None
-            if pre_home is None or post_home is None
-            else post_home - pre_home
-        )
-        pre_focal = (
-            None
-            if pre_home is None
-            else (pre_home if focal_team == home_team else 1.0 - pre_home)
-        )
-        post_focal = (
-            None
-            if post_home is None
-            else (post_home if focal_team == home_team else 1.0 - post_home)
-        )
-        reference_delta_focal = (
-            None
-            if pre_focal is None or post_focal is None
-            else post_focal - pre_focal
-        )
-        member_material = [
-            {
-                "game_id": game_id,
-                "episode_id": episode_id,
-                "play_id": _text(member.get("play_id"), field="play_id"),
-                "order_sequence": _integer(
-                    member.get("order_sequence"), field="order_sequence"
-                ),
-                "focal_team": _text(
-                    member.get("focal_team"), field="focal_team"
-                ),
-                model.precomputed_field: _probability(
-                    member.get(model.precomputed_field),
-                    field=model.precomputed_field,
-                ),
-            }
-            for member in members
-        ]
-        model_input_sha256 = _canonical_sha256(
-            {
-                "model_sha256": model.model_sha256,
-                "precomputed_field": model.precomputed_field,
-                "input_source_hashes": [
-                    {"name": name, "sha256": digest}
-                    for name, digest in source_pairs
-                ],
-                "episode_members": member_material,
-                "post_reference": (
-                    None
-                    if post_row is None
-                    else {
-                        "play_id": _text(
-                            post_row.get("play_id"), field="play_id"
-                        ),
-                        model.precomputed_field: _probability(
-                            post_row.get(model.precomputed_field),
-                            field=model.precomputed_field,
-                        ),
-                    }
-                ),
-            }
-        )
-        material: dict[str, object] = {
-            "game_id": game_id,
-            "episode_id": episode_id,
-            "episode_play_ids": tuple(
-                _text(member.get("play_id"), field="play_id")
-                for member in members
-            ),
-            "pre_reference_play_id": _text(
-                first.get("play_id"), field="play_id"
-            ),
-            "post_reference_play_id": (
-                None
-                if post_row is None
-                else _text(post_row.get("play_id"), field="play_id")
-            ),
-            "home_team": home_team,
-            "away_team": away_team,
-            "focal_team": focal_team,
-            "quarter": quarter,
-            "pre_probability_home": pre_home,
-            "post_probability_home": post_home,
-            "reference_delta_home": reference_delta_home,
-            "pre_probability_focal": pre_focal,
-            "post_probability_focal": post_focal,
-            "reference_delta_focal": reference_delta_focal,
-            "source_class": model.source_class,
-            "model_id": model.model_id,
-            "model_version": model.model_version,
-            "model_sha256": model.model_sha256,
-            "execution_mode": model.execution_mode,
-            "probability_field": model.precomputed_field,
-            "model_bytes_verified": model.model_bytes_verified,
-            "output_model_bytes_status": (
-                model.output_model_bytes_status
-            ),
-            "formal_registry_gate_passed": (
-                model.formal_registry_gate_passed
-            ),
-            "model_input_sha256": model_input_sha256,
-            "pit_status": model.pit_status,
-            "license_status": model.license_status,
-            "calibration_status": model.calibration_status,
-            "support_status": support_status,
-            "formal_comparison_eligible": formal_eligible,
-            "exclusion_reasons": ineligible_reasons,
-            "source_hashes": source_values,
-            "claim_boundary": "DIAGNOSTIC_REFERENCE_NOT_GROUND_TRUTH",
-        }
-        observations.append(
-            ReferenceValueObservationV1(
-                **material,
-                observation_sha256=_observation_sha256(material),
-            )
-        )
-
-    # ``grouped`` is created from rows already sorted by the canonical
-    # game/order-sequence/play key, so preserving group order also supports
-    # non-numeric provider play IDs without inventing another ordering rule.
-    canonical_observations = tuple(observations)
-    counts = Counter(row.support_status for row in canonical_observations)
-    summary = ReferenceValueSummaryV1(
-        total_episodes=len(canonical_observations),
-        formal_comparison_eligible=sum(
-            row.formal_comparison_eligible for row in canonical_observations
-        ),
-        support_status_counts=tuple(
-            (status, counts[status])
-            for status in _SUPPORT_STATUS_ORDER
-            if counts[status]
-        ),
-        game_count=len({row.game_id for row in canonical_observations}),
-        model_sha256=model.model_sha256,
-        input_source_hashes=source_pairs,
-    )
-    observations_sha256 = _canonical_sha256(
-        {
-            "schema_version": "ReferenceValueBundleV1",
-            "model": model.to_dict(),
-            "summary": summary.to_dict(),
-            "observations": [row.to_dict() for row in canonical_observations],
-        }
-    )
-    return ReferenceValueBundleV1(
-        observations=canonical_observations,
-        summary=summary,
-        model=model,
-        observations_sha256=observations_sha256,
-    )
-
-
-def build_reference_market_diagnostics(
-    reference_bundle: ReferenceValueBundleV1,
-    market_reaction_rows: object,
-    *,
-    materiality_threshold: float,
-) -> ReferenceMarketDiagnosticBundleV1:
-    """Join explicitly oriented market deltas to diagnostic references."""
-
-    if not isinstance(reference_bundle, ReferenceValueBundleV1):
-        raise ReferenceValueBuildError("reference_bundle must be V1")
-    threshold = _finite(
-        materiality_threshold, field="materiality_threshold"
-    )
-    if threshold <= 0.0 or threshold > 1.0:
-        raise ReferenceValueBuildError(
-            "materiality_threshold must be in (0, 1]"
-        )
-    observations = {
-        (row.game_id, row.episode_id): row
-        for row in reference_bundle.observations
-    }
-    reaction_records = _records(market_reaction_rows)
-    output: list[ReferenceMarketDiagnosticV1] = []
-    seen: set[tuple[str, str, str, str, int, str]] = set()
-    for source in reaction_records:
-        game_id = _text(source.get("game_id"), field="game_id")
-        episode_id = _text(source.get("episode_id"), field="episode_id")
-        logical_market_id = _text(
-            source.get("logical_market_id"), field="logical_market_id"
-        )
-        venue = _text(source.get("venue"), field="venue")
-        horizon = _integer(
-            source.get("horizon_seconds"), field="horizon_seconds"
-        )
-        if horizon <= 0:
-            raise ReferenceValueBuildError("horizon_seconds must be positive")
-        target_team = _text(source.get("target_team"), field="target_team")
-        market_delta = _finite(source.get("market_delta"), field="market_delta")
-        key = (
-            game_id,
-            episode_id,
-            logical_market_id,
-            venue,
-            horizon,
-            target_team,
-        )
-        if key in seen:
+                raise ReferenceValueBuildError(
+                    f"{field} must be a probability delta or null"
+                )
+        if self.reference_status == "SUPPORTED" and (
+            self.p_before_home is None
+            or self.p_after_home is None
+            or self.reference_delta_home is None
+            or self.pre_state_input_sha256 is None
+            or self.post_state_input_sha256 is None
+        ):
             raise ReferenceValueBuildError(
-                "duplicate reference diagnostic grain"
+                "supported reference requires probabilities and input hashes"
             )
-        seen.add(key)
-        observation = observations.get((game_id, episode_id))
-        if observation is None:
+        if self.reference_status == "COMPOSITE_TRANSITION" and (
+            self.p_after_home is not None
+            or self.reference_delta_home is not None
+            or not self.intervening_episode_ids
+        ):
             raise ReferenceValueBuildError(
-                "market reaction references an unknown episode"
+                "composite transition cannot publish an atomic delta"
             )
-        if target_team not in {observation.home_team, observation.away_team}:
-            raise ReferenceValueBuildError(
-                "market target_team is not one of the game teams"
-            )
-        reference_delta_target = observation.reference_delta_home
         if (
-            reference_delta_target is not None
-            and target_team == observation.away_team
-        ):
-            reference_delta_target = -reference_delta_target
-        reference_supported = (
-            observation.support_status == "SUPPORTED"
-            and reference_delta_target is not None
-        )
-        if not observation.formal_comparison_eligible:
-            comparison_status: ComparisonStatus = "REFERENCE_NOT_SUPPORTED"
-        elif (
-            reference_delta_target is None
-            or abs(reference_delta_target) < threshold
-        ):
-            comparison_status = "BELOW_MATERIALITY"
-        else:
-            comparison_status = "ELIGIBLE"
-        reference_gap = (
-            market_delta - reference_delta_target
-            if reference_supported
-            else None
-        )
-        if comparison_status == "ELIGIBLE":
-            assert reference_delta_target is not None
-            completion_fraction = market_delta / reference_delta_target
-        else:
-            completion_fraction = None
-        reaction_hashes_raw = source.get("source_hashes")
-        if not isinstance(reaction_hashes_raw, Sequence) or isinstance(
-            reaction_hashes_raw, (str, bytes, bytearray)
+            self.p_before_home is not None
+            and self.p_after_home is not None
+            and self.reference_delta_home is not None
+            and not math.isclose(
+                self.p_after_home - self.p_before_home,
+                self.reference_delta_home,
+                abs_tol=1e-12,
+            )
         ):
             raise ReferenceValueBuildError(
-                "market reaction source_hashes are required"
+                "reference_delta_home does not match probabilities"
             )
-        reaction_hashes = tuple(
-            _digest(value, field="market source hash")
-            for value in reaction_hashes_raw
+
+    def to_record(self) -> dict[str, object]:
+        record = asdict(self)
+        record["intervening_episode_ids"] = _json_tuple(
+            self.intervening_episode_ids
         )
-        if not reaction_hashes:
-            raise ReferenceValueBuildError(
-                "market reaction source_hashes are required"
+        record["exclusion_reasons"] = _json_tuple(self.exclusion_reasons)
+        return record
+
+
+@dataclass(frozen=True, slots=True)
+class GameReferenceTables:
+    game_id: str
+    second_half_receiver: str | None
+    opening_kickoff_event_id: str | None
+    opening_kickoff_known_at: str | None
+    state_predictions: pd.DataFrame
+    feature_provenance: pd.DataFrame
+    reference_observations: pd.DataFrame
+
+
+def _status_record(
+    row: pd.Series,
+    *,
+    model: ReferenceModelBindingV1,
+    status: ReferenceStatus,
+    reasons: tuple[str, ...],
+    p_home: float | None = None,
+    state_input_sha256: str | None = None,
+) -> dict[str, object]:
+    return {
+        "schema_version": "ReferenceStatePredictionV1",
+        "experiment_id": EXPERIMENT_ID,
+        "claim_boundary": CLAIM_BOUNDARY,
+        "game_id": str(row["game_id"]),
+        "state_event_id": str(row["event_id"]),
+        "state_raw_play_id": str(row["raw_play_id"]),
+        "state_atomic_information_episode_id": str(
+            row["atomic_information_episode_id"]
+        ),
+        "order_sequence": int(row["order_sequence"]),
+        "state_known_at": _optional_text(row["known_at"]),
+        "quarter": _integer(row["quarter"]),
+        "game_seconds_remaining": _integer(row["game_seconds_remaining"]),
+        "home_team": str(row["home_team"]),
+        "away_team": str(row["away_team"]),
+        "possession_team": _optional_text(row["possession_before"]),
+        "p_home": p_home,
+        "reference_status": status,
+        "exclusion_reasons": _json_tuple(reasons),
+        "state_input_sha256": state_input_sha256,
+        "model_id": model.model_id,
+        "model_version": model.model_version,
+        "model_sha256": model.model_sha256,
+        "model_manifest_sha256": model.manifest_sha256,
+        "pbp_source_sha256": str(row["pbp_source_sha256"]),
+    }
+
+
+def _opening_kickoff(
+    ordered: pd.DataFrame,
+) -> tuple[str | None, pd.Series | None]:
+    candidates = ordered.loc[
+        ordered["quarter"].map(_integer).eq(1)
+        & ordered["primary_action"]
+        .map(_optional_text)
+        .fillna("")
+        .str.upper()
+        .eq("KICKOFF")
+    ]
+    if candidates.empty:
+        return None, None
+    opening = candidates.iloc[0]
+    home = _optional_text(opening["home_team"])
+    away = _optional_text(opening["away_team"])
+    receiver = _optional_text(opening["possession_before"])
+    kicker = _optional_text(opening["actor_team"])
+    if (
+        home is None
+        or away is None
+        or receiver not in {home, away}
+        or kicker not in {home, away}
+        or receiver == kicker
+        or _optional_text(opening["known_at"]) is None
+    ):
+        return None, opening
+    return kicker, opening
+
+
+def _event_is_stage_a_eligible(row: pd.Series) -> bool:
+    status = (_optional_text(row["information_status"]) or "").upper()
+    disposition = (_optional_text(row["row_disposition"]) or "").upper()
+    review = (_optional_text(row["review_result"]) or "").lower()
+    return (
+        status == "FINAL"
+        and _strict_bool(row["final_sports_outcome_eligible"])
+        and "NO_PLAY" not in disposition
+        and "NULLIFIED" not in disposition
+        and "REVERSED" not in disposition
+        and "reversed" not in review
+    )
+
+
+def _information_event_is_independent(row: pd.Series) -> bool:
+    return _strict_bool(row["stage_b_information_event_eligible"]) or _strict_bool(
+        row["final_sports_outcome_eligible"]
+    )
+
+
+def _state_projection(
+    row: pd.Series,
+    *,
+    second_half_receiver: str | None,
+    opening: pd.Series | None,
+    predictor: HomeProbabilityPredictor,
+    model: ReferenceModelBindingV1,
+    expected_pbp_source_sha256: str,
+) -> tuple[dict[str, object], tuple[ReferenceFeatureProvenanceV1, ...]]:
+    period = _integer(row["quarter"])
+    if period is None or period not in {1, 2, 3, 4}:
+        return (
+            _status_record(
+                row,
+                model=model,
+                status="MODEL_SUPPORT_UNPROVEN",
+                reasons=("REGULATION_ONLY",),
+            ),
+            (),
+        )
+    state_known_text = _optional_text(row["known_at"])
+    if state_known_text is None:
+        return (
+            _status_record(
+                row,
+                model=model,
+                status="MISSING_PRE_STATE",
+                reasons=("MISSING_STATE_KNOWN_AT",),
+            ),
+            (),
+        )
+    if second_half_receiver is None or opening is None:
+        return (
+            _status_record(
+                row,
+                model=model,
+                status="MISSING_AS_OF_RECEIVER",
+                reasons=("MISSING_OPENING_KICKOFF_EVIDENCE",),
+            ),
+            (),
+        )
+    opening_known_text = _optional_text(opening["known_at"])
+    if opening_known_text is None:
+        return (
+            _status_record(
+                row,
+                model=model,
+                status="MISSING_AS_OF_RECEIVER",
+                reasons=("MISSING_OPENING_KICKOFF_KNOWN_AT",),
+            ),
+            (),
+        )
+    state_known = _timestamp(state_known_text, field="state known_at")
+    opening_known = _timestamp(
+        opening_known_text,
+        field="opening kickoff known_at",
+    )
+    if opening_known > state_known:
+        return (
+            _status_record(
+                row,
+                model=model,
+                status="FUTURE_FEATURE_REJECTED",
+                reasons=("RECEIVE_2H_KO_KNOWN_AFTER_STATE",),
+            ),
+            (),
+        )
+    home_team = _optional_text(row["home_team"])
+    away_team = _optional_text(row["away_team"])
+    possession = _optional_text(row["possession_before"])
+    game_seconds = _finite_number(row["game_seconds_remaining"])
+    home_score = _finite_number(row["pre_home_score"])
+    away_score = _finite_number(row["pre_away_score"])
+    down = _finite_number(row["down"])
+    distance = _finite_number(row["distance"])
+    yardline = _finite_number(row["yardline_100"])
+    home_timeouts = _finite_number(row["home_timeouts_remaining"])
+    away_timeouts = _finite_number(row["away_timeouts_remaining"])
+    if (
+        home_team is None
+        or away_team is None
+        or home_team == away_team
+        or possession not in {home_team, away_team}
+        or any(
+            value is None
+            for value in (
+                game_seconds,
+                home_score,
+                away_score,
+                down,
+                distance,
+                yardline,
+                home_timeouts,
+                away_timeouts,
             )
-        combined_hashes = tuple(
-            sorted({*observation.source_hashes, *reaction_hashes})
         )
-        material: dict[str, object] = {
-            "game_id": game_id,
-            "episode_id": episode_id,
-            "logical_market_id": logical_market_id,
-            "venue": venue,
-            "horizon_seconds": horizon,
-            "target_team": target_team,
-            "market_delta": market_delta,
-            "reference_delta_target": reference_delta_target,
-            "reference_gap": reference_gap,
-            "completion_fraction": completion_fraction,
-            "materiality_threshold": threshold,
-            "comparison_status": comparison_status,
-            "reference_observation_sha256": observation.observation_sha256,
-            "source_hashes": combined_hashes,
-            "claim_boundary": "DIAGNOSTIC_REFERENCE_NOT_GROUND_TRUTH",
-        }
-        output.append(
-            ReferenceMarketDiagnosticV1(
-                **material,
-                diagnostic_sha256=_canonical_sha256(
-                    {
-                        "schema_version": "ReferenceMarketDiagnosticV1",
-                        **material,
-                    }
+    ):
+        return (
+            _status_record(
+                row,
+                model=model,
+                status="MISSING_PRE_STATE",
+                reasons=("INCOMPLETE_OFFICIAL_MODEL_STATE",),
+            ),
+            (),
+        )
+    assert game_seconds is not None
+    assert home_score is not None
+    assert away_score is not None
+    assert down is not None
+    assert distance is not None
+    assert yardline is not None
+    assert home_timeouts is not None
+    assert away_timeouts is not None
+    possession_is_home = possession == home_team
+    score_differential = (
+        home_score - away_score
+        if possession_is_home
+        else away_score - home_score
+    )
+    half_seconds = (
+        game_seconds - 1800.0 if period <= 2 else game_seconds
+    )
+    elapsed_share = (3600.0 - game_seconds) / 3600.0
+    posteam_timeouts = home_timeouts if possession_is_home else away_timeouts
+    defteam_timeouts = away_timeouts if possession_is_home else home_timeouts
+    feature_values = (
+        float(period <= 2 and possession == second_half_receiver),
+        float(possession_is_home),
+        half_seconds,
+        game_seconds,
+        score_differential / math.exp(-4.0 * elapsed_share),
+        score_differential,
+        down,
+        distance,
+        yardline,
+        posteam_timeouts,
+        defteam_timeouts,
+    )
+    try:
+        model_input = NoSpreadModelInput(
+            feature_names=FEATURE_NAMES,
+            feature_values=tuple(float(value) for value in feature_values),
+            posteam=possession,
+            home_team=home_team,
+            away_team=away_team,
+            period=period,
+        )
+    except OfficialModelInputError:
+        return (
+            _status_record(
+                row,
+                model=model,
+                status="MISSING_PRE_STATE",
+                reasons=("INVALID_OFFICIAL_MODEL_STATE",),
+            ),
+            (),
+        )
+    state_event_id = str(row["event_id"])
+    state_raw_play_id = str(row["raw_play_id"])
+    current_source_hash = str(row["pbp_source_sha256"])
+    provenance: list[ReferenceFeatureProvenanceV1] = []
+    for name, value in zip(
+        FEATURE_NAMES,
+        model_input.feature_values,
+        strict=True,
+    ):
+        source = opening if name == "receive_2h_ko" else row
+        provenance.append(
+            ReferenceFeatureProvenanceV1(
+                game_id=str(row["game_id"]),
+                state_event_id=state_event_id,
+                state_raw_play_id=state_raw_play_id,
+                state_known_at=state_known_text,
+                feature_name=name,
+                feature_value=value,
+                feature_known_at=(
+                    opening_known_text
+                    if name == "receive_2h_ko"
+                    else state_known_text
+                ),
+                source_event_id=str(source["event_id"]),
+                source_raw_play_id=str(source["raw_play_id"]),
+                source_hash=(
+                    expected_pbp_source_sha256
+                    if name == "receive_2h_ko"
+                    else current_source_hash
                 ),
             )
         )
-    canonical_rows = tuple(
-        sorted(
-            output,
-            key=lambda row: (
-                row.game_id,
-                row.episode_id,
-                row.logical_market_id,
-                row.venue,
-                row.horizon_seconds,
-                row.target_team,
-            ),
+    input_material = {
+        "model": asdict(model),
+        "game_id": str(row["game_id"]),
+        "state_event_id": state_event_id,
+        "state_raw_play_id": state_raw_play_id,
+        "state_known_at": state_known_text,
+        "feature_names": list(FEATURE_NAMES),
+        "feature_values": list(model_input.feature_values),
+        "feature_provenance": [item.to_record() for item in provenance],
+    }
+    input_sha = _canonical_sha256(input_material)
+    probability = predictor.predict_home(model_input)
+    if (
+        isinstance(probability, bool)
+        or not isinstance(probability, Real)
+        or not math.isfinite(float(probability))
+        or not 0.0 <= float(probability) <= 1.0
+    ):
+        raise ReferenceValueBuildError(
+            "official predictor returned an invalid home probability"
         )
-    )
-    return ReferenceMarketDiagnosticBundleV1(
-        rows=canonical_rows,
-        rows_sha256=_canonical_sha256(
-            {
-                "schema_version": "ReferenceMarketDiagnosticBundleV1",
-                "materiality_threshold": threshold,
-                "rows": [row.to_dict() for row in canonical_rows],
-            }
+    return (
+        _status_record(
+            row,
+            model=model,
+            status="SUPPORTED",
+            reasons=(),
+            p_home=float(probability),
+            state_input_sha256=input_sha,
         ),
-        materiality_threshold=threshold,
+        tuple(provenance),
+    )
+
+
+def build_game_reference_tables(
+    canonical_events: pd.DataFrame,
+    *,
+    predictor: HomeProbabilityPredictor,
+    model: ReferenceModelBindingV1,
+    expected_pbp_source_sha256: str,
+) -> GameReferenceTables:
+    """Build one game without trusting physical row order or diagnostic WP."""
+
+    if not isinstance(canonical_events, pd.DataFrame) or canonical_events.empty:
+        raise ReferenceValueBuildError(
+            "canonical_events must be a non-empty DataFrame"
+        )
+    missing = sorted(_REQUIRED_EVENT_COLUMNS.difference(canonical_events.columns))
+    if missing:
+        raise ReferenceValueBuildError(
+            "canonical_events missing columns: " + ", ".join(missing)
+        )
+    expected_source = _require_sha(
+        expected_pbp_source_sha256,
+        field="expected_pbp_source_sha256",
+    )
+    ordered = canonical_events.copy()
+    order_values = pd.to_numeric(ordered["order_sequence"], errors="coerce")
+    if order_values.isna().any() or (order_values % 1 != 0).any():
+        raise ReferenceValueBuildError(
+            "order_sequence must be complete integral chronology"
+        )
+    ordered["_order"] = order_values.astype("int64")
+    ordered["_raw_sort"] = ordered["raw_play_id"].astype("string")
+    if ordered["_raw_sort"].isna().any() or ordered["_raw_sort"].eq("").any():
+        raise ReferenceValueBuildError("raw_play_id must be complete")
+    if ordered.duplicated(["_order", "_raw_sort"]).any():
+        raise ReferenceValueBuildError(
+            "canonical state chronology contains duplicate sort keys"
+        )
+    ordered = ordered.sort_values(
+        ["_order", "_raw_sort"],
+        kind="mergesort",
+    ).reset_index(drop=True)
+    games = tuple(ordered["game_id"].astype(str).unique())
+    if len(games) != 1:
+        raise ReferenceValueBuildError(
+            "build_game_reference_tables requires exactly one game"
+        )
+    game_id = games[0]
+    teams = ordered[["home_team", "away_team"]].drop_duplicates()
+    if len(teams) != 1:
+        raise ReferenceValueBuildError("game team identity is inconsistent")
+    source_hashes = set(ordered["pbp_source_sha256"].astype(str))
+    if source_hashes != {expected_source}:
+        raise ReferenceValueBuildError(
+            "canonical event PBP hashes do not match the governed source"
+        )
+
+    second_half_receiver, opening = _opening_kickoff(ordered)
+    state_records: list[dict[str, object]] = []
+    feature_rows: list[dict[str, object]] = []
+    for _, row in ordered.iterrows():
+        state_record, provenance = _state_projection(
+            row,
+            second_half_receiver=second_half_receiver,
+            opening=opening,
+            predictor=predictor,
+            model=model,
+            expected_pbp_source_sha256=expected_source,
+        )
+        state_records.append(state_record)
+        feature_rows.extend(item.to_record() for item in provenance)
+    states = pd.DataFrame(state_records, columns=STATE_PREDICTION_COLUMNS)
+    features = pd.DataFrame(
+        feature_rows,
+        columns=FEATURE_PROVENANCE_COLUMNS,
+    )
+
+    observations: list[dict[str, object]] = []
+    for index, event in ordered.iterrows():
+        pre_state = states.iloc[index]
+        later_supported = states.iloc[index + 1 :].loc[
+            states.iloc[index + 1 :]["reference_status"].eq("SUPPORTED")
+        ]
+        post_index = (
+            None if later_supported.empty else int(later_supported.index[0])
+        )
+        post_state = None if post_index is None else states.iloc[post_index]
+        between = (
+            ordered.iloc[0:0]
+            if post_index is None
+            else ordered.iloc[index + 1 : post_index]
+        )
+        intervening = tuple(
+            dict.fromkeys(
+                str(row["atomic_information_episode_id"])
+                for _, row in between.iterrows()
+                if _information_event_is_independent(row)
+            )
+        )
+
+        status: ReferenceStatus
+        reasons: tuple[str, ...]
+        p_before: float | None = None
+        p_after: float | None = None
+        delta: float | None = None
+        bridge_after: float | None = None
+        bridge_delta: float | None = None
+        if not _event_is_stage_a_eligible(event):
+            status = "EVENT_INELIGIBLE"
+            reasons = ("NOT_FINAL_EFFECTIVE_SPORTS_EVENT",)
+        elif pre_state["reference_status"] != "SUPPORTED":
+            status = str(pre_state["reference_status"])  # type: ignore[assignment]
+            reasons = tuple(
+                json.loads(str(pre_state["exclusion_reasons"]))
+            )
+        elif post_state is None:
+            status = "MISSING_POST_STATE"
+            reasons = ("NO_LATER_VALID_CANONICAL_PRE_STATE",)
+            p_before = float(pre_state["p_home"])
+        else:
+            p_before = float(pre_state["p_home"])
+            bridge_after = float(post_state["p_home"])
+            bridge_delta = bridge_after - p_before
+            if intervening:
+                status = "COMPOSITE_TRANSITION"
+                reasons = ("INDEPENDENT_INFORMATION_EVENT_BETWEEN_STATES",)
+            else:
+                status = "SUPPORTED"
+                reasons = ()
+                p_after = bridge_after
+                delta = bridge_delta
+        observation = ReferenceValueObservationV1(
+            game_id=game_id,
+            event_id=str(event["event_id"]),
+            raw_play_id=str(event["raw_play_id"]),
+            atomic_information_episode_id=str(
+                event["atomic_information_episode_id"]
+            ),
+            source_interval_start=_optional_text(event["source_interval_start"]),
+            source_interval_end=_optional_text(event["source_interval_end"]),
+            pre_state_event_id=str(pre_state["state_event_id"]),
+            pre_state_raw_play_id=str(pre_state["state_raw_play_id"]),
+            pre_state_known_at=_optional_text(pre_state["state_known_at"]),
+            post_state_event_id=(
+                None
+                if post_state is None
+                else str(post_state["state_event_id"])
+            ),
+            post_state_raw_play_id=(
+                None
+                if post_state is None
+                else str(post_state["state_raw_play_id"])
+            ),
+            post_state_known_at=(
+                None
+                if post_state is None
+                else _optional_text(post_state["state_known_at"])
+            ),
+            p_before_home=p_before,
+            p_after_home=p_after,
+            reference_delta_home=delta,
+            bridge_p_after_home=bridge_after,
+            bridge_delta_home=bridge_delta,
+            intervening_episode_ids=intervening,
+            reference_status=status,
+            exclusion_reasons=reasons,
+            pre_state_input_sha256=_optional_text(
+                pre_state["state_input_sha256"]
+            ),
+            post_state_input_sha256=(
+                None
+                if post_state is None
+                else _optional_text(post_state["state_input_sha256"])
+            ),
+            model_id=model.model_id,
+            model_sha256=model.model_sha256,
+            model_manifest_sha256=model.manifest_sha256,
+            pbp_source_sha256=expected_source,
+        )
+        observations.append(observation.to_record())
+    observation_frame = pd.DataFrame(
+        observations,
+        columns=REFERENCE_OBSERVATION_COLUMNS,
+    )
+    return GameReferenceTables(
+        game_id=game_id,
+        second_half_receiver=second_half_receiver,
+        opening_kickoff_event_id=(
+            None if opening is None else str(opening["event_id"])
+        ),
+        opening_kickoff_known_at=(
+            None if opening is None else _optional_text(opening["known_at"])
+        ),
+        state_predictions=states,
+        feature_provenance=features,
+        reference_observations=observation_frame,
     )
 
 
 __all__ = [
-    "ReferenceMarketDiagnosticBundleV1",
-    "ReferenceMarketDiagnosticV1",
-    "ReferenceModelProvenanceV1",
+    "CLAIM_BOUNDARY",
+    "EXPERIMENT_ID",
+    "FEATURE_PROVENANCE_COLUMNS",
+    "GameReferenceTables",
+    "HomeProbabilityPredictor",
+    "REFERENCE_OBSERVATION_COLUMNS",
+    "ReferenceFeatureProvenanceV1",
+    "ReferenceModelBindingV1",
     "ReferenceValueBuildError",
-    "ReferenceValueBundleV1",
     "ReferenceValueObservationV1",
-    "ReferenceValueSummaryV1",
-    "build_reference_market_diagnostics",
-    "build_reference_value_bundle",
+    "STATE_PREDICTION_COLUMNS",
+    "build_game_reference_tables",
 ]
