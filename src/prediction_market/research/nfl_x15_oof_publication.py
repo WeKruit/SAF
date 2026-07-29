@@ -46,9 +46,9 @@ from prediction_market.research.nfl_x15_models import (
 )
 
 
-SHARD_SCHEMA: Final[str] = "nfl_x15_oof_shard_publication_v1"
-BATCH_SCHEMA: Final[str] = "nfl_x15_oof_batch_index_v1"
-BUILDER_VERSION: Final[str] = "nfl-x15-oof-publication-v1"
+SHARD_SCHEMA: Final[str] = "nfl_x15_oof_shard_publication_v2"
+BATCH_SCHEMA: Final[str] = "nfl_x15_oof_batch_index_v2"
+BUILDER_VERSION: Final[str] = "nfl-x15-oof-publication-v2"
 OOF_TABLE_NAMES: Final[tuple[str, ...]] = (
     "oof_predictions",
     "conditional_quantiles",
@@ -94,6 +94,82 @@ SELECTION_PROJECTION_COLUMNS: Final[tuple[str, ...]] = (
     "training_game_ids",
     "validation_game_ids",
     "preprocessor_fit_game_ids",
+)
+_FOLD_ARRAY_COLUMNS: Final[tuple[str, ...]] = (
+    "train_weeks",
+    "validation_weeks",
+    "training_game_ids",
+    "validation_game_ids",
+    "preprocessor_fit_game_ids",
+)
+_SELECTION_PARQUET_COLUMNS: Final[tuple[str, ...]] = tuple(
+    column
+    for column in SELECTION_PROJECTION_COLUMNS
+    if column not in _FOLD_ARRAY_COLUMNS
+)
+_SELECTION_FILTERS: Final[list[tuple[str, str, str]]] = [
+    ("venue", "=", "polymarket"),
+    ("training_venue", "=", "polymarket"),
+    ("transport_mode", "=", "VENUE_SPECIFIC"),
+]
+_PREDICTION_REQUIRED_COLUMNS: Final[frozenset[str]] = frozenset(
+    {
+        *SELECTION_PROJECTION_COLUMNS,
+        "run_config_sha256",
+    }
+)
+_SELECTION_PAIR_GRAIN: Final[tuple[str, ...]] = (
+    "source_row_id",
+    "game_id",
+    "nfl_week",
+    "atomic_information_episode_id",
+    "venue",
+    "training_venue",
+    "calibration_venue",
+    "transport_mode",
+    "actual_home_contract_id",
+    "landmark_seconds",
+    "endpoint_seconds",
+)
+_IDENTITY_TEXT_COLUMNS: Final[tuple[str, ...]] = (
+    "game_id",
+    "atomic_information_episode_id",
+    "venue",
+    "training_venue",
+    "calibration_venue",
+    "transport_mode",
+    "actual_home_contract_id",
+    "fold_id",
+    "model_id",
+    "feature_block_id",
+    "cohort_authority_sha256",
+    "target_contract",
+    "claim_boundary",
+    "direction_threshold_semantics",
+    "venue_tick_support",
+    "market_continuity_support",
+    "schema_version",
+    "analysis_scope",
+)
+_BINARY_TRUTH_COLUMNS: Final[tuple[str, ...]] = (
+    "s_h_truth",
+    "o_h_given_s_truth",
+)
+_BINARY_PROBABILITY_COLUMNS: Final[tuple[str, ...]] = (
+    "s_h_calibrated_probability",
+    "o_h_given_s_calibrated_probability",
+)
+_DIRECTION_PROBABILITY_COLUMNS: Final[tuple[str, ...]] = (
+    "direction_calibrated_prob_down",
+    "direction_calibrated_prob_no_move",
+    "direction_calibrated_prob_up",
+)
+_DIRECTION_CLASSES: Final[frozenset[str]] = frozenset(
+    {"DOWN", "NO_MOVE", "UP"}
+)
+_EFFECTIVE_SEED_FORMULA: Final[str] = (
+    "base_random_state + fold_index*1000 + unit_index*100 "
+    "+ feature_block_index*10 + model_index"
 )
 _SHA256_PREFIX: Final[str] = "sha256:"
 _EXPECTED_TRAINING_ONLY_GAME_COUNT: Final[int] = 30
@@ -511,6 +587,32 @@ def _fold_authority(
     )
 
 
+def _effective_seed_contract(
+    run_config: Mapping[str, object],
+) -> dict[str, object]:
+    random_state = run_config.get("random_state")
+    if (
+        not isinstance(random_state, (int, np.integer))
+        or isinstance(random_state, (bool, np.bool_))
+    ):
+        raise X15OOFPublicationError(
+            "run config random_state must be an integer"
+        )
+    base_random_state = int(random_state)
+    if not 0 <= base_random_state <= 2**32 - 1:
+        raise X15OOFPublicationError(
+            "run config random_state is outside the uint32 seed range"
+        )
+    return {
+        "base_random_state": base_random_state,
+        "execution_unit_seed_stride": 100,
+        "formula": _EFFECTIVE_SEED_FORMULA,
+        "shard_fold_index": 0,
+        "shard_feature_block_index": 0,
+        "shard_model_index": 0,
+    }
+
+
 def _validate_run_config(
     model_run: X15ModelRun,
     *,
@@ -568,6 +670,7 @@ def _validate_run_config(
         raise X15OOFPublicationError(
             "run config cohort authority does not match publication authority"
         )
+    _effective_seed_contract(run_config)
     shared_config = dict(run_config)
     for execution_field in (
         "fold_ids",
@@ -576,6 +679,242 @@ def _validate_run_config(
     ):
         shared_config.pop(execution_field, None)
     return run_config, _model_sha256(shared_config)
+
+
+def _is_missing_scalar(value: object) -> bool:
+    if value is None or value is pd.NA:
+        return True
+    try:
+        missing = pd.isna(value)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(missing, (bool, np.bool_)) and bool(missing)
+
+
+def _validate_prediction_semantics(
+    predictions: pd.DataFrame,
+    *,
+    authority: FrozenDevelopmentAuthority,
+    fold_id: str,
+    model_id: str,
+    feature_block_id: str,
+    validation_game_ids: tuple[str, ...],
+) -> None:
+    missing = sorted(
+        _PREDICTION_REQUIRED_COLUMNS.difference(predictions.columns)
+    )
+    if missing:
+        raise X15OOFPublicationError(
+            f"oof_predictions missing governed columns: {missing}"
+        )
+    for column in _IDENTITY_TEXT_COLUMNS:
+        if not predictions[column].map(
+            lambda value: isinstance(value, str) and bool(value.strip())
+        ).all():
+            raise X15OOFPublicationError(
+                f"oof_predictions {column} must be nonempty text"
+            )
+    for column, expected in (
+        ("fold_id", fold_id),
+        ("model_id", model_id),
+        ("feature_block_id", feature_block_id),
+        ("target_contract", DIAGNOSTIC_TARGET_CONTRACT),
+        ("claim_boundary", DIAGNOSTIC_CLAIM_BOUNDARY),
+        (
+            "direction_threshold_semantics",
+            DIAGNOSTIC_DIRECTION_THRESHOLD_SEMANTICS,
+        ),
+        ("venue_tick_support", DIAGNOSTIC_VENUE_TICK_SUPPORT),
+        (
+            "market_continuity_support",
+            DIAGNOSTIC_MARKET_CONTINUITY_SUPPORT,
+        ),
+        ("schema_version", DIAGNOSTIC_SCHEMA_VERSION),
+        ("analysis_scope", DIAGNOSTIC_ANALYSIS_SCOPE),
+    ):
+        if not predictions[column].eq(expected).all():
+            raise X15OOFPublicationError(
+                f"oof_predictions identity drifted on {column}"
+            )
+    if not predictions["calibration_venue"].eq(
+        predictions["training_venue"]
+    ).all():
+        raise X15OOFPublicationError(
+            "oof_predictions calibration venue must equal training venue"
+        )
+    if not predictions["claim_eligible"].map(
+        lambda value: isinstance(value, (bool, np.bool_))
+        and not bool(value)
+    ).all():
+        raise X15OOFPublicationError(
+            "oof_predictions must remain claim_eligible=False"
+        )
+    threshold = pd.to_numeric(
+        predictions["direction_threshold_probability"],
+        errors="coerce",
+    )
+    if (
+        threshold.isna().any()
+        or not np.isfinite(threshold.to_numpy(dtype=float)).all()
+        or not threshold.eq(
+            DIAGNOSTIC_DIRECTION_THRESHOLD_PROBABILITY
+        ).all()
+    ):
+        raise X15OOFPublicationError(
+            "oof_predictions direction probability threshold drifted"
+        )
+
+    game_weeks = authority.game_weeks
+    governed_weeks = predictions["game_id"].map(game_weeks)
+    observed_weeks = pd.to_numeric(
+        predictions["nfl_week"], errors="coerce"
+    )
+    if (
+        governed_weeks.isna().any()
+        or observed_weeks.isna().any()
+        or not np.equal(
+            observed_weeks.to_numpy(dtype=float),
+            governed_weeks.to_numpy(dtype=float),
+        ).all()
+    ):
+        raise X15OOFPublicationError(
+            "oof_predictions game week disagrees with authority"
+        )
+    for column in ("source_row_id", "landmark_seconds", "endpoint_seconds"):
+        numeric = pd.to_numeric(predictions[column], errors="coerce")
+        values = numeric.to_numpy(dtype=float)
+        if (
+            numeric.isna().any()
+            or not np.isfinite(values).all()
+            or not np.equal(values, np.floor(values)).all()
+        ):
+            raise X15OOFPublicationError(
+                f"oof_predictions {column} must be integral"
+            )
+    if (
+        pd.to_numeric(predictions["source_row_id"]).lt(0).any()
+        or pd.to_numeric(predictions["landmark_seconds"]).lt(0).any()
+        or pd.to_numeric(predictions["endpoint_seconds"]).le(
+            pd.to_numeric(predictions["landmark_seconds"])
+        ).any()
+    ):
+        raise X15OOFPublicationError(
+            "oof_predictions L/H/source-row identity is invalid"
+        )
+    if predictions.duplicated(
+        list(_SELECTION_PAIR_GRAIN), keep=False
+    ).any():
+        raise X15OOFPublicationError(
+            "oof_predictions contains duplicate selection pair grain"
+        )
+
+    for column in _BINARY_TRUTH_COLUMNS:
+        if not predictions[column].map(
+            lambda value: _is_missing_scalar(value)
+            or isinstance(value, (bool, np.bool_))
+        ).all():
+            raise X15OOFPublicationError(
+                f"oof_predictions {column} has invalid binary truth"
+            )
+    if not predictions["direction_truth"].map(
+        lambda value: _is_missing_scalar(value)
+        or (
+            isinstance(value, str)
+            and value in _DIRECTION_CLASSES
+        )
+    ).all():
+        raise X15OOFPublicationError(
+            "oof_predictions has invalid direction truth"
+        )
+    s_h_true = predictions["s_h_truth"].map(
+        lambda value: isinstance(value, (bool, np.bool_))
+        and bool(value)
+    )
+    o_h_missing = predictions["o_h_given_s_truth"].map(
+        _is_missing_scalar
+    )
+    if (
+        (~s_h_true & ~o_h_missing).any()
+        or (s_h_true & o_h_missing).any()
+    ):
+        raise X15OOFPublicationError(
+            "oof_predictions O_H truth requires S_H truth"
+        )
+    o_h_true = predictions["o_h_given_s_truth"].map(
+        lambda value: isinstance(value, (bool, np.bool_))
+        and bool(value)
+    )
+    direction_missing = predictions["direction_truth"].map(
+        _is_missing_scalar
+    )
+    if (
+        (~o_h_true & ~direction_missing).any()
+        or (o_h_true & direction_missing).any()
+    ):
+        raise X15OOFPublicationError(
+            "oof_predictions direction truth requires O_H truth"
+        )
+    for column in (
+        *_BINARY_PROBABILITY_COLUMNS,
+        *_DIRECTION_PROBABILITY_COLUMNS,
+    ):
+        numeric = pd.to_numeric(predictions[column], errors="coerce")
+        values = numeric.to_numpy(dtype=float)
+        if (
+            numeric.isna().any()
+            or not np.isfinite(values).all()
+            or not numeric.between(0.0, 1.0, inclusive="both").all()
+        ):
+            raise X15OOFPublicationError(
+                f"oof_predictions {column} probability is outside [0,1]"
+            )
+    direction_sum = predictions[
+        list(_DIRECTION_PROBABILITY_COLUMNS)
+    ].astype(float).sum(axis=1).to_numpy(dtype=float)
+    if not np.isclose(
+        direction_sum,
+        np.ones(len(direction_sum), dtype=float),
+        rtol=0.0,
+        atol=1e-10,
+    ).all():
+        raise X15OOFPublicationError(
+            "oof_predictions direction probabilities must sum to one"
+        )
+
+    native_polymarket = predictions.loc[
+        predictions["venue"].eq("polymarket")
+        & predictions["training_venue"].eq("polymarket")
+        & predictions["transport_mode"].eq("VENUE_SPECIFIC")
+    ]
+    if not set(native_polymarket["game_id"].astype(str)).issubset(
+        validation_game_ids
+    ):
+        raise X15OOFPublicationError(
+            "native Polymarket OOF rows leave fold validation authority"
+        )
+
+
+def _native_polymarket_fold_arrays(
+    predictions: pd.DataFrame,
+) -> dict[str, tuple[object, ...]]:
+    native = predictions.loc[
+        predictions["venue"].eq("polymarket")
+        & predictions["training_venue"].eq("polymarket")
+        & predictions["transport_mode"].eq("VENUE_SPECIFIC")
+    ]
+    if native.empty:
+        return {column: () for column in _FOLD_ARRAY_COLUMNS}
+    values: dict[str, tuple[object, ...]] = {}
+    for column in _FOLD_ARRAY_COLUMNS:
+        first = _tuple_value(native.iloc[0][column])
+        if first is None or not native[column].map(
+            lambda value: _tuple_value(value) == first
+        ).all():
+            raise X15OOFPublicationError(
+                "native Polymarket fold arrays must be constant within shard"
+            )
+        values[column] = first
+    return values
 
 
 def _validate_frame_identity(
@@ -679,6 +1018,14 @@ def _validate_shard_run(
         raise X15OOFPublicationError(
             f"oof_predictions missing fold authority columns: {missing}"
         )
+    _validate_prediction_semantics(
+        predictions,
+        authority=authority,
+        fold_id=fold_id,
+        model_id=model_id,
+        feature_block_id=feature_block_id,
+        validation_game_ids=validation_game_ids,
+    )
     if not predictions["cohort_authority_sha256"].eq(
         authority.cohort_authority_sha256
     ).all():
@@ -737,8 +1084,13 @@ def _validate_shard_run(
         raise X15OOFPublicationError(
             "OOF row game must belong to its venue validation games"
         )
+    native_polymarket = predictions.loc[
+        predictions["venue"].eq("polymarket")
+        & predictions["training_venue"].eq("polymarket")
+        & predictions["transport_mode"].eq("VENUE_SPECIFIC")
+    ]
     observed_validation_game_ids = tuple(
-        sorted(set(predictions["game_id"].astype(str)))
+        sorted(set(native_polymarket["game_id"].astype(str)))
     )
     if not set(observed_validation_game_ids).issubset(
         validation_game_ids
@@ -898,6 +1250,10 @@ def publish_x15_oof_shard(
         model_id=model_id,
         feature_block_id=feature_block_id,
     )
+    effective_seed_contract = _effective_seed_contract(run_config)
+    selection_fold_arrays = _native_polymarket_fold_arrays(
+        model_run.oof_predictions
+    )
     tables = [
         _publish_table(
             output_root=root,
@@ -932,6 +1288,14 @@ def publish_x15_oof_shard(
         "run_config": run_config,
         "run_config_sha256": model_run.run_config_sha256,
         "shared_run_config_sha256": shared_config_sha256,
+        "effective_seed_contract": effective_seed_contract,
+        "effective_seed_contract_sha256": _model_sha256(
+            effective_seed_contract
+        ),
+        "selection_fold_arrays": selection_fold_arrays,
+        "selection_fold_arrays_sha256": _model_sha256(
+            selection_fold_arrays
+        ),
         "diagnostic_claim_boundary": DIAGNOSTIC_CLAIM_BOUNDARY,
         "diagnostic_target_contract": DIAGNOSTIC_TARGET_CONTRACT,
         "claim_eligible": False,
@@ -1040,6 +1404,59 @@ def _read_shard_document(
         raise X15OOFPublicationError(
             "shard manifest run config SHA-256 mismatch"
         )
+    expected_seed_contract = _effective_seed_contract(run_config)
+    seed_contract = document.get("effective_seed_contract")
+    if (
+        not isinstance(seed_contract, dict)
+        or seed_contract != expected_seed_contract
+        or _model_sha256(seed_contract)
+        != _require_sha256(
+            document.get("effective_seed_contract_sha256"),
+            field="shard manifest.effective_seed_contract_sha256",
+        )
+    ):
+        raise X15OOFPublicationError(
+            "shard manifest effective seed contract mismatch"
+        )
+    selection_fold_arrays = document.get("selection_fold_arrays")
+    if (
+        not isinstance(selection_fold_arrays, dict)
+        or set(selection_fold_arrays) != set(_FOLD_ARRAY_COLUMNS)
+        or _model_sha256(selection_fold_arrays)
+        != _require_sha256(
+            document.get("selection_fold_arrays_sha256"),
+            field="shard manifest.selection_fold_arrays_sha256",
+        )
+    ):
+        raise X15OOFPublicationError(
+            "shard manifest selection fold arrays mismatch"
+        )
+    normalized_fold_arrays: dict[str, tuple[object, ...]] = {}
+    for column in _FOLD_ARRAY_COLUMNS:
+        sequence = _tuple_value(selection_fold_arrays[column])
+        if sequence is None:
+            raise X15OOFPublicationError(
+                "shard manifest selection fold arrays are malformed"
+            )
+        normalized_fold_arrays[column] = sequence
+    if normalized_fold_arrays["validation_game_ids"]:
+        if (
+            normalized_fold_arrays["train_weeks"]
+            != _tuple_value(document.get("train_weeks"))
+            or normalized_fold_arrays["validation_weeks"]
+            != _tuple_value(document.get("validation_weeks"))
+            or not set(
+                map(str, normalized_fold_arrays["training_game_ids"])
+            ).issubset(set(map(str, document["training_game_ids"])))
+            or not set(
+                map(str, normalized_fold_arrays["validation_game_ids"])
+            ).issubset(set(map(str, document["validation_game_ids"])))
+            or normalized_fold_arrays["preprocessor_fit_game_ids"]
+            != normalized_fold_arrays["training_game_ids"]
+        ):
+            raise X15OOFPublicationError(
+                "shard manifest selection fold arrays leave authority"
+            )
     if (
         _tuple_value(run_config.get("fold_ids")) != (fold_id,)
         or _tuple_value(run_config.get("model_ids")) != (model_id,)
@@ -1202,6 +1619,12 @@ def _shard_reference(
         "shared_run_config_sha256": document[
             "shared_run_config_sha256"
         ],
+        "effective_seed_contract_sha256": document[
+            "effective_seed_contract_sha256"
+        ],
+        "selection_fold_arrays_sha256": document[
+            "selection_fold_arrays_sha256"
+        ],
         "shard_bundle_sha256": document["bundle_sha256"],
         "manifest_path": manifest_path.relative_to(output_root).as_posix(),
         "manifest_sha256": manifest_sha256,
@@ -1323,6 +1746,14 @@ def publish_x15_oof_batch(
         raise X15OOFPublicationError(
             "shard run config differs beyond fold/model/block execution "
             "coordinates"
+        )
+    effective_seed_contract_sha256s = {
+        str(document["effective_seed_contract_sha256"])
+        for document, _ in records.values()
+    }
+    if len(effective_seed_contract_sha256s) != 1:
+        raise X15OOFPublicationError(
+            "shard effective seed contracts differ"
         )
     selection_ready = not missing_cells
     if selection_ready and not all(
@@ -1455,6 +1886,9 @@ def publish_x15_oof_batch(
         "shared_run_config_sha256": next(
             iter(shared_run_config_sha256s)
         ),
+        "effective_seed_contract_sha256": next(
+            iter(effective_seed_contract_sha256s)
+        ),
         "batch_run_config": batch_run_config,
         "batch_run_config_sha256": _model_sha256(batch_run_config),
         "diagnostic_claim_boundary": DIAGNOSTIC_CLAIM_BOUNDARY,
@@ -1548,6 +1982,10 @@ def _read_selection_ready_batch(
         raise X15OOFPublicationError(
             "batch synthesized run config SHA-256 mismatch"
         )
+    batch_seed_contract_sha256 = _require_sha256(
+        document.get("effective_seed_contract_sha256"),
+        field="batch manifest.effective_seed_contract_sha256",
+    )
     expected_fold_ids = tuple(fold[0] for fold in EXPECTED_FOLDS)
     expected_cells = tuple(
         (fold_id, model_id, feature_block_id)
@@ -1608,6 +2046,20 @@ def _read_selection_ready_batch(
             raise X15OOFPublicationError(
                 "selection-ready batch shard reference is malformed"
             )
+        if (
+            _require_sha256(
+                reference.get("effective_seed_contract_sha256"),
+                field="batch shard effective_seed_contract_sha256",
+            )
+            != batch_seed_contract_sha256
+        ):
+            raise X15OOFPublicationError(
+                "selection-ready batch shard seed contract drifted"
+            )
+        _require_sha256(
+            reference.get("selection_fold_arrays_sha256"),
+            field="batch shard selection_fold_arrays_sha256",
+        )
         indexed_cells.append(
             (
                 str(reference.get("fold_id", "")),
@@ -1638,7 +2090,13 @@ def _selection_shard_frame(
         load_tables=False,
     )
     observed_manifest_sha256, _ = sha256_path(manifest_path)
-    for field in ("fold_id", "model_id", "feature_block_id"):
+    for field in (
+        "fold_id",
+        "model_id",
+        "feature_block_id",
+        "effective_seed_contract_sha256",
+        "selection_fold_arrays_sha256",
+    ):
         if document.get(field) != reference.get(field):
             raise X15OOFPublicationError(
                 f"selection shard reference disagrees on {field}"
@@ -1678,22 +2136,42 @@ def _selection_shard_frame(
     try:
         frame = pq.read_table(
             object_path,
-            columns=list(SELECTION_PROJECTION_COLUMNS),
+            columns=list(_SELECTION_PARQUET_COLUMNS),
+            filters=_SELECTION_FILTERS,
         ).to_pandas()
     except Exception as error:
         raise X15OOFPublicationError(
             "selection projection columns are unavailable"
         ) from error
-    for column, dtype in frame.dtypes.items():
-        if dtype != object:
-            continue
-        frame[column] = frame[column].map(
-            lambda value: (
-                tuple(value)
-                if isinstance(value, (list, np.ndarray))
-                else value
-            )
+    if frame.empty:
+        raise X15OOFPublicationError(
+            "selection shard has no native Polymarket OOF rows"
         )
+    if (
+        not frame["venue"].eq("polymarket").all()
+        or not frame["training_venue"].eq("polymarket").all()
+        or not frame["calibration_venue"].eq("polymarket").all()
+        or not frame["transport_mode"].eq("VENUE_SPECIFIC").all()
+    ):
+        raise X15OOFPublicationError(
+            "selection projection must contain native Polymarket rows only"
+        )
+    selection_fold_arrays = document["selection_fold_arrays"]
+    if not isinstance(selection_fold_arrays, dict):
+        raise X15OOFPublicationError(
+            "selection shard fold arrays are malformed"
+        )
+    fold_arrays = {
+        column: tuple(selection_fold_arrays[column])
+        for column in _FOLD_ARRAY_COLUMNS
+    }
+    for column, value in fold_arrays.items():
+        frame[column] = pd.Series(
+            [value] * len(frame),
+            index=frame.index,
+            dtype=object,
+        )
+    frame = frame.loc[:, list(SELECTION_PROJECTION_COLUMNS)]
     if tuple(frame.columns) != SELECTION_PROJECTION_COLUMNS:
         raise X15OOFPublicationError(
             "selection projection column order drifted"
