@@ -12,6 +12,7 @@ import hashlib
 import json
 import math
 import re
+import sys
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Final, Iterable, Mapping, Sequence
@@ -41,6 +42,9 @@ from prediction_market.research.nfl_x15_distribution import (
     QuantileSupportContract,
     fit_directional_quantiles,
     magnitude_distribution_metrics,
+)
+from prediction_market.research.nfl_x15_development_panel import (
+    VerifiedDiagnosticPanelPartition,
 )
 
 
@@ -306,6 +310,21 @@ class X15ModelRun:
     weight_audit: pd.DataFrame
     run_config_sha256: str
     run_config: Mapping[str, object] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class X15PreparedDiagnosticPanel:
+    """Compact reusable decision rows prepared from a verified batch iterator."""
+
+    frame: pd.DataFrame
+    parsed_by_sha256: Mapping[str, Mapping[str, object]]
+    game_ids: tuple[str, ...]
+    partition_count: int
+    source_row_count: int
+    batch_manifest_file_sha256: str
+    batch_sha256: str
+    cohort_authority_sha256: str
+    cohort_mapping_sha256: str
 
 
 @dataclass(slots=True)
@@ -764,6 +783,52 @@ def _decision_feature_frame(
                 row_states == 1, row_states < 0
             )
     return pd.DataFrame(feature_data, index=frame.index)
+
+
+def _compact_parsed_decision_payload(
+    payload: Mapping[str, object],
+    *,
+    feature_blocks: Mapping[str, tuple[str, ...]],
+) -> dict[str, object]:
+    governed = {
+        feature
+        for features in feature_blocks.values()
+        for feature in features
+    }
+    compact: dict[str, object] = {}
+    fact_features = payload.get("fact_features", {})
+    if not isinstance(fact_features, Mapping):
+        raise X15ModelInputError(
+            "decision feature fact_features must be an object"
+        )
+    selected_facts = {
+        sys.intern(feature.removeprefix("fact__")): fact_features.get(
+            feature.removeprefix("fact__")
+        )
+        for feature in governed
+        if feature.startswith("fact__")
+        and feature.removeprefix("fact__") in fact_features
+    }
+    if selected_facts:
+        compact["fact_features"] = selected_facts
+    if "multi_hot__*" in governed:
+        multi_hot = payload.get("multi_hot_features", {})
+        if not isinstance(multi_hot, Mapping):
+            raise X15ModelInputError(
+                "decision feature multi_hot_features must be an object"
+            )
+        compact["multi_hot_features"] = {
+            sys.intern(str(key)): value
+            for key, value in multi_hot.items()
+        }
+    for feature in governed:
+        if (
+            not feature.startswith("fact__")
+            and feature != "multi_hot__*"
+            and feature in payload
+        ):
+            compact[feature] = payload[feature]
+    return compact
 
 
 def _sha256_text_exact(value: object) -> str:
@@ -1999,7 +2064,7 @@ def _run_x15_walk_forward_engine(
     *,
     feature_blocks: Mapping[str, tuple[str, ...]],
     baseline_block_id: str,
-    parsed_by_sha256: dict[str, dict[str, object]] | None = None,
+    parsed_by_sha256: Mapping[str, Mapping[str, object]] | None = None,
     model_ids: Sequence[str] = MODEL_IDS,
     feature_block_ids: Sequence[str],
     fold_ids: Sequence[str] | None = None,
@@ -2084,8 +2149,6 @@ def _run_x15_walk_forward_engine(
         feature_block_ids=feature_block_ids,
         parsed_by_sha256=parsed_by_sha256,
     )
-    if parsed_by_sha256 is not None:
-        parsed_by_sha256.clear()
     run_config = {
         "model_ids": tuple(model_ids),
         "feature_block_ids": tuple(feature_block_ids),
@@ -2463,6 +2526,8 @@ def _validate_diagnostic_decision_payload(
 
 def _diagnostic_panel_frame(
     panel: object,
+    *,
+    decision_only: bool = False,
 ) -> tuple[pd.DataFrame, dict[str, dict[str, object]]]:
     if isinstance(panel, pd.DataFrame):
         source = panel
@@ -2617,10 +2682,194 @@ def _diagnostic_panel_frame(
         if not isinstance(frame[column].dtype, pd.CategoricalDtype):
             frame[column] = frame[column].astype("category")
     frame = _panel_frame(frame, copy_input=False)
+    if decision_only:
+        frame = frame.loc[frame["decision_eligible"]].copy()
+        if frame.empty:
+            raise X15ModelInputError(
+                "diagnostic partitions have no decision-eligible rows"
+            )
     parsed_by_sha256 = _parse_unique_decision_features(
         frame, diagnostic_contract=True
     )
     return frame, parsed_by_sha256
+
+
+def prepare_x15_historical_trades_diagnostic_partitions(
+    partitions: Iterable[VerifiedDiagnosticPanelPartition],
+) -> X15PreparedDiagnosticPanel:
+    """Adapt verified game partitions and retain only compact decision rows."""
+
+    if isinstance(partitions, (pd.DataFrame, VerifiedDiagnosticPanelPartition)):
+        raise X15ModelInputError(
+            "preparation requires an iterator of "
+            "VerifiedDiagnosticPanelPartition values"
+        )
+    prepared_frames: list[pd.DataFrame] = []
+    parsed_by_sha256: dict[str, Mapping[str, object]] = {}
+    decision_fingerprint_by_sha256: dict[str, bytes] = {}
+    game_ids: set[str] = set()
+    expected_lineage: tuple[object, ...] | None = None
+    source_row_count = 0
+    for partition in partitions:
+        if not isinstance(partition, VerifiedDiagnosticPanelPartition):
+            raise X15ModelInputError(
+                "preparation requires VerifiedDiagnosticPanelPartition values"
+            )
+        if (
+            type(partition.game_id) is not str
+            or not partition.game_id.strip()
+            or partition.game_id in game_ids
+            or type(partition.batch_game_count) is not int
+            or partition.batch_game_count <= 0
+        ):
+            raise X15ModelInputError(
+                "verified diagnostic partition identity is invalid"
+            )
+        for label, value in (
+            (
+                "batch_manifest_file_sha256",
+                partition.batch_manifest_file_sha256,
+            ),
+            ("batch_sha256", partition.batch_sha256),
+            ("game_manifest_sha256", partition.game_manifest_sha256),
+            (
+                "diagnostic_object_sha256",
+                partition.diagnostic_object_sha256,
+            ),
+            (
+                "cohort_authority_sha256",
+                partition.cohort_authority_sha256,
+            ),
+            ("cohort_mapping_sha256", partition.cohort_mapping_sha256),
+        ):
+            if type(value) is not str or _SHA256_RE.fullmatch(value) is None:
+                raise X15ModelInputError(
+                    f"verified diagnostic partition {label} is invalid"
+                )
+        lineage = (
+            partition.batch_game_count,
+            partition.batch_manifest_file_sha256,
+            partition.batch_sha256,
+            partition.cohort_authority_sha256,
+            partition.cohort_mapping_sha256,
+        )
+        if expected_lineage is None:
+            expected_lineage = lineage
+        elif lineage != expected_lineage:
+            raise X15ModelInputError(
+                "verified diagnostic partitions have conflicting batch lineage"
+            )
+        partition_games = set(
+            partition.panel["game_id"].astype(str)
+        ) if (
+            isinstance(partition.panel, pd.DataFrame)
+            and "game_id" in partition.panel
+        ) else set()
+        if partition_games != {partition.game_id}:
+            raise X15ModelInputError(
+                "verified diagnostic partition crosses game boundaries"
+            )
+        source_row_count += len(partition.panel)
+        adapted, parsed = _diagnostic_panel_frame(
+            partition.panel,
+            decision_only=True,
+        )
+        if not adapted["cohort_authority_sha256"].astype(str).eq(
+            partition.cohort_authority_sha256
+        ).all():
+            raise X15ModelInputError(
+                "verified diagnostic partition authority differs from panel"
+            )
+        for digest, decision_json in adapted.loc[
+            :,
+            ["decision_feature_sha256", "decision_features_json"],
+        ].drop_duplicates().itertuples(index=False, name=None):
+            digest = str(digest)
+            decision_json = str(decision_json)
+            fingerprint = hashlib.sha512(
+                decision_json.encode("utf-8")
+            ).digest()
+            prior_fingerprint = decision_fingerprint_by_sha256.get(digest)
+            if (
+                prior_fingerprint is not None
+                and prior_fingerprint != fingerprint
+            ):
+                raise X15ModelInputError(
+                    "digest maps to conflicting decision payloads"
+                )
+            decision_fingerprint_by_sha256[digest] = fingerprint
+        for digest, payload in parsed.items():
+            compact_payload = _compact_parsed_decision_payload(
+                payload,
+                feature_blocks=DIAGNOSTIC_FEATURE_BLOCKS,
+            )
+            existing = parsed_by_sha256.get(digest)
+            if (
+                existing is not None
+                and _canonical(existing) != _canonical(compact_payload)
+            ):
+                raise X15ModelInputError(
+                    "digest maps to conflicting decision payloads"
+                )
+            parsed_by_sha256[digest] = compact_payload
+        adapted.drop(columns=["decision_features_json"], inplace=True)
+        prepared_frames.append(adapted)
+        game_ids.add(partition.game_id)
+        del partition
+    if expected_lineage is None or not prepared_frames:
+        raise X15ModelInputError(
+            "verified diagnostic partition iterator must be nonempty"
+        )
+    expected_game_count = int(expected_lineage[0])
+    if len(game_ids) != expected_game_count:
+        raise X15ModelInputError(
+            "verified diagnostic partition iterator is incomplete"
+        )
+    frame = pd.concat(
+        prepared_frames,
+        ignore_index=True,
+    )
+    prepared_frames.clear()
+    if frame.duplicated(list(_PANEL_GRAIN)).any():
+        raise X15ModelInputError(
+            "verified diagnostic partitions duplicate panel grain"
+        )
+    for column in (
+        "schema_version",
+        "cohort_authority_sha256",
+        "game_id",
+        "atomic_information_episode_id",
+        "venue",
+        "actual_home_contract_id",
+        "direction",
+        "decision_feature_sha256",
+    ):
+        if not isinstance(frame[column].dtype, pd.CategoricalDtype):
+            frame[column] = frame[column].astype("category")
+    frame = frame.sort_values(
+        list(_PANEL_GRAIN),
+        kind="mergesort",
+    ).reset_index(drop=True)
+    frame["_source_row_id"] = np.arange(len(frame), dtype=int)
+    build_x15_week_folds(frame)
+    observed_digests = set(
+        frame["decision_feature_sha256"].astype(str)
+    )
+    if observed_digests != set(parsed_by_sha256):
+        raise X15ModelInputError(
+            "prepared decision cache does not match prepared rows"
+        )
+    return X15PreparedDiagnosticPanel(
+        frame=frame,
+        parsed_by_sha256=MappingProxyType(dict(parsed_by_sha256)),
+        game_ids=tuple(sorted(game_ids)),
+        partition_count=len(game_ids),
+        source_row_count=source_row_count,
+        batch_manifest_file_sha256=str(expected_lineage[1]),
+        batch_sha256=str(expected_lineage[2]),
+        cohort_authority_sha256=str(expected_lineage[3]),
+        cohort_mapping_sha256=str(expected_lineage[4]),
+    )
 
 
 def _diagnostic_metadata() -> dict[str, object]:
@@ -2681,7 +2930,11 @@ def run_x15_historical_trades_diagnostic_walk_forward(
 ) -> X15ModelRun:
     """Run an explicitly non-confirmatory historical-trades-only OOF study."""
 
-    adapted, parsed_by_sha256 = _diagnostic_panel_frame(panel)
+    if isinstance(panel, X15PreparedDiagnosticPanel):
+        adapted = panel.frame
+        parsed_by_sha256 = panel.parsed_by_sha256
+    else:
+        adapted, parsed_by_sha256 = _diagnostic_panel_frame(panel)
     result = _run_x15_walk_forward_engine(
         adapted,
         feature_blocks=DIAGNOSTIC_FEATURE_BLOCKS,
@@ -2715,9 +2968,11 @@ __all__ = [
     "RANDOM_STATE",
     "X15ModelInputError",
     "X15ModelRun",
+    "X15PreparedDiagnosticPanel",
     "X15WeekFold",
     "build_x15_week_folds",
     "hierarchical_sample_weights",
+    "prepare_x15_historical_trades_diagnostic_partitions",
     "run_x15_historical_trades_diagnostic_walk_forward",
     "run_x15_walk_forward",
 ]

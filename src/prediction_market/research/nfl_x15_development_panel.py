@@ -27,7 +27,7 @@ import os
 from pathlib import Path
 import re
 from types import MappingProxyType
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 import uuid
 
 import numpy as np
@@ -195,6 +195,21 @@ class VerifiedDevelopmentSources:
 
 
 @dataclass(frozen=True, slots=True)
+class VerifiedDiagnosticPanelPartition:
+    """One game panel decoded from a complete verified diagnostic batch."""
+
+    game_id: str
+    panel: pd.DataFrame
+    batch_game_count: int
+    batch_manifest_file_sha256: str
+    batch_sha256: str
+    game_manifest_sha256: str
+    diagnostic_object_sha256: str
+    cohort_authority_sha256: str
+    cohort_mapping_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
 class PublishedDevelopmentGame:
     game_id: str
     manifest_path: Path
@@ -264,7 +279,7 @@ def _canonical_value(value: object) -> object:
     if isinstance(value, (float, np.floating)):
         return float(value) if math.isfinite(float(value)) else None
     if isinstance(value, Decimal):
-        return str(value)
+        return float(value)
     if isinstance(value, Mapping):
         return {
             str(key): _canonical_value(child)
@@ -723,6 +738,7 @@ def _read_verified_table(
     table_name: str,
     market_style: bool,
     label: str,
+    require_published_semantics: bool = False,
 ) -> pd.DataFrame:
     descriptor = _table_descriptor(
         manifest,
@@ -762,14 +778,231 @@ def _read_verified_table(
             raise DevelopmentPanelError(
                 f"{label}.{table_name} Parquet row count mismatch"
             )
-        frame = parquet.read().to_pandas()
+        table = parquet.read()
+        frame = table.to_pandas()
     except (OSError, pa.ArrowException) as exc:
         raise DevelopmentPanelError(
             f"{label}.{table_name} is not readable Parquet"
         ) from exc
     if type(schema_columns) is list and list(frame.columns) != schema_columns:
         raise DevelopmentPanelError(f"{label}.{table_name} schema mismatch")
+    if require_published_semantics:
+        schema_fingerprint = _require_sha256(
+            descriptor.get("schema_fingerprint"),
+            label=f"{label}.{table_name}.schema_fingerprint",
+        )
+        observed_schema = _sha256_bytes(
+            str(table.schema).encode("utf-8")
+        )
+        if observed_schema != schema_fingerprint:
+            raise DevelopmentPanelError(
+                f"{label}.{table_name} schema fingerprint mismatch"
+            )
+        semantic_rows_sha256 = _require_sha256(
+            descriptor.get("semantic_rows_sha256"),
+            label=f"{label}.{table_name}.semantic_rows_sha256",
+        )
+        if _canonical_sha256(frame.to_dict("records")) != (
+            semantic_rows_sha256
+        ):
+            raise DevelopmentPanelError(
+                f"{label}.{table_name} semantic rows mismatch"
+            )
     return frame
+
+
+def iter_verified_diagnostic_panel_partitions(
+    *,
+    project_root: Path,
+    batch_manifest_path: Path,
+    batch_manifest_file_sha256: str,
+    expected_game_count: int = 153,
+) -> Iterator[VerifiedDiagnosticPanelPartition]:
+    """Yield one verified game panel from a complete bound diagnostic batch."""
+
+    if type(expected_game_count) is not int or expected_game_count <= 0:
+        raise DevelopmentPanelError("expected_game_count must be positive")
+    project_root = project_root.resolve()
+    expected_file_sha = _require_sha256(
+        batch_manifest_file_sha256,
+        label="diagnostic batch manifest SHA-256",
+    )
+    batch_path = _resolve_under(
+        project_root,
+        batch_manifest_path,
+        label="diagnostic batch manifest",
+    )
+    batch_payload = _stable_read(
+        batch_path,
+        label="diagnostic batch manifest",
+        expected_sha256=expected_file_sha,
+    )
+    document = _strict_json(
+        batch_payload,
+        label="diagnostic batch manifest",
+    )
+    _verify_semantic_hash(
+        document,
+        field="batch_sha256",
+        label="diagnostic batch",
+    )
+    threshold = document.get("direction_threshold_probability")
+    games = document.get("games")
+    if (
+        document.get("schema")
+        != "nfl_x15_development_panel_batch_index_v1"
+        or document.get("builder_version") != BUILDER_VERSION
+        or document.get("cohort") != "development"
+        or document.get("verified_development_game_count")
+        != expected_game_count
+        or document.get("published_game_count") != expected_game_count
+        or document.get("partial_publication") is not False
+        or document.get("holdout_reaction_accessed") is not False
+        or document.get("publication_gate") != "PASS"
+        or document.get("diagnostic_claim_boundary")
+        != DIAGNOSTIC_CLAIM_BOUNDARY
+        or document.get("diagnostic_target_contract")
+        != DIAGNOSTIC_TARGET_CONTRACT
+        or isinstance(threshold, bool)
+        or not isinstance(threshold, (int, float, Decimal))
+        or float(threshold) != DIRECTION_THRESHOLD_PROBABILITY
+        or document.get("direction_threshold_semantics")
+        != DIRECTION_THRESHOLD_SEMANTICS
+        or type(games) is not list
+        or len(games) != expected_game_count
+    ):
+        raise DevelopmentPanelError(
+            "complete diagnostic batch contract mismatch"
+        )
+    cohort_authority_sha256 = _require_sha256(
+        document.get("cohort_authority_sha256"),
+        label="diagnostic batch.cohort_authority_sha256",
+    )
+    cohort_mapping_sha256 = _require_sha256(
+        document.get("cohort_mapping_sha256"),
+        label="diagnostic batch.cohort_mapping_sha256",
+    )
+    source_shas = document.get("source_batch_file_sha256s")
+    if type(source_shas) is not dict or set(source_shas) != {
+        "facts",
+        "stage_a",
+        "market",
+    }:
+        raise DevelopmentPanelError(
+            "diagnostic batch source bindings are incomplete"
+        )
+    for name, value in source_shas.items():
+        _require_sha256(
+            value,
+            label=f"diagnostic batch source {name}",
+        )
+
+    by_game: dict[str, Mapping[str, Any]] = {}
+    for entry in games:
+        if type(entry) is not dict:
+            raise DevelopmentPanelError(
+                "diagnostic batch game descriptor is invalid"
+            )
+        game_id = entry.get("game_id")
+        if (
+            type(game_id) is not str
+            or not game_id.strip()
+            or game_id in by_game
+            or type(entry.get("manifest_path")) is not str
+            or entry.get("confirmatory_venue_count") != 0
+            or entry.get("diagnostic_venue_count") != 2
+        ):
+            raise DevelopmentPanelError(
+                "diagnostic batch game descriptor is invalid"
+            )
+        _require_sha256(
+            entry.get("manifest_sha256"),
+            label=f"diagnostic batch.{game_id}.manifest_sha256",
+        )
+        _require_sha256(
+            entry.get("bundle_sha256"),
+            label=f"diagnostic batch.{game_id}.bundle_sha256",
+        )
+        by_game[game_id] = MappingProxyType(entry)
+    batch = _VerifiedBatch(
+        path=batch_path,
+        file_sha256=expected_file_sha,
+        root=_batch_root(batch_path),
+        document=MappingProxyType(document),
+        games=MappingProxyType(by_game),
+    )
+    batch_sha256 = str(document["batch_sha256"])
+    for game_id in sorted(by_game):
+        descriptor = by_game[game_id]
+        manifest, _ = _verify_game_manifest(
+            batch=batch,
+            descriptor=descriptor,
+            label="published diagnostic",
+        )
+        sources = manifest.get("sources")
+        if (
+            manifest.get("schema")
+            != "nfl_x15_development_game_panel_manifest_v1"
+            or manifest.get("builder_version") != BUILDER_VERSION
+            or manifest.get("diagnostic_claim_boundary")
+            != DIAGNOSTIC_CLAIM_BOUNDARY
+            or manifest.get("diagnostic_target_contract")
+            != DIAGNOSTIC_TARGET_CONTRACT
+            or manifest.get("direction_threshold_semantics")
+            != DIRECTION_THRESHOLD_SEMANTICS
+            or manifest.get("holdout_reaction_accessed") is not False
+            or manifest.get("confirmatory_venue_count") != 0
+            or manifest.get("diagnostic_venue_count") != 2
+            or type(sources) is not dict
+            or sources.get("cohort_authority_sha256")
+            != cohort_authority_sha256
+            or sources.get("cohort_mapping_sha256")
+            != cohort_mapping_sha256
+        ):
+            raise DevelopmentPanelError(
+                f"{game_id} diagnostic game manifest contract mismatch"
+            )
+        table_descriptor = _table_descriptor(
+            manifest,
+            table_name="diagnostic_panel",
+            market_style=False,
+            label=f"published diagnostic.{game_id}",
+        )
+        diagnostic_object_sha256 = _require_sha256(
+            table_descriptor.get("object_sha256"),
+            label=f"{game_id}.diagnostic_panel.object_sha256",
+        )
+        panel = _read_verified_table(
+            batch=batch,
+            manifest=manifest,
+            table_name="diagnostic_panel",
+            market_style=False,
+            label=f"published diagnostic.{game_id}",
+            require_published_semantics=True,
+        )
+        if (
+            panel.empty
+            or set(panel["game_id"].astype(str)) != {game_id}
+            or not panel["schema_version"].eq(DIAGNOSTIC_SCHEMA).all()
+            or not panel["cohort_authority_sha256"]
+            .astype(str)
+            .eq(cohort_authority_sha256)
+            .all()
+        ):
+            raise DevelopmentPanelError(
+                f"{game_id} diagnostic panel lineage mismatch"
+            )
+        yield VerifiedDiagnosticPanelPartition(
+            game_id=game_id,
+            panel=panel,
+            batch_game_count=expected_game_count,
+            batch_manifest_file_sha256=expected_file_sha,
+            batch_sha256=batch_sha256,
+            game_manifest_sha256=str(descriptor["manifest_sha256"]),
+            diagnostic_object_sha256=diagnostic_object_sha256,
+            cohort_authority_sha256=cohort_authority_sha256,
+            cohort_mapping_sha256=cohort_mapping_sha256,
+        )
 
 
 def _adapt_market(
@@ -2027,9 +2260,11 @@ __all__ = [
     "DevelopmentSourceSpec",
     "PublishedDevelopmentGame",
     "VenueConfirmatoryEvidence",
+    "VerifiedDiagnosticPanelPartition",
     "VerifiedDevelopmentSources",
     "confirmatory_evidence_frame_sha256",
     "default_development_source_spec",
+    "iter_verified_diagnostic_panel_partitions",
     "publish_exact153_development_panel",
     "verify_development_sources",
 ]

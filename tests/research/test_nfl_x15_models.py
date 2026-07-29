@@ -7,6 +7,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from prediction_market.research import (
+    nfl_x15_development_panel as development_panel_module,
+)
 from prediction_market.research import nfl_x15_models as models_module
 from prediction_market.research.nfl_x15_models import (
     DIAGNOSTIC_ANALYSIS_SCOPE,
@@ -201,6 +204,31 @@ def _diagnostic_panel() -> pd.DataFrame:
             decision_json
         )
     return panel.drop(columns=["s_h", "o_h_given_s"])
+
+
+def _verified_diagnostic_partitions(
+    panel: pd.DataFrame,
+):
+    groups = tuple(panel.groupby("game_id", sort=True, observed=True))
+    batch_file_sha = _sha256_text("diagnostic-batch-file")
+    batch_sha = _sha256_text("diagnostic-batch-semantic")
+    mapping_sha = _sha256_text("diagnostic-cohort-mapping")
+    return tuple(
+        development_panel_module.VerifiedDiagnosticPanelPartition(
+            game_id=str(game_id),
+            panel=game.reset_index(drop=True),
+            batch_game_count=len(groups),
+            batch_manifest_file_sha256=batch_file_sha,
+            batch_sha256=batch_sha,
+            game_manifest_sha256=_sha256_text(f"{game_id}:manifest"),
+            diagnostic_object_sha256=_sha256_text(f"{game_id}:panel"),
+            cohort_authority_sha256=str(
+                game["cohort_authority_sha256"].iloc[0]
+            ),
+            cohort_mapping_sha256=mapping_sha,
+        )
+        for game_id, game in groups
+    )
 
 
 def test_builds_five_complete_game_folds_shared_by_both_venues() -> None:
@@ -562,6 +590,208 @@ def test_diagnostic_parses_each_unique_decision_payload_once(
     )
 
     assert parse_calls == unique_payloads
+
+
+def test_prepared_diagnostic_partitions_filter_before_global_compaction() -> None:
+    panel = _diagnostic_panel()
+    ineligible = panel.index[::7]
+    panel.loc[ineligible, "decision_eligible"] = False
+    panel.loc[ineligible, "target_eligible"] = False
+    panel.loc[ineligible, "delta_l_h"] = np.nan
+    panel.loc[ineligible, "direction"] = "UNOBSERVED"
+    panel.loc[ineligible, "conditional_magnitude"] = np.nan
+    partitions = _verified_diagnostic_partitions(panel)
+
+    prepared = (
+        models_module.prepare_x15_historical_trades_diagnostic_partitions(
+            iter(partitions)
+        )
+    )
+    reversed_prepared = (
+        models_module.prepare_x15_historical_trades_diagnostic_partitions(
+            reversed(partitions)
+        )
+    )
+
+    assert isinstance(prepared, models_module.X15PreparedDiagnosticPanel)
+    assert len(prepared.frame) == int(panel["decision_eligible"].sum())
+    assert prepared.frame["decision_eligible"].all()
+    assert prepared.partition_count == panel["game_id"].nunique()
+    assert prepared.game_ids == tuple(sorted(panel["game_id"].unique()))
+    assert prepared.frame["_source_row_id"].tolist() == list(
+        range(len(prepared.frame))
+    )
+    assert not prepared.frame.duplicated(
+        list(models_module._PANEL_GRAIN)
+    ).any()
+    for column in (
+        "game_id",
+        "atomic_information_episode_id",
+        "venue",
+        "actual_home_contract_id",
+        "decision_feature_sha256",
+    ):
+        assert isinstance(
+            prepared.frame[column].dtype,
+            pd.CategoricalDtype,
+        )
+    assert "decision_features_json" not in prepared.frame
+    pd.testing.assert_frame_equal(
+        prepared.frame,
+        reversed_prepared.frame,
+    )
+    assert dict(prepared.parsed_by_sha256) == dict(
+        reversed_prepared.parsed_by_sha256
+    )
+
+
+def test_prepared_diagnostic_adapter_never_receives_raw_pooled_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    panel = _diagnostic_panel()
+    partitions = _verified_diagnostic_partitions(panel)
+    observed_partition_sizes: list[int] = []
+    adapter = models_module._diagnostic_panel_frame
+
+    def recording_adapter(
+        partition: object,
+        *,
+        decision_only: bool = False,
+    ):
+        observed_partition_sizes.append(len(partition))
+        return adapter(partition, decision_only=decision_only)
+
+    monkeypatch.setattr(
+        models_module,
+        "_diagnostic_panel_frame",
+        recording_adapter,
+    )
+
+    models_module.prepare_x15_historical_trades_diagnostic_partitions(
+        iter(partitions)
+    )
+
+    assert len(observed_partition_sizes) == len(partitions)
+    assert max(observed_partition_sizes) < len(panel)
+    assert observed_partition_sizes == [
+        len(partition.panel) for partition in partitions
+    ]
+
+
+def test_prepared_diagnostic_cache_is_reused_across_execution_slices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    panel = _diagnostic_panel()
+    partitions = _verified_diagnostic_partitions(panel)
+    original_loads = json.loads
+    parse_calls = 0
+
+    def counting_loads(value: str) -> object:
+        nonlocal parse_calls
+        parse_calls += 1
+        return original_loads(value)
+
+    monkeypatch.setattr(models_module.json, "loads", counting_loads)
+    prepared = (
+        models_module.prepare_x15_historical_trades_diagnostic_partitions(
+            iter(partitions)
+        )
+    )
+    parses_after_preparation = parse_calls
+    cache_before = dict(prepared.parsed_by_sha256)
+
+    baseline = run_x15_historical_trades_diagnostic_walk_forward(
+        prepared,
+        model_ids=("b0_empirical_v1",),
+        feature_block_ids=("D0",),
+        fold_ids=("fold_01",),
+        include_magnitude=False,
+    )
+    candidate = run_x15_historical_trades_diagnostic_walk_forward(
+        prepared,
+        model_ids=("regularized_logistic_v1",),
+        feature_block_ids=("D1",),
+        fold_ids=("fold_01",),
+        include_magnitude=False,
+    )
+
+    assert parses_after_preparation == panel[
+        "decision_feature_sha256"
+    ].nunique()
+    assert parse_calls == parses_after_preparation
+    assert dict(prepared.parsed_by_sha256) == cache_before
+    assert not baseline.oof_predictions.empty
+    assert not candidate.oof_predictions.empty
+
+
+def test_prepared_diagnostic_cache_keeps_only_governed_features() -> None:
+    panel = _diagnostic_panel()
+    for index in panel.index:
+        decoded = json.loads(panel.loc[index, "decision_features_json"])
+        decoded["unused_publication_metadata"] = {
+            "blob": "not-a-model-feature" * 100
+        }
+        decision_json = json.dumps(
+            decoded,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        panel.loc[index, "decision_features_json"] = decision_json
+        panel.loc[index, "decision_feature_sha256"] = _sha256_text(
+            decision_json
+        )
+
+    prepared = (
+        models_module.prepare_x15_historical_trades_diagnostic_partitions(
+            iter(_verified_diagnostic_partitions(panel))
+        )
+    )
+
+    assert all(
+        "unused_publication_metadata" not in payload
+        for payload in prepared.parsed_by_sha256.values()
+    )
+    assert all(
+        "mark_l_price" in payload
+        for payload in prepared.parsed_by_sha256.values()
+    )
+
+
+def test_prepared_diagnostic_merge_fails_closed_on_digest_collision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    panel = (
+        _diagnostic_panel()
+        .groupby("game_id", sort=True, observed=True)
+        .head(1)
+        .head(2)
+        .copy()
+    )
+    collision_sha = "sha256:" + "f" * 64
+    panel["decision_feature_sha256"] = collision_sha
+    monkeypatch.setattr(
+        models_module,
+        "_sha256_text_exact",
+        lambda _: collision_sha,
+    )
+
+    with pytest.raises(
+        X15ModelInputError,
+        match="digest maps to conflicting decision payloads",
+    ):
+        models_module.prepare_x15_historical_trades_diagnostic_partitions(
+            iter(_verified_diagnostic_partitions(panel))
+        )
+
+
+def test_prepared_diagnostic_rejects_unverified_dataframe_partition() -> None:
+    with pytest.raises(
+        X15ModelInputError,
+        match="VerifiedDiagnosticPanelPartition",
+    ):
+        models_module.prepare_x15_historical_trades_diagnostic_partitions(
+            [_diagnostic_panel()]
+        )
 
 
 def test_hierarchical_weights_equalize_game_then_episode_then_rows() -> None:

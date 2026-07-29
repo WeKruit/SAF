@@ -729,6 +729,149 @@ def test_authority_holdout_count_is_exact_not_advisory(tmp_path: Path) -> None:
         )
 
 
+def test_verified_diagnostic_partition_iterator_loads_complete_bound_batch(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    spec = _source_fixture(source_root)
+    publication = publish_exact153_development_panel(
+        project_root=source_root,
+        output_root=source_root / "published",
+        source_spec=spec,
+        confirmatory_evidence={},
+    )
+
+    partitions = list(
+        _development_panel.iter_verified_diagnostic_panel_partitions(
+            project_root=source_root,
+            batch_manifest_path=publication.batch_manifest_path,
+            batch_manifest_file_sha256=publication.batch_manifest_sha256,
+            expected_game_count=1,
+        )
+    )
+
+    assert len(partitions) == 1
+    partition = partitions[0]
+    assert isinstance(
+        partition,
+        _development_panel.VerifiedDiagnosticPanelPartition,
+    )
+    assert partition.game_id == GAME_ID
+    assert partition.batch_game_count == 1
+    assert partition.batch_manifest_file_sha256 == (
+        publication.batch_manifest_sha256
+    )
+    assert set(partition.panel["game_id"]) == {GAME_ID}
+    assert set(partition.panel["schema_version"]) == {
+        "HistoricalTradesOnlyProbabilityPanelV1"
+    }
+
+
+def test_verified_diagnostic_partition_iterator_rejects_incomplete_batch(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    spec = _source_fixture(source_root)
+    publication = publish_exact153_development_panel(
+        project_root=source_root,
+        output_root=source_root / "published",
+        source_spec=spec,
+        confirmatory_evidence={},
+    )
+
+    with pytest.raises(
+        DevelopmentPanelError,
+        match="complete diagnostic batch contract mismatch",
+    ):
+        list(
+            _development_panel.iter_verified_diagnostic_panel_partitions(
+                project_root=source_root,
+                batch_manifest_path=publication.batch_manifest_path,
+                batch_manifest_file_sha256=publication.batch_manifest_sha256,
+                expected_game_count=2,
+            )
+        )
+
+
+def test_verified_diagnostic_partition_iterator_checks_semantic_row_hash(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    spec = _source_fixture(source_root)
+    publication = publish_exact153_development_panel(
+        project_root=source_root,
+        output_root=source_root / "published",
+        source_spec=spec,
+        confirmatory_evidence={},
+    )
+    output_root = publication.output_root
+    batch = json.loads(publication.batch_manifest_path.read_text())
+    game_descriptor = batch["games"][0]
+    game_manifest_path = output_root / game_descriptor["manifest_path"]
+    game_manifest = json.loads(game_manifest_path.read_text())
+    diagnostic = next(
+        descriptor
+        for descriptor in game_manifest["tables"]
+        if descriptor["name"] == "diagnostic_panel"
+    )
+    diagnostic["semantic_rows_sha256"] = "sha256:" + "f" * 64
+    game_manifest.pop("bundle_sha256")
+    game_manifest["bundle_sha256"] = (
+        _development_panel._canonical_sha256(game_manifest)
+    )
+    game_payload = _canonical(game_manifest)
+    game_file_sha = _sha(game_payload)
+    game_hex = game_file_sha.removeprefix("sha256:")
+    replacement_game_path = (
+        output_root
+        / "single-game"
+        / GAME_ID
+        / "manifests"
+        / "sha256"
+        / game_hex[:2]
+        / f"{game_hex}.manifest.json"
+    )
+    replacement_game_path.parent.mkdir(parents=True, exist_ok=True)
+    replacement_game_path.write_bytes(game_payload)
+    game_descriptor.update(
+        {
+            "manifest_path": replacement_game_path.relative_to(
+                output_root
+            ).as_posix(),
+            "manifest_sha256": game_file_sha,
+            "bundle_sha256": game_manifest["bundle_sha256"],
+        }
+    )
+    batch.pop("batch_sha256")
+    batch["batch_sha256"] = _development_panel._canonical_sha256(batch)
+    batch_payload = _canonical(batch)
+    batch_file_sha = _sha(batch_payload)
+    batch_hex = batch_file_sha.removeprefix("sha256:")
+    replacement_batch_path = (
+        output_root
+        / "batches"
+        / "manifests"
+        / "sha256"
+        / batch_hex[:2]
+        / f"{batch_hex}.batch-index.json"
+    )
+    replacement_batch_path.parent.mkdir(parents=True, exist_ok=True)
+    replacement_batch_path.write_bytes(batch_payload)
+
+    with pytest.raises(
+        DevelopmentPanelError,
+        match="diagnostic_panel semantic rows mismatch",
+    ):
+        list(
+            _development_panel.iter_verified_diagnostic_panel_partitions(
+                project_root=source_root,
+                batch_manifest_path=replacement_batch_path,
+                batch_manifest_file_sha256=batch_file_sha,
+                expected_game_count=1,
+            )
+        )
+
+
 def test_runner_exposes_single_game_streaming_option() -> None:
     project_root = Path(__file__).resolve().parents[2]
     result = subprocess.run(
