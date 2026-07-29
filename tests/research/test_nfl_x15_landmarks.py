@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import hashlib
+import json
+
 import pandas as pd
 import pytest
 
 from prediction_market.research import nfl_x15_landmarks as landmarks
 
 
-def _inputs() -> dict[str, pd.DataFrame]:
+def _inputs() -> dict[str, object]:
     facts = pd.DataFrame(
         [
             {
@@ -170,6 +173,20 @@ def _inputs() -> dict[str, pd.DataFrame]:
             }
         ]
     )
+    canonical_mapping = [
+        {
+            "cohort": "development",
+            "game_id": "2025_01_AAA_BBB",
+            "nfl_week": 1,
+        }
+    ]
+    mapping_sha256 = "sha256:" + hashlib.sha256(
+        json.dumps(
+            canonical_mapping,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
     return {
         "episode_facts": facts,
         "stage_a_references": references,
@@ -179,10 +196,12 @@ def _inputs() -> dict[str, pd.DataFrame]:
         "tick_rules": tick_rules,
         "continuity": continuity,
         "cohort_metadata": cohort_metadata,
+        "expected_cohort_authority_sha256": "sha256:" + "e" * 64,
+        "expected_cohort_mapping_sha256": mapping_sha256,
     }
 
 
-def _build(**changes: pd.DataFrame):
+def _build(**changes: object):
     inputs = _inputs()
     inputs.update(changes)
     builder = getattr(landmarks, "build_venue_reaction_panel_v3")
@@ -200,7 +219,11 @@ def test_v3_grid_is_stable_unique_and_uses_only_actual_home_contract() -> None:
     inputs = _inputs()
     first = _build()
     shuffled = {
-        name: frame.sample(frac=1, random_state=7).reset_index(drop=True)
+        name: (
+            frame.sample(frac=1, random_state=7).reset_index(drop=True)
+            if isinstance(frame, pd.DataFrame)
+            else frame
+        )
         for name, frame in inputs.items()
     }
     second = _build(**shuffled)
@@ -273,7 +296,11 @@ def test_multi_event_factor_membership_is_order_invariant() -> None:
 
     first = _build(**inputs).panel
     shuffled = {
-        name: frame.sample(frac=1, random_state=11).reset_index(drop=True)
+        name: (
+            frame.sample(frac=1, random_state=11).reset_index(drop=True)
+            if isinstance(frame, pd.DataFrame)
+            else frame
+        )
         for name, frame in inputs.items()
     }
     second = _build(**shuffled).panel
@@ -291,10 +318,9 @@ def test_multi_event_factor_membership_is_order_invariant() -> None:
 
 def test_panel_publishes_frozen_week_and_separate_factor_membership() -> None:
     metadata = _inputs()["cohort_metadata"].copy()
-    metadata.loc[0, "nfl_week"] = 12
     result = _build(cohort_metadata=metadata)
 
-    assert set(result.panel["nfl_week"]) == {12}
+    assert set(result.panel["nfl_week"]) == {1}
     assert set(result.panel["cohort_authority_sha256"]) == {"sha256:" + "e" * 64}
     assert len(result.factor_membership) == 1
     membership = result.factor_membership.iloc[0]
@@ -311,6 +337,16 @@ def test_panel_publishes_frozen_week_and_separate_factor_membership() -> None:
     error = getattr(landmarks, "VenueReactionPanelError")
     with pytest.raises(error, match="game set"):
         _build(cohort_metadata=inconsistent)
+
+    wrong_week = metadata.copy()
+    wrong_week.loc[0, "nfl_week"] = 12
+    with pytest.raises(error, match="mapping does not match frozen authority"):
+        _build(cohort_metadata=wrong_week)
+
+    wrong_authority = metadata.copy()
+    wrong_authority.loc[0, "authority_sha256"] = "sha256:" + "f" * 64
+    with pytest.raises(error, match="does not match frozen authority"):
+        _build(cohort_metadata=wrong_authority)
 
 
 def test_survival_censor_and_missing_observation_are_distinct_and_never_filled() -> None:

@@ -679,7 +679,17 @@ def _validate_cohort_metadata(
     frame: pd.DataFrame,
     *,
     facts: pd.DataFrame,
+    expected_authority_sha256: str,
+    expected_mapping_sha256: str,
 ) -> pd.DataFrame:
+    expected_authority = _sha256(
+        expected_authority_sha256,
+        label="expected_cohort_authority_sha256",
+    )
+    expected_mapping = _sha256(
+        expected_mapping_sha256,
+        label="expected_cohort_mapping_sha256",
+    )
     metadata = _require_frame(
         frame,
         label="cohort_metadata",
@@ -706,11 +716,29 @@ def _validate_cohort_metadata(
         _sha256(authority, label="cohort_metadata.authority_sha256")
     if metadata["authority_sha256"].nunique() != 1:
         raise VenueReactionPanelError("cohort_metadata authority_sha256 must be single")
+    observed_authority = str(metadata["authority_sha256"].iloc[0])
+    if observed_authority != expected_authority:
+        raise VenueReactionPanelError(
+            "cohort_metadata authority_sha256 does not match frozen authority"
+        )
     expected = set(facts["game_id"].astype(str))
     observed = set(metadata["game_id"].astype(str))
     if expected != observed:
         raise VenueReactionPanelError(
             "cohort_metadata game set must exactly match episode_facts"
+        )
+    canonical_mapping = [
+        {
+            "cohort": str(row["cohort"]),
+            "game_id": str(row["game_id"]),
+            "nfl_week": int(row["nfl_week"]),
+        }
+        for row in metadata.sort_values("game_id", kind="mergesort").to_dict("records")
+    ]
+    observed_mapping = _sha256_text(_canonical_json(canonical_mapping))
+    if observed_mapping != expected_mapping:
+        raise VenueReactionPanelError(
+            "cohort_metadata mapping does not match frozen authority"
         )
     return metadata
 
@@ -944,11 +972,18 @@ def build_venue_reaction_panel_v3(
     tick_rules: pd.DataFrame,
     continuity: pd.DataFrame,
     cohort_metadata: pd.DataFrame,
+    expected_cohort_authority_sha256: str,
+    expected_cohort_mapping_sha256: str,
 ) -> VenueReactionPanelV3:
     """Build the complete actual-home VenueReactionPanelV3 and attrition audit."""
 
     all_facts, facts, fact_attrition = _validate_facts(episode_facts)
-    cohorts = _validate_cohort_metadata(cohort_metadata, facts=all_facts)
+    cohorts = _validate_cohort_metadata(
+        cohort_metadata,
+        facts=all_facts,
+        expected_authority_sha256=expected_cohort_authority_sha256,
+        expected_mapping_sha256=expected_cohort_mapping_sha256,
+    )
     references = _validate_references(stage_a_references)
     hits = _validate_factor_hits(factor_hits, all_facts)
     market = _validate_market(market_rows)
