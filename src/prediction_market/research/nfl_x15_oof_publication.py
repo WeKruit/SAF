@@ -32,6 +32,8 @@ from prediction_market.research.nfl_x15_model_selection import (
     EXPECTED_DEVELOPMENT_GAME_COUNT,
     EXPECTED_FOLDS,
     FrozenDevelopmentAuthority,
+    ModelSelectionError,
+    bind_frozen_development_authority,
 )
 from prediction_market.research.nfl_x15_models import (
     DIAGNOSTIC_ANALYSIS_SCOPE,
@@ -45,13 +47,14 @@ from prediction_market.research.nfl_x15_models import (
     EFFECTIVE_SEED_CONTRACT_ID,
     EFFECTIVE_SEED_COORDINATE_FIELDS,
     EFFECTIVE_SEED_MODULUS,
+    SURVIVAL_PROBABILITY_CONTRACT,
     X15ModelRun,
 )
 
 
-SHARD_SCHEMA: Final[str] = "nfl_x15_oof_shard_publication_v3"
-BATCH_SCHEMA: Final[str] = "nfl_x15_oof_batch_index_v3"
-BUILDER_VERSION: Final[str] = "nfl-x15-oof-publication-v3"
+SHARD_SCHEMA: Final[str] = "nfl_x15_oof_shard_publication_v4"
+BATCH_SCHEMA: Final[str] = "nfl_x15_oof_batch_index_v4"
+BUILDER_VERSION: Final[str] = "nfl-x15-oof-publication-v4"
 OOF_TABLE_NAMES: Final[tuple[str, ...]] = (
     "oof_predictions",
     "conditional_quantiles",
@@ -210,6 +213,7 @@ _FOLD_BY_ID: Final[
 }
 _DIAGNOSTIC_CONFIG: Final[dict[str, object]] = {
     "schema_version": DIAGNOSTIC_SCHEMA_VERSION,
+    "survival_probability_contract": SURVIVAL_PROBABILITY_CONTRACT,
     "target_contract": DIAGNOSTIC_TARGET_CONTRACT,
     "claim_boundary": DIAGNOSTIC_CLAIM_BOUNDARY,
     "analysis_scope": DIAGNOSTIC_ANALYSIS_SCOPE,
@@ -471,6 +475,55 @@ def _verify_content_addressed_filename(
     return _SHA256_PREFIX + hexadecimal
 
 
+def _bind_canonical_authority(
+    *,
+    development_games: object,
+    cohort_authority_sha256: object,
+    authority_metadata_sha256: object,
+    field: str,
+) -> FrozenDevelopmentAuthority:
+    if not isinstance(development_games, (tuple, list)):
+        raise X15OOFPublicationError(
+            f"{field} development_games must be an array"
+        )
+    normalized_games: list[tuple[object, ...]] = []
+    for value in development_games:
+        if not isinstance(value, (tuple, list)) or len(value) != 4:
+            raise X15OOFPublicationError(
+                f"{field} development_games are malformed"
+            )
+        normalized_games.append(tuple(value))
+    cohort_sha256 = _require_sha256(
+        cohort_authority_sha256,
+        field=f"{field}.cohort_authority_sha256",
+    )
+    metadata_sha256 = _require_sha256(
+        authority_metadata_sha256,
+        field=f"{field}.authority_metadata_sha256",
+    )
+    frame = pd.DataFrame(
+        normalized_games,
+        columns=("game_id", "nfl_week", "kickoff_utc", "batch_sha256"),
+    )
+    frame["cohort_authority_sha256"] = cohort_sha256
+    try:
+        authority = bind_frozen_development_authority(
+            frame,
+            cohort_authority_sha256=cohort_sha256,
+        )
+    except ModelSelectionError as error:
+        raise X15OOFPublicationError(f"{field} {error}") from error
+    if tuple(normalized_games) != authority.development_games:
+        raise X15OOFPublicationError(
+            f"{field} development_games are not canonical"
+        )
+    if authority.metadata_sha256 != metadata_sha256:
+        raise X15OOFPublicationError(
+            f"{field} metadata SHA-256 mismatch"
+        )
+    return authority
+
+
 def _validate_authority(
     authority: FrozenDevelopmentAuthority,
 ) -> dict[str, int]:
@@ -478,24 +531,15 @@ def _validate_authority(
         raise X15OOFPublicationError(
             "authority must be FrozenDevelopmentAuthority"
         )
-    if authority.game_count != EXPECTED_DEVELOPMENT_GAME_COUNT:
-        raise X15OOFPublicationError(
-            "OOF publication requires exact 153-game development authority"
-        )
-    _require_sha256(
-        authority.cohort_authority_sha256,
-        field="authority.cohort_authority_sha256",
+    canonical = _bind_canonical_authority(
+        development_games=authority.development_games,
+        cohort_authority_sha256=authority.cohort_authority_sha256,
+        authority_metadata_sha256=authority.metadata_sha256,
+        field="authority",
     )
-    if _model_sha256(authority.development_games) != authority.metadata_sha256:
-        raise X15OOFPublicationError("authority metadata SHA-256 mismatch")
-    game_weeks = authority.game_weeks
-    if (
-        len(game_weeks) != EXPECTED_DEVELOPMENT_GAME_COUNT
-        or set(game_weeks.values()) != set(range(1, 13))
-    ):
-        raise X15OOFPublicationError(
-            "authority must contain unique games across weeks 1..12"
-        )
+    if canonical != authority:
+        raise X15OOFPublicationError("authority is not canonical")
+    game_weeks = canonical.game_weeks
     training_only_count = sum(
         week in (1, 2) for week in game_weeks.values()
     )
@@ -509,20 +553,6 @@ def _validate_authority(
         raise X15OOFPublicationError(
             "exact-153 authority must bind 30 weeks1-2 training-only "
             "games and 123 weeks3-12 OOF validation games"
-        )
-    for game_id, week, kickoff_utc, batch_sha256 in (
-        authority.development_games
-    ):
-        if (
-            not game_id
-            or not kickoff_utc
-            or week not in range(1, 13)
-        ):
-            raise X15OOFPublicationError(
-                "authority game metadata is malformed"
-            )
-        _require_sha256(
-            batch_sha256, field=f"authority.{game_id}.batch_sha256"
         )
     return game_weeks
 
@@ -548,6 +578,25 @@ def _execution_cells(
             )
         cells.append(tuple(map(str, coordinate)))
     return tuple(cells)
+
+
+def _authority_from_batch_document(
+    document: Mapping[str, object],
+) -> FrozenDevelopmentAuthority:
+    authority = _bind_canonical_authority(
+        development_games=document.get("authority_development_games"),
+        cohort_authority_sha256=document.get("cohort_authority_sha256"),
+        authority_metadata_sha256=document.get(
+            "authority_metadata_sha256"
+        ),
+        field="batch authority",
+    )
+    if document.get("authority_game_count") != authority.game_count:
+        raise X15OOFPublicationError(
+            "batch authority metadata SHA-256 mismatch"
+        )
+    _validate_authority(authority)
+    return authority
 
 
 def _fold_authority(
@@ -617,6 +666,38 @@ def _effective_seed_contract(
     return expected
 
 
+def _validate_diagnostic_run_config_contract(
+    run_config: Mapping[str, object],
+) -> None:
+    for field, expected in _DIAGNOSTIC_CONFIG.items():
+        if run_config.get(field) != expected:
+            raise X15OOFPublicationError(
+                f"diagnostic run config drifted on {field}"
+            )
+    if run_config.get("include_magnitude") is not False:
+        raise X15OOFPublicationError(
+            "probability shard requires include_magnitude=False"
+        )
+    _effective_seed_contract(run_config)
+
+
+def _shared_run_config_sha256(
+    run_config: Mapping[str, object],
+    *,
+    synthesized_batch: bool = False,
+) -> str:
+    shared_config = dict(run_config)
+    for execution_field in (
+        "fold_ids",
+        "model_ids",
+        "feature_block_ids",
+    ):
+        shared_config.pop(execution_field, None)
+    if synthesized_batch:
+        shared_config.pop("source_shards", None)
+    return _model_sha256(shared_config)
+
+
 def _validate_run_config(
     model_run: X15ModelRun,
     *,
@@ -638,11 +719,7 @@ def _validate_run_config(
     run_config = dict(model_run.run_config)
     if _model_sha256(run_config) != run_config_sha256:
         raise X15OOFPublicationError("run config SHA-256 mismatch")
-    for field, expected in _DIAGNOSTIC_CONFIG.items():
-        if run_config.get(field) != expected:
-            raise X15OOFPublicationError(
-                f"diagnostic run config drifted on {field}"
-            )
+    _validate_diagnostic_run_config_contract(run_config)
     if _tuple_value(run_config.get("fold_ids")) != (fold_id,):
         raise X15OOFPublicationError(
             "one shard requires run_config.fold_ids=(fold_id,)"
@@ -663,10 +740,6 @@ def _validate_run_config(
             "shard model/feature-block pair is outside the frozen "
             "probability design matrix"
         )
-    if run_config.get("include_magnitude") is not False:
-        raise X15OOFPublicationError(
-            "probability shard requires include_magnitude=False"
-        )
     if (
         run_config.get("cohort_authority_sha256")
         != authority.cohort_authority_sha256
@@ -674,15 +747,7 @@ def _validate_run_config(
         raise X15OOFPublicationError(
             "run config cohort authority does not match publication authority"
         )
-    _effective_seed_contract(run_config)
-    shared_config = dict(run_config)
-    for execution_field in (
-        "fold_ids",
-        "model_ids",
-        "feature_block_ids",
-    ):
-        shared_config.pop(execution_field, None)
-    return run_config, _model_sha256(shared_config)
+    return run_config, _shared_run_config_sha256(run_config)
 
 
 def _is_missing_scalar(value: object) -> bool:
@@ -1417,6 +1482,37 @@ def _read_shard_document(
         raise X15OOFPublicationError(
             "shard manifest run config SHA-256 mismatch"
         )
+    _validate_diagnostic_run_config_contract(run_config)
+    cohort_authority_sha256 = _require_sha256(
+        document.get("cohort_authority_sha256"),
+        field="shard manifest.cohort_authority_sha256",
+    )
+    _require_sha256(
+        document.get("authority_metadata_sha256"),
+        field="shard manifest.authority_metadata_sha256",
+    )
+    _require_sha256(
+        document.get("cohort_mapping_sha256"),
+        field="shard manifest.cohort_mapping_sha256",
+    )
+    if (
+        run_config.get("cohort_authority_sha256")
+        != cohort_authority_sha256
+    ):
+        raise X15OOFPublicationError(
+            "shard embedded and top-level cohort authority mismatch"
+        )
+    shared_run_config_sha256 = _require_sha256(
+        document.get("shared_run_config_sha256"),
+        field="shard manifest.shared_run_config_sha256",
+    )
+    if (
+        _shared_run_config_sha256(run_config)
+        != shared_run_config_sha256
+    ):
+        raise X15OOFPublicationError(
+            "shard shared run config SHA-256 mismatch"
+        )
     expected_seed_contract = _effective_seed_contract(run_config)
     seed_contract = document.get("effective_seed_contract")
     if (
@@ -1866,6 +1962,7 @@ def publish_x15_oof_batch(
         "experiment_id": "X-15",
         "cohort": "development",
         "authority_game_count": authority.game_count,
+        "authority_development_games": authority.development_games,
         "training_only_game_count": len(training_only_game_ids),
         "oof_validation_game_count": len(oof_validation_game_ids),
         "published_oof_validation_game_count": len(
@@ -1995,10 +2092,44 @@ def _read_selection_ready_batch(
         raise X15OOFPublicationError(
             "batch synthesized run config SHA-256 mismatch"
         )
+    _validate_diagnostic_run_config_contract(batch_run_config)
+    cohort_authority_sha256 = _require_sha256(
+        document.get("cohort_authority_sha256"),
+        field="batch manifest.cohort_authority_sha256",
+    )
+    if (
+        batch_run_config.get("cohort_authority_sha256")
+        != cohort_authority_sha256
+    ):
+        raise X15OOFPublicationError(
+            "batch embedded and top-level cohort authority mismatch"
+        )
+    shared_run_config_sha256 = _require_sha256(
+        document.get("shared_run_config_sha256"),
+        field="batch manifest.shared_run_config_sha256",
+    )
+    if (
+        _shared_run_config_sha256(
+            batch_run_config,
+            synthesized_batch=True,
+        )
+        != shared_run_config_sha256
+    ):
+        raise X15OOFPublicationError(
+            "batch shared run config SHA-256 mismatch"
+        )
     batch_seed_contract_sha256 = _require_sha256(
         document.get("effective_seed_contract_sha256"),
         field="batch manifest.effective_seed_contract_sha256",
     )
+    if (
+        _model_sha256(_effective_seed_contract(batch_run_config))
+        != batch_seed_contract_sha256
+    ):
+        raise X15OOFPublicationError(
+            "batch effective seed contract SHA-256 mismatch"
+        )
+    _authority_from_batch_document(document)
     expected_fold_ids = tuple(fold[0] for fold in EXPECTED_FOLDS)
     expected_cells = tuple(
         (fold_id, model_id, feature_block_id)
@@ -2069,6 +2200,20 @@ def _read_selection_ready_batch(
             raise X15OOFPublicationError(
                 "selection-ready batch shard seed contract drifted"
             )
+        if (
+            _require_sha256(
+                reference.get("shared_run_config_sha256"),
+                field="batch shard shared_run_config_sha256",
+            )
+            != shared_run_config_sha256
+        ):
+            raise X15OOFPublicationError(
+                "selection-ready batch shard shared run config drifted"
+            )
+        _require_sha256(
+            reference.get("run_config_sha256"),
+            field="batch shard run_config_sha256",
+        )
         _require_sha256(
             reference.get("selection_fold_arrays_sha256"),
             field="batch shard selection_fold_arrays_sha256",
@@ -2084,7 +2229,58 @@ def _read_selection_ready_batch(
         raise X15OOFPublicationError(
             "selection-ready batch shard index differs from frozen matrix"
         )
+    if (
+        _tuple_value(batch_run_config.get("fold_ids"))
+        != expected_fold_ids
+        or _tuple_value(batch_run_config.get("model_ids"))
+        != tuple(dict.fromkeys(cell[1] for cell in expected_cells))
+        or _tuple_value(batch_run_config.get("feature_block_ids"))
+        != tuple(dict.fromkeys(cell[2] for cell in expected_cells))
+    ):
+        raise X15OOFPublicationError(
+            "selection-ready batch run config execution matrix drifted"
+        )
+    expected_source_shards = tuple(
+        {
+            "fold_id": reference["fold_id"],
+            "model_id": reference["model_id"],
+            "feature_block_id": reference["feature_block_id"],
+            "manifest_sha256": reference["manifest_sha256"],
+            "shard_bundle_sha256": reference["shard_bundle_sha256"],
+        }
+        for reference in shards
+    )
+    if _canonical(
+        batch_run_config.get("source_shards")
+    ) != _canonical(expected_source_shards):
+        raise X15OOFPublicationError(
+            "selection-ready batch run config source shards drifted"
+        )
     return document, path, observed_manifest_sha256
+
+
+def load_verified_x15_oof_selection_batch(
+    *,
+    batch_manifest_path: str | Path,
+    output_root: str | Path,
+) -> tuple[
+    dict[str, object],
+    Path,
+    str,
+    FrozenDevelopmentAuthority,
+]:
+    """Load one exact-55 batch and its complete frozen authority."""
+
+    document, path, manifest_sha256 = _read_selection_ready_batch(
+        batch_manifest_path=batch_manifest_path,
+        output_root=Path(output_root).resolve(),
+    )
+    return (
+        document,
+        path,
+        manifest_sha256,
+        _authority_from_batch_document(document),
+    )
 
 
 def _selection_shard_frame(
@@ -2107,6 +2303,8 @@ def _selection_shard_frame(
         "fold_id",
         "model_id",
         "feature_block_id",
+        "run_config_sha256",
+        "shared_run_config_sha256",
         "effective_seed_contract_sha256",
         "selection_fold_arrays_sha256",
     ):
@@ -2324,6 +2522,7 @@ __all__ = [
     "X15OOFBatchPublication",
     "X15OOFShardPublication",
     "X15OOFPublicationError",
+    "load_verified_x15_oof_selection_batch",
     "load_x15_oof_selection_projection",
     "load_x15_oof_shard",
     "publish_x15_oof_batch",

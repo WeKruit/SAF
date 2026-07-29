@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
@@ -25,6 +26,7 @@ from prediction_market.research.nfl_x15_models import (
     EFFECTIVE_SEED_CONTRACT_ID,
     EFFECTIVE_SEED_COORDINATE_FIELDS,
     EFFECTIVE_SEED_MODULUS,
+    SURVIVAL_PROBABILITY_CONTRACT,
     X15ModelRun,
 )
 from prediction_market.research.nfl_x15_oof_publication import (
@@ -102,6 +104,7 @@ def _run_config(
         "fold_ids": (fold_id,),
         "transport_pairs": (),
         "include_magnitude": False,
+        "survival_probability_contract": SURVIVAL_PROBABILITY_CONTRACT,
         "random_state": 20260728,
         "effective_seed_contract": {
             "contract_id": EFFECTIVE_SEED_CONTRACT_ID,
@@ -285,6 +288,31 @@ def _manifest(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _republish_document(
+    document: dict[str, object],
+    *,
+    output_root: Path,
+    digest_field: str,
+    suffix: str,
+) -> Path:
+    material = dict(document)
+    material.pop(digest_field, None)
+    material[digest_field] = oof_publication._canonical_sha256(material)
+    payload = oof_publication._canonical_bytes(material)
+    file_sha256 = oof_publication._sha256_bytes(payload)
+    digest = file_sha256.removeprefix("sha256:")
+    path = (
+        output_root
+        / "forged"
+        / "sha256"
+        / digest[:2]
+        / f"{digest}{suffix}"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    return path
+
+
 def _replace_predictions(
     run: X15ModelRun,
     predictions: pd.DataFrame,
@@ -344,6 +372,8 @@ def test_fold_publication_is_content_addressed_idempotent_and_recoverable(
     assert second == first
     document = _manifest(first.manifest_path)
     assert document["fold_id"] == "fold_01"
+    assert document["schema"] == "nfl_x15_oof_shard_publication_v4"
+    assert document["builder_version"] == "nfl-x15-oof-publication-v4"
     assert document["model_id"] == "b0_empirical_v1"
     assert document["feature_block_id"] == "D0"
     assert document["selection_role"] == "BASELINE"
@@ -540,10 +570,16 @@ def test_exact_five_fold_batch_verifies_153_authority_before_selection_ready(
     )
 
     document = _manifest(batch.manifest_path)
+    assert document["schema"] == "nfl_x15_oof_batch_index_v4"
+    assert document["builder_version"] == "nfl-x15-oof-publication-v4"
     assert batch.selection_ready is True
     assert document["selection_ready"] is True
     assert document["publication_status"] == "SELECTION_READY"
     assert document["authority_game_count"] == 153
+    assert document["authority_development_games"] == [
+        list(game) for game in authority.development_games
+    ]
+    assert document["authority_metadata_sha256"] == authority.metadata_sha256
     assert document["training_only_game_count"] == 30
     assert document["oof_validation_game_count"] == 123
     assert document["oof_validation_game_ids_sha256"].startswith("sha256:")
@@ -591,6 +627,95 @@ def test_exact_five_fold_batch_verifies_153_authority_before_selection_ready(
         assert reference["train_weeks"] == list(expected[1])
         assert reference["validation_weeks"] == list(expected[2])
         assert reference["run_config_sha256"].startswith("sha256:")
+
+    (
+        verified_document,
+        verified_path,
+        verified_manifest_sha256,
+        verified_authority,
+    ) = oof_publication.load_verified_x15_oof_selection_batch(
+        batch_manifest_path=batch.manifest_path,
+        output_root=tmp_path,
+    )
+    assert verified_document == document
+    assert verified_path == batch.manifest_path
+    assert verified_manifest_sha256 == batch.manifest_sha256
+    assert verified_authority == authority
+
+    drifted_contract = json.loads(json.dumps(document))
+    drifted_run_config = dict(drifted_contract["batch_run_config"])
+    drifted_run_config["survival_probability_contract"] = (
+        "WRONG_NONEMPTY_CONTRACT"
+    )
+    drifted_contract["batch_run_config"] = drifted_run_config
+    drifted_contract["batch_run_config_sha256"] = _sha(drifted_run_config)
+    drifted_shared_config = dict(drifted_run_config)
+    for field in (
+        "fold_ids",
+        "model_ids",
+        "feature_block_ids",
+        "source_shards",
+    ):
+        drifted_shared_config.pop(field)
+    drifted_contract["shared_run_config_sha256"] = _sha(
+        drifted_shared_config
+    )
+    drifted_contract_path = _republish_document(
+        drifted_contract,
+        output_root=tmp_path,
+        digest_field="batch_sha256",
+        suffix=".batch-index.json",
+    )
+    with pytest.raises(
+        X15OOFPublicationError,
+        match="survival_probability_contract",
+    ):
+        oof_publication.load_verified_x15_oof_selection_batch(
+            batch_manifest_path=drifted_contract_path,
+            output_root=tmp_path,
+        )
+
+    invalid_utc = json.loads(json.dumps(document))
+    invalid_utc["authority_development_games"][0][2] = (
+        "2025-09-01T00:00:00"
+    )
+    invalid_utc["authority_metadata_sha256"] = _sha(
+        invalid_utc["authority_development_games"]
+    )
+    invalid_utc_path = _republish_document(
+        invalid_utc,
+        output_root=tmp_path,
+        digest_field="batch_sha256",
+        suffix=".batch-index.json",
+    )
+    with pytest.raises(
+        X15OOFPublicationError,
+        match="explicit UTC",
+    ):
+        oof_publication.load_verified_x15_oof_selection_batch(
+            batch_manifest_path=invalid_utc_path,
+            output_root=tmp_path,
+        )
+
+    invalid_game_sha = json.loads(json.dumps(document))
+    invalid_game_sha["authority_development_games"][0][3] = "not-a-sha"
+    invalid_game_sha["authority_metadata_sha256"] = _sha(
+        invalid_game_sha["authority_development_games"]
+    )
+    invalid_game_sha_path = _republish_document(
+        invalid_game_sha,
+        output_root=tmp_path,
+        digest_field="batch_sha256",
+        suffix=".batch-index.json",
+    )
+    with pytest.raises(
+        X15OOFPublicationError,
+        match="batch_sha256",
+    ):
+        oof_publication.load_verified_x15_oof_selection_batch(
+            batch_manifest_path=invalid_game_sha_path,
+            output_root=tmp_path,
+        )
 
     observed_reads: list[dict[str, object]] = []
     real_read_table = oof_publication.pq.read_table
@@ -927,6 +1052,183 @@ def test_shard_rejects_nonintegral_random_state_seed(
     ):
         publish_x15_oof_shard(
             model_run=run,
+            authority=authority,
+            cohort_mapping_sha256=MAPPING_SHA,
+            output_root=tmp_path,
+        )
+
+
+def test_shard_rejects_wrong_nonempty_survival_contract(
+    tmp_path: Path,
+) -> None:
+    authority = _authority()
+    run = _fold_run(
+        "fold_01",
+        authority=authority,
+        config_override={
+            "survival_probability_contract": "WRONG_NONEMPTY_CONTRACT"
+        },
+    )
+
+    with pytest.raises(
+        X15OOFPublicationError,
+        match="survival_probability_contract",
+    ):
+        publish_x15_oof_shard(
+            model_run=run,
+            authority=authority,
+            cohort_mapping_sha256=MAPPING_SHA,
+            output_root=tmp_path,
+        )
+
+
+def test_publish_rejects_naive_authority_time(tmp_path: Path) -> None:
+    authority = _authority()
+    development_games = tuple(
+        (
+            game_id,
+            week,
+            kickoff_utc.removesuffix("Z"),
+            batch_sha256,
+        )
+        for game_id, week, kickoff_utc, batch_sha256 in (
+            authority.development_games
+        )
+    )
+    drifted = replace(
+        authority,
+        development_games=development_games,
+        metadata_sha256=_sha(development_games),
+    )
+
+    with pytest.raises(X15OOFPublicationError, match="explicit UTC"):
+        publish_x15_oof_shard(
+            model_run=_fold_run("fold_01", authority=drifted),
+            authority=drifted,
+            cohort_mapping_sha256=MAPPING_SHA,
+            output_root=tmp_path,
+        )
+
+
+def test_publish_rejects_noncanonical_authority_order(
+    tmp_path: Path,
+) -> None:
+    authority = _authority()
+    development_games = tuple(reversed(authority.development_games))
+    drifted = replace(
+        authority,
+        development_games=development_games,
+        metadata_sha256=_sha(development_games),
+    )
+
+    with pytest.raises(X15OOFPublicationError, match="not canonical"):
+        publish_x15_oof_shard(
+            model_run=_fold_run("fold_01", authority=drifted),
+            authority=drifted,
+            cohort_mapping_sha256=MAPPING_SHA,
+            output_root=tmp_path,
+        )
+
+
+def test_resume_rejects_wrong_nonempty_survival_contract(
+    tmp_path: Path,
+) -> None:
+    authority = _authority()
+    shard = publish_x15_oof_shard(
+        model_run=_fold_run("fold_01", authority=authority),
+        authority=authority,
+        cohort_mapping_sha256=MAPPING_SHA,
+        output_root=tmp_path,
+    )
+    document = _manifest(shard.manifest_path)
+    run_config = dict(document["run_config"])
+    run_config["survival_probability_contract"] = "WRONG_NONEMPTY_CONTRACT"
+    document["run_config"] = run_config
+    document["run_config_sha256"] = _sha(run_config)
+    shared_config = dict(run_config)
+    for field in ("fold_ids", "model_ids", "feature_block_ids"):
+        shared_config.pop(field)
+    document["shared_run_config_sha256"] = _sha(shared_config)
+    forged = _republish_document(
+        document,
+        output_root=tmp_path,
+        digest_field="bundle_sha256",
+        suffix=".shard-manifest.json",
+    )
+
+    with pytest.raises(
+        X15OOFPublicationError,
+        match="survival_probability_contract",
+    ):
+        publish_x15_oof_batch(
+            shard_manifest_paths=(forged,),
+            authority=authority,
+            cohort_mapping_sha256=MAPPING_SHA,
+            output_root=tmp_path,
+        )
+
+
+def test_resume_recomputes_shared_run_config_sha256(
+    tmp_path: Path,
+) -> None:
+    authority = _authority()
+    shard = publish_x15_oof_shard(
+        model_run=_fold_run("fold_01", authority=authority),
+        authority=authority,
+        cohort_mapping_sha256=MAPPING_SHA,
+        output_root=tmp_path,
+    )
+    document = _manifest(shard.manifest_path)
+    document["shared_run_config_sha256"] = "sha256:" + "f" * 64
+    forged = _republish_document(
+        document,
+        output_root=tmp_path,
+        digest_field="bundle_sha256",
+        suffix=".shard-manifest.json",
+    )
+
+    with pytest.raises(
+        X15OOFPublicationError,
+        match="shared run config SHA-256",
+    ):
+        load_x15_oof_shard(
+            manifest_path=forged,
+            output_root=tmp_path,
+        )
+
+
+def test_resume_binds_embedded_and_top_level_cohort_authority(
+    tmp_path: Path,
+) -> None:
+    authority = _authority()
+    shard = publish_x15_oof_shard(
+        model_run=_fold_run("fold_01", authority=authority),
+        authority=authority,
+        cohort_mapping_sha256=MAPPING_SHA,
+        output_root=tmp_path,
+    )
+    document = _manifest(shard.manifest_path)
+    run_config = dict(document["run_config"])
+    run_config["cohort_authority_sha256"] = "sha256:" + "c" * 64
+    document["run_config"] = run_config
+    document["run_config_sha256"] = _sha(run_config)
+    shared_config = dict(run_config)
+    for field in ("fold_ids", "model_ids", "feature_block_ids"):
+        shared_config.pop(field)
+    document["shared_run_config_sha256"] = _sha(shared_config)
+    forged = _republish_document(
+        document,
+        output_root=tmp_path,
+        digest_field="bundle_sha256",
+        suffix=".shard-manifest.json",
+    )
+
+    with pytest.raises(
+        X15OOFPublicationError,
+        match="cohort authority",
+    ):
+        publish_x15_oof_batch(
+            shard_manifest_paths=(forged,),
             authority=authority,
             cohort_mapping_sha256=MAPPING_SHA,
             output_root=tmp_path,
