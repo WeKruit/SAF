@@ -14,7 +14,7 @@ from prediction_market.research.nfl_x15_model_selection import (
     FrozenSelectionSpec,
     bind_frozen_development_authority,
     select_candidate_against_b0,
-    select_stage_b_v2_winner,
+    select_stage_b_v3_winner,
 )
 from prediction_market.research.nfl_x15_models import (
     X15ModelRun,
@@ -27,7 +27,6 @@ from prediction_market.research.nfl_x16_kalshi_validation import (
     hash_game_id_evidence,
     lock_preholdout_metadata_audit,
     record_metadata_access,
-    validate_development_venue_transport,
 )
 from test_nfl_x15_models import (
     _diagnostic_panel,
@@ -37,7 +36,7 @@ from test_nfl_x15_model_selection import (
     _authority as _complete_selection_authority,
     _run as _complete_selection_run,
     _spec as _complete_selection_spec,
-    _stage_b_v2_runs,
+    _stage_b_v3_runs,
 )
 
 
@@ -49,6 +48,25 @@ CLAIM_BOUNDARY = (
 X11_SPORTS_OUTCOME_EVIDENCE_SHA256 = (
     "sha256:1d0c033459c69778e265be3fca16ae2c87f650d5003a61ffdea4c020a4fd0b05"
 )
+STAGE_B_BATCH_MANIFEST_PATH = Path(
+    "x15-selection-v3/verified-exact45.batch-index.json"
+)
+STAGE_B_ARTIFACT_ROOT = Path("/verified-test-artifacts")
+
+
+def _validate_transport(
+    model_run: X15ModelRun,
+    *,
+    authority_metadata,
+    stage_b_selection,
+):
+    return validation.validate_development_venue_transport(
+        model_run,
+        authority_metadata=authority_metadata,
+        stage_b_selection=stage_b_selection,
+        stage_b_batch_manifest_path=STAGE_B_BATCH_MANIFEST_PATH,
+        stage_b_artifact_root=STAGE_B_ARTIFACT_ROOT,
+    )
 
 
 def test_kalshi_validation_uses_proper_joint_log_score() -> None:
@@ -128,7 +146,7 @@ def _stage_b_selection(*, authority=None):
     if authority is None:
         authority = source_authority
     if authority is source_authority:
-        runs = _stage_b_v2_runs()
+        runs = _stage_b_v3_runs()
     else:
         target_cohort = authority.cohort_authority_sha256
         authority = bind_frozen_development_authority(
@@ -152,7 +170,7 @@ def _stage_b_selection(*, authority=None):
             cohort_authority_sha256=target_cohort,
         )
         remapped_runs: list[X15ModelRun] = []
-        for run in _stage_b_v2_runs():
+        for run in _stage_b_v3_runs():
             predictions = run.oof_predictions.copy()
             predictions["cohort_authority_sha256"] = target_cohort
             run_config = dict(run.run_config)
@@ -168,40 +186,122 @@ def _stage_b_selection(*, authority=None):
                 )
             )
         runs = tuple(remapped_runs)
-    return select_stage_b_v2_winner(runs, authority=authority)
+    return select_stage_b_v3_winner(runs, authority=authority)
 
 
 def _run_config(
-    *, fold_ids: tuple[str, ...] = ("fold_01", "fold_02")
+    *,
+    source_provenance_sha256: str | None = None,
 ) -> dict[str, object]:
-    return {
-        "schema_version": "HistoricalTradesOnlyProbabilityPanelV2",
-        "survival_probability_contract": (
-            "DISCRETE_INTERVAL_SURVIVAL_PRODUCT_V1"
-        ),
-        "target_contract": TARGET_CONTRACT,
-        "claim_boundary": CLAIM_BOUNDARY,
-        "analysis_scope": (
-            "HISTORICAL_TRADES_ONLY_SOURCE_TIME_DIAGNOSTIC"
-        ),
-        "direction_threshold_probability": 0.01,
-        "direction_threshold_semantics": (
-            "FIXED_CROSS_VENUE_RESEARCH_MATERIALITY_NOT_TICK"
-        ),
-        "venue_tick_support": "UNSUPPORTED",
-        "market_continuity_support": "UNKNOWN",
-        "claim_eligible": False,
-        "cohort_authority_sha256": AUTHORITY,
-        "feature_blocks": {
-            "D0": (),
-            "D1": (),
-            "D2": (),
-            "D3": (),
-            "D4": (),
-        },
-        "fold_ids": fold_ids,
-        "transport_pairs": (("polymarket", "kalshi"),),
-    }
+    stage_b = _stage_b_selection()
+    winner = stage_b.winner
+    assert winner is not None
+    source_run = next(
+        run
+        for run in _stage_b_v3_runs()
+        if winner.spec.candidate_model_id
+        in run.run_config["model_ids"]
+        and winner.spec.candidate_feature_block_id
+        in run.run_config["feature_block_ids"]
+    )
+    winner_audit = stage_b.candidate_audit.loc[
+        stage_b.candidate_audit["final_winner"].eq(True)
+    ].iloc[0]
+    config = dict(source_run.run_config)
+    config["transport_pairs"] = (("polymarket", "kalshi"),)
+    config["stage_b_source_run_config_sha256"] = (
+        source_run.run_config_sha256
+    )
+    config["stage_b_winner_model_selection_result_sha256"] = (
+        winner_audit["model_selection_result_sha256"]
+    )
+    config["stage_b_source_provenance_sha256"] = (
+        source_provenance_sha256
+        or "sha256:" + "0" * 64
+    )
+    return config
+
+
+def _verified_stage_b_source_run(
+    *,
+    candidate_model_id: str,
+    candidate_feature_block_id: str,
+) -> X15ModelRun:
+    source = next(
+        run
+        for run in _stage_b_v3_runs()
+        if run.run_config["model_ids"]
+        == ("b0_empirical_v1", candidate_model_id)
+        and run.run_config["feature_block_ids"]
+        == ("D0", candidate_feature_block_id)
+    )
+    predictions = source.oof_predictions.copy()
+    training_ids = predictions["training_game_ids"].map(tuple)
+    for column in (
+        "calibrator_fit_game_ids_s_h",
+        "calibrator_fit_game_ids_o_h_given_s",
+        "calibrator_fit_game_ids_direction",
+    ):
+        predictions[column] = training_ids
+    fold_character = predictions["fold_id"].astype(str).str[-1]
+    predictions["training_data_sha256"] = fold_character.map(
+        lambda value: "sha256:" + value * 64
+    )
+    predictions["preprocessor_training_sha256"] = (
+        "sha256:" + "b" * 64
+    )
+    predictions["s_h_model_training_sha256"] = "sha256:" + "4" * 64
+    predictions["o_h_given_s_model_training_sha256"] = (
+        "sha256:" + "5" * 64
+    )
+    predictions["direction_model_training_sha256"] = (
+        "sha256:" + "6" * 64
+    )
+    predictions["s_h_calibration_training_sha256"] = (
+        "sha256:" + "c" * 64
+    )
+    predictions["o_h_given_s_calibration_training_sha256"] = (
+        "sha256:" + "d" * 64
+    )
+    predictions["direction_calibration_training_sha256"] = (
+        "sha256:" + "e" * 64
+    )
+    baseline = predictions["model_id"].eq("b0_empirical_v1")
+    predictions["feature_block_sha256"] = "sha256:" + "7" * 64
+    predictions["model_spec_sha256"] = "sha256:" + "8" * 64
+    predictions.loc[baseline, "feature_block_sha256"] = (
+        "sha256:" + "0" * 64
+    )
+    predictions.loc[baseline, "model_spec_sha256"] = (
+        "sha256:" + "1" * 64
+    )
+    predictions["fold_sha256"] = fold_character.map(
+        lambda value: "sha256:" + value * 64
+    )
+    return replace(source, oof_predictions=predictions)
+
+
+@pytest.fixture(autouse=True)
+def _verified_stage_b_source_loader(monkeypatch):
+    def load(
+        *,
+        batch_manifest_path,
+        artifact_root,
+        candidate_model_id,
+        candidate_feature_block_id,
+    ):
+        assert Path(batch_manifest_path) == STAGE_B_BATCH_MANIFEST_PATH
+        assert Path(artifact_root) == STAGE_B_ARTIFACT_ROOT
+        return _verified_stage_b_source_run(
+            candidate_model_id=candidate_model_id,
+            candidate_feature_block_id=candidate_feature_block_id,
+        )
+
+    monkeypatch.setattr(
+        validation,
+        "load_x15_selection_projection_v3",
+        load,
+    )
 
 
 def _authority_rows() -> pd.DataFrame:
@@ -211,13 +311,23 @@ def _authority_rows() -> pd.DataFrame:
         ("holdout", 81, tuple(range(13, 19))),
     ):
         for index in range(count):
+            development = cohort == "development"
             rows.append(
                 {
-                    "game_id": f"{cohort}-{index:03d}",
+                    "game_id": (
+                        f"game-{index:03d}"
+                        if development
+                        else f"{cohort}-{index:03d}"
+                    ),
                     "cohort": cohort,
                     "nfl_week": weeks[index % len(weeks)],
                     "kickoff_utc": (
-                        f"2025-09-{index % 28 + 1:02d}T12:00:00Z"
+                        f"2025-08-{index % 28 + 1:02d}T12:00:00Z"
+                        if development
+                        else (
+                            f"2025-09-{index % 28 + 1:02d}"
+                            "T12:00:00Z"
+                        )
                     ),
                     "batch_sha256": "sha256:" + f"{index + 1:064x}",
                     "cohort_authority_sha256": AUTHORITY,
@@ -277,6 +387,31 @@ def _bind_authority(
         reaction_blind_metadata_game_ids_sha256=hash_game_id_evidence(
             metadata_ids
         ),
+    )
+
+
+def _verified_preholdout_lock(
+    *,
+    cohort_authority_sha256: str = AUTHORITY,
+    authority_metadata=None,
+) -> dict[str, object]:
+    metadata = authority_metadata
+    if metadata is None:
+        rows = _authority_rows().copy()
+        rows["cohort_authority_sha256"] = cohort_authority_sha256
+        metadata = _bind_authority(
+            rows,
+            authority=cohort_authority_sha256,
+        )
+    elif (
+        metadata.cohort_authority_sha256
+        != cohort_authority_sha256
+    ):
+        raise AssertionError("test authority metadata mismatch")
+    ledger = begin_prelock_metadata_ledger(metadata)
+    return lock_preholdout_metadata_audit(
+        ledger,
+        authority_metadata=metadata,
     )
 
 
@@ -360,10 +495,23 @@ def _source_and_transport(
     metadata = _authority_rows().loc[
         lambda frame: frame["cohort"].eq("development")
     ]
+    stage_b = _stage_b_selection()
+    winner = stage_b.winner
+    assert winner is not None
+    frozen_anchor = (
+        winner.paired_rows.loc[
+            lambda frame: frame["landmark_seconds"].eq(3)
+            & frame["endpoint_seconds"].eq(30)
+            & frame["nfl_week"].isin((3, 4, 5, 6))
+        ]
+        .drop_duplicates("game_id")
+        .head(36)
+        .set_index("game_id")
+    )
     evaluation_games = metadata.loc[
-        metadata["nfl_week"].isin((3, 4, 5, 6))
-    ].head(36)
-    week_by_game = metadata.set_index("game_id")["nfl_week"]
+        metadata["game_id"].isin(frozen_anchor.index)
+    ].sort_values(["nfl_week", "game_id"], kind="mergesort")
+    assert len(evaluation_games) == 36
     source: list[dict[str, object]] = []
     transported: list[dict[str, object]] = []
     native: list[dict[str, object]] = []
@@ -371,35 +519,20 @@ def _source_and_transport(
     for game_position, game in enumerate(
         evaluation_games.itertuples(index=False)
     ):
-        first_fold = int(game.nfl_week) in (3, 4)
-        train_weeks = (
-            (1, 2) if first_fold else (1, 2, 3, 4)
+        frozen = frozen_anchor.loc[str(game.game_id)]
+        train_weeks = tuple(frozen["train_weeks_candidate"])
+        validation_weeks = tuple(
+            frozen["validation_weeks_candidate"]
         )
-        validation_weeks = (3, 4) if first_fold else (5, 6)
-        training_ids = tuple(
-            sorted(
-                week_by_game[
-                    week_by_game.isin(train_weeks)
-                ].index.astype(str)
-            )
-        )
+        training_ids = tuple(frozen["training_game_ids_candidate"])
         validation_ids = tuple(
-            sorted(
-                week_by_game[
-                    week_by_game.isin(validation_weeks)
-                ].index.astype(str)
-            )
+            frozen["validation_game_ids_candidate"]
         )
-        fold_character = "1" if first_fold else "2"
-        s_truth = game_position % 6 != 0
-        o_truth = (
-            game_position % 5 != 0 if s_truth else pd.NA
-        )
-        direction = (
-            ("DOWN", "NO_MOVE", "UP")[game_position % 3]
-            if s_truth and bool(o_truth)
-            else pd.NA
-        )
+        fold_id = str(frozen["fold_id"])
+        fold_character = fold_id[-1]
+        s_truth = frozen["s_h_truth_candidate"]
+        o_truth = frozen["o_h_given_s_truth_candidate"]
+        direction = frozen["direction_truth_candidate"]
         native_binary = 0.82 if bool(s_truth) else 0.18
         transport_binary = 0.74 if bool(s_truth) else 0.26
         if catastrophic:
@@ -477,16 +610,18 @@ def _source_and_transport(
             "game_id": str(game.game_id),
             "nfl_week": int(game.nfl_week),
             "atomic_information_episode_id": (
-                f"{game.game_id}:episode"
+                str(frozen["atomic_information_episode_id"])
             ),
             "landmark_seconds": 3,
             "endpoint_seconds": 30,
-            "fold_id": f"fold_0{fold_character}",
+            "fold_id": fold_id,
             "train_weeks": train_weeks,
             "validation_weeks": validation_weeks,
             "training_game_ids": training_ids,
             "validation_game_ids": validation_ids,
-            "preprocessor_fit_game_ids": training_ids,
+            "preprocessor_fit_game_ids": tuple(
+                frozen["preprocessor_fit_game_ids_candidate"]
+            ),
             "calibrator_fit_game_ids_s_h": training_ids,
             "calibrator_fit_game_ids_o_h_given_s": training_ids,
             "calibrator_fit_game_ids_direction": training_ids,
@@ -532,17 +667,29 @@ def _source_and_transport(
         }
         candidate_source = {
             **identity,
-            "source_row_id": game_position,
-            "actual_home_contract_id": f"poly-{game.game_id}",
+            "source_row_id": frozen["source_row_id"],
+            "actual_home_contract_id": frozen[
+                "actual_home_contract_id"
+            ],
             "venue": "polymarket",
             "training_venue": "polymarket",
             "calibration_venue": "polymarket",
             "transport_mode": "VENUE_SPECIFIC",
-            "s_h_calibrated_probability": transport_binary,
-            "o_h_given_s_calibrated_probability": transport_observation,
-            "direction_calibrated_prob_down": transport_direction[0],
-            "direction_calibrated_prob_no_move": transport_direction[1],
-            "direction_calibrated_prob_up": transport_direction[2],
+            "s_h_calibrated_probability": frozen[
+                "s_h_calibrated_probability_candidate"
+            ],
+            "o_h_given_s_calibrated_probability": frozen[
+                "o_h_given_s_calibrated_probability_candidate"
+            ],
+            "direction_calibrated_prob_down": frozen[
+                "direction_calibrated_prob_down_candidate"
+            ],
+            "direction_calibrated_prob_no_move": frozen[
+                "direction_calibrated_prob_no_move_candidate"
+            ],
+            "direction_calibrated_prob_up": frozen[
+                "direction_calibrated_prob_up_candidate"
+            ],
         }
         source.append(candidate_source)
         last_candidate_source = candidate_source
@@ -605,17 +752,29 @@ def _source_and_transport(
         source.append(
             {
                 **b0_identity,
-                "source_row_id": game_position + 3_000,
-                "actual_home_contract_id": f"poly-{game.game_id}",
+                "source_row_id": frozen["source_row_id"],
+                "actual_home_contract_id": frozen[
+                    "actual_home_contract_id"
+                ],
                 "venue": "polymarket",
                 "training_venue": "polymarket",
                 "calibration_venue": "polymarket",
                 "transport_mode": "VENUE_SPECIFIC",
-                "s_h_calibrated_probability": b0_binary,
-                "o_h_given_s_calibrated_probability": b0_observation,
-                "direction_calibrated_prob_down": b0_direction[0],
-                "direction_calibrated_prob_no_move": b0_direction[1],
-                "direction_calibrated_prob_up": b0_direction[2],
+                "s_h_calibrated_probability": frozen[
+                    "s_h_calibrated_probability_b0"
+                ],
+                "o_h_given_s_calibrated_probability": frozen[
+                    "o_h_given_s_calibrated_probability_b0"
+                ],
+                "direction_calibrated_prob_down": frozen[
+                    "direction_calibrated_prob_down_b0"
+                ],
+                "direction_calibrated_prob_no_move": frozen[
+                    "direction_calibrated_prob_no_move_b0"
+                ],
+                "direction_calibrated_prob_up": frozen[
+                    "direction_calibrated_prob_up_b0"
+                ],
             }
         )
         transported.append(
@@ -651,13 +810,13 @@ def _source_and_transport(
             }
         )
     assert last_candidate_source is not None
-    unmatched_source = last_candidate_source.copy()
-    unmatched_source["source_row_id"] = 9_999
-    unmatched_source["atomic_information_episode_id"] = (
-        "source-only-episode"
+    source_frame = pd.DataFrame(source)
+    source_provenance_sha256 = (
+        validation._transport_source_provenance_sha256(source_frame)
     )
-    unmatched_source["landmark_seconds"] = 5
-    source.append(unmatched_source)
+    run_config = _run_config(
+        source_provenance_sha256=source_provenance_sha256
+    )
     return X15ModelRun(
         oof_predictions=pd.DataFrame(
             [*source, *transported, *native]
@@ -666,9 +825,111 @@ def _source_and_transport(
         fold_metrics=pd.DataFrame(),
         support_audit=pd.DataFrame(),
         weight_audit=pd.DataFrame(),
-        run_config_sha256=validation._canonical_sha256(_run_config()),
-        run_config=_run_config(),
+        run_config_sha256=validation._canonical_sha256(run_config),
+        run_config=run_config,
     )
+
+
+def _replace_transported_candidate_probabilities(
+    run: X15ModelRun,
+    *,
+    s_h_correct_probability: float | None = None,
+    o_h_given_s_correct_probability: float | None = None,
+    direction_correct_probability: float | None = None,
+    native_correct_probability: float | None = None,
+) -> X15ModelRun:
+    """Return a run with one precisely targeted development score change."""
+
+    predictions = run.oof_predictions.copy()
+    candidate = (
+        predictions["venue"].eq("kalshi")
+        & predictions["training_venue"].eq("polymarket")
+        & predictions["model_id"].eq("regularized_logistic_v1")
+        & predictions["feature_block_id"].eq("D1")
+    )
+    native = (
+        predictions["venue"].eq("kalshi")
+        & predictions["training_venue"].eq("kalshi")
+        & predictions["model_id"].eq("regularized_logistic_v1")
+        & predictions["feature_block_id"].eq("D1")
+    )
+
+    def _binary_probability(
+        truth: object, correct_probability: float
+    ) -> float:
+        return (
+            correct_probability
+            if bool(truth)
+            else 1.0 - correct_probability
+        )
+
+    if s_h_correct_probability is not None:
+        predictions.loc[
+            candidate, "s_h_calibrated_probability"
+        ] = predictions.loc[candidate, "s_h_truth"].map(
+            lambda truth: _binary_probability(
+                truth, s_h_correct_probability
+            )
+        )
+    if o_h_given_s_correct_probability is not None:
+        evaluable = candidate & predictions[
+            "o_h_given_s_truth"
+        ].notna()
+        predictions.loc[
+            evaluable, "o_h_given_s_calibrated_probability"
+        ] = predictions.loc[evaluable, "o_h_given_s_truth"].map(
+            lambda truth: _binary_probability(
+                truth, o_h_given_s_correct_probability
+            )
+        )
+    if direction_correct_probability is not None:
+        evaluable = candidate & predictions["direction_truth"].notna()
+        for row_index in predictions.index[evaluable]:
+            down, no_move, up = _class_probabilities(
+                str(predictions.at[row_index, "direction_truth"]),
+                correct_probability=direction_correct_probability,
+            )
+            predictions.at[
+                row_index, "direction_calibrated_prob_down"
+            ] = down
+            predictions.at[
+                row_index, "direction_calibrated_prob_no_move"
+            ] = no_move
+            predictions.at[
+                row_index, "direction_calibrated_prob_up"
+            ] = up
+    if native_correct_probability is not None:
+        predictions.loc[
+            native, "s_h_calibrated_probability"
+        ] = predictions.loc[native, "s_h_truth"].map(
+            lambda truth: _binary_probability(
+                truth, native_correct_probability
+            )
+        )
+        native_o = native & predictions["o_h_given_s_truth"].notna()
+        predictions.loc[
+            native_o, "o_h_given_s_calibrated_probability"
+        ] = predictions.loc[native_o, "o_h_given_s_truth"].map(
+            lambda truth: _binary_probability(
+                truth, native_correct_probability
+            )
+        )
+        native_direction = native & predictions["direction_truth"].notna()
+        for row_index in predictions.index[native_direction]:
+            down, no_move, up = _class_probabilities(
+                str(predictions.at[row_index, "direction_truth"]),
+                correct_probability=native_correct_probability,
+            )
+            predictions.at[
+                row_index, "direction_calibrated_prob_down"
+            ] = down
+            predictions.at[
+                row_index, "direction_calibrated_prob_no_move"
+            ] = no_move
+            predictions.at[
+                row_index, "direction_calibrated_prob_up"
+            ] = up
+    return replace(run, oof_predictions=predictions)
 
 
 def test_binds_authoritative_153_81_target_specific_exposure() -> None:
@@ -761,14 +1022,14 @@ def test_sports_outcome_exposure_must_cover_exact_holdout_authority() -> None:
 
 
 def test_transport_scores_kalshi_truth_against_native_kalshi_oof() -> None:
-    result = validate_development_venue_transport(
+    result = _validate_transport(
         _source_and_transport(),
         authority_metadata=_bind_authority(),
         stage_b_selection=_stage_b_selection(),
     )
 
     assert result.target_recalibration_applied is False
-    assert result.unmatched_source_rows == 1
+    assert result.unmatched_source_rows == 0
     assert result.unmatched_target_rows == 0
     assert result.native_comparator_paired_rows == 36
     assert result.paired_game_count == 36
@@ -780,7 +1041,10 @@ def test_transport_scores_kalshi_truth_against_native_kalshi_oof() -> None:
     assert result.transport_b0_bootstrap_seed == 20260729
     assert not result.native_b0_score_summary.empty
     assert result.transport_gate_passed is True
-    assert result.diagnostic_status == "HISTORICAL_SIGNAL_CANDIDATE"
+    assert (
+        result.diagnostic_status
+        == "HISTORICAL_PREDICTIVE_UTILITY_CANDIDATE"
+    )
     assert {"S_H", "O_H_GIVEN_S", "DIRECTION"} == set(
         result.score_summary["head"]
     )
@@ -797,6 +1061,323 @@ def test_transport_scores_kalshi_truth_against_native_kalshi_oof() -> None:
     assert not result.calibration_summary.empty
 
 
+@pytest.mark.parametrize(
+    ("degraded_head", "expected_failed_head"),
+    (
+        ("s_h", "S_H"),
+        ("o_h_given_s", "O_H_GIVEN_S"),
+    ),
+)
+def test_transport_requires_each_binary_nuisance_head_to_improve_b0(
+    degraded_head: str,
+    expected_failed_head: str,
+) -> None:
+    run = _replace_transported_candidate_probabilities(
+        _source_and_transport(),
+        s_h_correct_probability=(
+            0.59 if degraded_head == "s_h" else None
+        ),
+        o_h_given_s_correct_probability=(
+            0.59 if degraded_head == "o_h_given_s" else None
+        ),
+    )
+
+    result = _validate_transport(
+        run,
+        authority_metadata=_bind_authority(),
+        stage_b_selection=_stage_b_selection(),
+    )
+
+    s_h = result.transport_b0_head_gate_summary.loc[
+        lambda frame: frame["head"].eq("S_H")
+        & frame["metric"].eq("LOG_LOSS")
+    ].iloc[0]
+    o_h = result.transport_b0_head_gate_summary.loc[
+        lambda frame: frame["head"].eq("O_H_GIVEN_S")
+        & frame["metric"].eq("LOG_LOSS")
+    ].iloc[0]
+    failed = s_h if expected_failed_head == "S_H" else o_h
+    passed = o_h if expected_failed_head == "S_H" else s_h
+    assert failed["overall_mean_improvement"] < 0.0
+    assert bool(failed["gate_passed"]) is False
+    assert passed["overall_mean_improvement"] > 0.0
+    assert bool(passed["gate_passed"]) is True
+    assert result.binary_nuisance_gate_passed is False
+    assert result.transport_gate_passed is False
+
+
+def test_transport_requires_direction_log_loss_and_brier_improvement() -> None:
+    run = _replace_transported_candidate_probabilities(
+        _source_and_transport(),
+        direction_correct_probability=0.52,
+    )
+
+    result = _validate_transport(
+        run,
+        authority_metadata=_bind_authority(),
+        stage_b_selection=_stage_b_selection(),
+    )
+
+    direction = result.transport_b0_head_gate_summary.loc[
+        lambda frame: frame["head"].eq("DIRECTION")
+    ].set_index("metric")
+    assert set(direction.index) == {"LOG_LOSS", "BRIER"}
+    assert (
+        direction["bootstrap_samples"].eq(10_000).all()
+    )
+    assert direction["bootstrap_seed"].eq(20260729).all()
+    assert direction["overall_ci_low"].lt(0.0).all()
+    assert not direction["gate_passed"].any()
+    assert result.direction_gate_passed is False
+    assert result.transport_gate_passed is False
+
+
+def test_direction_log_loss_improvement_cannot_mask_brier_failure() -> None:
+    run = _source_and_transport()
+    predictions = run.oof_predictions.copy()
+    candidate = (
+        predictions["venue"].eq("kalshi")
+        & predictions["training_venue"].eq("polymarket")
+        & predictions["model_id"].eq("regularized_logistic_v1")
+        & predictions["direction_truth"].notna()
+    )
+    columns = (
+        "direction_calibrated_prob_down",
+        "direction_calibrated_prob_no_move",
+        "direction_calibrated_prob_up",
+    )
+    class_index = {"DOWN": 0, "NO_MOVE": 1, "UP": 2}
+    for row_index in predictions.index[candidate]:
+        truth_index = class_index[
+            str(predictions.at[row_index, "direction_truth"])
+        ]
+        values = [0.001, 0.001, 0.001]
+        values[truth_index] = 0.59
+        values[next(index for index in range(3) if index != truth_index)] = (
+            0.409
+        )
+        predictions.loc[row_index, list(columns)] = values
+    result = _validate_transport(
+        replace(run, oof_predictions=predictions),
+        authority_metadata=_bind_authority(),
+        stage_b_selection=_stage_b_selection(),
+    )
+
+    direction = result.transport_b0_head_gate_summary.loc[
+        lambda frame: frame["head"].eq("DIRECTION")
+    ].set_index("metric")
+    assert direction.loc["LOG_LOSS", "overall_ci_low"] > 0.0
+    assert bool(direction.loc["LOG_LOSS", "gate_passed"]) is True
+    assert direction.loc["BRIER", "overall_ci_low"] < 0.0
+    assert bool(direction.loc["BRIER", "gate_passed"]) is False
+    assert result.direction_gate_passed is False
+
+
+def test_direction_brier_improvement_cannot_mask_log_loss_failure() -> None:
+    run = _source_and_transport()
+    predictions = run.oof_predictions.copy()
+    transported_b0 = (
+        predictions["venue"].eq("kalshi")
+        & predictions["training_venue"].eq("polymarket")
+        & predictions["model_id"].eq("b0_empirical_v1")
+        & predictions["direction_truth"].notna()
+    )
+    candidate = (
+        predictions["venue"].eq("kalshi")
+        & predictions["training_venue"].eq("polymarket")
+        & predictions["model_id"].eq("regularized_logistic_v1")
+        & predictions["direction_truth"].notna()
+    )
+    columns = (
+        "direction_calibrated_prob_down",
+        "direction_calibrated_prob_no_move",
+        "direction_calibrated_prob_up",
+    )
+    class_index = {"DOWN": 0, "NO_MOVE": 1, "UP": 2}
+    for row_index in predictions.index[transported_b0]:
+        truth_index = class_index[
+            str(predictions.at[row_index, "direction_truth"])
+        ]
+        values = [0.001, 0.001, 0.001]
+        values[truth_index] = 0.60
+        values[next(index for index in range(3) if index != truth_index)] = (
+            0.399
+        )
+        predictions.loc[row_index, list(columns)] = values
+    for row_index in predictions.index[candidate]:
+        truth_index = class_index[
+            str(predictions.at[row_index, "direction_truth"])
+        ]
+        values = [0.205, 0.205, 0.205]
+        values[truth_index] = 0.59
+        predictions.loc[row_index, list(columns)] = values
+    result = _validate_transport(
+        replace(run, oof_predictions=predictions),
+        authority_metadata=_bind_authority(),
+        stage_b_selection=_stage_b_selection(),
+    )
+
+    direction = result.transport_b0_head_gate_summary.loc[
+        lambda frame: frame["head"].eq("DIRECTION")
+    ].set_index("metric")
+    assert direction.loc["LOG_LOSS", "overall_ci_low"] < 0.0
+    assert bool(direction.loc["LOG_LOSS", "gate_passed"]) is False
+    assert direction.loc["BRIER", "overall_ci_low"] > 0.0
+    assert bool(direction.loc["BRIER", "gate_passed"]) is True
+    assert result.direction_gate_passed is False
+
+
+def test_transport_anchor_requires_thirty_evaluable_games() -> None:
+    run = _source_and_transport()
+    dropped_games = frozenset(
+        sorted(run.oof_predictions["game_id"].unique())[29:36]
+    )
+    predictions = run.oof_predictions.loc[
+        ~(
+            run.oof_predictions["venue"].eq("kalshi")
+            & run.oof_predictions["game_id"].isin(dropped_games)
+        )
+    ].copy()
+    reduced = replace(run, oof_predictions=predictions)
+
+    result = _validate_transport(
+        reduced,
+        authority_metadata=_bind_authority(),
+        stage_b_selection=_stage_b_selection(),
+    )
+
+    assert result.transport_b0_anchor_game_count == 29
+    assert result.transport_b0_improvement_gate_passed is False
+    assert result.transport_gate_passed is False
+
+
+def test_native_kalshi_noninferiority_is_headwise_bootstrapped() -> None:
+    passing = _validate_transport(
+        _source_and_transport(),
+        authority_metadata=_bind_authority(),
+        stage_b_selection=_stage_b_selection(),
+    )
+    assert passing.native_noninferiority_gate_passed is True
+    assert len(passing.native_noninferiority_summary) == 6
+    assert passing.native_noninferiority_summary[
+        "bootstrap_samples"
+    ].eq(10_000).all()
+    assert passing.native_noninferiority_summary[
+        "bootstrap_seed"
+    ].eq(20260729).all()
+
+    failing_run = _replace_transported_candidate_probabilities(
+        _source_and_transport(),
+        native_correct_probability=0.999,
+    )
+    failing = _validate_transport(
+        failing_run,
+        authority_metadata=_bind_authority(),
+        stage_b_selection=_stage_b_selection(),
+    )
+    assert failing.native_noninferiority_gate_passed is False
+    assert failing.transport_gate_passed is False
+    assert failing.diagnostic_status == (
+        "HISTORICAL_PREDICTIVE_UTILITY_REJECTED"
+    )
+    assert (
+        failing.native_noninferiority_summary[
+            "upper95_within_margin"
+        ]
+        .eq(False)
+        .any()
+    )
+
+
+def test_transport_rejects_joint_source_target_stage_b_provenance_drift() -> None:
+    run = _source_and_transport()
+    predictions = run.oof_predictions.copy()
+    selected = (
+        predictions["model_id"].eq("regularized_logistic_v1")
+        & predictions["feature_block_id"].eq("D1")
+        & predictions["training_venue"].eq("polymarket")
+    )
+    predictions.loc[
+        selected, "preprocessor_training_sha256"
+    ] = "sha256:" + "f" * 64
+    drifted = replace(run, oof_predictions=predictions)
+
+    with pytest.raises(
+        KalshiValidationError,
+        match="independently verified exact45 winner provenance",
+    ):
+        _validate_transport(
+            drifted,
+            authority_metadata=_bind_authority(),
+            stage_b_selection=_stage_b_selection(),
+        )
+
+
+def test_transport_rejects_coherent_rewrite_with_recomputed_digests() -> None:
+    run = _source_and_transport()
+    predictions = run.oof_predictions.copy()
+    selected = (
+        predictions["model_id"].eq("regularized_logistic_v1")
+        & predictions["feature_block_id"].eq("D1")
+        & predictions["training_venue"].eq("polymarket")
+    )
+    predictions.loc[
+        selected, "preprocessor_training_sha256"
+    ] = "sha256:" + "f" * 64
+    source = predictions.loc[
+        predictions["venue"].eq("polymarket")
+        & predictions["training_venue"].eq("polymarket")
+    ]
+    rewritten_config = dict(run.run_config)
+    rewritten_config["stage_b_source_provenance_sha256"] = (
+        validation._transport_source_provenance_sha256(source)
+    )
+    rewritten = replace(
+        run,
+        oof_predictions=predictions,
+        run_config=rewritten_config,
+        run_config_sha256=validation._canonical_sha256(
+            rewritten_config
+        ),
+    )
+
+    with pytest.raises(
+        KalshiValidationError,
+        match="independently verified exact45 winner provenance",
+    ):
+        _validate_transport(
+            rewritten,
+            authority_metadata=_bind_authority(),
+            stage_b_selection=_stage_b_selection(),
+        )
+
+
+def test_transport_rejects_native_b0_population_attrition() -> None:
+    run = _source_and_transport()
+    predictions = run.oof_predictions.copy()
+    native = (
+        predictions["venue"].eq("kalshi")
+        & predictions["training_venue"].eq("kalshi")
+    )
+    missing_game = str(predictions.loc[native, "game_id"].iloc[0])
+    predictions = predictions.drop(
+        predictions.index[
+            native & predictions["game_id"].eq(missing_game)
+        ]
+    )
+    drifted = replace(run, oof_predictions=predictions)
+
+    with pytest.raises(
+        KalshiValidationError,
+        match="identical Kalshi truth/identity population",
+    ):
+        _validate_transport(
+            drifted,
+            authority_metadata=_bind_authority(),
+            stage_b_selection=_stage_b_selection(),
+        )
+
+
 def test_transport_rejects_self_reported_noncanonical_run_config_sha() -> None:
     run = _source_and_transport()
     drifted_config = dict(run.run_config)
@@ -807,7 +1388,7 @@ def test_transport_rejects_self_reported_noncanonical_run_config_sha() -> None:
         KalshiValidationError,
         match="run_config_sha256 does not bind",
     ):
-        validate_development_venue_transport(
+        _validate_transport(
             drifted,
             authority_metadata=_bind_authority(),
             stage_b_selection=_stage_b_selection(),
@@ -828,7 +1409,7 @@ def test_transport_requires_frozen_survival_probability_contract() -> None:
         KalshiValidationError,
         match="survival_probability_contract",
     ):
-        validate_development_venue_transport(
+        _validate_transport(
             drifted,
             authority_metadata=_bind_authority(),
             stage_b_selection=_stage_b_selection(),
@@ -859,7 +1440,7 @@ def test_transport_rejects_legacy_probability_panel_v1() -> None:
         KalshiValidationError,
         match="run_config drifted on schema_version",
     ):
-        validate_development_venue_transport(
+        _validate_transport(
             legacy_run,
             authority_metadata=_bind_authority(),
             stage_b_selection=_stage_b_selection(),
@@ -867,7 +1448,7 @@ def test_transport_rejects_legacy_probability_panel_v1() -> None:
 
 
 def test_catastrophic_transport_degradation_fails_candidate_gate() -> None:
-    result = validate_development_venue_transport(
+    result = _validate_transport(
         _source_and_transport(catastrophic=True),
         authority_metadata=_bind_authority(),
         stage_b_selection=_stage_b_selection(),
@@ -876,11 +1457,14 @@ def test_catastrophic_transport_degradation_fails_candidate_gate() -> None:
     assert result.score_gate_passed is True
     assert result.catastrophic_degradation is True
     assert result.transport_gate_passed is False
-    assert result.diagnostic_status == "HISTORICAL_SIGNAL_REJECTED"
+    assert (
+        result.diagnostic_status
+        == "HISTORICAL_PREDICTIVE_UTILITY_REJECTED"
+    )
 
 
 def test_jointly_bad_transport_and_native_cannot_beat_frozen_b0() -> None:
-    result = validate_development_venue_transport(
+    result = _validate_transport(
         _source_and_transport(jointly_bad=True),
         authority_metadata=_bind_authority(),
         stage_b_selection=_stage_b_selection(),
@@ -891,7 +1475,10 @@ def test_jointly_bad_transport_and_native_cannot_beat_frozen_b0() -> None:
     assert result.transport_b0_mean_improvement < 0.0
     assert result.transport_b0_improvement_gate_passed is False
     assert result.transport_gate_passed is False
-    assert result.diagnostic_status == "HISTORICAL_SIGNAL_REJECTED"
+    assert (
+        result.diagnostic_status
+        == "HISTORICAL_PREDICTIVE_UTILITY_REJECTED"
+    )
 
 
 def _exact_factor_inputs(
@@ -904,6 +1491,7 @@ def _exact_factor_inputs(
     object,
     object,
     validation.FrozenFactorMembershipEvidence,
+    validation.FrozenAuthorityMetadata,
 ]:
     evidence = validation.load_frozen_factor_membership_evidence()
     original_authority = _complete_selection_authority()
@@ -979,7 +1567,7 @@ def _exact_factor_inputs(
         "preprocessor_fit_game_ids",
     )
     membership_runs: list[X15ModelRun] = []
-    for run in _stage_b_v2_runs():
+    for run in _stage_b_v3_runs():
         predictions = run.oof_predictions.copy()
         original_prediction_game_ids = predictions["game_id"].astype(
             str
@@ -1021,9 +1609,45 @@ def _exact_factor_inputs(
                 ),
             )
         )
-    stage_b_selection = select_stage_b_v2_winner(
+    stage_b_selection = select_stage_b_v3_winner(
         tuple(membership_runs),
         authority=membership_authority,
+    )
+    development_metadata = pd.DataFrame(
+        [
+            {
+                "game_id": game_id,
+                "cohort": "development",
+                "nfl_week": nfl_week,
+                "kickoff_utc": kickoff_utc,
+                "batch_sha256": batch_sha256,
+                "cohort_authority_sha256": (
+                    evidence.cohort_authority_sha256
+                ),
+                "market_reaction_exposure": "DEVELOPMENT_USED",
+                "sports_outcome_exposure": "DEVELOPMENT_USED",
+                "reaction_read_count": 0,
+            }
+            for (
+                game_id,
+                nfl_week,
+                kickoff_utc,
+                batch_sha256,
+            ) in membership_authority.development_games
+        ]
+    )
+    holdout_metadata = _authority_rows().loc[
+        lambda frame: frame["cohort"].eq("holdout")
+    ].copy()
+    holdout_metadata["cohort_authority_sha256"] = (
+        evidence.cohort_authority_sha256
+    )
+    factor_authority_metadata = _bind_authority(
+        pd.concat(
+            [development_metadata, holdout_metadata],
+            ignore_index=True,
+        ),
+        authority=evidence.cohort_authority_sha256,
     )
     selection = stage_b_selection.winner
     assert selection is not None
@@ -1048,7 +1672,7 @@ def _exact_factor_inputs(
         run_config_sha256=raw_transport_run.run_config_sha256,
         run_config=raw_transport_run.run_config,
     )
-    transport = validate_development_venue_transport(
+    transport = _validate_transport(
         stage_b_transport_run,
         authority_metadata=_bind_authority(),
         stage_b_selection=_stage_b_selection(),
@@ -1112,7 +1736,12 @@ def _exact_factor_inputs(
         cohort_authority_sha256=evidence.cohort_authority_sha256,
         transport_b0_pair_diagnostics=target_rows,
     )
-    return stage_b_selection, transport, evidence
+    return (
+        stage_b_selection,
+        transport,
+        evidence,
+        factor_authority_metadata,
+    )
 
 
 def test_factor_membership_is_bound_to_fixed_registry_and_artifact() -> None:
@@ -1158,12 +1787,20 @@ def test_factor_membership_is_bound_to_fixed_registry_and_artifact() -> None:
         "0725380c27e0353a0f6c92bef482b72b757970981cf6c31102f93fb6c64047c4"
     )
     parameters = inspect.signature(
-        validation.build_cross_venue_factor_shortlist
+        validation.build_cross_venue_predictive_utility_shortlist
     ).parameters
     assert "factor_membership" not in parameters
     assert "factor_membership_evidence" in parameters
+    assert "preholdout_metadata_lock" in parameters
+    assert "authority_metadata" in parameters
 
-    selection, transport, _ = _exact_factor_inputs(shared=True)
+    selection, transport, _, authority_metadata = _exact_factor_inputs(
+        shared=True
+    )
+    metadata_lock = _verified_preholdout_lock(
+        cohort_authority_sha256=evidence.cohort_authority_sha256,
+        authority_metadata=authority_metadata,
+    )
     tampered = replace(
         evidence,
         authority_batch_sha256="sha256:" + "0" * 64,
@@ -1172,10 +1809,12 @@ def test_factor_membership_is_bound_to_fixed_registry_and_artifact() -> None:
         KalshiValidationError,
         match="does not bind the frozen artifacts",
     ):
-        validation.build_cross_venue_factor_shortlist(
+        validation.build_cross_venue_predictive_utility_shortlist(
             selection,
             transport_validation=transport,
             factor_membership_evidence=tampered,
+            authority_metadata=authority_metadata,
+            preholdout_metadata_lock=metadata_lock,
         )
 
     dropped_rows = evidence.membership_rows.iloc[:-1].copy()
@@ -1190,10 +1829,12 @@ def test_factor_membership_is_bound_to_fixed_registry_and_artifact() -> None:
         KalshiValidationError,
         match="does not bind the frozen artifacts",
     ):
-        validation.build_cross_venue_factor_shortlist(
+        validation.build_cross_venue_predictive_utility_shortlist(
             selection,
             transport_validation=transport,
             factor_membership_evidence=self_reported,
+            authority_metadata=authority_metadata,
+            preholdout_metadata_lock=metadata_lock,
         )
 
 
@@ -1270,11 +1911,13 @@ def test_factor_authority_contracts_bind_exact_v4_facts_and_v2_panel() -> None:
     )
 
 
-def test_kalshi_factor_validation_accepts_only_stage_b_v2_winner() -> None:
+def test_kalshi_factor_validation_accepts_only_stage_b_v3_winner() -> None:
     transport_parameters = inspect.signature(
-        validate_development_venue_transport
+        validation.validate_development_venue_transport
     ).parameters
     assert "stage_b_selection" in transport_parameters
+    assert "stage_b_batch_manifest_path" in transport_parameters
+    assert "stage_b_artifact_root" in transport_parameters
     assert "spec" not in transport_parameters
 
     legacy_single_candidate = select_candidate_against_b0(
@@ -1284,19 +1927,23 @@ def test_kalshi_factor_validation_accepts_only_stage_b_v2_winner() -> None:
     )
     with pytest.raises(
         KalshiValidationError,
-        match="Stage-B V2",
+        match="Stage-B V3",
     ):
-        validation._require_frozen_stage_b_v2_winner(
-            legacy_single_candidate
+        validation._require_frozen_stage_b_v3_winner(
+            legacy_single_candidate,
+            authority=_complete_selection_authority(),
         )
 
-    stage_b = select_stage_b_v2_winner(
-        _stage_b_v2_runs(),
+    stage_b = select_stage_b_v3_winner(
+        _stage_b_v3_runs(),
         authority=_complete_selection_authority(),
     )
     assert stage_b.winner is not None
     assert (
-        validation._require_frozen_stage_b_v2_winner(stage_b)
+        validation._require_frozen_stage_b_v3_winner(
+            stage_b,
+            authority=_complete_selection_authority(),
+        )
         is stage_b.winner
     )
     assert stage_b.winner.spec.selection_venue == "polymarket"
@@ -1309,8 +1956,8 @@ def test_kalshi_factor_validation_accepts_only_stage_b_v2_winner() -> None:
 def test_kalshi_rejects_stage_b_candidate_evidence_mutation(
     mutation: str,
 ) -> None:
-    stage_b = select_stage_b_v2_winner(
-        _stage_b_v2_runs(),
+    stage_b = select_stage_b_v3_winner(
+        _stage_b_v3_runs(),
         authority=_complete_selection_authority(),
     )
     winner = stage_b.winner
@@ -1338,19 +1985,33 @@ def test_kalshi_rejects_stage_b_candidate_evidence_mutation(
         candidate_results=mutated_results,
     )
 
-    with pytest.raises(KalshiValidationError, match="Stage-B V2"):
-        validation._require_frozen_stage_b_v2_winner(mutated)
+    with pytest.raises(KalshiValidationError, match="Stage-B V3"):
+        validation._require_frozen_stage_b_v3_winner(
+            mutated,
+            authority=_complete_selection_authority(),
+        )
 
 
 def test_exact_paired_factor_rows_pass_dual_venue_gate() -> None:
-    selection, transport, evidence = _exact_factor_inputs(shared=True)
+    (
+        selection,
+        transport,
+        evidence,
+        authority_metadata,
+    ) = _exact_factor_inputs(shared=True)
+    metadata_lock = _verified_preholdout_lock(
+        cohort_authority_sha256=evidence.cohort_authority_sha256,
+        authority_metadata=authority_metadata,
+    )
 
-    shortlist = validation.build_cross_venue_factor_shortlist(
+    shortlist = validation.build_cross_venue_predictive_utility_shortlist(
         selection,
         transport_validation=transport,
         factor_membership_evidence=evidence,
+        authority_metadata=authority_metadata,
+        preholdout_metadata_lock=metadata_lock,
         min_support_games=30,
-        min_support_episodes=30,
+        min_support_episodes=20,
     )
 
     row = shortlist.loc[
@@ -1361,76 +2022,214 @@ def test_exact_paired_factor_rows_pass_dual_venue_gate() -> None:
     assert row["shared_episode_count"] == 36
     assert row["polymarket_only_pair_row_count"] == 218
     assert row["kalshi_only_pair_row_count"] == 0
-    assert bool(row["polymarket_individual_statistical_gate"]) is True
-    assert bool(row["kalshi_individual_statistical_gate"]) is True
-    assert bool(row["cross_venue_same_sign"]) is True
-    assert bool(row["factor_specific_dual_venue_gate_passed"]) is True
-    assert row["diagnostic_status"] == "HISTORICAL_SIGNAL_CANDIDATE"
+    assert bool(
+        row["polymarket_predictive_utility_gate_passed"]
+    ) is True
+    assert bool(row["kalshi_predictive_utility_gate_passed"]) is True
+    assert bool(row["cross_venue_both_positive"]) is True
+    assert bool(
+        row["factor_conditioned_dual_venue_gate_passed"]
+    ) is True
+    assert row["shortlist_schema_version"] == (
+        "NFLFactorPredictiveUtilityShortlistV1"
+    )
+    assert row["diagnostic_status"] == (
+        "HISTORICAL_PREDICTIVE_UTILITY_CANDIDATE"
+    )
+    forbidden = (
+        "gross_markout",
+        "mean_effect",
+        "factor_effect",
+        "signed_reaction",
+        "alpha",
+        "signal",
+    )
+    assert not any(
+        token in str(column).lower()
+        for column in shortlist.columns
+        for token in forbidden
+    )
 
 
 def test_disjoint_positive_factor_samples_cannot_enter_shortlist() -> None:
-    selection, transport, evidence = _exact_factor_inputs(shared=False)
+    (
+        selection,
+        transport,
+        evidence,
+        authority_metadata,
+    ) = _exact_factor_inputs(shared=False)
+    metadata_lock = _verified_preholdout_lock(
+        cohort_authority_sha256=evidence.cohort_authority_sha256,
+        authority_metadata=authority_metadata,
+    )
 
-    shortlist = validation.build_cross_venue_factor_shortlist(
+    shortlist = validation.build_cross_venue_predictive_utility_shortlist(
         selection,
         transport_validation=transport,
         factor_membership_evidence=evidence,
+        authority_metadata=authority_metadata,
+        preholdout_metadata_lock=metadata_lock,
         min_support_games=30,
-        min_support_episodes=30,
+        min_support_episodes=20,
     )
 
     row = shortlist.loc[
         shortlist["factor_id"].eq("NFL.EVENT.COMPLETE_PASS")
     ].iloc[0]
     assert bool(row["global_transport_gate_passed"]) is True
-    assert row["diagnostic_status"] == "HISTORICAL_SIGNAL_REJECTED"
+    assert row["diagnostic_status"] == (
+        "HISTORICAL_PREDICTIVE_UTILITY_REJECTED"
+    )
     assert row["shared_pair_row_count"] == 0
     assert row["shared_game_count"] == 0
     assert row["shared_episode_count"] == 0
     assert row["polymarket_only_pair_row_count"] == 254
     assert row["kalshi_only_pair_row_count"] == 36
-    assert bool(row["factor_specific_dual_venue_gate_passed"]) is False
+    assert bool(
+        row["factor_conditioned_dual_venue_gate_passed"]
+    ) is False
+
+
+@pytest.mark.parametrize(
+    ("min_support_games", "min_support_episodes"),
+    ((29, 20), (30, 19), (31, 20), (30, 21)),
+)
+def test_factor_conditioned_support_floors_are_not_overridable(
+    min_support_games: int,
+    min_support_episodes: int,
+) -> None:
+    (
+        selection,
+        transport,
+        evidence,
+        authority_metadata,
+    ) = _exact_factor_inputs(shared=True)
+    metadata_lock = _verified_preholdout_lock(
+        cohort_authority_sha256=evidence.cohort_authority_sha256,
+        authority_metadata=authority_metadata,
+    )
+
+    with pytest.raises(
+        KalshiValidationError,
+        match="support contract is frozen",
+    ):
+        validation.build_cross_venue_predictive_utility_shortlist(
+            selection,
+            transport_validation=transport,
+            factor_membership_evidence=evidence,
+            authority_metadata=authority_metadata,
+            preholdout_metadata_lock=metadata_lock,
+            min_support_games=min_support_games,
+            min_support_episodes=min_support_episodes,
+        )
+
+
+def test_factor_shortlist_requires_verified_current_metadata_lock() -> None:
+    (
+        selection,
+        transport,
+        evidence,
+        authority_metadata,
+    ) = _exact_factor_inputs(shared=True)
+    metadata_lock = _verified_preholdout_lock(
+        cohort_authority_sha256=evidence.cohort_authority_sha256,
+        authority_metadata=authority_metadata,
+    )
+    forged = dict(metadata_lock)
+    forged["holdout_reaction_read_count"] = 1
+
+    with pytest.raises(
+        KalshiValidationError,
+        match="verified pre-holdout metadata lock",
+    ):
+        validation.build_cross_venue_predictive_utility_shortlist(
+            selection,
+            transport_validation=transport,
+            factor_membership_evidence=evidence,
+            authority_metadata=authority_metadata,
+            preholdout_metadata_lock=forged,
+        )
+
+
+def test_factor_shortlist_rejects_post_lock_reaction_read_mutation() -> None:
+    (
+        selection,
+        transport,
+        evidence,
+        authority_metadata,
+    ) = _exact_factor_inputs(shared=True)
+    metadata_lock = _verified_preholdout_lock(
+        cohort_authority_sha256=evidence.cohort_authority_sha256,
+        authority_metadata=authority_metadata,
+    )
+    first_holdout_index = authority_metadata.holdout.index[0]
+    authority_metadata.holdout.loc[
+        first_holdout_index, "reaction_read_count"
+    ] = 1
+
+    with pytest.raises(
+        KalshiValidationError,
+        match="verified pre-holdout metadata lock",
+    ):
+        validation.build_cross_venue_predictive_utility_shortlist(
+            selection,
+            transport_validation=transport,
+            factor_membership_evidence=evidence,
+            authority_metadata=authority_metadata,
+            preholdout_metadata_lock=metadata_lock,
+        )
 
 
 def test_global_transport_gate_cannot_replace_bad_kalshi_factor_gate() -> None:
-    mixed_run = _source_and_transport(mixed_factor_bad_games=5)
-    initial_transport = validate_development_venue_transport(
+    mixed_run = _source_and_transport()
+    initial_transport = _validate_transport(
         mixed_run,
         authority_metadata=_bind_authority(),
         stage_b_selection=_stage_b_selection(),
     )
     negative_rows = (
-        initial_transport.transport_b0_pair_diagnostics.loc[
-            lambda frame: frame["loss_improvement"].lt(0)
-        ]
-        .sort_values("game_id", kind="mergesort")
-        .reset_index(drop=True)
+        initial_transport.transport_b0_pair_diagnostics.head(30).copy()
     )
-    assert len(negative_rows) == 5
-    selection, transport, evidence = _exact_factor_inputs(
+    negative_rows["loss_improvement"] = -1.0
+    (
+        selection,
+        transport,
+        evidence,
+        authority_metadata,
+    ) = _exact_factor_inputs(
         shared=True,
         transport_run=mixed_run,
-        pair_count=5,
+        pair_count=30,
         kalshi_rows=negative_rows,
     )
     assert transport.transport_gate_passed is True
+    metadata_lock = _verified_preholdout_lock(
+        cohort_authority_sha256=evidence.cohort_authority_sha256,
+        authority_metadata=authority_metadata,
+    )
 
-    shortlist = validation.build_cross_venue_factor_shortlist(
+    shortlist = validation.build_cross_venue_predictive_utility_shortlist(
         selection,
         transport_validation=transport,
         factor_membership_evidence=evidence,
-        min_support_games=5,
-        min_support_episodes=5,
+        authority_metadata=authority_metadata,
+        preholdout_metadata_lock=metadata_lock,
+        min_support_games=30,
+        min_support_episodes=20,
     )
 
     row = shortlist.loc[
         shortlist["factor_id"].eq("NFL.EVENT.COMPLETE_PASS")
     ].iloc[0]
-    assert row["shared_pair_row_count"] == 5
-    assert row["kalshi_mean_effect"] < 0.0
+    assert row["shared_pair_row_count"] == 30
+    assert row["kalshi_mean_log_score_improvement"] < 0.0
     assert bool(row["global_transport_gate_passed"]) is True
-    assert bool(row["factor_specific_dual_venue_gate_passed"]) is False
-    assert row["diagnostic_status"] != "HISTORICAL_SIGNAL_CANDIDATE"
+    assert bool(
+        row["factor_conditioned_dual_venue_gate_passed"]
+    ) is False
+    assert row["diagnostic_status"] != (
+        "HISTORICAL_PREDICTIVE_UTILITY_CANDIDATE"
+    )
 
 
 def test_transport_rejects_target_recalibration_and_provenance_drift() -> None:
@@ -1454,7 +2253,7 @@ def test_transport_rejects_target_recalibration_and_provenance_drift() -> None:
     with pytest.raises(
         KalshiValidationError, match="genuine Polymarket source OOF"
     ):
-        validate_development_venue_transport(
+        _validate_transport(
             recalibrated_run,
             authority_metadata=metadata,
             stage_b_selection=_stage_b_selection(),
@@ -1478,7 +2277,7 @@ def test_transport_rejects_target_recalibration_and_provenance_drift() -> None:
         KalshiValidationError,
         match="source-only preprocessor_training_sha256",
     ):
-        validate_development_venue_transport(
+        _validate_transport(
             drifted_run,
             authority_metadata=metadata,
             stage_b_selection=_stage_b_selection(),
@@ -1516,6 +2315,23 @@ def test_prelock_ledger_remains_metadata_only() -> None:
             source_sha256="sha256:" + "8" * 64,
         )
     assert not hasattr(validation, "transport_to_kalshi_holdout")
+
+
+def test_preholdout_lock_recomputes_mutable_authority_frames() -> None:
+    metadata = _bind_authority()
+    ledger = begin_prelock_metadata_ledger(metadata)
+    metadata.development.loc[
+        metadata.development.index[0], "batch_sha256"
+    ] = "sha256:" + "f" * 64
+
+    with pytest.raises(
+        KalshiValidationError,
+        match="current authority metadata",
+    ):
+        lock_preholdout_metadata_audit(
+            ledger,
+            authority_metadata=metadata,
+        )
 
 
 def test_genuine_fold_slice_scores_but_cannot_select() -> None:
@@ -1595,34 +2411,19 @@ def test_genuine_fold_slice_scores_but_cannot_select() -> None:
         ),
         authority=metadata.selection_authority,
     )
-    transport = validate_development_venue_transport(
-        run,
-        authority_metadata=metadata,
-        stage_b_selection=_stage_b_selection(
-            authority=metadata.selection_authority,
-        ),
-    )
-
     assert selection.authority_gate_passed is False
     assert selection.selected is False
     assert selection.diagnostic_status == (
         "PARTIAL_DEVELOPMENT_DIAGNOSTIC_ONLY"
     )
-    assert not transport.score_summary.empty
-    expected_model_blocks = set(
-        map(
-            tuple,
-            transport.native_comparison_diagnostics[
-                ["model_id", "feature_block_id"]
-            ]
-            .drop_duplicates()
-            .to_numpy(),
+    with pytest.raises(
+        KalshiValidationError,
+        match="Stage-B V3 selection evidence",
+    ):
+        _validate_transport(
+            run,
+            authority_metadata=metadata,
+            stage_b_selection=_stage_b_selection(
+                authority=metadata.selection_authority,
+            ),
         )
-    )
-    score_counts = transport.score_summary.groupby(
-        ["model_id", "feature_block_id"]
-    ).size()
-    assert set(score_counts.index) == expected_model_blocks
-    assert score_counts.eq(6).all()
-    assert transport.score_gate_passed is False
-    assert transport.transport_gate_passed is False

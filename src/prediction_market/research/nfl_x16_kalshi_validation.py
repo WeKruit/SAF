@@ -31,7 +31,6 @@ from prediction_market.research.nfl_x15_model_selection import (
     DIRECTION_THRESHOLD_PROBABILITY,
     DIRECTION_THRESHOLD_SEMANTICS,
     FrozenDevelopmentAuthority,
-    FrozenSelectionSpec,
     HISTORICAL_ANALYSIS_SCOPE,
     HISTORICAL_CLAIM_BOUNDARY,
     HISTORICAL_SCHEMA_VERSION,
@@ -44,14 +43,16 @@ from prediction_market.research.nfl_x15_model_selection import (
     StageBModelSelectionResult,
     VENUE_TICK_SUPPORT,
     bind_frozen_development_authority,
-    verify_stage_b_v2_selection_result,
+    verify_stage_b_v3_selection_result,
+)
+from prediction_market.research.nfl_x15_selection_batch_v3 import (
+    X15SelectionBatchV3Error,
+    load_x15_selection_projection_v3,
 )
 from prediction_market.research.nfl_x15_statistics import (
     DEFAULT_MAX_GAME_CONTRIBUTION,
     DEFAULT_MAX_Q_VALUE,
     DEFAULT_MIN_LOO_SAME_SIGN,
-    X15StatisticsInputError,
-    summarize_development_signals,
 )
 
 
@@ -62,10 +63,13 @@ TARGET_VENUE: Final[str] = "kalshi"
 VENUE_SPECIFIC_MODE: Final[str] = "VENUE_SPECIFIC"
 TRANSPORT_MODE: Final[str] = "NO_TARGET_RECALIBRATION"
 MIN_TRANSPORT_PAIRED_GAMES: Final[int] = 30
-MIN_TRANSPORT_EVALUATED_GAMES_PER_HEAD: Final[int] = 20
-MIN_TRANSPORT_EVALUATED_ROWS_PER_HEAD: Final[int] = 20
+MIN_TRANSPORT_EVALUATED_GAMES_PER_HEAD: Final[int] = 30
+MIN_TRANSPORT_EVALUATED_ROWS_PER_HEAD: Final[int] = 30
 MAX_LOG_LOSS_DEGRADATION: Final[float] = 0.25
 MAX_BRIER_DEGRADATION: Final[float] = 0.10
+FACTOR_PREDICTIVE_UTILITY_SCHEMA_VERSION: Final[str] = (
+    "NFLFactorPredictiveUtilityShortlistV1"
+)
 X11_SPORTS_OUTCOME_EVIDENCE_SHA256: Final[str] = (
     "sha256:1d0c033459c69778e265be3fca16ae2c87f650d5003a61ffdea4c020a4fd0b05"
 )
@@ -1054,6 +1058,88 @@ def _canonical_metadata_records(frame: pd.DataFrame) -> list[dict[str, object]]:
     return records
 
 
+def _recompute_authority_metadata_sha256(
+    authority_metadata: FrozenAuthorityMetadata,
+) -> str:
+    """Rebind the current mutable DataFrame contents at the lock boundary."""
+
+    development = authority_metadata.development
+    holdout = authority_metadata.holdout
+    if (
+        not isinstance(development, pd.DataFrame)
+        or not isinstance(holdout, pd.DataFrame)
+        or len(development) != EXPECTED_DEVELOPMENT_GAMES
+        or len(holdout) != EXPECTED_HOLDOUT_GAMES
+        or development["game_id"].nunique()
+        != EXPECTED_DEVELOPMENT_GAMES
+        or holdout["game_id"].nunique() != EXPECTED_HOLDOUT_GAMES
+        or set(development["game_id"]).intersection(holdout["game_id"])
+        or not development["cohort"].eq("development").all()
+        or not holdout["cohort"].eq("holdout").all()
+    ):
+        raise KalshiValidationError(
+            "current authority metadata frame/count contract drifted"
+        )
+    frame = pd.concat([development, holdout], ignore_index=True)
+    if not _AUTHORITY_REQUIRED.issubset(frame.columns):
+        raise KalshiValidationError(
+            "current authority metadata columns drifted"
+        )
+    historical_evidence = load_frozen_historical_exposure_evidence()
+    holdout_ids = tuple(sorted(holdout["game_id"].astype(str)))
+    return _canonical_sha256(
+        {
+            "cohort_metadata": _canonical_metadata_records(frame),
+            "historical_reviewed_game_ids": tuple(
+                sorted(historical_evidence.reviewed_game_ids)
+            ),
+            "historical_reviewed_game_ids_sha256": (
+                authority_metadata.historical_reviewed_game_ids_sha256
+            ),
+            "historical_reviewed_artifact_path": (
+                authority_metadata.historical_reviewed_artifact_path
+            ),
+            "historical_reviewed_artifact_sha256": (
+                authority_metadata.historical_reviewed_artifact_sha256
+            ),
+            "historical_reaction_game_ids": tuple(
+                sorted(historical_evidence.reaction_game_ids)
+            ),
+            "historical_reaction_game_ids_sha256": (
+                authority_metadata.historical_reaction_game_ids_sha256
+            ),
+            "historical_reaction_artifact_path": (
+                authority_metadata.historical_reaction_artifact_path
+            ),
+            "historical_reaction_artifact_sha256": (
+                authority_metadata.historical_reaction_artifact_sha256
+            ),
+            "sports_outcome_exposed_game_ids": holdout_ids,
+            "sports_outcome_exposed_game_ids_sha256": (
+                authority_metadata.sports_outcome_exposed_game_ids_sha256
+            ),
+            "sports_outcome_source_evidence_sha256": (
+                authority_metadata.sports_outcome_source_evidence_sha256
+            ),
+            "sports_outcome_observation_count": (
+                authority_metadata.sports_outcome_observation_count
+            ),
+            "reaction_blind_metadata_game_ids": holdout_ids,
+            "reaction_blind_metadata_game_ids_sha256": (
+                authority_metadata
+                .reaction_blind_metadata_game_ids_sha256
+            ),
+            "stage_a_outcome_validation_eligible": (
+                authority_metadata.stage_a_outcome_validation_eligible
+            ),
+            "stage_b_market_reaction_validation_eligible": (
+                authority_metadata
+                .stage_b_market_reaction_validation_eligible
+            ),
+        }
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class FrozenAuthorityMetadata:
     """Exact cohort metadata that can be inspected without reaction rows."""
@@ -1601,10 +1687,280 @@ def _validate_fold_local_source_rows(
     return work
 
 
+def _transport_source_provenance_sha256(frame: pd.DataFrame) -> str:
+    required = {
+        *_TRANSPORT_PAIR_COLUMNS,
+        *_HASH_PROVENANCE_COLUMNS,
+        *_SEQUENCE_PROVENANCE_COLUMNS,
+    }
+    missing = sorted(required.difference(frame.columns))
+    if missing:
+        raise KalshiValidationError(
+            "transport source provenance columns are missing: "
+            f"{missing}"
+        )
+    records: list[dict[str, object]] = []
+    ordered = frame.sort_values(
+        list(_TRANSPORT_PAIR_COLUMNS), kind="mergesort"
+    )
+    for row in ordered.to_dict("records"):
+        record: dict[str, object] = {}
+        for column in (
+            *_TRANSPORT_PAIR_COLUMNS,
+            *_HASH_PROVENANCE_COLUMNS,
+            *_SEQUENCE_PROVENANCE_COLUMNS,
+        ):
+            value = row[column]
+            record[column] = (
+                tuple(value)
+                if column in _SEQUENCE_PROVENANCE_COLUMNS
+                else value
+            )
+        records.append(record)
+    return _canonical_sha256(
+        {
+            "schema": "nfl_x16_stage_b_source_provenance_v1",
+            "rows": records,
+        }
+    )
+
+
+def _require_exact_frozen_stage_b_source(
+    source: pd.DataFrame,
+    *,
+    selection: ModelSelectionResult,
+    verified_source_run: X15ModelRun,
+) -> None:
+    identity = (
+        "source_row_id",
+        *_MODEL_COMPARISON_PAIR_COLUMNS,
+        "actual_home_contract_id",
+    )
+    winner_rows = selection.paired_rows
+    for model_id, feature_block_id, suffix in (
+        (
+            selection.spec.candidate_model_id,
+            selection.spec.candidate_feature_block_id,
+            "candidate",
+        ),
+        (
+            selection.spec.baseline_model_id,
+            selection.spec.baseline_feature_block_id,
+            "b0",
+        ),
+    ):
+        observed = source.loc[
+            source["model_id"].eq(model_id)
+            & source["feature_block_id"].eq(feature_block_id)
+        ].copy()
+        if observed.empty or observed.duplicated(
+            list(identity), keep=False
+        ).any():
+            raise KalshiValidationError(
+                "transport source does not bind exact frozen Stage-B "
+                "winner provenance"
+            )
+        expected = winner_rows.copy()
+        expected_columns = {
+            f"train_weeks_{suffix}": "train_weeks",
+            f"validation_weeks_{suffix}": "validation_weeks",
+            f"training_game_ids_{suffix}": "training_game_ids",
+            f"validation_game_ids_{suffix}": "validation_game_ids",
+            f"preprocessor_fit_game_ids_{suffix}": (
+                "preprocessor_fit_game_ids"
+            ),
+            f"s_h_truth_{suffix}": "s_h_truth",
+            f"o_h_given_s_truth_{suffix}": "o_h_given_s_truth",
+            f"direction_truth_{suffix}": "direction_truth",
+            f"s_h_calibrated_probability_{suffix}": (
+                "s_h_calibrated_probability"
+            ),
+            f"o_h_given_s_calibrated_probability_{suffix}": (
+                "o_h_given_s_calibrated_probability"
+            ),
+            f"direction_calibrated_prob_down_{suffix}": (
+                "direction_calibrated_prob_down"
+            ),
+            f"direction_calibrated_prob_no_move_{suffix}": (
+                "direction_calibrated_prob_no_move"
+            ),
+            f"direction_calibrated_prob_up_{suffix}": (
+                "direction_calibrated_prob_up"
+            ),
+        }
+        expected = expected[
+            [*identity, *expected_columns]
+        ].rename(columns=expected_columns)
+        pair = observed.merge(
+            expected,
+            on=list(identity),
+            how="left",
+            suffixes=("_observed", "_frozen"),
+            validate="one_to_one",
+            indicator=True,
+        )
+        if not pair["_merge"].eq("both").all():
+            raise KalshiValidationError(
+                "transport source does not bind exact frozen Stage-B "
+                "winner provenance"
+            )
+        for column in expected_columns.values():
+            left = pair[f"{column}_observed"]
+            right = pair[f"{column}_frozen"]
+            if column in _SEQUENCE_PROVENANCE_COLUMNS:
+                matches = all(
+                    tuple(left_value) == tuple(right_value)
+                    for left_value, right_value in zip(
+                        left, right, strict=True
+                    )
+                )
+            elif column in {
+                "s_h_truth",
+                "o_h_given_s_truth",
+                "direction_truth",
+            }:
+                matches = _nullable_truth_equal(left, right)
+            else:
+                numeric_left = pd.to_numeric(left, errors="coerce")
+                numeric_right = pd.to_numeric(right, errors="coerce")
+                matches = bool(
+                    np.isclose(
+                        numeric_left.to_numpy(dtype=float),
+                        numeric_right.to_numpy(dtype=float),
+                        atol=0.0,
+                        rtol=0.0,
+                        equal_nan=True,
+                    ).all()
+                )
+            if not matches:
+                raise KalshiValidationError(
+                    "transport source does not bind exact frozen Stage-B "
+                    "winner provenance"
+                )
+
+    anchor_columns = (
+        "source_row_id",
+        *_TRANSPORT_PAIR_COLUMNS,
+        "venue",
+        "training_venue",
+        "calibration_venue",
+        "transport_mode",
+        "actual_home_contract_id",
+        *_HASH_PROVENANCE_COLUMNS,
+        *_SEQUENCE_PROVENANCE_COLUMNS,
+        *_PROBABILITY_COLUMNS,
+        "s_h_truth",
+        "o_h_given_s_truth",
+        "direction_truth",
+    )
+    anchor = verified_source_run.oof_predictions
+    missing_anchor = sorted(set(anchor_columns).difference(anchor.columns))
+    if (
+        not isinstance(anchor, pd.DataFrame)
+        or anchor.empty
+        or missing_anchor
+    ):
+        raise KalshiValidationError(
+            "independently verified exact45 source lacks frozen "
+            f"winner provenance columns: {missing_anchor}"
+        )
+    anchor = anchor.loc[
+        anchor["venue"].eq(SOURCE_VENUE)
+        & anchor["training_venue"].eq(SOURCE_VENUE)
+        & anchor["calibration_venue"].eq(SOURCE_VENUE)
+        & anchor["transport_mode"].eq(VENUE_SPECIFIC_MODE),
+        list(anchor_columns),
+    ].copy()
+    expected_designs = {
+        (
+            selection.spec.baseline_model_id,
+            selection.spec.baseline_feature_block_id,
+        ),
+        (
+            selection.spec.candidate_model_id,
+            selection.spec.candidate_feature_block_id,
+        ),
+    }
+    observed_designs = set(
+        zip(
+            anchor["model_id"].astype(str),
+            anchor["feature_block_id"].astype(str),
+            strict=True,
+        )
+    )
+    identity = list(_TRANSPORT_PAIR_COLUMNS)
+    if (
+        observed_designs != expected_designs
+        or anchor.duplicated(identity, keep=False).any()
+    ):
+        raise KalshiValidationError(
+            "independently verified exact45 source has wrong winner "
+            "or fold identity"
+        )
+    observed = source.loc[:, list(anchor_columns)].copy()
+    pair = observed.merge(
+        anchor,
+        on=identity,
+        how="left",
+        suffixes=("_observed", "_verified"),
+        validate="one_to_one",
+        indicator=True,
+    )
+    if not pair["_merge"].eq("both").all():
+        raise KalshiValidationError(
+            "transport source does not match independently verified "
+            "exact45 winner provenance"
+        )
+    compared_columns = [
+        column for column in anchor_columns if column not in identity
+    ]
+    for column in compared_columns:
+        left = pair[f"{column}_observed"]
+        right = pair[f"{column}_verified"]
+        if column in _SEQUENCE_PROVENANCE_COLUMNS:
+            matches = all(
+                tuple(left_value) == tuple(right_value)
+                for left_value, right_value in zip(
+                    left, right, strict=True
+                )
+            )
+        elif column in {
+            "s_h_truth",
+            "o_h_given_s_truth",
+            "direction_truth",
+        }:
+            matches = _nullable_truth_equal(left, right)
+        elif column in {
+            "source_row_id",
+            *_PROBABILITY_COLUMNS,
+        }:
+            numeric_left = pd.to_numeric(left, errors="coerce")
+            numeric_right = pd.to_numeric(right, errors="coerce")
+            matches = bool(
+                np.isclose(
+                    numeric_left.to_numpy(dtype=float),
+                    numeric_right.to_numpy(dtype=float),
+                    atol=0.0,
+                    rtol=0.0,
+                    equal_nan=True,
+                ).all()
+            )
+        else:
+            matches = left.astype(str).equals(right.astype(str))
+        if not matches:
+            raise KalshiValidationError(
+                "transport source does not match independently verified "
+                "exact45 winner provenance"
+            )
+
+
 def _validate_task4_transport_run(
     model_run: X15ModelRun,
     *,
     authority_metadata: FrozenAuthorityMetadata,
+    selection: ModelSelectionResult,
+    winner_evidence_sha256: str,
+    verified_source_run: X15ModelRun,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     if not isinstance(model_run, X15ModelRun):
         raise KalshiValidationError(
@@ -1650,6 +2006,35 @@ def _validate_task4_transport_run(
             raise KalshiValidationError(
                 f"Task4 diagnostic run_config drifted on {field}"
             )
+    source_run_config_sha256 = model_run.run_config.get(
+        "stage_b_source_run_config_sha256"
+    )
+    source_provenance_sha256 = model_run.run_config.get(
+        "stage_b_source_provenance_sha256"
+    )
+    declared_winner_evidence_sha256 = model_run.run_config.get(
+        "stage_b_winner_model_selection_result_sha256"
+    )
+    source_config = dict(model_run.run_config)
+    for field in (
+        "stage_b_source_run_config_sha256",
+        "stage_b_source_provenance_sha256",
+        "stage_b_winner_model_selection_result_sha256",
+    ):
+        source_config.pop(field, None)
+    source_config["transport_pairs"] = ()
+    if (
+        source_run_config_sha256
+        != verified_source_run.run_config_sha256
+        or not _is_sha256(source_provenance_sha256)
+        or declared_winner_evidence_sha256 != winner_evidence_sha256
+        or _canonical_sha256(source_config)
+        != verified_source_run.run_config_sha256
+    ):
+        raise KalshiValidationError(
+            "transport run_config does not bind exact frozen Stage-B "
+            "winner provenance"
+        )
     transport_pairs = model_run.run_config.get("transport_pairs")
     if (
         not isinstance(transport_pairs, (tuple, list))
@@ -1792,6 +2177,19 @@ def _validate_task4_transport_run(
     native_kalshi = _validate_fold_local_source_rows(
         native_kalshi, development_ids=development_ids
     )
+    _require_exact_frozen_stage_b_source(
+        source,
+        selection=selection,
+        verified_source_run=verified_source_run,
+    )
+    if (
+        _transport_source_provenance_sha256(source)
+        != source_provenance_sha256
+    ):
+        raise KalshiValidationError(
+            "transport source does not bind exact frozen Stage-B "
+            "winner provenance"
+        )
     return source, target, native_kalshi
 
 
@@ -2292,6 +2690,358 @@ def _candidate_b0_integrated_log_loss(
     return pd.DataFrame(records)
 
 
+def _candidate_b0_head_scores(
+    pairs: pd.DataFrame,
+    *,
+    layer: str,
+) -> pd.DataFrame:
+    """Score transported candidate and B0 on each exact Kalshi truth head."""
+
+    records: list[dict[str, object]] = []
+    direction_columns = (
+        "direction_calibrated_prob_down",
+        "direction_calibrated_prob_no_move",
+        "direction_calibrated_prob_up",
+    )
+    direction_classes = ("DOWN", "NO_MOVE", "UP")
+    for _, row in pairs.iterrows():
+        identity = {
+            column: row[column]
+            for column in _MODEL_COMPARISON_PAIR_COLUMNS
+        }
+        for head, truth_column, probability_column in (
+            ("S_H", "s_h_truth", "s_h_calibrated_probability"),
+            (
+                "O_H_GIVEN_S",
+                "o_h_given_s_truth",
+                "o_h_given_s_calibrated_probability",
+            ),
+        ):
+            truth = _valid_binary_truth(
+                row[f"{truth_column}_candidate"]
+            )
+            if truth is None:
+                continue
+            candidate_probability = float(
+                row[f"{probability_column}_candidate"]
+            )
+            baseline_probability = float(
+                row[f"{probability_column}_b0"]
+            )
+            if not (
+                np.isfinite(candidate_probability)
+                and np.isfinite(baseline_probability)
+                and 0 < candidate_probability < 1
+                and 0 < baseline_probability < 1
+            ):
+                raise KalshiValidationError(
+                    f"{layer} binary probabilities must be finite in (0, 1)"
+                )
+            candidate_loss = float(
+                -(
+                    truth * np.log(candidate_probability)
+                    + (1 - truth) * np.log(1 - candidate_probability)
+                )
+            )
+            baseline_loss = float(
+                -(
+                    truth * np.log(baseline_probability)
+                    + (1 - truth) * np.log(1 - baseline_probability)
+                )
+            )
+            records.append(
+                {
+                    **identity,
+                    "comparison_layer": layer,
+                    "head": head,
+                    "metric": "LOG_LOSS",
+                    "candidate_score": candidate_loss,
+                    "b0_score": baseline_loss,
+                    "score_improvement": baseline_loss - candidate_loss,
+                }
+            )
+
+        direction_truth = row["direction_truth_candidate"]
+        if pd.isna(direction_truth):
+            continue
+        if str(direction_truth) not in direction_classes:
+            raise KalshiValidationError(
+                f"{layer} direction truth is invalid"
+            )
+        candidate_direction = np.asarray(
+            [
+                row[f"{column}_candidate"]
+                for column in direction_columns
+            ],
+            dtype=float,
+        )
+        baseline_direction = np.asarray(
+            [row[f"{column}_b0"] for column in direction_columns],
+            dtype=float,
+        )
+        if (
+            not np.isfinite(candidate_direction).all()
+            or not np.isfinite(baseline_direction).all()
+            or (candidate_direction <= 0).any()
+            or (baseline_direction <= 0).any()
+            or not np.isclose(candidate_direction.sum(), 1.0, atol=1e-6)
+            or not np.isclose(baseline_direction.sum(), 1.0, atol=1e-6)
+        ):
+            raise KalshiValidationError(
+                f"{layer} direction probabilities are invalid"
+            )
+        truth_index = direction_classes.index(str(direction_truth))
+        one_hot = np.zeros(3, dtype=float)
+        one_hot[truth_index] = 1.0
+        for metric, candidate_score, baseline_score in (
+            (
+                "LOG_LOSS",
+                float(-np.log(candidate_direction[truth_index])),
+                float(-np.log(baseline_direction[truth_index])),
+            ),
+            (
+                "BRIER",
+                float(np.square(candidate_direction - one_hot).sum()),
+                float(np.square(baseline_direction - one_hot).sum()),
+            ),
+        ):
+            records.append(
+                {
+                    **identity,
+                    "comparison_layer": layer,
+                    "head": "DIRECTION",
+                    "metric": metric,
+                    "candidate_score": candidate_score,
+                    "b0_score": baseline_score,
+                    "score_improvement": baseline_score - candidate_score,
+                }
+            )
+    return pd.DataFrame(records)
+
+
+def _bootstrap_game_mean(
+    values: np.ndarray,
+) -> tuple[float, float, float]:
+    if len(values) < 2:
+        return float("nan"), float("nan"), float("nan")
+    rng = np.random.default_rng(BOOTSTRAP_SEED)
+    selections = rng.integers(
+        0,
+        len(values),
+        size=(BOOTSTRAP_SAMPLES, len(values)),
+    )
+    draws = values[selections].mean(axis=1)
+    low, high = np.quantile(draws, (0.025, 0.975))
+    return float(low), float(high), float(np.mean(draws > 0.0))
+
+
+def _head_gate_summary(
+    diagnostics: pd.DataFrame,
+) -> pd.DataFrame:
+    """Summarize exact transported-candidate versus transported-B0 heads."""
+
+    records: list[dict[str, object]] = []
+    for (head, metric), rows in diagnostics.groupby(
+        ["head", "metric"], sort=True, observed=True
+    ):
+        games = (
+            rows.groupby("game_id", sort=True, as_index=False)
+            .agg(score_improvement=("score_improvement", "mean"))
+            .reset_index(drop=True)
+        )
+        values = games["score_improvement"].to_numpy(dtype=float)
+        low, high, probability = _bootstrap_game_mean(values)
+        anchor = rows.loc[
+            rows["landmark_seconds"].eq(ANCHOR_LANDMARK_SECONDS)
+            & rows["endpoint_seconds"].eq(ANCHOR_ENDPOINT_SECONDS)
+        ]
+        anchor_games = (
+            anchor.groupby("game_id", sort=True)["score_improvement"]
+            .mean()
+            .to_numpy(dtype=float)
+        )
+        overall_mean = (
+            float(values.mean()) if len(values) else float("nan")
+        )
+        anchor_mean = (
+            float(anchor_games.mean())
+            if len(anchor_games)
+            else float("nan")
+        )
+        if str(head) in {"S_H", "O_H_GIVEN_S"}:
+            gate = bool(
+                str(metric) == "LOG_LOSS"
+                and len(values) >= MIN_TRANSPORT_EVALUATED_GAMES_PER_HEAD
+                and len(anchor_games)
+                >= MIN_TRANSPORT_EVALUATED_GAMES_PER_HEAD
+                and np.isfinite(overall_mean)
+                and np.isfinite(anchor_mean)
+                and overall_mean >= 0.0
+                and anchor_mean >= 0.0
+            )
+            gate_semantics = (
+                "OVERALL_AND_L3_H30_MEAN_LOG_LOSS_IMPROVEMENT_NONNEGATIVE"
+            )
+        else:
+            gate = bool(
+                str(head) == "DIRECTION"
+                and str(metric) in {"LOG_LOSS", "BRIER"}
+                and len(values) >= MIN_TRANSPORT_EVALUATED_GAMES_PER_HEAD
+                and len(anchor_games)
+                >= MIN_TRANSPORT_EVALUATED_GAMES_PER_HEAD
+                and np.isfinite(overall_mean)
+                and np.isfinite(anchor_mean)
+                and np.isfinite(low)
+                and float(low) > 0.0
+                and anchor_mean >= 0.0
+            )
+            gate_semantics = (
+                "OVERALL_GAME_CLUSTER_LOWER95_POSITIVE_AND_L3_H30_"
+                "MEAN_NONNEGATIVE"
+            )
+        records.append(
+            {
+                "head": str(head),
+                "metric": str(metric),
+                "evaluated_row_count": len(rows),
+                "evaluated_game_count": len(games),
+                "overall_mean_improvement": overall_mean,
+                "overall_ci_low": low,
+                "overall_ci_high": high,
+                "bootstrap_probability_improved": probability,
+                "bootstrap_samples": BOOTSTRAP_SAMPLES,
+                "bootstrap_seed": BOOTSTRAP_SEED,
+                "anchor_landmark_seconds": ANCHOR_LANDMARK_SECONDS,
+                "anchor_endpoint_seconds": ANCHOR_ENDPOINT_SECONDS,
+                "anchor_game_count": len(anchor_games),
+                "anchor_mean_improvement": anchor_mean,
+                "gate_semantics": gate_semantics,
+                "gate_passed": gate,
+            }
+        )
+    return pd.DataFrame(records)
+
+
+def _native_noninferiority_summary(
+    native_pairs: pd.DataFrame,
+) -> pd.DataFrame:
+    """Bootstrap transport-minus-native degradation by game and score head."""
+
+    score_rows: list[dict[str, object]] = []
+    for head, truth_column, probability_column in (
+        ("S_H", "s_h_truth", "s_h_calibrated_probability"),
+        (
+            "O_H_GIVEN_S",
+            "o_h_given_s_truth",
+            "o_h_given_s_calibrated_probability",
+        ),
+    ):
+        paired_rows, _ = _paired_binary_scores(
+            native_pairs,
+            head=head,
+            truth_column=truth_column,
+            probability_column=probability_column,
+        )
+        for row in paired_rows:
+            score_rows.extend(
+                (
+                    {
+                        "game_id": row["game_id"],
+                        "head": head,
+                        "metric": "LOG_LOSS",
+                        "score_degradation": (
+                            row["transport_log_loss"]
+                            - row["native_log_loss"]
+                        ),
+                    },
+                    {
+                        "game_id": row["game_id"],
+                        "head": head,
+                        "metric": "BRIER",
+                        "score_degradation": (
+                            row["transport_brier"]
+                            - row["native_brier"]
+                        ),
+                    },
+                )
+            )
+    direction_rows, _ = _paired_direction_scores(native_pairs)
+    for row in direction_rows:
+        score_rows.extend(
+            (
+                {
+                    "game_id": row["game_id"],
+                    "head": "DIRECTION",
+                    "metric": "LOG_LOSS",
+                    "score_degradation": (
+                        row["transport_log_loss"]
+                        - row["native_log_loss"]
+                    ),
+                },
+                {
+                    "game_id": row["game_id"],
+                    "head": "DIRECTION",
+                    "metric": "BRIER",
+                    "score_degradation": (
+                        row["transport_brier"]
+                        - row["native_brier"]
+                    ),
+                },
+            )
+        )
+    frame = pd.DataFrame(score_rows)
+    records: list[dict[str, object]] = []
+    for (head, metric), rows in frame.groupby(
+        ["head", "metric"], sort=True, observed=True
+    ):
+        games = (
+            rows.groupby("game_id", sort=True, as_index=False)
+            .agg(score_degradation=("score_degradation", "mean"))
+            .reset_index(drop=True)
+        )
+        values = games["score_degradation"].to_numpy(dtype=float)
+        if len(values) < 2:
+            low = high = float("nan")
+        else:
+            rng = np.random.default_rng(BOOTSTRAP_SEED)
+            selections = rng.integers(
+                0,
+                len(values),
+                size=(BOOTSTRAP_SAMPLES, len(values)),
+            )
+            draws = values[selections].mean(axis=1)
+            low, high = np.quantile(draws, (0.025, 0.975))
+        margin = (
+            MAX_LOG_LOSS_DEGRADATION
+            if str(metric) == "LOG_LOSS"
+            else MAX_BRIER_DEGRADATION
+        )
+        gate = bool(
+            len(games) >= MIN_TRANSPORT_EVALUATED_GAMES_PER_HEAD
+            and np.isfinite(high)
+            and float(high) <= margin
+        )
+        records.append(
+            {
+                "head": str(head),
+                "metric": str(metric),
+                "evaluated_row_count": len(rows),
+                "evaluated_game_count": len(games),
+                "mean_score_degradation": (
+                    float(values.mean()) if len(values) else float("nan")
+                ),
+                "degradation_ci_low": float(low),
+                "degradation_ci_high": float(high),
+                "noninferiority_margin": margin,
+                "upper95_within_margin": gate,
+                "bootstrap_samples": BOOTSTRAP_SAMPLES,
+                "bootstrap_seed": BOOTSTRAP_SEED,
+                "aggregation": "EQUAL_GAME_GAME_CLUSTER_BOOTSTRAP",
+            }
+        )
+    return pd.DataFrame(records)
+
+
 def _game_cluster_improvement_summary(
     diagnostics: pd.DataFrame,
 ) -> dict[str, object]:
@@ -2328,10 +3078,11 @@ def _game_cluster_improvement_summary(
     )
     gate = bool(
         len(values) >= MIN_TRANSPORT_PAIRED_GAMES
-        and len(anchor_games) >= 2
+        and len(anchor_games) >= MIN_TRANSPORT_PAIRED_GAMES
         and np.isfinite(mean_improvement)
         and np.isfinite(low)
-        and mean_improvement > 0.0
+        and np.isfinite(anchor_mean)
+        and mean_improvement >= 0.0
         and float(low) > 0.0
         and anchor_mean >= 0.0
     )
@@ -2392,6 +3143,9 @@ class DevelopmentVenueValidation:
     transport_b0_anchor_game_count: int
     transport_b0_anchor_mean_improvement: float
     transport_b0_improvement_gate_passed: bool
+    binary_nuisance_gate_passed: bool
+    direction_gate_passed: bool
+    native_noninferiority_gate_passed: bool
     transport_gate_passed: bool
     coverage_audit: pd.DataFrame
     attrition: pd.DataFrame
@@ -2400,6 +3154,9 @@ class DevelopmentVenueValidation:
     transport_b0_pair_diagnostics: pd.DataFrame
     native_b0_pair_diagnostics: pd.DataFrame
     native_b0_score_summary: pd.DataFrame
+    transport_b0_head_diagnostics: pd.DataFrame
+    transport_b0_head_gate_summary: pd.DataFrame
+    native_noninferiority_summary: pd.DataFrame
     score_summary: pd.DataFrame
     calibration_summary: pd.DataFrame
 
@@ -2409,6 +3166,8 @@ def validate_development_venue_transport(
     *,
     authority_metadata: FrozenAuthorityMetadata,
     stage_b_selection: StageBModelSelectionResult,
+    stage_b_batch_manifest_path: str | Path,
+    stage_b_artifact_root: str | Path,
 ) -> DevelopmentVenueValidation:
     """Validate the frozen Stage-B Poly winner on Kalshi development OOF."""
 
@@ -2416,8 +3175,9 @@ def validate_development_venue_transport(
         raise KalshiValidationError(
             "authority_metadata must be FrozenAuthorityMetadata"
         )
-    selection = _require_frozen_stage_b_v2_winner(
-        stage_b_selection
+    selection = _require_frozen_stage_b_v3_winner(
+        stage_b_selection,
+        authority=authority_metadata.selection_authority,
     )
     if (
         selection.cohort_authority_sha256
@@ -2428,9 +3188,50 @@ def validate_development_venue_transport(
             "authority"
         )
     spec = selection.spec
+    try:
+        verified_source_run = load_x15_selection_projection_v3(
+            batch_manifest_path=stage_b_batch_manifest_path,
+            artifact_root=stage_b_artifact_root,
+            candidate_model_id=spec.candidate_model_id,
+            candidate_feature_block_id=(
+                spec.candidate_feature_block_id
+            ),
+        )
+    except (OSError, ValueError, X15SelectionBatchV3Error) as exc:
+        raise KalshiValidationError(
+            "Stage-B winner source failed immutable exact45 verification"
+        ) from exc
+    if (
+        verified_source_run.run_config_sha256
+        != selection.run_config_sha256
+    ):
+        raise KalshiValidationError(
+            "Stage-B winner does not match independently verified "
+            "exact45 source evidence"
+        )
+    _require_exact_frozen_stage_b_source(
+        verified_source_run.oof_predictions,
+        selection=selection,
+        verified_source_run=verified_source_run,
+    )
+    winner_audit = stage_b_selection.candidate_audit.loc[
+        stage_b_selection.candidate_audit["final_winner"].eq(True)
+    ]
+    if len(winner_audit) != 1:
+        raise KalshiValidationError(
+            "Stage-B V3 winner audit is not unique"
+        )
+    winner_evidence_sha256 = _require_sha256(
+        winner_audit.iloc[0]["model_selection_result_sha256"],
+        field="Stage-B winner model_selection_result_sha256",
+    )
     all_source, all_target, all_native_kalshi = (
         _validate_task4_transport_run(
-            model_run, authority_metadata=authority_metadata
+            model_run,
+            authority_metadata=authority_metadata,
+            selection=selection,
+            winner_evidence_sha256=winner_evidence_sha256,
+            verified_source_run=verified_source_run,
         )
     )
 
@@ -2567,14 +3368,74 @@ def validate_development_venue_transport(
         transport_b0_pairs,
         layer="TRANSPORT_CANDIDATE_VS_TRANSPORT_B0",
     )
+    transport_b0_head_diagnostics = _candidate_b0_head_scores(
+        transport_b0_pairs,
+        layer="TRANSPORT_CANDIDATE_VS_TRANSPORT_B0",
+    )
+    transport_b0_head_gate_summary = _head_gate_summary(
+        transport_b0_head_diagnostics
+    )
     transport_b0_summary = _game_cluster_improvement_summary(
         transport_b0_diagnostics
+    )
+    native_noninferiority_summary = _native_noninferiority_summary(
+        native_pairs
     )
     native_b0_pairs = _merge_exact_candidate_b0_rows(
         native_kalshi,
         native_b0,
         layer="NATIVE_KALSHI_CANDIDATE_VS_NATIVE_KALSHI_B0",
     )
+    population = transport_b0_pairs[
+        [
+            *_MODEL_COMPARISON_PAIR_COLUMNS,
+            "actual_home_contract_id_candidate",
+            "s_h_truth_candidate",
+            "o_h_given_s_truth_candidate",
+            "direction_truth_candidate",
+        ]
+    ].merge(
+        native_b0_pairs[
+            [
+                *_MODEL_COMPARISON_PAIR_COLUMNS,
+                "actual_home_contract_id_candidate",
+                "s_h_truth_candidate",
+                "o_h_given_s_truth_candidate",
+                "direction_truth_candidate",
+            ]
+        ],
+        on=list(_MODEL_COMPARISON_PAIR_COLUMNS),
+        how="outer",
+        suffixes=("_transport", "_native"),
+        validate="one_to_one",
+        indicator=True,
+    )
+    if (
+        not population["_merge"].eq("both").all()
+        or not population[
+            "actual_home_contract_id_candidate_transport"
+        ].eq(
+            population[
+                "actual_home_contract_id_candidate_native"
+            ]
+        ).all()
+        or not _nullable_truth_equal(
+            population["s_h_truth_candidate_transport"],
+            population["s_h_truth_candidate_native"],
+        )
+        or not _nullable_truth_equal(
+            population["o_h_given_s_truth_candidate_transport"],
+            population["o_h_given_s_truth_candidate_native"],
+        )
+        or not _nullable_truth_equal(
+            population["direction_truth_candidate_transport"],
+            population["direction_truth_candidate_native"],
+        )
+    ):
+        raise KalshiValidationError(
+            "transported and native candidate-vs-B0 layers require an "
+            "identical Kalshi truth/identity population"
+        )
     native_b0_diagnostics = _candidate_b0_integrated_log_loss(
         native_b0_pairs,
         layer="NATIVE_KALSHI_CANDIDATE_VS_NATIVE_KALSHI_B0",
@@ -2842,13 +3703,41 @@ def validate_development_venue_transport(
             > MAX_BRIER_DEGRADATION
         )
         catastrophic = bool((log_loss_bad | brier_bad).any())
+    nuisance_rows = transport_b0_head_gate_summary.loc[
+        transport_b0_head_gate_summary["head"].isin(
+            ("S_H", "O_H_GIVEN_S")
+        )
+        & transport_b0_head_gate_summary["metric"].eq("LOG_LOSS")
+    ]
+    direction_rows = transport_b0_head_gate_summary.loc[
+        transport_b0_head_gate_summary["head"].eq("DIRECTION")
+        & transport_b0_head_gate_summary["metric"].isin(
+            ("LOG_LOSS", "BRIER")
+        )
+    ]
+    binary_nuisance_gate = bool(
+        len(nuisance_rows) == 2
+        and nuisance_rows["gate_passed"].all()
+    )
+    direction_gate = bool(
+        len(direction_rows) == 2
+        and direction_rows["gate_passed"].all()
+    )
+    native_noninferiority_gate = bool(
+        len(native_noninferiority_summary) == 6
+        and native_noninferiority_summary[
+            "upper95_within_margin"
+        ].all()
+    )
     transport_gate = (
         coverage_gate
         and score_gate
-        and not catastrophic
         and bool(
             transport_b0_summary["improvement_gate_passed"]
         )
+        and binary_nuisance_gate
+        and direction_gate
+        and native_noninferiority_gate
     )
     return DevelopmentVenueValidation(
         source_venue=SOURCE_VENUE,
@@ -2865,9 +3754,9 @@ def validate_development_venue_transport(
         candidate_model_id=spec.candidate_model_id,
         candidate_feature_block_id=spec.candidate_feature_block_id,
         diagnostic_status=(
-            "HISTORICAL_SIGNAL_CANDIDATE"
+            "HISTORICAL_PREDICTIVE_UTILITY_CANDIDATE"
             if transport_gate
-            else "HISTORICAL_SIGNAL_REJECTED"
+            else "HISTORICAL_PREDICTIVE_UTILITY_REJECTED"
         ),
         execution_claim_eligible=False,
         tick_claim_eligible=False,
@@ -2916,6 +3805,11 @@ def validate_development_venue_transport(
         transport_b0_improvement_gate_passed=bool(
             transport_b0_summary["improvement_gate_passed"]
         ),
+        binary_nuisance_gate_passed=binary_nuisance_gate,
+        direction_gate_passed=direction_gate,
+        native_noninferiority_gate_passed=(
+            native_noninferiority_gate
+        ),
         transport_gate_passed=transport_gate,
         coverage_audit=coverage.sort_values(
             coverage_keys, kind="mergesort"
@@ -2938,6 +3832,26 @@ def validate_development_venue_transport(
             kind="mergesort",
         ).reset_index(drop=True),
         native_b0_score_summary=native_b0_score_summary,
+        transport_b0_head_diagnostics=(
+            transport_b0_head_diagnostics.sort_values(
+                [
+                    "head",
+                    "metric",
+                    *_MODEL_COMPARISON_PAIR_COLUMNS,
+                ],
+                kind="mergesort",
+            ).reset_index(drop=True)
+        ),
+        transport_b0_head_gate_summary=(
+            transport_b0_head_gate_summary.sort_values(
+                ["head", "metric"], kind="mergesort"
+            ).reset_index(drop=True)
+        ),
+        native_noninferiority_summary=(
+            native_noninferiority_summary.sort_values(
+                ["head", "metric"], kind="mergesort"
+            ).reset_index(drop=True)
+        ),
         score_summary=score_summary.sort_values(
             ["model_id", "feature_block_id", "head", "metric"],
             kind="mergesort",
@@ -2954,16 +3868,19 @@ def validate_development_venue_transport(
     )
 
 
-def _require_frozen_stage_b_v2_winner(
+def _require_frozen_stage_b_v3_winner(
     stage_b_selection: object,
+    *,
+    authority: FrozenDevelopmentAuthority,
 ) -> ModelSelectionResult:
     try:
-        verified = verify_stage_b_v2_selection_result(
-            stage_b_selection
+        verified = verify_stage_b_v3_selection_result(
+            stage_b_selection,
+            authority=authority,
         )
     except ModelSelectionError as exc:
         raise KalshiValidationError(
-            "Stage-B V2 selection evidence failed complete "
+            "Stage-B V3 selection evidence failed complete "
             "authoritative verification"
         ) from exc
     winner = verified.winner
@@ -2974,30 +3891,144 @@ def _require_frozen_stage_b_v2_winner(
         or winner.spec.selection_venue != SOURCE_VENUE
     ):
         raise KalshiValidationError(
-            "Stage-B V2 selection evidence is not one frozen "
+            "Stage-B V3 selection evidence is not one frozen "
             "Polymarket winner"
         )
     return winner
 
 
-def build_cross_venue_factor_shortlist(
+def _verify_preholdout_metadata_lock(
+    lock: object,
+    *,
+    cohort_authority_sha256: str,
+    authority_metadata: FrozenAuthorityMetadata,
+) -> Mapping[str, object]:
+    if not isinstance(lock, Mapping):
+        raise KalshiValidationError(
+            "factor-conditioned utility requires a verified pre-holdout "
+            "metadata lock"
+        )
+    required = {
+        "lock_event",
+        "cohort_authority_sha256",
+        "metadata_sha256",
+        "current_metadata_sha256",
+        "chain_sha256",
+        "metadata_access_count",
+        "development_game_count",
+        "holdout_game_count",
+        "holdout_reaction_read_count",
+        "market_reaction_exposure",
+        "sports_outcome_exposure",
+        "sports_outcome_source_evidence_sha256",
+        "sports_outcome_observation_count",
+        "stage_a_outcome_validation_eligible",
+        "stage_b_market_reaction_validation_eligible",
+        "lock_sha256",
+    }
+    if set(lock) != required:
+        raise KalshiValidationError(
+            "factor-conditioned utility requires a verified pre-holdout "
+            "metadata lock"
+        )
+    if not isinstance(authority_metadata, FrozenAuthorityMetadata):
+        raise KalshiValidationError(
+            "factor-conditioned utility requires current authority "
+            "metadata"
+        )
+    try:
+        current_metadata_sha256 = (
+            _recompute_authority_metadata_sha256(authority_metadata)
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise KalshiValidationError(
+            "factor-conditioned utility requires current authority "
+            "metadata"
+        ) from exc
+    payload = {key: lock[key] for key in lock if key != "lock_sha256"}
+    if (
+        lock["lock_sha256"] != _canonical_sha256(payload)
+        or lock["lock_event"] != "PRE_SHORTLIST_METADATA_ONLY_LOCK"
+        or lock["cohort_authority_sha256"]
+        != cohort_authority_sha256
+        or authority_metadata.cohort_authority_sha256
+        != cohort_authority_sha256
+        or authority_metadata.metadata_sha256
+        != lock["metadata_sha256"]
+        or current_metadata_sha256 != lock["metadata_sha256"]
+        or lock["metadata_sha256"] != lock["current_metadata_sha256"]
+        or not _is_sha256(lock["metadata_sha256"])
+        or not _is_sha256(lock["chain_sha256"])
+        or lock["development_game_count"] != EXPECTED_DEVELOPMENT_GAMES
+        or lock["holdout_game_count"] != EXPECTED_HOLDOUT_GAMES
+        or lock["holdout_reaction_read_count"] != 0
+        or lock["market_reaction_exposure"] != "SEALED_UNREAD"
+        or lock["sports_outcome_exposure"] != "PRIOR_EXPOSED_X11"
+        or lock["sports_outcome_source_evidence_sha256"]
+        != X11_SPORTS_OUTCOME_EVIDENCE_SHA256
+        or lock["sports_outcome_observation_count"]
+        != X11_HOLDOUT_DRIVE_OUTCOME_COUNT
+        or authority_metadata.holdout_reaction_read_count != 0
+        or not authority_metadata.holdout[
+            "reaction_read_count"
+        ].eq(0).all()
+        or not authority_metadata.holdout[
+            "market_reaction_exposure"
+        ].eq("SEALED_UNREAD").all()
+        or not authority_metadata.holdout[
+            "sports_outcome_exposure"
+        ].eq("PRIOR_EXPOSED_X11").all()
+        or authority_metadata.stage_a_outcome_validation_eligible
+        is not False
+        or (
+            authority_metadata.stage_b_market_reaction_validation_eligible
+            is not True
+        )
+        or (
+            authority_metadata.sports_outcome_source_evidence_sha256
+            != X11_SPORTS_OUTCOME_EVIDENCE_SHA256
+        )
+        or (
+            authority_metadata.sports_outcome_observation_count
+            != X11_HOLDOUT_DRIVE_OUTCOME_COUNT
+        )
+        or lock["stage_a_outcome_validation_eligible"] is not False
+        or lock["stage_b_market_reaction_validation_eligible"] is not True
+        or isinstance(lock["metadata_access_count"], bool)
+        or not isinstance(lock["metadata_access_count"], Integral)
+        or int(lock["metadata_access_count"]) < 0
+    ):
+        raise KalshiValidationError(
+            "factor-conditioned utility requires a verified pre-holdout "
+            "metadata lock"
+        )
+    return lock
+
+
+def build_cross_venue_predictive_utility_shortlist(
     stage_b_selection: StageBModelSelectionResult,
     *,
     transport_validation: DevelopmentVenueValidation,
     factor_membership_evidence: FrozenFactorMembershipEvidence,
+    authority_metadata: FrozenAuthorityMetadata,
+    preholdout_metadata_lock: Mapping[str, object],
     min_support_games: int = 30,
     min_support_episodes: int = 20,
 ) -> pd.DataFrame:
-    """Combine exact Poly and Kalshi candidate-vs-B0 evidence by factor.
+    """Condition frozen predictive scores on exact V4 factor membership.
 
-    The Polymarket and Kalshi effects are rebuilt from their respective
-    clean-anchor candidate/B0 rows before one joint statistics call.  The
-    global transport gate is retained as an additional safety condition; it
-    cannot stand in for either factor-specific venue gate.
+    This is a model-utility audit, not a price-reaction or trading claim.
+    Candidate identity remains frozen and cannot be reranked here.
     """
 
-    selection = _require_frozen_stage_b_v2_winner(
-        stage_b_selection
+    selection = _require_frozen_stage_b_v3_winner(
+        stage_b_selection,
+        authority=authority_metadata.selection_authority,
+    )
+    metadata_lock = _verify_preholdout_metadata_lock(
+        preholdout_metadata_lock,
+        cohort_authority_sha256=selection.cohort_authority_sha256,
+        authority_metadata=authority_metadata,
     )
     if not isinstance(
         transport_validation, DevelopmentVenueValidation
@@ -3063,13 +4094,14 @@ def build_cross_venue_factor_shortlist(
     if (
         isinstance(min_support_games, bool)
         or not isinstance(min_support_games, Integral)
-        or int(min_support_games) <= 0
+        or int(min_support_games) != 30
         or isinstance(min_support_episodes, bool)
         or not isinstance(min_support_episodes, Integral)
-        or int(min_support_episodes) <= 0
+        or int(min_support_episodes) != 20
     ):
         raise KalshiValidationError(
-            "factor support minima must be positive integers"
+            "factor-conditioned support contract is frozen at "
+            "30 games and 20 episodes"
         )
     if (
         selection.spec.candidate_model_id
@@ -3318,135 +4350,174 @@ def build_cross_venue_factor_shortlist(
             ),
         }
 
-    signal_frames: list[pd.DataFrame] = []
+    utility_records: list[dict[str, object]] = []
     if not shared_pairs.empty:
-        for venue, improvement_column in (
-            (SOURCE_VENUE, "loss_improvement_polymarket"),
-            (TARGET_VENUE, "loss_improvement_kalshi"),
+        for (
+            factor_id,
+            factor_version,
+        ), factor_rows in shared_pairs.groupby(
+            ["factor_id", "factor_version"],
+            sort=True,
+            observed=True,
         ):
-            equal_game_units = (
-                shared_pairs.groupby(
-                    [
-                        "factor_id",
-                        "factor_version",
-                        "game_id",
-                    ],
-                    sort=True,
-                    as_index=False,
+            for venue, improvement_column in (
+                (SOURCE_VENUE, "loss_improvement_polymarket"),
+                (TARGET_VENUE, "loss_improvement_kalshi"),
+            ):
+                game_units = (
+                    factor_rows.groupby(
+                        "game_id", sort=True, as_index=False
+                    )
+                    .agg(
+                        log_score_improvement=(
+                            improvement_column,
+                            "mean",
+                        )
+                    )
+                    .reset_index(drop=True)
                 )
-                .agg(gross_markout=(improvement_column, "mean"))
-                .reset_index(drop=True)
-            )
-            equal_game_units["venue"] = venue
-            equal_game_units["model_id"] = (
-                selection.spec.candidate_model_id
-            )
-            equal_game_units["episode_id"] = equal_game_units[
-                "game_id"
-            ].map(lambda game_id: f"{game_id}:equal-game-effect-unit")
-            equal_game_units["evaluation_status"] = "EVALUATED"
-            equal_game_units["dataset_partition"] = "development"
-            signal_frames.append(equal_game_units)
-    if signal_frames:
-        signals = pd.concat(signal_frames, ignore_index=True)
-        try:
-            statistics = summarize_development_signals(
-                signals[
-                    [
-                        "factor_id",
-                        "venue",
-                        "model_id",
-                        "game_id",
-                        "episode_id",
-                        "gross_markout",
-                        "evaluation_status",
-                        "dataset_partition",
-                    ]
-                ],
-                seed=BOOTSTRAP_SEED,
-                n_bootstrap=BOOTSTRAP_SAMPLES,
-                confidence_level=0.95,
-                min_support_games=int(min_support_games),
-                min_support_signals=int(min_support_games),
-            )
-        except X15StatisticsInputError as exc:
-            raise KalshiValidationError(
-                f"cross-venue factor statistics are invalid: {exc}"
-            ) from exc
-        statistics["raw_support_games"] = statistics.apply(
-            lambda row: shared_support[
-                (str(row["factor_id"]), str(
-                    versions.loc[
-                        versions["factor_id"].eq(row["factor_id"]),
-                        "factor_version",
-                    ].iloc[0]
-                ))
-            ]["shared_game_count"],
-            axis=1,
-        ).astype(int)
-        statistics["raw_support_episodes"] = statistics.apply(
-            lambda row: shared_support[
-                (str(row["factor_id"]), str(
-                    versions.loc[
-                        versions["factor_id"].eq(row["factor_id"]),
-                        "factor_version",
-                    ].iloc[0]
-                ))
-            ]["shared_episode_count"],
-            axis=1,
-        ).astype(int)
-        statistics["factor_support_status"] = statistics[
-            "factor_id"
-        ].map(
-            lambda factor_id: shared_support[
-                (
-                    str(factor_id),
-                    str(
-                        versions.loc[
-                            versions["factor_id"].eq(factor_id),
-                            "factor_version",
-                        ].iloc[0]
-                    ),
+                values = game_units[
+                    "log_score_improvement"
+                ].to_numpy(dtype=float)
+                low, high, probability = _bootstrap_game_mean(values)
+                if len(values) >= 2:
+                    rng = np.random.default_rng(BOOTSTRAP_SEED)
+                    selections = rng.integers(
+                        0,
+                        len(values),
+                        size=(BOOTSTRAP_SAMPLES, len(values)),
+                    )
+                    draws = values[selections].mean(axis=1)
+                    p_value = float(
+                        min(
+                            1.0,
+                            2.0
+                            * min(
+                                np.mean(draws <= 0.0),
+                                np.mean(draws >= 0.0),
+                            ),
+                        )
+                    )
+                    leave_one_out = np.asarray(
+                        [
+                            np.delete(values, index).mean()
+                            for index in range(len(values))
+                        ],
+                        dtype=float,
+                    )
+                    loo_positive_rate = float(
+                        np.mean(leave_one_out > 0.0)
+                    )
+                else:
+                    p_value = float("nan")
+                    loo_positive_rate = float("nan")
+                absolute_sum = float(np.abs(values).sum())
+                max_contribution = (
+                    float(np.abs(values).max() / absolute_sum)
+                    if len(values) and absolute_sum > 0.0
+                    else float("nan")
                 )
-            ]["shared_support_status"]
-        )
-        statistics["bh_q_gate_passed"] = statistics[
-            "bh_q_value"
-        ].le(DEFAULT_MAX_Q_VALUE)
-        statistics["loo_sign_gate_passed"] = statistics[
-            "leave_one_game_out_same_sign_rate"
-        ].ge(DEFAULT_MIN_LOO_SAME_SIGN)
-        statistics["max_game_contribution_gate_passed"] = statistics[
-            "max_single_game_absolute_contribution_ratio"
-        ].le(DEFAULT_MAX_GAME_CONTRIBUTION)
-    else:
-        statistics = pd.DataFrame(
-            columns=[
-                "factor_id",
-                "venue",
-                "cross_venue_same_sign",
-            ]
+                utility_records.append(
+                    {
+                        "factor_id": str(factor_id),
+                        "factor_version": str(factor_version),
+                        "venue": venue,
+                        "support_games": len(game_units),
+                        "support_episodes": len(
+                            factor_rows[
+                                [
+                                    "game_id",
+                                    "atomic_information_episode_id",
+                                ]
+                            ].drop_duplicates()
+                        ),
+                        "mean_log_score_improvement": (
+                            float(values.mean())
+                            if len(values)
+                            else float("nan")
+                        ),
+                        "median_log_score_improvement": (
+                            float(np.median(values))
+                            if len(values)
+                            else float("nan")
+                        ),
+                        "log_score_improvement_ci_lower": low,
+                        "log_score_improvement_ci_upper": high,
+                        "bootstrap_probability_improved": probability,
+                        "bootstrap_two_sided_p_value": p_value,
+                        "leave_one_game_out_positive_rate": (
+                            loo_positive_rate
+                        ),
+                        "max_single_game_absolute_contribution_ratio": (
+                            max_contribution
+                        ),
+                    }
+                )
+    utility = pd.DataFrame(
+        utility_records,
+        columns=[
+            "factor_id",
+            "factor_version",
+            "venue",
+            "support_games",
+            "support_episodes",
+            "mean_log_score_improvement",
+            "median_log_score_improvement",
+            "log_score_improvement_ci_lower",
+            "log_score_improvement_ci_upper",
+            "bootstrap_probability_improved",
+            "bootstrap_two_sided_p_value",
+            "leave_one_game_out_positive_rate",
+            "max_single_game_absolute_contribution_ratio",
+        ],
+    )
+    if not utility.empty:
+        utility["bh_q_value"] = float("nan")
+        for venue, indices in utility.groupby(
+            "venue", sort=True
+        ).groups.items():
+            del venue
+            ordered = utility.loc[
+                indices, "bootstrap_two_sided_p_value"
+            ].sort_values(kind="mergesort")
+            finite = ordered.loc[np.isfinite(ordered)]
+            if finite.empty:
+                continue
+            raw = (
+                finite.to_numpy(dtype=float)
+                * len(finite)
+                / np.arange(1, len(finite) + 1, dtype=float)
+            )
+            adjusted = np.minimum.accumulate(raw[::-1])[::-1]
+            utility.loc[finite.index, "bh_q_value"] = np.minimum(
+                adjusted, 1.0
+            )
+        utility["predictive_utility_gate_passed"] = (
+            utility["support_games"].ge(int(min_support_games))
+            & utility["support_episodes"].ge(int(min_support_episodes))
+            & utility["mean_log_score_improvement"].gt(0.0)
+            & utility["log_score_improvement_ci_lower"].gt(0.0)
+            & utility["bh_q_value"].le(DEFAULT_MAX_Q_VALUE)
+            & utility["leave_one_game_out_positive_rate"].ge(
+                DEFAULT_MIN_LOO_SAME_SIGN
+            )
+            & utility[
+                "max_single_game_absolute_contribution_ratio"
+            ].le(DEFAULT_MAX_GAME_CONTRIBUTION)
         )
     venue_metrics = (
         "support_games",
-        "support_signals",
-        "raw_support_games",
-        "raw_support_episodes",
-        "factor_support_status",
-        "mean_effect",
-        "median_effect",
-        "mean_ci_lower",
-        "mean_ci_upper",
+        "support_episodes",
+        "mean_log_score_improvement",
+        "median_log_score_improvement",
+        "log_score_improvement_ci_lower",
+        "log_score_improvement_ci_upper",
+        "bootstrap_probability_improved",
+        "bootstrap_two_sided_p_value",
         "bh_q_value",
-        "leave_one_game_out_same_sign_rate",
+        "leave_one_game_out_positive_rate",
         "max_single_game_absolute_contribution_ratio",
-        "recommended_for_gating",
-        "mean_ci_excludes_zero",
-        "bh_q_gate_passed",
-        "loo_sign_gate_passed",
-        "max_game_contribution_gate_passed",
-        "individual_statistical_gate",
-        "passes_development_gate",
+        "predictive_utility_gate_passed",
     )
     records: list[dict[str, object]] = []
     for version_row in versions.itertuples(index=False):
@@ -3454,9 +4525,12 @@ def build_cross_venue_factor_shortlist(
             str(version_row.factor_id),
             str(version_row.factor_version),
         )
-        factor_rows = statistics.loc[
-            statistics["factor_id"].eq(version_row.factor_id)
-        ]
+        factor_rows = utility.loc[
+            utility["factor_id"].eq(version_row.factor_id)
+            & utility["factor_version"].eq(
+                version_row.factor_version
+            )
+        ] if not utility.empty else utility
         support = shared_support.get(
             factor_key,
             {
@@ -3516,27 +4590,15 @@ def build_cross_venue_factor_shortlist(
             ]
             if len(venue_rows) > 1:
                 raise KalshiValidationError(
-                    "factor statistics produced duplicate venue rows"
+                    "factor-conditioned utility produced duplicate venue rows"
                 )
             if venue_rows.empty:
                 for metric in venue_metrics:
-                    if metric == "factor_support_status":
-                        value: object = "NO_EXACT_FACTOR_EVIDENCE"
-                    elif metric in {
-                        "recommended_for_gating",
-                        "mean_ci_excludes_zero",
-                        "bh_q_gate_passed",
-                        "loo_sign_gate_passed",
-                        "max_game_contribution_gate_passed",
-                        "individual_statistical_gate",
-                        "passes_development_gate",
-                    }:
+                    if metric == "predictive_utility_gate_passed":
                         value = False
                     elif metric in {
                         "support_games",
-                        "support_signals",
-                        "raw_support_games",
-                        "raw_support_episodes",
+                        "support_episodes",
                     }:
                         value = 0
                     else:
@@ -3548,37 +4610,19 @@ def build_cross_venue_factor_shortlist(
                     record[f"{prefix}_{metric}"] = venue_row[
                         metric
                     ]
-        record["cross_venue_same_sign"] = bool(
+        record["cross_venue_both_positive"] = bool(
             len(factor_rows) == 2
-            and factor_rows["cross_venue_same_sign"].all()
+            and factor_rows["mean_log_score_improvement"].gt(0.0).all()
         )
         factor_gate = bool(
             record["shared_support_status"] == "SUPPORTED"
-            and record["polymarket_factor_support_status"]
-            == "SUPPORTED"
-            and record["kalshi_factor_support_status"]
-            == "SUPPORTED"
-            and record["polymarket_recommended_for_gating"]
-            and record["kalshi_recommended_for_gating"]
-            and record["polymarket_mean_ci_excludes_zero"]
-            and record["kalshi_mean_ci_excludes_zero"]
-            and record["polymarket_bh_q_gate_passed"]
-            and record["kalshi_bh_q_gate_passed"]
-            and record["polymarket_loo_sign_gate_passed"]
-            and record["kalshi_loo_sign_gate_passed"]
             and record[
-                "polymarket_max_game_contribution_gate_passed"
+                "polymarket_predictive_utility_gate_passed"
             ]
-            and record[
-                "kalshi_max_game_contribution_gate_passed"
-            ]
-            and record["polymarket_individual_statistical_gate"]
-            and record["kalshi_individual_statistical_gate"]
-            and record["polymarket_passes_development_gate"]
-            and record["kalshi_passes_development_gate"]
-            and record["cross_venue_same_sign"]
+            and record["kalshi_predictive_utility_gate_passed"]
+            and record["cross_venue_both_positive"]
         )
-        record["factor_specific_dual_venue_gate_passed"] = (
+        record["factor_conditioned_dual_venue_gate_passed"] = (
             factor_gate
         )
         record["polymarket_selection_gate_passed"] = bool(
@@ -3594,9 +4638,12 @@ def build_cross_venue_factor_shortlist(
         )
         record["registered_shortlist_gate_passed"] = registered
         record["diagnostic_status"] = (
-            "HISTORICAL_SIGNAL_CANDIDATE"
+            "HISTORICAL_PREDICTIVE_UTILITY_CANDIDATE"
             if registered
-            else "HISTORICAL_SIGNAL_REJECTED"
+            else "HISTORICAL_PREDICTIVE_UTILITY_REJECTED"
+        )
+        record["shortlist_schema_version"] = (
+            FACTOR_PREDICTIVE_UTILITY_SCHEMA_VERSION
         )
         record["claim_landmark_seconds"] = (
             selection.spec.anchor_landmark_seconds
@@ -3609,7 +4656,7 @@ def build_cross_venue_factor_shortlist(
         )
         record["target_contract"] = selection.target_contract
         record["claim_boundary"] = selection.claim_boundary
-        record["schema_version"] = selection.schema_version
+        record["source_schema_version"] = selection.schema_version
         record["analysis_scope"] = selection.analysis_scope
         record["exact_pair_grain"] = (
             _CROSS_VENUE_FACTOR_PAIR_GRAIN
@@ -3658,6 +4705,18 @@ def build_cross_venue_factor_shortlist(
         record["execution_claim_eligible"] = False
         record["tick_claim_eligible"] = False
         record["continuity_claim_eligible"] = False
+        record["preholdout_metadata_lock_sha256"] = metadata_lock[
+            "lock_sha256"
+        ]
+        record["preholdout_metadata_sha256"] = metadata_lock[
+            "metadata_sha256"
+        ]
+        record["holdout_reaction_read_count"] = metadata_lock[
+            "holdout_reaction_read_count"
+        ]
+        record["holdout_status"] = metadata_lock[
+            "market_reaction_exposure"
+        ]
         records.append(record)
     return pd.DataFrame(records).sort_values(
         ["factor_id", "factor_version"], kind="mergesort"
@@ -3847,10 +4906,19 @@ def lock_preholdout_metadata_audit(
         raise KalshiValidationError(
             "authority_metadata must be FrozenAuthorityMetadata"
         )
+    try:
+        current_metadata_sha256 = (
+            _recompute_authority_metadata_sha256(authority_metadata)
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise KalshiValidationError(
+            "current authority metadata cannot be recomputed"
+        ) from exc
     if (
         ledger.cohort_authority_sha256
         != authority_metadata.cohort_authority_sha256
         or ledger.metadata_sha256 != authority_metadata.metadata_sha256
+        or current_metadata_sha256 != authority_metadata.metadata_sha256
         or authority_metadata.holdout_reaction_read_count != 0
         or authority_metadata.stage_a_outcome_validation_eligible is not False
         or (
@@ -3869,13 +4937,16 @@ def lock_preholdout_metadata_audit(
         ].eq("PRIOR_EXPOSED_X11").all()
     ):
         raise KalshiValidationError(
-            "metadata ledger does not bind the frozen authority"
+            "metadata ledger does not bind the current authority metadata"
         )
     latest = ledger.records[-1].chain_sha256
     lock_payload = {
         "lock_event": "PRE_SHORTLIST_METADATA_ONLY_LOCK",
         "cohort_authority_sha256": ledger.cohort_authority_sha256,
         "metadata_sha256": ledger.metadata_sha256,
+        "current_metadata_sha256": current_metadata_sha256,
+        "development_game_count": len(authority_metadata.development),
+        "holdout_game_count": len(authority_metadata.holdout),
         "chain_sha256": latest,
         "metadata_access_count": len(ledger.records) - 1,
         "holdout_reaction_read_count": 0,
@@ -3910,7 +4981,7 @@ __all__ = [
     "X11_SPORTS_OUTCOME_EVIDENCE_SHA256",
     "begin_prelock_metadata_ledger",
     "bind_frozen_authority_metadata",
-    "build_cross_venue_factor_shortlist",
+    "build_cross_venue_predictive_utility_shortlist",
     "lock_preholdout_metadata_audit",
     "load_frozen_factor_membership_evidence",
     "load_frozen_historical_exposure_evidence",

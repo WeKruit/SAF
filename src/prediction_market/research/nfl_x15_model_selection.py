@@ -50,11 +50,9 @@ STAGE_B_CANDIDATE_SUITE: Final[
     ("regularized_logistic_v1", "D1"),
     ("regularized_logistic_v1", "D2"),
     ("regularized_logistic_v1", "D3"),
-    ("regularized_logistic_v1", "D4"),
     ("shallow_xgboost_v1", "D1"),
     ("shallow_xgboost_v1", "D2"),
     ("shallow_xgboost_v1", "D3"),
-    ("shallow_xgboost_v1", "D4"),
 )
 BOOTSTRAP_SAMPLES: Final[int] = 10_000
 BOOTSTRAP_SEED: Final[int] = 20260729
@@ -245,8 +243,13 @@ STAGE_B_WINNER_RULE_SHA256: Final[str] = _canonical_sha256(
         "candidate_suite": STAGE_B_CANDIDATE_SUITE,
         "baseline": (BASELINE_MODEL_ID, BASELINE_FEATURE_BLOCK_ID),
         "candidate_gate": (
-            "AUTHORITY_AND_INTEGRATED_PAIRED_GAME_CLUSTER_CI_LOW_GT_0"
-            "_AND_L3_H30_ANCHOR_AT_LEAST_30_GAMES_NO_SIGN_REVERSAL"
+            "AUTHORITY_AND_JOINT_INTEGRATED_CI_LOW_GT_0"
+            "_AND_JOINT_L3_H30_ANCHOR"
+            "_AND_DIRECTION_LOG_LOSS_INTEGRATED_CI_LOW_GT_0"
+            "_AND_DIRECTION_BRIER_INTEGRATED_CI_LOW_GT_0"
+            "_AND_DIRECTION_L3_H30_AT_LEAST_30_GAMES"
+            "_AND_BOTH_DIRECTION_ANCHOR_MEANS_GTE_0"
+            "_AND_NO_DIRECTION_SIGN_REVERSAL"
         ),
         "best": "MAX_INTEGRATED_MEAN_IMPROVEMENT",
         "best_standard_error": (
@@ -255,6 +258,9 @@ STAGE_B_WINNER_RULE_SHA256: Final[str] = _canonical_sha256(
         "eligible": "MEAN_GTE_BEST_MEAN_MINUS_BEST_STANDARD_ERROR",
         "simplicity_order": STAGE_B_CANDIDATE_SUITE,
     }
+)
+STAGE_B_SELECTION_CONTRACT_VERSION: Final[str] = (
+    "NFL_X15_STAGE_B_MODEL_SELECTION_V3"
 )
 
 
@@ -456,11 +462,14 @@ class FrozenSelectionSpec:
             == self.baseline_feature_block_id
         ):
             raise ModelSelectionError("candidate and B0 must differ")
-        if self.candidate_feature_block_id not in (
-            set(DIAGNOSTIC_FEATURE_BLOCKS) - {"D0"}
-        ):
+        if self.candidate_feature_block_id == "D4":
             raise ModelSelectionError(
-                "historical diagnostic candidates must use D1..D4"
+                "D4 is explicitly unsupported and nonselectable in "
+                "Stage-B V3"
+            )
+        if self.candidate_feature_block_id not in {"D1", "D2", "D3"}:
+            raise ModelSelectionError(
+                "historical diagnostic candidates must use D1..D3"
             )
 
 
@@ -493,6 +502,18 @@ class ModelSelectionResult:
     bootstrap_samples: int
     bootstrap_seed: int
     integrated_gate_passed: bool
+    direction_episode_losses: pd.DataFrame
+    direction_game_losses: pd.DataFrame
+    direction_log_loss_integrated_mean_improvement: float
+    direction_log_loss_integrated_ci_low: float
+    direction_log_loss_integrated_ci_high: float
+    direction_log_loss_bootstrap_probability_improved: float
+    direction_log_loss_integrated_gate_passed: bool
+    direction_brier_integrated_mean_improvement: float
+    direction_brier_integrated_ci_low: float
+    direction_brier_integrated_ci_high: float
+    direction_brier_bootstrap_probability_improved: float
+    direction_brier_integrated_gate_passed: bool
     anchor_game_losses: pd.DataFrame
     anchor_game_count: int
     anchor_episode_count: int
@@ -502,17 +523,27 @@ class ModelSelectionResult:
     anchor_mean_improvement: float
     anchor_sign_reversed: bool
     anchor_gate_passed: bool
+    direction_anchor_game_losses: pd.DataFrame
+    direction_anchor_game_count: int
+    direction_anchor_episode_count: int
+    direction_anchor_support_status: str
+    direction_anchor_log_loss_mean_improvement: float
+    direction_anchor_brier_mean_improvement: float
+    direction_anchor_log_loss_sign_reversed: bool
+    direction_anchor_brier_sign_reversed: bool
+    direction_anchor_gate_passed: bool
     loss_improvement_sign_semantics: str
     selected: bool
 
 
 @dataclass(frozen=True, slots=True)
 class StageBModelSelectionResult:
-    """Frozen eight-candidate Stage-B V2 winner decision and audit."""
+    """Frozen six-candidate Stage-B V3 winner decision and audit."""
 
     decision_status: str
     winner: ModelSelectionResult | None
     candidate_results: tuple[ModelSelectionResult, ...]
+    development_authority_metadata_sha256: str
     candidate_audit: pd.DataFrame
     best_integrated_mean_improvement: float | None
     best_standard_error: float | None
@@ -524,6 +555,7 @@ class StageBModelSelectionResult:
     schema_version: str
     survival_probability_contract: str
     winner_rule_sha256: str
+    selection_contract_version: str
 
 
 def _nullable_equal(left: pd.Series, right: pd.Series) -> bool:
@@ -892,6 +924,270 @@ def _development_authority_gate(
     )
 
 
+def _raise_stage_b_authority_error(detail: str) -> None:
+    raise ModelSelectionError(
+        "Stage-B V3 authority evidence is inconsistent: " + detail
+    )
+
+
+def _verify_frozen_development_authority(
+    authority: object,
+    *,
+    expected_cohort_authority_sha256: str,
+    expected_metadata_sha256: str,
+) -> FrozenDevelopmentAuthority:
+    """Rebind the embedded authority instead of trusting its scalar fields."""
+
+    if not isinstance(authority, FrozenDevelopmentAuthority):
+        _raise_stage_b_authority_error(
+            "development_authority must be FrozenDevelopmentAuthority"
+        )
+    if (
+        authority.cohort_authority_sha256
+        != expected_cohort_authority_sha256
+        or authority.metadata_sha256 != expected_metadata_sha256
+        or not _is_sha256(expected_metadata_sha256)
+    ):
+        _raise_stage_b_authority_error(
+            "cohort or metadata authority digest drifted"
+        )
+    try:
+        rows = tuple(authority.development_games)
+        metadata = pd.DataFrame(
+            (
+                {
+                    "game_id": game_id,
+                    "nfl_week": nfl_week,
+                    "kickoff_utc": kickoff_utc,
+                    "batch_sha256": batch_sha256,
+                    "cohort_authority_sha256": (
+                        authority.cohort_authority_sha256
+                    ),
+                }
+                for (
+                    game_id,
+                    nfl_week,
+                    kickoff_utc,
+                    batch_sha256,
+                ) in rows
+            )
+        )
+        rebound = bind_frozen_development_authority(
+            metadata,
+            cohort_authority_sha256=(
+                authority.cohort_authority_sha256
+            ),
+        )
+    except (ModelSelectionError, TypeError, ValueError) as error:
+        _raise_stage_b_authority_error(
+            f"embedded development authority cannot be rebound: {error}"
+        )
+    if rebound != authority:
+        _raise_stage_b_authority_error(
+            "embedded development authority differs from its rebound"
+        )
+    return authority
+
+
+def _constant_tuple_equals(
+    values: pd.Series,
+    expected: tuple[object, ...],
+) -> bool:
+    """Check one governed tuple without a Python callback for every row."""
+
+    if values.empty:
+        return False
+    try:
+        unique = values.unique()
+    except (TypeError, ValueError):
+        return False
+    return (
+        len(unique) == 1
+        and _tuple_value(unique[0]) == tuple(expected)
+    )
+
+
+def _verify_stage_b_authority_consistency(
+    result: ModelSelectionResult,
+    *,
+    authority: FrozenDevelopmentAuthority,
+) -> None:
+    """Rederive exact-153 fold authority from paired candidate/B0 rows."""
+
+    paired = result.paired_rows
+    required = {
+        "game_id",
+        "nfl_week",
+        "fold_id",
+        "cohort_authority_sha256",
+        *(
+            f"{column}_{side}"
+            for column in (
+                "training_venue",
+                "model_id",
+                "feature_block_id",
+                "train_weeks",
+                "validation_weeks",
+                "training_game_ids",
+                "validation_game_ids",
+                "preprocessor_fit_game_ids",
+            )
+            for side in ("b0", "candidate")
+        ),
+    }
+    if not isinstance(paired, pd.DataFrame) or paired.empty:
+        _raise_stage_b_authority_error(
+            "paired_rows must be a nonempty DataFrame"
+        )
+    missing = sorted(required.difference(paired.columns))
+    if missing:
+        _raise_stage_b_authority_error(
+            f"paired_rows missing authority columns {missing}"
+        )
+    if (
+        result.cohort_authority_sha256
+        != authority.cohort_authority_sha256
+        or not paired["cohort_authority_sha256"].eq(
+            authority.cohort_authority_sha256
+        ).all()
+    ):
+        _raise_stage_b_authority_error(
+            "candidate rows disagree with cohort authority"
+        )
+
+    expected_models = {
+        "b0": (
+            result.spec.baseline_model_id,
+            result.spec.baseline_feature_block_id,
+        ),
+        "candidate": (
+            result.spec.candidate_model_id,
+            result.spec.candidate_feature_block_id,
+        ),
+    }
+    for side, (model_id, feature_block_id) in expected_models.items():
+        if (
+            not paired[f"model_id_{side}"].eq(model_id).all()
+            or not paired[f"feature_block_id_{side}"].eq(
+                feature_block_id
+            ).all()
+            or not paired[f"training_venue_{side}"].eq(
+                result.spec.selection_venue
+            ).all()
+        ):
+            _raise_stage_b_authority_error(
+                f"{side} model, block, or training venue drifted"
+            )
+
+    game_weeks = authority.game_weeks
+    game_ids = paired["game_id"].astype(str)
+    authority_weeks = game_ids.map(game_weeks)
+    observed_weeks = pd.to_numeric(
+        paired["nfl_week"], errors="coerce"
+    )
+    if (
+        authority_weeks.isna().any()
+        or observed_weeks.isna().any()
+        or not authority_weeks.astype("Int64").eq(
+            observed_weeks.astype("Int64")
+        ).all()
+    ):
+        _raise_stage_b_authority_error(
+            "game/week identity differs from frozen development metadata"
+        )
+
+    expected_fold_by_week = {
+        week: fold_id
+        for fold_id, _, validation_weeks in EXPECTED_FOLDS
+        for week in validation_weeks
+    }
+    expected_row_folds = authority_weeks.map(expected_fold_by_week)
+    if (
+        expected_row_folds.isna().any()
+        or not expected_row_folds.eq(
+            paired["fold_id"].astype(str)
+        ).all()
+    ):
+        _raise_stage_b_authority_error(
+            "row fold does not match its frozen validation week"
+        )
+
+    expected_fold_ids = tuple(fold[0] for fold in EXPECTED_FOLDS)
+    observed_fold_ids = tuple(
+        sorted(set(paired["fold_id"].astype(str)))
+    )
+    if observed_fold_ids != expected_fold_ids:
+        _raise_stage_b_authority_error(
+            "all five frozen validation folds are required"
+        )
+
+    governed_tuple_columns = (
+        "train_weeks",
+        "validation_weeks",
+        "training_game_ids",
+        "validation_game_ids",
+        "preprocessor_fit_game_ids",
+    )
+    for fold_id, train_weeks, validation_weeks in EXPECTED_FOLDS:
+        fold_rows = paired.loc[paired["fold_id"].eq(fold_id)]
+        expected_training_ids = tuple(
+            sorted(
+                game_id
+                for game_id, week in game_weeks.items()
+                if week in train_weeks
+            )
+        )
+        expected_validation_ids = tuple(
+            sorted(
+                game_id
+                for game_id, week in game_weeks.items()
+                if week in validation_weeks
+            )
+        )
+        observed_validation_ids = tuple(
+            sorted(set(fold_rows["game_id"].astype(str)))
+        )
+        if observed_validation_ids != expected_validation_ids:
+            _raise_stage_b_authority_error(
+                f"{fold_id} validation game coverage drifted"
+            )
+        expected_by_column = {
+            "train_weeks": tuple(train_weeks),
+            "validation_weeks": tuple(validation_weeks),
+            "training_game_ids": expected_training_ids,
+            "validation_game_ids": expected_validation_ids,
+            "preprocessor_fit_game_ids": expected_training_ids,
+        }
+        for column in governed_tuple_columns:
+            baseline = fold_rows[f"{column}_b0"]
+            candidate = fold_rows[f"{column}_candidate"]
+            if (
+                not baseline.eq(candidate).all()
+                or not _constant_tuple_equals(
+                    baseline, expected_by_column[column]
+                )
+                or not _constant_tuple_equals(
+                    candidate, expected_by_column[column]
+                )
+            ):
+                _raise_stage_b_authority_error(
+                    f"{fold_id} {column} identity drifted"
+                )
+
+    if (
+        result.authority_gate_passed is not True
+        or result.authority_gate_failures != ()
+        or result.development_authority_game_count
+        != EXPECTED_DEVELOPMENT_GAME_COUNT
+        or result.development_authority_game_count
+        != authority.game_count
+        or result.observed_fold_ids != expected_fold_ids
+    ):
+        _raise_stage_b_authority_error(
+            "stored authority gate does not match rederived evidence"
+        )
+
+
 def _merge_exact_pairs(
     work: pd.DataFrame, *, spec: FrozenSelectionSpec
 ) -> pd.DataFrame:
@@ -946,55 +1242,63 @@ def _binary_losses(
 ) -> tuple[np.ndarray, np.ndarray]:
     baseline_losses = np.full(len(pairs), np.nan, dtype=float)
     candidate_losses = np.full(len(pairs), np.nan, dtype=float)
-    for position, (truth, baseline_probability, candidate_probability) in (
-        enumerate(
-            zip(
-                pairs[f"{truth_column}_b0"],
+    truths = pairs[f"{truth_column}_b0"]
+    available = truths.notna().to_numpy(dtype=bool)
+    if not available.any():
+        return baseline_losses, candidate_losses
+    available_truths = truths.loc[truths.notna()]
+    valid_truths = available_truths.map(
+        lambda value: (
+            isinstance(value, (bool, np.bool_))
+            or (
+                isinstance(value, (Integral, np.integer))
+                and not isinstance(value, (bool, np.bool_))
+                and int(value) in (0, 1)
+            )
+        )
+    )
+    if not valid_truths.all():
+        raise ModelSelectionError(
+            f"{truth_column} must be binary or missing"
+        )
+    outcomes = available_truths.astype(int).to_numpy(dtype=float)
+    probabilities = np.column_stack(
+        [
+            pd.to_numeric(
                 pairs[f"{probability_column}_b0"],
+                errors="coerce",
+            ).to_numpy(dtype=float, na_value=np.nan),
+            pd.to_numeric(
                 pairs[f"{probability_column}_candidate"],
-                strict=True,
-            )
-        )
+                errors="coerce",
+            ).to_numpy(dtype=float, na_value=np.nan),
+        ]
+    )[available]
+    if (
+        not np.isfinite(probabilities).all()
+        or (probabilities <= 0).any()
+        or (probabilities >= 1).any()
     ):
-        if pd.isna(truth):
-            continue
-        if isinstance(truth, (bool, np.bool_)):
-            outcome = int(truth)
-        elif (
-            isinstance(truth, (Integral, np.integer))
-            and not isinstance(truth, (bool, np.bool_))
-            and int(truth) in (0, 1)
-        ):
-            outcome = int(truth)
-        else:
-            raise ModelSelectionError(
-                f"{truth_column} must be binary or missing"
-            )
-        probabilities = np.asarray(
-            [baseline_probability, candidate_probability], dtype=float
+        raise ModelSelectionError(
+            f"available {truth_column} rows require paired calibrated "
+            "probabilities in (0, 1)"
         )
-        if (
-            not np.isfinite(probabilities).all()
-            or (probabilities <= 0).any()
-            or (probabilities >= 1).any()
-        ):
-            raise ModelSelectionError(
-                f"available {truth_column} rows require paired calibrated "
-                "probabilities in (0, 1)"
-            )
-        losses = -(
-            outcome * np.log(probabilities)
-            + (1 - outcome) * np.log(1 - probabilities)
-        )
-        baseline_losses[position], candidate_losses[position] = losses
+    losses = -(
+        outcomes[:, None] * np.log(probabilities)
+        + (1.0 - outcomes[:, None]) * np.log(1.0 - probabilities)
+    )
+    baseline_losses[available] = losses[:, 0]
+    candidate_losses[available] = losses[:, 1]
     return baseline_losses, candidate_losses
 
 
 def _direction_losses(
     pairs: pd.DataFrame,
-) -> tuple[np.ndarray, np.ndarray]:
-    baseline_losses = np.full(len(pairs), np.nan, dtype=float)
-    candidate_losses = np.full(len(pairs), np.nan, dtype=float)
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    baseline_log_losses = np.full(len(pairs), np.nan, dtype=float)
+    candidate_log_losses = np.full(len(pairs), np.nan, dtype=float)
+    baseline_brier_losses = np.full(len(pairs), np.nan, dtype=float)
+    candidate_brier_losses = np.full(len(pairs), np.nan, dtype=float)
     baseline_columns = [
         f"{column}_b0" for column in _DIRECTION_PROBABILITY_COLUMNS
     ]
@@ -1002,36 +1306,66 @@ def _direction_losses(
         f"{column}_candidate"
         for column in _DIRECTION_PROBABILITY_COLUMNS
     ]
-    for position, truth in enumerate(pairs["direction_truth_b0"]):
-        if pd.isna(truth):
-            continue
-        if str(truth) not in _DIRECTION_INDEX:
-            raise ModelSelectionError(
-                "direction_truth must be DOWN, NO_MOVE, UP, or missing"
-            )
-        baseline = pairs.loc[
-            pairs.index[position], baseline_columns
-        ].to_numpy(dtype=float)
-        candidate = pairs.loc[
-            pairs.index[position], candidate_columns
-        ].to_numpy(dtype=float)
-        probabilities = np.vstack([baseline, candidate])
-        if (
-            not np.isfinite(probabilities).all()
-            or (probabilities <= 0).any()
-            or (probabilities >= 1).any()
-            or not np.allclose(
-                probabilities.sum(axis=1), 1.0, atol=1e-6, rtol=0
-            )
-        ):
-            raise ModelSelectionError(
-                "available direction rows require paired calibrated "
-                "three-class probabilities that sum to one"
-            )
-        truth_index = _DIRECTION_INDEX[str(truth)]
-        baseline_losses[position] = -np.log(baseline[truth_index])
-        candidate_losses[position] = -np.log(candidate[truth_index])
-    return baseline_losses, candidate_losses
+    truths = pairs["direction_truth_b0"]
+    available = truths.notna().to_numpy(dtype=bool)
+    if not available.any():
+        return (
+            baseline_log_losses,
+            candidate_log_losses,
+            baseline_brier_losses,
+            candidate_brier_losses,
+        )
+    available_truths = truths.loc[truths.notna()].astype(str)
+    if not available_truths.isin(_DIRECTION_INDEX).all():
+        raise ModelSelectionError(
+            "direction_truth must be DOWN, NO_MOVE, UP, or missing"
+        )
+    baseline = pairs.loc[
+        :, baseline_columns
+    ].to_numpy(dtype=float, na_value=np.nan)[available]
+    candidate = pairs.loc[
+        :, candidate_columns
+    ].to_numpy(dtype=float, na_value=np.nan)[available]
+    probabilities = np.vstack([baseline, candidate])
+    if (
+        not np.isfinite(probabilities).all()
+        or (probabilities <= 0).any()
+        or (probabilities >= 1).any()
+        or not np.allclose(
+            baseline.sum(axis=1), 1.0, atol=1e-6, rtol=0
+        )
+        or not np.allclose(
+            candidate.sum(axis=1), 1.0, atol=1e-6, rtol=0
+        )
+    ):
+        raise ModelSelectionError(
+            "available direction rows require paired calibrated "
+            "three-class probabilities that sum to one"
+        )
+    truth_indexes = available_truths.map(
+        _DIRECTION_INDEX
+    ).to_numpy(dtype=int)
+    one_hot = np.zeros_like(baseline)
+    one_hot[np.arange(len(one_hot)), truth_indexes] = 1.0
+    positions = np.arange(len(truth_indexes))
+    baseline_log_losses[available] = -np.log(
+        baseline[positions, truth_indexes]
+    )
+    candidate_log_losses[available] = -np.log(
+        candidate[positions, truth_indexes]
+    )
+    baseline_brier_losses[available] = np.square(
+        baseline - one_hot
+    ).sum(axis=1)
+    candidate_brier_losses[available] = np.square(
+        candidate - one_hot
+    ).sum(axis=1)
+    return (
+        baseline_log_losses,
+        candidate_log_losses,
+        baseline_brier_losses,
+        candidate_brier_losses,
+    )
 
 
 def _attach_multihead_losses(pairs: pd.DataFrame) -> pd.DataFrame:
@@ -1046,7 +1380,12 @@ def _attach_multihead_losses(pairs: pd.DataFrame) -> pd.DataFrame:
         truth_column="o_h_given_s_truth",
         probability_column="o_h_given_s_calibrated_probability",
     )
-    direction_b0, direction_candidate = _direction_losses(result)
+    (
+        direction_b0,
+        direction_candidate,
+        direction_brier_b0,
+        direction_brier_candidate,
+    ) = _direction_losses(result)
     baseline_heads = np.column_stack(
         [s_h_b0, observed_b0, direction_b0]
     )
@@ -1077,6 +1416,18 @@ def _attach_multihead_losses(pairs: pd.DataFrame) -> pd.DataFrame:
     result["loss_improvement"] = (
         result["baseline_integrated_row_loss"]
         - result["candidate_integrated_row_loss"]
+    )
+    result["baseline_direction_log_loss"] = direction_b0
+    result["candidate_direction_log_loss"] = direction_candidate
+    result["direction_log_loss_improvement"] = (
+        direction_b0 - direction_candidate
+    )
+    result["baseline_direction_brier_loss"] = direction_brier_b0
+    result["candidate_direction_brier_loss"] = (
+        direction_brier_candidate
+    )
+    result["direction_brier_improvement"] = (
+        direction_brier_b0 - direction_brier_candidate
     )
     result["direction_truth"] = result["direction_truth_b0"]
 
@@ -1137,10 +1488,97 @@ def _hierarchical_losses(
     return episodes, games
 
 
+def _hierarchical_direction_losses(
+    rows: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Aggregate exact-paired direction losses episode then game equally."""
+
+    required = (
+        "baseline_direction_log_loss",
+        "candidate_direction_log_loss",
+        "direction_log_loss_improvement",
+        "baseline_direction_brier_loss",
+        "candidate_direction_brier_loss",
+        "direction_brier_improvement",
+    )
+    available = rows.loc[
+        np.isfinite(rows.loc[:, required].to_numpy(dtype=float)).all(
+            axis=1
+        )
+    ].copy()
+    if available.empty:
+        raise ModelSelectionError(
+            "direction selection requires exact-paired direction truth"
+        )
+    episode_keys = [
+        "game_id",
+        "atomic_information_episode_id",
+        "venue",
+    ]
+    episodes = (
+        available.groupby(episode_keys, sort=True, as_index=False)
+        .agg(
+            baseline_log_loss=("baseline_direction_log_loss", "mean"),
+            candidate_log_loss=(
+                "candidate_direction_log_loss",
+                "mean",
+            ),
+            baseline_brier_loss=(
+                "baseline_direction_brier_loss",
+                "mean",
+            ),
+            candidate_brier_loss=(
+                "candidate_direction_brier_loss",
+                "mean",
+            ),
+            row_count=("direction_log_loss_improvement", "size"),
+        )
+        .reset_index(drop=True)
+    )
+    episodes["log_loss_improvement"] = (
+        episodes["baseline_log_loss"]
+        - episodes["candidate_log_loss"]
+    )
+    episodes["brier_improvement"] = (
+        episodes["baseline_brier_loss"]
+        - episodes["candidate_brier_loss"]
+    )
+    games = (
+        episodes.groupby("game_id", sort=True, as_index=False)
+        .agg(
+            baseline_log_loss=("baseline_log_loss", "mean"),
+            candidate_log_loss=("candidate_log_loss", "mean"),
+            baseline_brier_loss=("baseline_brier_loss", "mean"),
+            candidate_brier_loss=("candidate_brier_loss", "mean"),
+            episode_count=(
+                "atomic_information_episode_id",
+                "nunique",
+            ),
+            row_count=("row_count", "sum"),
+        )
+        .reset_index(drop=True)
+    )
+    games["log_loss_improvement"] = (
+        games["baseline_log_loss"] - games["candidate_log_loss"]
+    )
+    games["brier_improvement"] = (
+        games["baseline_brier_loss"] - games["candidate_brier_loss"]
+    )
+    games["hierarchical_weight"] = 1.0
+    return episodes, games
+
+
 def _bootstrap_game_improvements(
-    game_losses: pd.DataFrame, *, spec: FrozenSelectionSpec
+    game_losses: pd.DataFrame,
+    *,
+    spec: FrozenSelectionSpec,
+    improvement_column: str = "loss_improvement",
 ) -> tuple[float, float, float, float]:
-    improvements = game_losses["loss_improvement"].to_numpy(dtype=float)
+    if improvement_column not in game_losses.columns:
+        raise ModelSelectionError(
+            f"missing bootstrap improvement column: {improvement_column}"
+        )
+    improvements = game_losses[improvement_column].to_numpy(dtype=float)
     if len(improvements) < 2:
         raise ModelSelectionError(
             "paired game bootstrap requires at least two games"
@@ -1196,6 +1634,37 @@ def select_candidate_against_b0(
         probability_improved,
     ) = _bootstrap_game_improvements(game_losses, spec=spec)
     integrated_gate = integrated_mean > 0.0 and integrated_low > 0.0
+    (
+        direction_episode_losses,
+        direction_game_losses,
+    ) = _hierarchical_direction_losses(paired)
+    (
+        direction_log_loss_mean,
+        direction_log_loss_low,
+        direction_log_loss_high,
+        direction_log_loss_probability_improved,
+    ) = _bootstrap_game_improvements(
+        direction_game_losses,
+        spec=spec,
+        improvement_column="log_loss_improvement",
+    )
+    (
+        direction_brier_mean,
+        direction_brier_low,
+        direction_brier_high,
+        direction_brier_probability_improved,
+    ) = _bootstrap_game_improvements(
+        direction_game_losses,
+        spec=spec,
+        improvement_column="brier_improvement",
+    )
+    direction_log_loss_gate = (
+        direction_log_loss_mean > 0.0
+        and direction_log_loss_low > 0.0
+    )
+    direction_brier_gate = (
+        direction_brier_mean > 0.0 and direction_brier_low > 0.0
+    )
 
     anchor = paired.loc[
         paired["landmark_seconds"].eq(spec.anchor_landmark_seconds)
@@ -1226,7 +1695,48 @@ def select_candidate_against_b0(
         and anchor_mean >= 0.0
         and not anchor_sign_reversed
     )
-    selected = authority_gate and integrated_gate and anchor_gate
+    (
+        direction_anchor_episode_losses,
+        direction_anchor_game_losses,
+    ) = _hierarchical_direction_losses(anchor)
+    direction_anchor_game_count = len(direction_anchor_game_losses)
+    direction_anchor_episode_count = len(
+        direction_anchor_episode_losses
+    )
+    direction_anchor_supported = (
+        direction_anchor_game_count >= MIN_ANCHOR_GAMES
+    )
+    direction_anchor_log_loss_mean = float(
+        direction_anchor_game_losses["log_loss_improvement"].mean()
+    )
+    direction_anchor_brier_mean = float(
+        direction_anchor_game_losses["brier_improvement"].mean()
+    )
+    direction_anchor_log_loss_sign_reversed = bool(
+        np.sign(direction_anchor_log_loss_mean)
+        * np.sign(direction_log_loss_mean)
+        < 0
+    )
+    direction_anchor_brier_sign_reversed = bool(
+        np.sign(direction_anchor_brier_mean)
+        * np.sign(direction_brier_mean)
+        < 0
+    )
+    direction_anchor_gate = (
+        direction_anchor_supported
+        and direction_anchor_log_loss_mean >= 0.0
+        and direction_anchor_brier_mean >= 0.0
+        and not direction_anchor_log_loss_sign_reversed
+        and not direction_anchor_brier_sign_reversed
+    )
+    selected = (
+        authority_gate
+        and integrated_gate
+        and anchor_gate
+        and direction_log_loss_gate
+        and direction_brier_gate
+        and direction_anchor_gate
+    )
     return ModelSelectionResult(
         spec=spec,
         cohort_authority_sha256=row_authority,
@@ -1261,6 +1771,32 @@ def select_candidate_against_b0(
         bootstrap_samples=spec.bootstrap_samples,
         bootstrap_seed=spec.bootstrap_seed,
         integrated_gate_passed=integrated_gate,
+        direction_episode_losses=direction_episode_losses.reset_index(
+            drop=True
+        ),
+        direction_game_losses=direction_game_losses.reset_index(
+            drop=True
+        ),
+        direction_log_loss_integrated_mean_improvement=(
+            direction_log_loss_mean
+        ),
+        direction_log_loss_integrated_ci_low=direction_log_loss_low,
+        direction_log_loss_integrated_ci_high=direction_log_loss_high,
+        direction_log_loss_bootstrap_probability_improved=(
+            direction_log_loss_probability_improved
+        ),
+        direction_log_loss_integrated_gate_passed=(
+            direction_log_loss_gate
+        ),
+        direction_brier_integrated_mean_improvement=(
+            direction_brier_mean
+        ),
+        direction_brier_integrated_ci_low=direction_brier_low,
+        direction_brier_integrated_ci_high=direction_brier_high,
+        direction_brier_bootstrap_probability_improved=(
+            direction_brier_probability_improved
+        ),
+        direction_brier_integrated_gate_passed=direction_brier_gate,
         anchor_game_losses=anchor_game_losses.reset_index(drop=True),
         anchor_game_count=anchor_game_count,
         anchor_episode_count=anchor_episode_count,
@@ -1274,6 +1810,29 @@ def select_candidate_against_b0(
         anchor_mean_improvement=anchor_mean,
         anchor_sign_reversed=anchor_sign_reversed,
         anchor_gate_passed=anchor_gate,
+        direction_anchor_game_losses=(
+            direction_anchor_game_losses.reset_index(drop=True)
+        ),
+        direction_anchor_game_count=direction_anchor_game_count,
+        direction_anchor_episode_count=direction_anchor_episode_count,
+        direction_anchor_support_status=(
+            "SUPPORTED"
+            if direction_anchor_supported
+            else "INSUFFICIENT_SUPPORT"
+        ),
+        direction_anchor_log_loss_mean_improvement=(
+            direction_anchor_log_loss_mean
+        ),
+        direction_anchor_brier_mean_improvement=(
+            direction_anchor_brier_mean
+        ),
+        direction_anchor_log_loss_sign_reversed=(
+            direction_anchor_log_loss_sign_reversed
+        ),
+        direction_anchor_brier_sign_reversed=(
+            direction_anchor_brier_sign_reversed
+        ),
+        direction_anchor_gate_passed=direction_anchor_gate,
         loss_improvement_sign_semantics=(
             spec.loss_improvement_sign_semantics
         ),
@@ -1367,7 +1926,7 @@ def _stage_b_projection_identity(
         or not predictions["training_venue"].eq("polymarket").all()
     ):
         raise ModelSelectionError(
-            "Stage-B selection requires all 8 frozen native Polymarket "
+            "Stage-B selection requires all 6 frozen native Polymarket "
             "projection candidates"
         )
     observed_pairs = set(
@@ -1467,11 +2026,11 @@ def _validate_stage_b_candidate_suite(
         model_runs, Sequence
     ):
         raise ModelSelectionError(
-            "Stage-B selection requires 8 projection runs"
+            "Stage-B selection requires 6 projection runs"
         )
     if len(model_runs) != len(STAGE_B_CANDIDATE_SUITE):
         raise ModelSelectionError(
-            "Stage-B selection requires all 8 frozen Polymarket "
+            "Stage-B selection requires all 6 frozen Polymarket "
             "candidate projections"
         )
     by_candidate: dict[tuple[str, str], X15ModelRun] = {}
@@ -1491,7 +2050,7 @@ def _validate_stage_b_candidate_suite(
     ]
     if missing:
         raise ModelSelectionError(
-            "Stage-B selection requires all 8 frozen Polymarket "
+            "Stage-B selection requires all 6 frozen Polymarket "
             f"candidate projections; missing={missing}"
         )
     if len(shared_hashes) != 1:
@@ -1543,7 +2102,10 @@ _MODEL_SELECTION_RESULT_FRAME_FIELDS: Final[tuple[str, ...]] = (
     "paired_rows",
     "episode_losses",
     "game_losses",
+    "direction_episode_losses",
+    "direction_game_losses",
     "anchor_game_losses",
+    "direction_anchor_game_losses",
 )
 
 
@@ -1795,7 +2357,7 @@ def _model_selection_result_evidence(
 ) -> dict[str, str]:
     if not isinstance(result, ModelSelectionResult):
         raise ModelSelectionError(
-            "Stage-B V2 candidates must be ModelSelectionResult evidence"
+            "Stage-B V3 candidates must be ModelSelectionResult evidence"
         )
     frame_hashes = {
         f"{field}_sha256": _dataframe_evidence_sha256(
@@ -1827,6 +2389,337 @@ def _model_selection_result_evidence(
         **frame_hashes,
         "model_selection_result_sha256": result_sha256,
     }
+
+
+def _verify_model_selection_result_consistency(
+    result: ModelSelectionResult,
+) -> None:
+    """Rederive every statistically material field from paired evidence."""
+
+    paired = result.paired_rows
+    if not isinstance(paired, pd.DataFrame) or paired.empty:
+        raise ModelSelectionError(
+            "Stage-B V3 candidate evidence is internally inconsistent: "
+            "paired_rows must be nonempty"
+        )
+    required = {
+        *_PAIR_COLUMNS,
+        *(
+            f"{column}_{side}"
+            for column in (
+                *_TRUTH_COLUMNS,
+                "s_h_calibrated_probability",
+                "o_h_given_s_calibrated_probability",
+                *_DIRECTION_PROBABILITY_COLUMNS,
+            )
+            for side in ("b0", "candidate")
+        ),
+    }
+    missing = sorted(required.difference(paired.columns))
+    if missing:
+        raise ModelSelectionError(
+            "Stage-B V3 candidate evidence is internally inconsistent: "
+            f"paired_rows missing {missing}"
+        )
+    if paired.duplicated(list(_PAIR_COLUMNS), keep=False).any():
+        raise ModelSelectionError(
+            "Stage-B V3 candidate evidence is internally inconsistent: "
+            "paired_rows contain duplicate exact-pair identities"
+        )
+    for column in _TRUTH_COLUMNS:
+        if not _nullable_equal(
+            paired[f"{column}_b0"],
+            paired[f"{column}_candidate"],
+        ):
+            raise ModelSelectionError(
+                "Stage-B V3 candidate evidence is internally inconsistent: "
+                f"paired truth drifted on {column}"
+            )
+
+    rederived_paired = _attach_multihead_losses(paired)
+    derived_columns = (
+        "available_head_count",
+        "baseline_integrated_row_loss",
+        "candidate_integrated_row_loss",
+        "loss_improvement",
+        "baseline_direction_log_loss",
+        "candidate_direction_log_loss",
+        "direction_log_loss_improvement",
+        "baseline_direction_brier_loss",
+        "candidate_direction_brier_loss",
+        "direction_brier_improvement",
+        "direction_truth",
+        "row_weight_within_episode",
+        "episode_weight_within_game",
+        "game_weight",
+        "hierarchical_row_weight",
+    )
+    if any(column not in paired.columns for column in derived_columns):
+        raise ModelSelectionError(
+            "Stage-B V3 candidate evidence is internally inconsistent: "
+            "paired_rows lack derived loss evidence"
+        )
+    observed_derived = paired.loc[:, list(derived_columns)]
+    expected_derived = rederived_paired.loc[:, list(derived_columns)]
+    if _dataframe_evidence_sha256(
+        observed_derived,
+        field="paired_rows.derived",
+    ) != _dataframe_evidence_sha256(
+        expected_derived,
+        field="paired_rows.derived.rederived",
+    ):
+        raise ModelSelectionError(
+            "Stage-B V3 candidate evidence is internally inconsistent: "
+            "paired_rows derived losses do not match truth/probabilities"
+        )
+
+    expected_episode, expected_games = _hierarchical_losses(
+        rederived_paired
+    )
+    (
+        expected_direction_episode,
+        expected_direction_games,
+    ) = _hierarchical_direction_losses(rederived_paired)
+    (
+        integrated_mean,
+        integrated_low,
+        integrated_high,
+        integrated_probability,
+    ) = _bootstrap_game_improvements(
+        expected_games,
+        spec=result.spec,
+    )
+    (
+        direction_log_loss_mean,
+        direction_log_loss_low,
+        direction_log_loss_high,
+        direction_log_loss_probability,
+    ) = _bootstrap_game_improvements(
+        expected_direction_games,
+        spec=result.spec,
+        improvement_column="log_loss_improvement",
+    )
+    (
+        direction_brier_mean,
+        direction_brier_low,
+        direction_brier_high,
+        direction_brier_probability,
+    ) = _bootstrap_game_improvements(
+        expected_direction_games,
+        spec=result.spec,
+        improvement_column="brier_improvement",
+    )
+
+    anchor = rederived_paired.loc[
+        rederived_paired["landmark_seconds"].eq(
+            result.spec.anchor_landmark_seconds
+        )
+        & rederived_paired["endpoint_seconds"].eq(
+            result.spec.anchor_endpoint_seconds
+        )
+    ].copy()
+    if anchor.empty:
+        raise ModelSelectionError(
+            "Stage-B V3 candidate evidence is internally inconsistent: "
+            "clean anchor is missing"
+        )
+    expected_anchor_episode, expected_anchor_games = (
+        _hierarchical_losses(anchor)
+    )
+    (
+        expected_direction_anchor_episode,
+        expected_direction_anchor_games,
+    ) = _hierarchical_direction_losses(anchor)
+
+    expected_frames = {
+        "episode_losses": expected_episode.reset_index(drop=True),
+        "game_losses": expected_games.reset_index(drop=True),
+        "direction_episode_losses": (
+            expected_direction_episode.reset_index(drop=True)
+        ),
+        "direction_game_losses": (
+            expected_direction_games.reset_index(drop=True)
+        ),
+        "anchor_game_losses": expected_anchor_games.reset_index(
+            drop=True
+        ),
+        "direction_anchor_game_losses": (
+            expected_direction_anchor_games.reset_index(drop=True)
+        ),
+    }
+    for field, expected in expected_frames.items():
+        observed = getattr(result, field)
+        if _dataframe_evidence_sha256(
+            observed,
+            field=field,
+        ) != _dataframe_evidence_sha256(
+            expected,
+            field=f"{field}.rederived",
+        ):
+            raise ModelSelectionError(
+                "Stage-B V3 candidate evidence is internally inconsistent: "
+                f"{field} does not match paired_rows"
+            )
+
+    integrated_gate = integrated_mean > 0.0 and integrated_low > 0.0
+    direction_log_loss_gate = (
+        direction_log_loss_mean > 0.0
+        and direction_log_loss_low > 0.0
+    )
+    direction_brier_gate = (
+        direction_brier_mean > 0.0
+        and direction_brier_low > 0.0
+    )
+    anchor_game_count = len(expected_anchor_games)
+    anchor_episode_count = len(expected_anchor_episode)
+    anchor_supported = anchor_game_count >= MIN_ANCHOR_GAMES
+    anchor_mean = float(
+        expected_anchor_games["loss_improvement"].mean()
+    )
+    anchor_sign_reversed = bool(
+        np.sign(anchor_mean) * np.sign(integrated_mean) < 0
+    )
+    anchor_gate = (
+        anchor_supported
+        and anchor_mean >= 0.0
+        and not anchor_sign_reversed
+    )
+    direction_anchor_game_count = len(
+        expected_direction_anchor_games
+    )
+    direction_anchor_episode_count = len(
+        expected_direction_anchor_episode
+    )
+    direction_anchor_supported = (
+        direction_anchor_game_count >= MIN_ANCHOR_GAMES
+    )
+    direction_anchor_log_loss_mean = float(
+        expected_direction_anchor_games["log_loss_improvement"].mean()
+    )
+    direction_anchor_brier_mean = float(
+        expected_direction_anchor_games["brier_improvement"].mean()
+    )
+    direction_anchor_log_loss_sign_reversed = bool(
+        np.sign(direction_anchor_log_loss_mean)
+        * np.sign(direction_log_loss_mean)
+        < 0
+    )
+    direction_anchor_brier_sign_reversed = bool(
+        np.sign(direction_anchor_brier_mean)
+        * np.sign(direction_brier_mean)
+        < 0
+    )
+    direction_anchor_gate = (
+        direction_anchor_supported
+        and direction_anchor_log_loss_mean >= 0.0
+        and direction_anchor_brier_mean >= 0.0
+        and not direction_anchor_log_loss_sign_reversed
+        and not direction_anchor_brier_sign_reversed
+    )
+    selected = (
+        result.authority_gate_passed
+        and integrated_gate
+        and anchor_gate
+        and direction_log_loss_gate
+        and direction_brier_gate
+        and direction_anchor_gate
+    )
+    diagnostic_status = (
+        "HISTORICAL_SIGNAL_CANDIDATE"
+        if selected
+        else (
+            "PARTIAL_DEVELOPMENT_DIAGNOSTIC_ONLY"
+            if not result.authority_gate_passed
+            else "HISTORICAL_SIGNAL_REJECTED"
+        )
+    )
+    expected_scalars: dict[str, object] = {
+        "integrated_mean_improvement": integrated_mean,
+        "integrated_ci_low": integrated_low,
+        "integrated_ci_high": integrated_high,
+        "bootstrap_probability_improved": integrated_probability,
+        "integrated_gate_passed": integrated_gate,
+        "direction_log_loss_integrated_mean_improvement": (
+            direction_log_loss_mean
+        ),
+        "direction_log_loss_integrated_ci_low": (
+            direction_log_loss_low
+        ),
+        "direction_log_loss_integrated_ci_high": (
+            direction_log_loss_high
+        ),
+        "direction_log_loss_bootstrap_probability_improved": (
+            direction_log_loss_probability
+        ),
+        "direction_log_loss_integrated_gate_passed": (
+            direction_log_loss_gate
+        ),
+        "direction_brier_integrated_mean_improvement": (
+            direction_brier_mean
+        ),
+        "direction_brier_integrated_ci_low": direction_brier_low,
+        "direction_brier_integrated_ci_high": direction_brier_high,
+        "direction_brier_bootstrap_probability_improved": (
+            direction_brier_probability
+        ),
+        "direction_brier_integrated_gate_passed": direction_brier_gate,
+        "anchor_game_count": anchor_game_count,
+        "anchor_episode_count": anchor_episode_count,
+        "anchor_game_coverage": (
+            anchor_game_count / len(expected_games)
+        ),
+        "anchor_episode_coverage": (
+            anchor_episode_count / len(expected_episode)
+        ),
+        "anchor_support_status": (
+            "SUPPORTED"
+            if anchor_supported
+            else "INSUFFICIENT_SUPPORT"
+        ),
+        "anchor_mean_improvement": anchor_mean,
+        "anchor_sign_reversed": anchor_sign_reversed,
+        "anchor_gate_passed": anchor_gate,
+        "direction_anchor_game_count": direction_anchor_game_count,
+        "direction_anchor_episode_count": (
+            direction_anchor_episode_count
+        ),
+        "direction_anchor_support_status": (
+            "SUPPORTED"
+            if direction_anchor_supported
+            else "INSUFFICIENT_SUPPORT"
+        ),
+        "direction_anchor_log_loss_mean_improvement": (
+            direction_anchor_log_loss_mean
+        ),
+        "direction_anchor_brier_mean_improvement": (
+            direction_anchor_brier_mean
+        ),
+        "direction_anchor_log_loss_sign_reversed": (
+            direction_anchor_log_loss_sign_reversed
+        ),
+        "direction_anchor_brier_sign_reversed": (
+            direction_anchor_brier_sign_reversed
+        ),
+        "direction_anchor_gate_passed": direction_anchor_gate,
+        "bootstrap_samples": result.spec.bootstrap_samples,
+        "bootstrap_seed": result.spec.bootstrap_seed,
+        "loss_improvement_sign_semantics": (
+            result.spec.loss_improvement_sign_semantics
+        ),
+        "diagnostic_status": diagnostic_status,
+        "execution_claim_eligible": False,
+        "tick_claim_eligible": False,
+        "continuity_claim_eligible": False,
+        "selected": selected,
+    }
+    for field, expected in expected_scalars.items():
+        if _typed_dataframe_value(
+            getattr(result, field)
+        ) != _typed_dataframe_value(expected):
+            raise ModelSelectionError(
+                "Stage-B V3 candidate evidence is internally inconsistent: "
+                f"{field} does not match paired_rows"
+            )
 
 
 def _stage_b_decision(
@@ -1919,6 +2812,30 @@ def _stage_b_candidate_audit_rows(
                 "integrated_gate_passed": (
                     result.integrated_gate_passed
                 ),
+                "direction_log_loss_integrated_mean_improvement": (
+                    result.direction_log_loss_integrated_mean_improvement
+                ),
+                "direction_log_loss_integrated_ci_low": (
+                    result.direction_log_loss_integrated_ci_low
+                ),
+                "direction_log_loss_integrated_ci_high": (
+                    result.direction_log_loss_integrated_ci_high
+                ),
+                "direction_log_loss_integrated_gate_passed": (
+                    result.direction_log_loss_integrated_gate_passed
+                ),
+                "direction_brier_integrated_mean_improvement": (
+                    result.direction_brier_integrated_mean_improvement
+                ),
+                "direction_brier_integrated_ci_low": (
+                    result.direction_brier_integrated_ci_low
+                ),
+                "direction_brier_integrated_ci_high": (
+                    result.direction_brier_integrated_ci_high
+                ),
+                "direction_brier_integrated_gate_passed": (
+                    result.direction_brier_integrated_gate_passed
+                ),
                 "anchor_game_count": result.anchor_game_count,
                 "anchor_mean_improvement": (
                     result.anchor_mean_improvement
@@ -1927,6 +2844,24 @@ def _stage_b_candidate_audit_rows(
                     result.anchor_sign_reversed
                 ),
                 "anchor_gate_passed": result.anchor_gate_passed,
+                "direction_anchor_game_count": (
+                    result.direction_anchor_game_count
+                ),
+                "direction_anchor_log_loss_mean_improvement": (
+                    result.direction_anchor_log_loss_mean_improvement
+                ),
+                "direction_anchor_brier_mean_improvement": (
+                    result.direction_anchor_brier_mean_improvement
+                ),
+                "direction_anchor_log_loss_sign_reversed": (
+                    result.direction_anchor_log_loss_sign_reversed
+                ),
+                "direction_anchor_brier_sign_reversed": (
+                    result.direction_anchor_brier_sign_reversed
+                ),
+                "direction_anchor_gate_passed": (
+                    result.direction_anchor_gate_passed
+                ),
                 "game_count": len(result.game_losses),
                 "standard_error": standard_error,
                 "within_one_se": within_one_se[index],
@@ -1945,20 +2880,25 @@ def _stage_b_candidate_audit_rows(
                     SURVIVAL_PROBABILITY_CONTRACT
                 ),
                 "winner_rule_sha256": STAGE_B_WINNER_RULE_SHA256,
+                "selection_contract_version": (
+                    STAGE_B_SELECTION_CONTRACT_VERSION
+                ),
                 **_model_selection_result_evidence(result),
             }
         )
     return audit_rows
 
 
-def verify_stage_b_v2_selection_result(
+def verify_stage_b_v3_selection_result(
     selection: object,
+    *,
+    authority: FrozenDevelopmentAuthority,
 ) -> StageBModelSelectionResult:
-    """Recompute and verify the complete frozen Stage-B V2 decision."""
+    """Verify V3 against an independently loaded exact-45 authority."""
 
     if not isinstance(selection, StageBModelSelectionResult):
         raise ModelSelectionError(
-            "Stage-B V2 evidence must be a StageBModelSelectionResult"
+            "Stage-B V3 evidence must be a StageBModelSelectionResult"
         )
     results = selection.candidate_results
     if (
@@ -1978,9 +2918,16 @@ def verify_stage_b_v2_selection_result(
         != STAGE_B_CANDIDATE_SUITE
     ):
         raise ModelSelectionError(
-            "Stage-B V2 evidence does not contain the frozen candidate suite"
+            "Stage-B V3 evidence does not contain the frozen candidate suite"
         )
     expected_authority = results[0].cohort_authority_sha256
+    authority = _verify_frozen_development_authority(
+        authority,
+        expected_cohort_authority_sha256=expected_authority,
+        expected_metadata_sha256=(
+            selection.development_authority_metadata_sha256
+        ),
+    )
     expected_suite_sha256 = _canonical_sha256(
         tuple(
             {
@@ -2008,10 +2955,18 @@ def verify_stage_b_v2_selection_result(
         or selection.survival_probability_contract
         != SURVIVAL_PROBABILITY_CONTRACT
         or selection.winner_rule_sha256 != STAGE_B_WINNER_RULE_SHA256
+        or selection.selection_contract_version
+        != STAGE_B_SELECTION_CONTRACT_VERSION
     ):
         raise ModelSelectionError(
-            "Stage-B V2 authority, run, or probability contract drifted"
+            "Stage-B V3 authority, run, or probability contract drifted"
         )
+    for result in results:
+        _verify_stage_b_authority_consistency(
+            result,
+            authority=authority,
+        )
+        _verify_model_selection_result_consistency(result)
     (
         standard_errors,
         expected_winner,
@@ -2033,7 +2988,7 @@ def verify_stage_b_v2_selection_result(
         or selection.one_se_threshold != threshold
     ):
         raise ModelSelectionError(
-            "Stage-B V2 decision or winner identity does not match "
+            "Stage-B V3 decision or winner identity does not match "
             "candidate evidence"
         )
     expected_rows = _stage_b_candidate_audit_rows(
@@ -2062,19 +3017,23 @@ def verify_stage_b_v2_selection_result(
         != expected_audit_sha256
     ):
         raise ModelSelectionError(
-            "Stage-B V2 candidate audit does not bind complete "
+            "Stage-B V3 candidate audit does not bind complete "
             "ModelSelectionResult evidence"
         )
     return selection
 
 
-def select_stage_b_v2_winner(
+def select_stage_b_v3_winner(
     model_runs: Sequence[X15ModelRun],
     *,
-    authority: FrozenDevelopmentAuthority | None = None,
+    authority: FrozenDevelopmentAuthority,
 ) -> StageBModelSelectionResult:
-    """Select the frozen Stage-B V2 suite with the one-SE winner rule."""
+    """Select the frozen Stage-B V3 suite with the one-SE winner rule."""
 
+    if not isinstance(authority, FrozenDevelopmentAuthority):
+        raise ModelSelectionError(
+            "Stage-B V3 selection requires FrozenDevelopmentAuthority"
+        )
     (
         ordered_runs,
         shared_run_config_sha256,
@@ -2135,6 +3094,9 @@ def select_stage_b_v2_winner(
         ),
         winner=winner,
         candidate_results=results,
+        development_authority_metadata_sha256=(
+            authority.metadata_sha256
+        ),
         candidate_audit=candidate_audit,
         best_integrated_mean_improvement=best_mean,
         best_standard_error=best_standard_error,
@@ -2146,11 +3108,17 @@ def select_stage_b_v2_winner(
         schema_version=HISTORICAL_SCHEMA_VERSION,
         survival_probability_contract=SURVIVAL_PROBABILITY_CONTRACT,
         winner_rule_sha256=STAGE_B_WINNER_RULE_SHA256,
+        selection_contract_version=(
+            STAGE_B_SELECTION_CONTRACT_VERSION
+        ),
     )
-    return verify_stage_b_v2_selection_result(selection)
+    return verify_stage_b_v3_selection_result(
+        selection,
+        authority=authority,
+    )
 
 
-def build_factor_claim_audit(
+def build_factor_conditioned_predictive_utility_audit(
     selection: ModelSelectionResult,
     *,
     factor_membership: pd.DataFrame,
@@ -2241,7 +3209,7 @@ def build_factor_claim_audit(
         ["game_id", "atomic_information_episode_id"], keep=False
     ).any():
         raise ModelSelectionError(
-            "clean-anchor factor claims require one row per episode"
+            "clean-anchor factor-conditioned predictive utility require one row per episode"
         )
     joined = membership.merge(
         anchor,
@@ -2290,7 +3258,7 @@ def build_factor_claim_audit(
         )
     except X15StatisticsInputError as exc:
         raise ModelSelectionError(
-            f"factor claim audit is invalid: {exc}"
+            f"factor-conditioned predictive utility audit is invalid: {exc}"
         ) from exc
 
     version = (
@@ -2327,7 +3295,13 @@ def build_factor_claim_audit(
         )
         .rename(
             columns={
-                "support_signals": "equal_game_effect_unit_count"
+                "support_signals": "equal_game_effect_unit_count",
+                "mean_effect": (
+                    "mean_predictive_loss_improvement"
+                ),
+                "median_effect": (
+                    "median_predictive_loss_improvement"
+                ),
             }
         )
     )
@@ -2376,11 +3350,11 @@ def build_factor_claim_audit(
     )
     audit["diagnostic_status"] = np.where(
         audit["registered_gate_passed"],
-        "HISTORICAL_SIGNAL_CANDIDATE",
+        "FACTOR_CONDITIONED_PREDICTIVE_UTILITY_CANDIDATE",
         np.where(
             review_only,
-            "HISTORICAL_SIGNAL_REVIEW_ONLY",
-            "HISTORICAL_SIGNAL_REJECTED",
+            "FACTOR_CONDITIONED_PREDICTIVE_UTILITY_REVIEW_ONLY",
+            "FACTOR_CONDITIONED_PREDICTIVE_UTILITY_REJECTED",
         ),
     )
     audit["execution_claim_eligible"] = False
@@ -2417,11 +3391,12 @@ __all__ = [
     "ModelSelectionResult",
     "STAGE_B_CANDIDATE_SUITE",
     "STAGE_B_WINNER_RULE_SHA256",
+    "STAGE_B_SELECTION_CONTRACT_VERSION",
     "StageBModelSelectionResult",
     "bind_frozen_development_authority",
     "VENUE_TICK_SUPPORT",
-    "build_factor_claim_audit",
+    "build_factor_conditioned_predictive_utility_audit",
     "select_candidate_against_b0",
-    "select_stage_b_v2_winner",
-    "verify_stage_b_v2_selection_result",
+    "select_stage_b_v3_winner",
+    "verify_stage_b_v3_selection_result",
 ]

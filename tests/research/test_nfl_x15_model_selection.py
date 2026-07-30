@@ -11,9 +11,9 @@ from prediction_market.research.nfl_x15_model_selection import (
     FrozenSelectionSpec,
     ModelSelectionError,
     bind_frozen_development_authority,
-    build_factor_claim_audit,
+    build_factor_conditioned_predictive_utility_audit,
     select_candidate_against_b0,
-    select_stage_b_v2_winner,
+    select_stage_b_v3_winner,
 )
 from prediction_market.research.nfl_x15_models import X15ModelRun
 
@@ -34,11 +34,9 @@ STAGE_B_CANDIDATE_SUITE = (
     ("regularized_logistic_v1", "D1"),
     ("regularized_logistic_v1", "D2"),
     ("regularized_logistic_v1", "D3"),
-    ("regularized_logistic_v1", "D4"),
     ("shallow_xgboost_v1", "D1"),
     ("shallow_xgboost_v1", "D2"),
     ("shallow_xgboost_v1", "D3"),
-    ("shallow_xgboost_v1", "D4"),
 )
 
 
@@ -104,7 +102,7 @@ def _run_config(
     *,
     fold_ids: tuple[str, ...],
     candidate_model_id: str = "regularized_logistic_v1",
-    candidate_feature_block_id: str = "D4",
+    candidate_feature_block_id: str = "D3",
 ) -> dict[str, object]:
     return {
         "schema_version": "HistoricalTradesOnlyProbabilityPanelV2",
@@ -157,7 +155,7 @@ def _task4_predictions(
     complete: bool,
     unequal_episodes: bool = False,
     candidate_model_id: str = "regularized_logistic_v1",
-    candidate_feature_block_id: str = "D4",
+    candidate_feature_block_id: str = "D3",
 ) -> pd.DataFrame:
     metadata = _development_metadata()
     if complete:
@@ -286,7 +284,7 @@ def _run(
     complete: bool = True,
     unequal_episodes: bool = False,
     candidate_model_id: str = "regularized_logistic_v1",
-    candidate_feature_block_id: str = "D4",
+    candidate_feature_block_id: str = "D3",
 ) -> X15ModelRun:
     fold_ids = tuple(fold[0] for fold in FOLDS) if complete else ("fold_01",)
     run_config = _run_config(
@@ -310,7 +308,7 @@ def _run(
     )
 
 
-def _stage_b_v2_runs() -> tuple[X15ModelRun, ...]:
+def _stage_b_v3_runs() -> tuple[X15ModelRun, ...]:
     return tuple(
         _run(
             candidate_model_id=model_id,
@@ -323,7 +321,7 @@ def _stage_b_v2_runs() -> tuple[X15ModelRun, ...]:
 def _spec() -> FrozenSelectionSpec:
     return FrozenSelectionSpec(
         candidate_model_id="regularized_logistic_v1",
-        candidate_feature_block_id="D4",
+        candidate_feature_block_id="D3",
     )
 
 
@@ -378,6 +376,78 @@ def test_complete_153_all_five_folds_is_required_for_selection() -> None:
     assert result.selected is True
     assert result.diagnostic_status == "HISTORICAL_SIGNAL_CANDIDATE"
     assert result.game_losses["hierarchical_weight"].eq(1.0).all()
+    assert result.direction_log_loss_integrated_gate_passed is True
+    assert result.direction_brier_integrated_gate_passed is True
+    assert result.direction_anchor_gate_passed is True
+    assert result.direction_anchor_game_count >= 30
+
+
+def test_direction_log_loss_pass_but_brier_fail_rejects_candidate() -> None:
+    run = _run()
+    predictions = run.oof_predictions.copy()
+    candidate = predictions["model_id"].eq("regularized_logistic_v1")
+    direction_columns = (
+        "direction_calibrated_prob_down",
+        "direction_calibrated_prob_no_move",
+        "direction_calibrated_prob_up",
+    )
+    baseline_by_truth = {
+        "DOWN": (0.12, 0.16, 0.72),
+        "NO_MOVE": (0.16, 0.72, 0.12),
+        "UP": (0.72, 0.16, 0.12),
+    }
+    truth_index = {"DOWN": 0, "NO_MOVE": 1, "UP": 2}
+    for row_index in predictions.index[candidate]:
+        truth = str(predictions.at[row_index, "direction_truth"])
+        baseline = baseline_by_truth[truth]
+        correct_probability = baseline[truth_index[truth]] + 0.01
+        values = [0.001, 0.001, 0.001]
+        values[truth_index[truth]] = correct_probability
+        wrong_index = next(
+            index for index in range(3) if index != truth_index[truth]
+        )
+        values[wrong_index] = 1.0 - correct_probability - 0.001
+        predictions.loc[row_index, list(direction_columns)] = values
+    drifted = replace(run, oof_predictions=predictions)
+
+    result = select_candidate_against_b0(
+        drifted,
+        spec=_spec(),
+        authority=_authority(),
+    )
+
+    assert result.integrated_gate_passed is True
+    assert result.direction_log_loss_integrated_gate_passed is True
+    assert result.direction_brier_integrated_gate_passed is False
+    assert result.selected is False
+
+
+def test_direction_anchor_requires_thirty_distinct_games() -> None:
+    run = _run()
+    predictions = run.oof_predictions.copy()
+    anchor = predictions["landmark_seconds"].eq(3) & predictions[
+        "endpoint_seconds"
+    ].eq(30)
+    retained_games = set(
+        sorted(predictions.loc[anchor, "game_id"].unique())[:29]
+    )
+    predictions.loc[
+        anchor & ~predictions["game_id"].isin(retained_games),
+        "direction_truth",
+    ] = pd.NA
+    drifted = replace(run, oof_predictions=predictions)
+
+    result = select_candidate_against_b0(
+        drifted,
+        spec=_spec(),
+        authority=_authority(),
+    )
+
+    assert result.anchor_gate_passed is True
+    assert result.direction_anchor_game_count == 29
+    assert result.direction_anchor_support_status == "INSUFFICIENT_SUPPORT"
+    assert result.direction_anchor_gate_passed is False
+    assert result.selected is False
 
 
 def test_development_authority_requires_explicit_utc_kickoff() -> None:
@@ -514,7 +584,7 @@ def test_exact_pairs_anchor_and_polymarket_source_are_frozen() -> None:
     with pytest.raises(ModelSelectionError, match="fixed at polymarket"):
         FrozenSelectionSpec(
             candidate_model_id="regularized_logistic_v1",
-            candidate_feature_block_id="D4",
+            candidate_feature_block_id="D3",
             selection_venue="kalshi",
         )
 
@@ -531,7 +601,7 @@ def test_factor_audit_uses_equal_game_units_and_all_registered_gates() -> None:
     membership["factor_id"] = "NFL.PASS.COMPLETE"
     membership["factor_version"] = "v1"
 
-    audit = build_factor_claim_audit(
+    audit = build_factor_conditioned_predictive_utility_audit(
         selection,
         factor_membership=membership,
         min_support_games=30,
@@ -546,7 +616,14 @@ def test_factor_audit_uses_equal_game_units_and_all_registered_gates() -> None:
         anchor.groupby("game_id")["loss_improvement"].mean().mean()
     )
 
-    assert row["mean_effect"] == pytest.approx(expected_equal_game_mean)
+    assert row["mean_predictive_loss_improvement"] == pytest.approx(
+        expected_equal_game_mean
+    )
+    assert not any(
+        forbidden in column.lower()
+        for column in audit.columns
+        for forbidden in ("gross_markout", "mean_effect", "alpha")
+    )
     assert row["equal_game_effect_unit_count"] == row["support_games"]
     required_gates = {
         "recommended_for_gating",
@@ -565,10 +642,15 @@ def test_factor_audit_uses_equal_game_units_and_all_registered_gates() -> None:
 
 
 def test_diagnostic_block_and_nonexecution_contract_fail_closed() -> None:
-    with pytest.raises(ModelSelectionError, match="D1..D4"):
+    with pytest.raises(ModelSelectionError, match="D1..D3"):
         FrozenSelectionSpec(
             candidate_model_id="regularized_logistic_v1",
             candidate_feature_block_id="B4",
+        )
+    with pytest.raises(ModelSelectionError, match="D4.*unsupported"):
+        FrozenSelectionSpec(
+            candidate_model_id="regularized_logistic_v1",
+            candidate_feature_block_id="D4",
         )
 
     run = _run()
@@ -592,9 +674,9 @@ def test_diagnostic_block_and_nonexecution_contract_fail_closed() -> None:
         )
 
 
-def test_stage_b_v2_winner_interface_is_exposed() -> None:
-    assert callable(select_stage_b_v2_winner)
-    assert callable(selection_module.verify_stage_b_v2_selection_result)
+def test_stage_b_v3_winner_interface_is_exposed() -> None:
+    assert callable(select_stage_b_v3_winner)
+    assert callable(selection_module.verify_stage_b_v3_selection_result)
     assert (
         selection_module.STAGE_B_CANDIDATE_SUITE
         == STAGE_B_CANDIDATE_SUITE
@@ -616,7 +698,7 @@ def test_stage_b_rejects_v1_or_missing_survival_contract(
     schema_version: str,
     survival_contract: str | None,
 ) -> None:
-    runs = _stage_b_v2_runs()
+    runs = _stage_b_v3_runs()
     run = runs[0]
     run_config = dict(run.run_config)
     run_config["schema_version"] = schema_version
@@ -641,24 +723,24 @@ def test_stage_b_rejects_v1_or_missing_survival_contract(
             else "survival_probability_contract"
         ),
     ):
-        select_stage_b_v2_winner(
+        select_stage_b_v3_winner(
             (drifted, *runs[1:]),
             authority=_authority(),
         )
 
 
-def test_stage_b_requires_all_eight_frozen_candidates() -> None:
-    runs = _stage_b_v2_runs()
+def test_stage_b_requires_all_six_frozen_candidates() -> None:
+    runs = _stage_b_v3_runs()
 
-    with pytest.raises(ModelSelectionError, match="all 8 frozen"):
-        select_stage_b_v2_winner(
+    with pytest.raises(ModelSelectionError, match="all 6 frozen"):
+        select_stage_b_v3_winner(
             runs[:-1],
             authority=_authority(),
         )
 
 
-def test_stage_b_consumes_eight_verified_projection_runs_end_to_end() -> None:
-    runs = _stage_b_v2_runs()
+def test_stage_b_consumes_six_verified_projection_runs_end_to_end() -> None:
+    runs = _stage_b_v3_runs()
     for run, candidate in zip(
         runs, STAGE_B_CANDIDATE_SUITE, strict=True
     ):
@@ -671,12 +753,15 @@ def test_stage_b_consumes_eight_verified_projection_runs_end_to_end() -> None:
         )
         assert observed == {("b0_empirical_v1", "D0"), candidate}
 
-    result = select_stage_b_v2_winner(
+    result = select_stage_b_v3_winner(
         runs,
         authority=_authority(),
     )
 
-    assert len(result.candidate_results) == 8
+    assert len(result.candidate_results) == 6
+    assert result.selection_contract_version == (
+        "NFL_X15_STAGE_B_MODEL_SELECTION_V3"
+    )
     assert result.candidate_audit["gate_selected"].all()
     assert result.winner is not None
     assert (
@@ -688,10 +773,16 @@ def test_stage_b_consumes_eight_verified_projection_runs_end_to_end() -> None:
         "episode_losses_sha256",
         "game_losses_sha256",
         "anchor_game_losses_sha256",
+        "direction_episode_losses_sha256",
+        "direction_game_losses_sha256",
+        "direction_anchor_game_losses_sha256",
         "model_selection_result_sha256",
     }.issubset(result.candidate_audit.columns)
     assert (
-        selection_module.verify_stage_b_v2_selection_result(result)
+        selection_module.verify_stage_b_v3_selection_result(
+            result,
+            authority=_authority(),
+        )
         is result
     )
 
@@ -702,6 +793,8 @@ def test_stage_b_consumes_eight_verified_projection_runs_end_to_end() -> None:
         "paired_rows",
         "paired_rows_index",
         "paired_rows_dtype",
+        "direction_game_losses",
+        "direction_brier_metric",
         "promotion_metric",
         "winner_identity",
     ],
@@ -709,8 +802,8 @@ def test_stage_b_consumes_eight_verified_projection_runs_end_to_end() -> None:
 def test_stage_b_verifier_rejects_replaced_candidate_evidence(
     mutation: str,
 ) -> None:
-    result = select_stage_b_v2_winner(
-        _stage_b_v2_runs(),
+    result = select_stage_b_v3_winner(
+        _stage_b_v3_runs(),
         authority=_authority(),
     )
     winner = result.winner
@@ -746,6 +839,24 @@ def test_stage_b_verifier_rejects_replaced_candidate_evidence(
                 winner,
                 paired_rows=mutated_rows,
             )
+        elif mutation == "direction_game_losses":
+            mutated_direction = winner.direction_game_losses.copy()
+            mutated_direction.loc[
+                mutated_direction.index[0],
+                "brier_improvement",
+            ] += 1.0
+            mutated_winner = replace(
+                winner,
+                direction_game_losses=mutated_direction,
+            )
+        elif mutation == "direction_brier_metric":
+            mutated_winner = replace(
+                winner,
+                direction_brier_integrated_mean_improvement=(
+                    winner.direction_brier_integrated_mean_improvement
+                    + 1.0
+                ),
+            )
         else:
             mutated_winner = replace(
                 winner,
@@ -763,8 +874,11 @@ def test_stage_b_verifier_rejects_replaced_candidate_evidence(
             candidate_results=candidate_results,
         )
 
-    with pytest.raises(ModelSelectionError, match="Stage-B V2"):
-        selection_module.verify_stage_b_v2_selection_result(replaced)
+    with pytest.raises(ModelSelectionError, match="Stage-B V3"):
+        selection_module.verify_stage_b_v3_selection_result(
+            replaced,
+            authority=_authority(),
+        )
 
 
 @pytest.mark.parametrize(
@@ -779,8 +893,8 @@ def test_stage_b_verifier_rejects_typed_paired_row_cell_replacement(
     before: object,
     after: object,
 ) -> None:
-    result = select_stage_b_v2_winner(
-        _stage_b_v2_runs(),
+    result = select_stage_b_v3_winner(
+        _stage_b_v3_runs(),
         authority=_authority(),
     )
     winner = result.winner
@@ -825,10 +939,14 @@ def test_stage_b_verifier_rejects_typed_paired_row_cell_replacement(
             )
         ),
     )
-    assert (
-        selection_module.verify_stage_b_v2_selection_result(rebound)
-        is rebound
-    )
+    with pytest.raises(
+        ModelSelectionError,
+        match="paired_rows.*derived",
+    ):
+        selection_module.verify_stage_b_v3_selection_result(
+            rebound,
+            authority=_authority(),
+        )
 
     attacked_rows = paired_rows.copy()
     attacked_rows.at[
@@ -848,8 +966,266 @@ def test_stage_b_verifier_rejects_typed_paired_row_cell_replacement(
         candidate_results=attacked_candidates,
     )
 
-    with pytest.raises(ModelSelectionError, match="Stage-B V2"):
-        selection_module.verify_stage_b_v2_selection_result(attacked)
+    with pytest.raises(ModelSelectionError, match="Stage-B V3"):
+        selection_module.verify_stage_b_v3_selection_result(
+            attacked,
+            authority=_authority(),
+        )
+
+
+def _rebind_complete_stage_b_evidence(
+    selection,
+    *,
+    candidate_results,
+):
+    (
+        standard_errors,
+        expected_winner,
+        best_mean,
+        best_standard_error,
+        threshold,
+        within_one_se,
+    ) = selection_module._stage_b_decision(candidate_results)
+    rows = selection_module._stage_b_candidate_audit_rows(
+        candidate_results,
+        standard_errors=standard_errors,
+        within_one_se=within_one_se,
+        winner=expected_winner,
+        shared_run_config_sha256=selection.shared_run_config_sha256,
+        suite_run_config_sha256=selection.suite_run_config_sha256,
+    )
+    audit = pd.DataFrame(rows)
+    return replace(
+        selection,
+        decision_status=(
+            "MODEL_ADVANCE"
+            if expected_winner is not None
+            else "NO_MODEL_ADVANCE"
+        ),
+        winner=expected_winner,
+        candidate_results=candidate_results,
+        candidate_audit=audit,
+        best_integrated_mean_improvement=best_mean,
+        best_standard_error=best_standard_error,
+        one_se_threshold=threshold,
+        candidate_audit_sha256=(
+            selection_module._dataframe_evidence_sha256(
+                audit,
+                field="candidate_audit",
+            )
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "paired_joint_loss",
+        "paired_direction_loss",
+        "joint_game_loss",
+        "direction_game_log_loss",
+        "joint_anchor_loss",
+        "direction_anchor_brier",
+        "joint_ci",
+        "direction_brier_ci",
+        "anchor_gate",
+        "selected",
+    ),
+)
+def test_stage_b_verifier_rederives_all_statistically_material_evidence(
+    mutation: str,
+) -> None:
+    selection = select_stage_b_v3_winner(
+        _stage_b_v3_runs(),
+        authority=_authority(),
+    )
+    candidate = selection.candidate_results[0]
+    if mutation == "paired_joint_loss":
+        frame = candidate.paired_rows.copy()
+        frame.loc[frame.index[0], "loss_improvement"] += 0.5
+        mutated = replace(candidate, paired_rows=frame)
+    elif mutation == "paired_direction_loss":
+        frame = candidate.paired_rows.copy()
+        frame.loc[
+            frame.index[0],
+            "direction_log_loss_improvement",
+        ] += 0.5
+        mutated = replace(candidate, paired_rows=frame)
+    elif mutation == "joint_game_loss":
+        frame = candidate.game_losses.copy()
+        frame.loc[frame.index[0], "loss_improvement"] += 0.5
+        mutated = replace(candidate, game_losses=frame)
+    elif mutation == "direction_game_log_loss":
+        frame = candidate.direction_game_losses.copy()
+        frame.loc[frame.index[0], "log_loss_improvement"] += 0.5
+        mutated = replace(candidate, direction_game_losses=frame)
+    elif mutation == "joint_anchor_loss":
+        frame = candidate.anchor_game_losses.copy()
+        frame.loc[frame.index[0], "loss_improvement"] += 0.5
+        mutated = replace(candidate, anchor_game_losses=frame)
+    elif mutation == "direction_anchor_brier":
+        frame = candidate.direction_anchor_game_losses.copy()
+        frame.loc[frame.index[0], "brier_improvement"] += 0.5
+        mutated = replace(
+            candidate,
+            direction_anchor_game_losses=frame,
+        )
+    elif mutation == "joint_ci":
+        mutated = replace(
+            candidate,
+            integrated_ci_low=candidate.integrated_ci_low + 0.5,
+        )
+    elif mutation == "direction_brier_ci":
+        mutated = replace(
+            candidate,
+            direction_brier_integrated_ci_low=(
+                candidate.direction_brier_integrated_ci_low + 0.5
+            ),
+        )
+    elif mutation == "anchor_gate":
+        mutated = replace(
+            candidate,
+            direction_anchor_gate_passed=(
+                not candidate.direction_anchor_gate_passed
+            ),
+        )
+    else:
+        mutated = replace(candidate, selected=not candidate.selected)
+    candidates = (
+        mutated,
+        *selection.candidate_results[1:],
+    )
+    rebound = _rebind_complete_stage_b_evidence(
+        selection,
+        candidate_results=candidates,
+    )
+
+    with pytest.raises(
+        ModelSelectionError,
+        match="Stage-B V3 candidate evidence is internally inconsistent",
+    ):
+        selection_module.verify_stage_b_v3_selection_result(
+            rebound,
+            authority=_authority(),
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "nfl_week",
+        "fold_id",
+        "unknown_game_id",
+        "train_weeks_candidate_only",
+        "training_game_ids_candidate_only",
+        "validation_game_ids_both",
+        "preprocessor_fit_game_ids_both",
+        "authority_gate_scalar",
+        "authority_failures_scalar",
+    ),
+)
+def test_stage_b_verifier_rederives_frozen_authority_per_paired_row(
+    mutation: str,
+) -> None:
+    selection = select_stage_b_v3_winner(
+        _stage_b_v3_runs(),
+        authority=_authority(),
+    )
+    candidate = selection.candidate_results[0]
+    if mutation == "authority_gate_scalar":
+        mutated = replace(candidate, authority_gate_passed=False)
+    elif mutation == "authority_failures_scalar":
+        mutated = replace(
+            candidate,
+            authority_gate_failures=("FORGED_FAILURE",),
+        )
+    else:
+        paired = candidate.paired_rows.copy()
+        row = paired.index[0]
+        if mutation == "nfl_week":
+            row = paired.index[paired["nfl_week"].eq(3)][0]
+            paired.at[row, "nfl_week"] = 4
+        elif mutation == "fold_id":
+            paired.at[row, "fold_id"] = "fold_05"
+        elif mutation == "unknown_game_id":
+            paired.at[row, "game_id"] = "not-in-frozen-authority"
+        elif mutation == "train_weeks_candidate_only":
+            paired.at[row, "train_weeks_candidate"] = (99,)
+        elif mutation == "training_game_ids_candidate_only":
+            paired.at[row, "training_game_ids_candidate"] = (
+                "not-a-training-game",
+            )
+        elif mutation == "validation_game_ids_both":
+            paired.at[row, "validation_game_ids_b0"] = (
+                "not-a-validation-game",
+            )
+            paired.at[row, "validation_game_ids_candidate"] = (
+                "not-a-validation-game",
+            )
+        else:
+            paired.at[row, "preprocessor_fit_game_ids_b0"] = (
+                "not-a-training-game",
+            )
+            paired.at[row, "preprocessor_fit_game_ids_candidate"] = (
+                "not-a-training-game",
+            )
+        mutated = replace(candidate, paired_rows=paired)
+    rebound = _rebind_complete_stage_b_evidence(
+        selection,
+        candidate_results=(
+            mutated,
+            *selection.candidate_results[1:],
+        ),
+    )
+
+    with pytest.raises(
+        ModelSelectionError,
+        match="Stage-B V3 authority evidence is inconsistent",
+    ):
+        selection_module.verify_stage_b_v3_selection_result(
+            rebound,
+            authority=_authority(),
+        )
+
+
+def test_stage_b_verifier_rejects_coherent_week_swap_rehashed_against_self(
+) -> None:
+    independent_authority = _authority()
+    selection = select_stage_b_v3_winner(
+        _stage_b_v3_runs(),
+        authority=independent_authority,
+    )
+    swapped_metadata = _development_metadata()
+    week_one_index = swapped_metadata.index[
+        swapped_metadata["nfl_week"].eq(1)
+    ][0]
+    week_two_index = swapped_metadata.index[
+        swapped_metadata["nfl_week"].eq(2)
+    ][0]
+    swapped_metadata.loc[week_one_index, "nfl_week"] = 2
+    swapped_metadata.loc[week_two_index, "nfl_week"] = 1
+    self_authorized_swap = bind_frozen_development_authority(
+        swapped_metadata,
+        cohort_authority_sha256=AUTHORITY,
+    )
+    attacked = _rebind_complete_stage_b_evidence(
+        replace(
+            selection,
+            development_authority_metadata_sha256=(
+                self_authorized_swap.metadata_sha256
+            ),
+        ),
+        candidate_results=selection.candidate_results,
+    )
+
+    with pytest.raises(
+        ModelSelectionError,
+        match="Stage-B V3 authority evidence is inconsistent",
+    ):
+        selection_module.verify_stage_b_v3_selection_result(
+            attacked,
+            authority=independent_authority,
+        )
 
 
 @pytest.mark.parametrize(
@@ -858,7 +1234,10 @@ def test_stage_b_verifier_rejects_typed_paired_row_cell_replacement(
         "paired_rows",
         "episode_losses",
         "game_losses",
+        "direction_episode_losses",
+        "direction_game_losses",
         "anchor_game_losses",
+        "direction_anchor_game_losses",
     ),
 )
 @pytest.mark.parametrize(
@@ -1051,8 +1430,8 @@ def test_typed_dtype_descriptor_binds_datetime_and_arrow_metadata() -> None:
 
 def test_stage_b_verifier_rejects_candidate_audit_typed_cell_replacement(
 ) -> None:
-    result = select_stage_b_v2_winner(
-        _stage_b_v2_runs(),
+    result = select_stage_b_v3_winner(
+        _stage_b_v3_runs(),
         authority=_authority(),
     )
     attacked_audit = result.candidate_audit.copy()
@@ -1066,27 +1445,35 @@ def test_stage_b_verifier_rejects_candidate_audit_typed_cell_replacement(
     attacked = replace(result, candidate_audit=attacked_audit)
 
     with pytest.raises(ModelSelectionError, match="candidate audit"):
-        selection_module.verify_stage_b_v2_selection_result(attacked)
+        selection_module.verify_stage_b_v3_selection_result(
+            attacked,
+            authority=_authority(),
+        )
 
 
 def _stub_suite_results(
-    monkeypatch: pytest.MonkeyPatch,
     *,
     selected_means: dict[tuple[str, str], tuple[bool, float, float]],
-) -> None:
+) -> tuple[selection_module.ModelSelectionResult, ...]:
     base = select_candidate_against_b0(
         _run(),
         spec=_spec(),
         authority=_authority(),
     )
 
-    def stub(
-        model_run: X15ModelRun,
-        *,
-        spec: FrozenSelectionSpec,
-        authority,
+    results = []
+    for model_run, (
+        candidate_model_id,
+        candidate_feature_block_id,
+    ) in zip(
+        _stage_b_v3_runs(),
+        STAGE_B_CANDIDATE_SUITE,
+        strict=True,
     ):
-        del authority
+        spec = FrozenSelectionSpec(
+            candidate_model_id=candidate_model_id,
+            candidate_feature_block_id=candidate_feature_block_id,
+        )
         selected, mean, standard_error = selected_means[
             (spec.candidate_model_id, spec.candidate_feature_block_id)
         ]
@@ -1100,58 +1487,56 @@ def _stub_suite_results(
                 ),
             }
         )
-        return replace(
-            base,
-            spec=spec,
-            diagnostic_status=(
-                "HISTORICAL_SIGNAL_CANDIDATE"
-                if selected
-                else "HISTORICAL_SIGNAL_REJECTED"
-            ),
-            integrated_mean_improvement=mean,
-            integrated_ci_low=mean - 0.01,
-            integrated_ci_high=mean + 0.01,
-            integrated_gate_passed=selected,
-            anchor_mean_improvement=max(mean, 0.0),
-            anchor_sign_reversed=False,
-            anchor_gate_passed=selected,
-            game_losses=game_losses,
-            run_config_sha256=model_run.run_config_sha256,
-            selected=selected,
+        results.append(
+            replace(
+                base,
+                spec=spec,
+                diagnostic_status=(
+                    "HISTORICAL_SIGNAL_CANDIDATE"
+                    if selected
+                    else "HISTORICAL_SIGNAL_REJECTED"
+                ),
+                integrated_mean_improvement=mean,
+                integrated_ci_low=mean - 0.01,
+                integrated_ci_high=mean + 0.01,
+                integrated_gate_passed=selected,
+                anchor_mean_improvement=max(mean, 0.0),
+                anchor_sign_reversed=False,
+                anchor_gate_passed=selected,
+                game_losses=game_losses,
+                run_config_sha256=model_run.run_config_sha256,
+                selected=selected,
+            )
         )
-
-    monkeypatch.setattr(
-        selection_module,
-        "select_candidate_against_b0",
-        stub,
-    )
+    return tuple(results)
 
 
 def test_stage_b_no_gate_passes_means_no_model_advance(
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _stub_suite_results(
-        monkeypatch,
+    results = _stub_suite_results(
         selected_means={
             pair: (False, -0.01, 0.01)
             for pair in STAGE_B_CANDIDATE_SUITE
         },
     )
 
-    result = select_stage_b_v2_winner(
-        _stage_b_v2_runs(),
-        authority=_authority(),
+    (
+        _,
+        winner,
+        best_mean,
+        _,
+        _,
+        within_one_se,
+    ) = selection_module._stage_b_decision(
+        results
     )
 
-    assert result.decision_status == "NO_MODEL_ADVANCE"
-    assert result.winner is None
-    assert len(result.candidate_audit) == 8
-    assert not result.candidate_audit["within_one_se"].any()
-    assert not result.candidate_audit["final_winner"].any()
+    assert winner is None
+    assert best_mean is None
+    assert not any(within_one_se)
 
 
 def test_stage_b_one_se_rule_selects_simpler_eligible_candidate(
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     selected_means = {
         pair: (True, 0.10, 0.01)
@@ -1162,67 +1547,38 @@ def test_stage_b_one_se_rule_selects_simpler_eligible_candidate(
         0.16,
         0.01,
     )
-    selected_means[("shallow_xgboost_v1", "D4")] = (
+    selected_means[("shallow_xgboost_v1", "D3")] = (
         True,
         0.20,
         0.05,
     )
-    _stub_suite_results(
-        monkeypatch,
+    results = _stub_suite_results(
         selected_means=selected_means,
     )
 
-    result = select_stage_b_v2_winner(
-        _stage_b_v2_runs(),
-        authority=_authority(),
+    (
+        standard_errors,
+        winner,
+        _,
+        best_standard_error,
+        threshold,
+        within_one_se,
+    ) = selection_module._stage_b_decision(
+        results
     )
 
-    assert result.decision_status == "MODEL_ADVANCE"
-    assert result.winner is not None
+    assert winner is not None
     assert (
-        result.winner.spec.candidate_model_id,
-        result.winner.spec.candidate_feature_block_id,
+        winner.spec.candidate_model_id,
+        winner.spec.candidate_feature_block_id,
     ) == ("regularized_logistic_v1", "D1")
-    assert result.best_standard_error == pytest.approx(0.05)
-    assert result.one_se_threshold == pytest.approx(0.15)
-    assert result.candidate_audit["complexity_rank"].tolist() == list(
-        range(1, 9)
-    )
-    assert result.candidate_audit["winner_rule_sha256"].nunique() == 1
-    assert result.candidate_audit["cohort_authority_sha256"].nunique() == 1
-    assert result.candidate_audit["run_config_sha256"].nunique() == 8
-    assert (
-        result.candidate_audit["shared_run_config_sha256"].nunique()
-        == 1
-    )
-    assert result.candidate_audit_sha256 == (
-        selection_module._dataframe_evidence_sha256(
-            result.candidate_audit,
-            field="candidate_audit",
-        )
-    )
-    assert result.suite_run_config_sha256 == (
-        selection_module._canonical_sha256(
-            tuple(
-                {
-                    "candidate": candidate,
-                    "run_config_sha256": run.run_config_sha256,
-                }
-                for candidate, run in zip(
-                    STAGE_B_CANDIDATE_SUITE,
-                    _stage_b_v2_runs(),
-                    strict=True,
-                )
-            )
-        )
-    )
-    assert not (
-        result.candidate_audit["candidate_feature_block_id"] == "D0"
-    ).any()
+    assert best_standard_error == pytest.approx(0.05)
+    assert threshold == pytest.approx(0.15)
+    assert len(standard_errors) == 6
+    assert within_one_se[0] is True
 
 
 def test_stage_b_clearly_better_candidate_outside_one_se_wins(
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     selected_means = {
         pair: (True, 0.10, 0.01)
@@ -1233,34 +1589,36 @@ def test_stage_b_clearly_better_candidate_outside_one_se_wins(
         0.20,
         0.01,
     )
-    selected_means[("shallow_xgboost_v1", "D4")] = (
+    selected_means[("shallow_xgboost_v1", "D3")] = (
         True,
         0.30,
         0.01,
     )
-    _stub_suite_results(
-        monkeypatch,
+    results = _stub_suite_results(
         selected_means=selected_means,
     )
 
-    result = select_stage_b_v2_winner(
-        _stage_b_v2_runs(),
-        authority=_authority(),
+    (
+        _,
+        winner,
+        _,
+        _,
+        _,
+        within_one_se,
+    ) = selection_module._stage_b_decision(
+        results
     )
 
-    assert result.winner is not None
+    assert winner is not None
     assert (
-        result.winner.spec.candidate_model_id,
-        result.winner.spec.candidate_feature_block_id,
-    ) == ("shallow_xgboost_v1", "D4")
-    simple = result.candidate_audit.loc[
-        result.candidate_audit["complexity_rank"].eq(1)
-    ].iloc[0]
-    assert bool(simple["within_one_se"]) is False
+        winner.spec.candidate_model_id,
+        winner.spec.candidate_feature_block_id,
+    ) == ("shallow_xgboost_v1", "D3")
+    assert within_one_se[0] is False
 
 
 def test_stage_b_kalshi_rows_cannot_satisfy_candidate_suite() -> None:
-    runs = _stage_b_v2_runs()
+    runs = _stage_b_v3_runs()
     run = runs[0]
     missing_pair = STAGE_B_CANDIDATE_SUITE[0]
     predictions = run.oof_predictions.copy()
@@ -1272,8 +1630,8 @@ def test_stage_b_kalshi_rows_cannot_satisfy_candidate_suite() -> None:
     predictions.loc[kalshi_mask, "training_venue"] = "kalshi"
     predictions.loc[kalshi_mask, "calibration_venue"] = "kalshi"
 
-    with pytest.raises(ModelSelectionError, match="all 8 frozen"):
-        select_stage_b_v2_winner(
+    with pytest.raises(ModelSelectionError, match="all 6 frozen"):
+        select_stage_b_v3_winner(
             (
                 replace(run, oof_predictions=predictions),
                 *runs[1:],
@@ -1283,17 +1641,17 @@ def test_stage_b_kalshi_rows_cannot_satisfy_candidate_suite() -> None:
 
 
 def test_stage_b_rejects_duplicate_projection_candidate_identity() -> None:
-    runs = _stage_b_v2_runs()
+    runs = _stage_b_v3_runs()
 
     with pytest.raises(ModelSelectionError, match="duplicate candidate"):
-        select_stage_b_v2_winner(
+        select_stage_b_v3_winner(
             (*runs[:-1], runs[0]),
             authority=_authority(),
         )
 
 
 def test_stage_b_rejects_wrong_projection_run_identity() -> None:
-    runs = _stage_b_v2_runs()
+    runs = _stage_b_v3_runs()
     run = runs[0]
     run_config = dict(run.run_config)
     run_config["model_ids"] = (
@@ -1307,20 +1665,20 @@ def test_stage_b_rejects_wrong_projection_run_identity() -> None:
     )
 
     with pytest.raises(ModelSelectionError, match="run_config identity"):
-        select_stage_b_v2_winner(
+        select_stage_b_v3_winner(
             (drifted, *runs[1:]),
             authority=_authority(),
         )
 
 
 def test_stage_b_rejects_run_config_digest_mismatch() -> None:
-    runs = _stage_b_v2_runs()
+    runs = _stage_b_v3_runs()
     run = runs[0]
     run_config = dict(run.run_config)
     run_config["source_batch_sha256"] = "sha256:" + "e" * 64
 
     with pytest.raises(ModelSelectionError, match="SHA-256 mismatch"):
-        select_stage_b_v2_winner(
+        select_stage_b_v3_winner(
             (
                 replace(run, run_config=run_config),
                 *runs[1:],
@@ -1330,7 +1688,7 @@ def test_stage_b_rejects_run_config_digest_mismatch() -> None:
 
 
 def test_stage_b_rejects_duplicate_source_shard_identity() -> None:
-    runs = _stage_b_v2_runs()
+    runs = _stage_b_v3_runs()
     run = runs[0]
     run_config = dict(run.run_config)
     source_shards = list(run_config["source_shards"])
@@ -1343,7 +1701,7 @@ def test_stage_b_rejects_duplicate_source_shard_identity() -> None:
     )
 
     with pytest.raises(ModelSelectionError, match="source_shards"):
-        select_stage_b_v2_winner(
+        select_stage_b_v3_winner(
             (drifted, *runs[1:]),
             authority=_authority(),
         )
