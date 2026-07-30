@@ -1,12 +1,43 @@
 # NFL X-16 Next-Session Handoff
 
-Copy the prompt below into a new Codex session.
+## Authoritative X-16 Plan Location
+
+The complete, authoritative X-16 implementation plan is:
+
+```text
+Repository-relative:
+docs/superpowers/plans/2026-07-30-nfl-x16-reaction-trajectory.md
+
+Local absolute path:
+/Users/wekruitclaw1/Desktop/prediction-market/.worktrees/hft-time-evidence-audit-v1/docs/superpowers/plans/2026-07-30-nfl-x16-reaction-trajectory.md
+
+GitHub:
+https://github.com/WeKruit/SAF/blob/codex/hft-time-evidence-audit-v1/docs/superpowers/plans/2026-07-30-nfl-x16-reaction-trajectory.md
+```
+
+This handoff is only the next-session startup prompt. It does not replace,
+summarize, or override the X-16 plan. The next session must read the complete
+plan before inspecting implementation files or delegating work.
+
+Copy everything below the divider into a new Codex session.
 
 ---
 
 You are continuing the SAF repository's NFL research program.
 
-Repository:
+GitHub repository:
+
+```text
+https://github.com/WeKruit/SAF
+```
+
+Required branch:
+
+```text
+codex/hft-time-evidence-audit-v1
+```
+
+Local repository:
 
 ```text
 /Users/wekruitclaw1/Desktop/prediction-market
@@ -18,18 +49,26 @@ Canonical implementation worktree:
 /Users/wekruitclaw1/Desktop/prediction-market/.worktrees/hft-time-evidence-audit-v1
 ```
 
-Use the branch containing this handoff file. First run:
+First checkout and verify the required branch:
 
 ```bash
 git fetch origin
+git checkout codex/hft-time-evidence-audit-v1
+git pull --ff-only origin codex/hft-time-evidence-audit-v1
 git status --short --branch
 git rev-parse HEAD
 ```
 
-Read completely before editing:
+The authoritative X-16 plan is:
 
 ```text
 docs/superpowers/plans/2026-07-30-nfl-x16-reaction-trajectory.md
+```
+
+Read that complete file first. Then read the three program-level sources of
+truth before editing:
+
+```text
 charter/research_program_charter_v0.2.md
 charter/catalog_registry.csv
 charter/catalog_team_assignments.csv
