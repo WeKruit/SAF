@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NFL exact-153 两阶段研究状态报告</title><style>
+    :root{color-scheme:light;--ink:#17231f;--muted:#66746e;--line:#d9dfda;
+    --paper:#f5f3ec;--panel:#fffdfa;--green:#167a55;--green2:#d9f1e7;
+    --amber:#9a6714;--amber2:#fff0c9;--red:#a43c36;--red2:#f9dcd8;
+    --blue:#315f9a;--blue2:#dfeaf8}
+    *{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);
+    font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",
+    "Hiragino Sans GB","Microsoft YaHei",sans-serif}.page{max-width:1480px;
+    margin:auto;padding:34px 42px 80px}h1{font:700 36px/1.15 Georgia,
+    "Songti SC",serif;margin:0 0 10px}h2{font:700 23px/1.2 Georgia,
+    "Songti SC",serif;margin:36px 0 14px}h3{font-size:17px;margin:22px 0 10px}
+    .lede{color:var(--muted);max-width:920px}.badges{display:flex;gap:9px;
+    flex-wrap:wrap;margin:20px 0}.badge{border:1px solid var(--line);background:
+    var(--panel);padding:7px 11px;border-radius:999px;font-weight:650}.grid{
+    display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.card{
+    background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    padding:20px;box-shadow:0 4px 16px rgba(24,38,32,.04)}.callout{
+    border-left:5px solid var(--blue);background:var(--blue2);padding:13px 15px;
+    margin:12px 0;border-radius:8px}.callout.pass{border-color:var(--green);
+    background:var(--green2)}.callout.pending{border-color:var(--amber);
+    background:var(--amber2)}.callout.fail{border-color:var(--red);
+    background:var(--red2)}.callout.neutral{border-color:#78837e;background:#e9ecea}
+    .table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px;
+    background:var(--panel)}table{border-collapse:collapse;width:100%;min-width:680px}
+    th,td{padding:10px 12px;border-bottom:1px solid var(--line);text-align:left;
+    vertical-align:top}thead th{background:#ecefe9;font-size:12px;text-transform:
+    uppercase;letter-spacing:.04em}tbody tr:last-child td,tbody tr:last-child th{
+    border-bottom:0}.heat{text-align:center!important;font-weight:700}.heat.done{
+    background:var(--green2);color:var(--green)}.heat.pending{background:var(--amber2);
+    color:var(--amber)}.heat.na{background:#eef0ee;color:#88918d}.path{font:12px/1.4
+    ui-monospace,SFMono-Regular,Menlo,monospace;word-break:break-all}.foot{
+    margin-top:36px;color:var(--muted);font-size:13px}
+    @media(max-width:850px){.page{padding:24px 16px}.grid{grid-template-columns:1fr}}
+    </style></head>
+<body><main class="page">
+<h1>NFL exact-153 两阶段研究状态报告</h1>
+<p class="lede">离线报告 · 只读取 SHA-256 验证的 content-addressed artifacts。
+部分阶段未完成时只报告进度，不从 partial shards 推断结论。</p>
+<div class="badges">
+<span class="badge">Factor V4：PASS</span>
+<span class="badge">Stage A：PASS</span>
+<span class="badge">Stage B：PARTIAL_DIAGNOSTIC_ONLY</span>
+<span class="badge">Development Gate：BLOCKED</span>
+<span class="badge">153 场 development</span>
+<span class="badge">Holdout：SEALED</span>
+</div>
+
+<h2>1. 当前 State / Progress</h2>
+<div class="callout fail"><b>
+Development Gate：BLOCKED</b><br>
+现有 exact45/selection/Kalshi 只能作为诊断，不得 shortlist 或读取 holdout。
+</div>
+<div class="table-wrap"><table class=""><thead><tr><th>Blocker ID</th><th>审核含义</th></tr></thead><tbody><tr><td>OT_SCOPE_CONTAMINATION</td><td>OT 样本范围污染；旧 exact45 仅作诊断</td></tr><tr><td>PIT_PRESTATE_REFERENCE_NOT_PROPAGATED</td><td>约 70% 可得的 PIT p_before 未传播到 Stage B</td></tr><tr><td>FINALIZED_EPISODE_NOT_BUILT</td><td>审核登记的 development blocker</td></tr><tr><td>DUPLICATE_SEMANTIC_FEATURES</td><td>审核登记的 development blocker</td></tr></tbody></table></div>
+<div class="grid">
+<section class="card"><h3>153 场事实覆盖</h3>
+<div class="table-wrap"><table class=""><thead><tr><th>项目</th><th>真实值</th></tr></thead><tbody><tr><td>比赛</td><td>153</td></tr><tr><td>Raw PBP</td><td>26,192</td></tr><tr><td>Canonical factor events</td><td>26,192</td></tr><tr><td>Factor hits</td><td>83,659</td></tr><tr><td>Coverage rows</td><td>9,027</td></tr><tr><td>Silent loss</td><td>0</td></tr><tr><td>Factor definitions</td><td>59</td></tr></tbody></table></div></section>
+<section class="card"><h3>Stage A：体育 reference</h3>
+<div class="table-wrap"><table class=""><thead><tr><th>指标</th><th>真实值</th></tr></thead><tbody><tr><td>Model</td><td>MODEL-NFL-FASTRMODELS-NO-SPREAD-CLOCK-V1</td></tr><tr><td>Model version</td><td>9f2495fdb4943087ca663d96706eb5df7973aff4</td></tr><tr><td>Evaluated games</td><td>153</td></tr><tr><td>Evaluated states</td><td>21,641</td></tr><tr><td>Brier</td><td>0.158593</td></tr><tr><td>Log loss</td><td>0.470834</td></tr><tr><td>Calibration slope</td><td>1.091129</td></tr><tr><td>Calibration intercept</td><td>-0.021436</td></tr></tbody></table></div></section>
+</div>
+<section class="card" style="margin-top:18px"><h3>exact45 运行进度</h3>
+<div class="callout pending"><b>PARTIAL_DIAGNOSTIC_ONLY</b>
+<br>6 / 45 个冻结执行单元已发布并进入 authority。</div>
+<div class="table-wrap"><table class="heatmap"><thead><tr><th>真实执行单元</th><th>fold_01</th><th>fold_02</th><th>fold_03</th><th>fold_04</th><th>fold_05</th></tr></thead><tbody><tr><th>b0_empirical_v1 · D0</th><td class="heat done" title="fold_01|b0_empirical_v1|D0">完成</td><td class="heat pending" title="fold_02|b0_empirical_v1|D0">待运行</td><td class="heat pending" title="fold_03|b0_empirical_v1|D0">待运行</td><td class="heat pending" title="fold_04|b0_empirical_v1|D0">待运行</td><td class="heat pending" title="fold_05|b0_empirical_v1|D0">待运行</td></tr><tr><th>regularized_logistic_v1 · D0</th><td class="heat done" title="fold_01|regularized_logistic_v1|D0">完成</td><td class="heat pending" title="fold_02|regularized_logistic_v1|D0">待运行</td><td class="heat pending" title="fold_03|regularized_logistic_v1|D0">待运行</td><td class="heat pending" title="fold_04|regularized_logistic_v1|D0">待运行</td><td class="heat pending" title="fold_05|regularized_logistic_v1|D0">待运行</td></tr><tr><th>regularized_logistic_v1 · D1</th><td class="heat done" title="fold_01|regularized_logistic_v1|D1">完成</td><td class="heat pending" title="fold_02|regularized_logistic_v1|D1">待运行</td><td class="heat pending" title="fold_03|regularized_logistic_v1|D1">待运行</td><td class="heat pending" title="fold_04|regularized_logistic_v1|D1">待运行</td><td class="heat pending" title="fold_05|regularized_logistic_v1|D1">待运行</td></tr><tr><th>regularized_logistic_v1 · D2</th><td class="heat done" title="fold_01|regularized_logistic_v1|D2">完成</td><td class="heat pending" title="fold_02|regularized_logistic_v1|D2">待运行</td><td class="heat pending" title="fold_03|regularized_logistic_v1|D2">待运行</td><td class="heat pending" title="fold_04|regularized_logistic_v1|D2">待运行</td><td class="heat pending" title="fold_05|regularized_logistic_v1|D2">待运行</td></tr><tr><th>regularized_logistic_v1 · D3</th><td class="heat done" title="fold_01|regularized_logistic_v1|D3">完成</td><td class="heat pending" title="fold_02|regularized_logistic_v1|D3">待运行</td><td class="heat pending" title="fold_03|regularized_logistic_v1|D3">待运行</td><td class="heat pending" title="fold_04|regularized_logistic_v1|D3">待运行</td><td class="heat pending" title="fold_05|regularized_logistic_v1|D3">待运行</td></tr><tr><th>shallow_xgboost_v1 · D0</th><td class="heat done" title="fold_01|shallow_xgboost_v1|D0">完成</td><td class="heat pending" title="fold_02|shallow_xgboost_v1|D0">待运行</td><td class="heat pending" title="fold_03|shallow_xgboost_v1|D0">待运行</td><td class="heat pending" title="fold_04|shallow_xgboost_v1|D0">待运行</td><td class="heat pending" title="fold_05|shallow_xgboost_v1|D0">待运行</td></tr><tr><th>shallow_xgboost_v1 · D1</th><td class="heat pending" title="fold_01|shallow_xgboost_v1|D1">待运行</td><td class="heat pending" title="fold_02|shallow_xgboost_v1|D1">待运行</td><td class="heat pending" title="fold_03|shallow_xgboost_v1|D1">待运行</td><td class="heat pending" title="fold_04|shallow_xgboost_v1|D1">待运行</td><td class="heat pending" title="fold_05|shallow_xgboost_v1|D1">待运行</td></tr><tr><th>shallow_xgboost_v1 · D2</th><td class="heat pending" title="fold_01|shallow_xgboost_v1|D2">待运行</td><td class="heat pending" title="fold_02|shallow_xgboost_v1|D2">待运行</td><td class="heat pending" title="fold_03|shallow_xgboost_v1|D2">待运行</td><td class="heat pending" title="fold_04|shallow_xgboost_v1|D2">待运行</td><td class="heat pending" title="fold_05|shallow_xgboost_v1|D2">待运行</td></tr><tr><th>shallow_xgboost_v1 · D3</th><td class="heat pending" title="fold_01|shallow_xgboost_v1|D3">待运行</td><td class="heat pending" title="fold_02|shallow_xgboost_v1|D3">待运行</td><td class="heat pending" title="fold_03|shallow_xgboost_v1|D3">待运行</td><td class="heat pending" title="fold_04|shallow_xgboost_v1|D3">待运行</td><td class="heat pending" title="fold_05|shallow_xgboost_v1|D3">待运行</td></tr></tbody></table></div></section>
+
+<h2>2. 模型与 Feature Block</h2>
+<div class="table-wrap"><table class=""><thead><tr><th>模型</th><th>Block</th><th>PIT 输入</th><th>完成 folds</th><th>计划 folds</th><th>状态</th></tr></thead><tbody><tr><td>b0_empirical_v1</td><td>D0</td><td>L/H 时间控制</td><td>1</td><td>5</td><td>PARTIAL</td></tr><tr><td>regularized_logistic_v1</td><td>D0</td><td>L/H 时间控制</td><td>1</td><td>5</td><td>PARTIAL</td></tr><tr><td>regularized_logistic_v1</td><td>D1</td><td>D0 + 价格、staleness、30/60s 成交活跃度</td><td>1</td><td>5</td><td>PARTIAL</td></tr><tr><td>regularized_logistic_v1</td><td>D2</td><td>D1 + 比赛时钟、比分、球权、档数、距离、场地</td><td>1</td><td>5</td><td>PARTIAL</td></tr><tr><td>regularized_logistic_v1</td><td>D3</td><td>D2 + event/action 与 Factor V4 multi-hot</td><td>1</td><td>5</td><td>PARTIAL</td></tr><tr><td>shallow_xgboost_v1</td><td>D0</td><td>L/H 时间控制</td><td>1</td><td>5</td><td>PARTIAL</td></tr><tr><td>shallow_xgboost_v1</td><td>D1</td><td>D0 + 价格、staleness、30/60s 成交活跃度</td><td>0</td><td>5</td><td>PARTIAL</td></tr><tr><td>shallow_xgboost_v1</td><td>D2</td><td>D1 + 比赛时钟、比分、球权、档数、距离、场地</td><td>0</td><td>5</td><td>PARTIAL</td></tr><tr><td>shallow_xgboost_v1</td><td>D3</td><td>D2 + event/action 与 Factor V4 multi-hot</td><td>0</td><td>5</td><td>PARTIAL</td></tr></tbody></table></div>
+<div class="callout neutral"><b>D4：UNSUPPORTED_FEATURE_BLOCK</b><br>
+Stage A 的 event-after reference 字段在 L=1/2/3/5/10 秒 decision rows 上
+没有 PIT support，因此不进入 Stage B selection。</div>
+
+<h2>3. Polymarket Stage B 方向概率</h2>
+<div class="callout fail"><b>Selection promotion gate：BLOCKED</b><br>当前 exact45 只可作为诊断，不能进入 shortlist 或 holdout。</div><div class="callout pending"><b>Stage B selection artifact：PENDING</b><br>selection result 尚未发布；本报告不从 partial shards 推断 winner 或方向指标。</div>
+
+<h2>4. Kalshi 冻结 Winner 验证</h2>
+<div class="callout fail"><b>Kalshi gate：BLOCKED</b><br>尚无 Kalshi artifact；不得作为 cross-venue promotion。</div>
+
+<h2>5. 条件幅度 / Magnitude</h2>
+<div class="callout fail"><b>Magnitude gate：BLOCKED</b><br>Probability development gate 未通过，不能把条件幅度结果晋升为正式 follow-up。</div>
+
+<h2>6. Holdout Gate</h2>
+<div class="callout fail"><b>
+Holdout gate：BLOCKED</b><br>
+81 场 holdout reaction read count 保持 0；development blockers 清除并重新发布 authority 前禁止读取。
+</div>
+
+<h2>7. Verified Artifacts / Lineage</h2>
+<div class="table-wrap"><table class="path"><thead><tr><th>Artifact</th><th>状态</th><th>文件 SHA-256</th><th>绝对路径</th><th>Schema</th></tr></thead><tbody><tr><td>Factor V4</td><td>VERIFIED</td><td>sha256:5d693723e991b7f691dab2826308773a0ce6a30564c37dcb7d4a1cb9e1580757</td><td>/Users/wekruitclaw1/Desktop/prediction-market/.worktrees/hft-time-evidence-audit-v1/artifacts/market-observation/nfl/x13/exact-153-facts-v4/batches/manifests/sha256/5d/5d693723e991b7f691dab2826308773a0ce6a30564c37dcb7d4a1cb9e1580757.batch-index.json</td><td>nfl_x13_exact153_fact_batch_index_v4</td></tr><tr><td>Stage A</td><td>VERIFIED</td><td>sha256:50040cc83d44f5a62d70cbac92d2aa4d8064bbd4b9c3b36f79fe578bd72a2182</td><td>/Users/wekruitclaw1/Desktop/prediction-market/.worktrees/hft-time-evidence-audit-v1/artifacts/market-observation/nfl/x15/stage-a-reference-v1/batches/manifests/sha256/50/50040cc83d44f5a62d70cbac92d2aa4d8064bbd4b9c3b36f79fe578bd72a2182.batch-index.json</td><td>nfl_x15_stage_a_batch_index_v1</td></tr><tr><td>exact45 authority</td><td>VERIFIED</td><td>sha256:394284a39aee4dd7d2b76439194e7990cf4aeeb2112710b8ef216a35a28ba023</td><td>/Users/wekruitclaw1/Desktop/prediction-market/.worktrees/hft-time-evidence-audit-v1/artifacts/market-observation/nfl/x15/stage-b-probability-oof-v2/selection-v3/batches/manifests/sha256/39/394284a39aee4dd7d2b76439194e7990cf4aeeb2112710b8ef216a35a28ba023.batch-index.json</td><td>nfl_x15_selection_batch_v3</td></tr><tr><td>selection result</td><td>NOT_PUBLISHED</td><td>—</td><td>—</td><td>—</td></tr><tr><td>Kalshi validation</td><td>NOT_PUBLISHED</td><td>—</td><td>—</td><td>—</td></tr><tr><td>magnitude result</td><td>NOT_PUBLISHED</td><td>—</td><td>—</td><td>—</td></tr></tbody></table></div>
+
+<h2>8. Claim Boundary</h2>
+<div class="table-wrap"><table class=""><thead><tr><th>层</th><th>允许的结论</th></tr></thead><tbody><tr><td>Factor V4</td><td>DEVELOPMENT_SPORTS_FACTS_ONLY; no market reaction, holdout reaction, causality, execution, or alpha claim</td></tr><tr><td>Stage A</td><td>RETROSPECTIVE_DIAGNOSTIC; frozen official no-spread model; not live-PIT latency, causality, execution, or alpha evidence</td></tr><tr><td>Stage B</td><td>HISTORICAL_TRADES_ONLY_SOURCE_TIME_PROBABILITY_DIAGNOSTIC</td></tr><tr><td>明确排除</td><td>不声称 live latency、因果、bid/ask execution、L2/OFI、queue、maker fill、可交易 alpha；holdout 尚未读取。</td></tr></tbody></table></div>
+<p class="foot">本页中的颜色热力图只编码 exact45 manifest 的真实
+observed/missing execution cell table；不编码未发布的模型效果。</p>
+</main></body></html>
