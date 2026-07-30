@@ -404,6 +404,70 @@ def _sha256(value: object) -> str:
     return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _sha256_row_stream(
+    rows: Iterable[Mapping[str, object]],
+    *,
+    envelope: Mapping[str, object] | None = None,
+) -> str:
+    """Hash canonical row records without materializing two full Python lists.
+
+    ``_sha256`` first canonicalizes the complete value and then serializes it,
+    which temporarily duplicates every row dictionary.  The governed training
+    hashes use already-sorted row records, so they can be serialized one at a
+    time while preserving the exact JSON byte contract.
+    """
+
+    digest = hashlib.sha256()
+    if envelope is None:
+        digest.update(b"[")
+        suffix = b"]"
+    else:
+        canonical_envelope = _canonical(envelope)
+        if not isinstance(canonical_envelope, dict):
+            raise TypeError("hash envelope must canonicalize to a dictionary")
+        if "rows" in canonical_envelope:
+            raise TypeError("hash envelope must not contain rows")
+        if any(str(key) > "rows" for key in canonical_envelope):
+            raise TypeError("hash envelope keys must sort before rows")
+        prefix = json.dumps(
+            canonical_envelope,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        digest.update(prefix[:-1].encode("utf-8"))
+        if canonical_envelope:
+            digest.update(b",")
+        digest.update(b'"rows":[')
+        suffix = b"]}"
+    first = True
+    for row in rows:
+        if not first:
+            digest.update(b",")
+        digest.update(
+            json.dumps(
+                _canonical(row),
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        )
+        first = False
+    digest.update(suffix)
+    return "sha256:" + digest.hexdigest()
+
+
+def _canonical_scalar_json(value: object) -> str:
+    """Return the exact canonical scalar JSON used as a stable sort key."""
+
+    return json.dumps(
+        _canonical(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
 def effective_random_state(
     *,
     base_random_state: int,
@@ -662,8 +726,21 @@ def _annotate_discrete_survival_intervals(
             for index, value in ordered["endpoint_seconds"].items()
         }
         survival_failed = False
-        for index, row in ordered.iterrows():
-            cumulative_truth = row["s_h"]
+        for (
+            index,
+            cumulative_truth,
+            interval_start_value,
+            landmark_seconds_value,
+            decision_eligible,
+        ) in ordered.loc[
+            :,
+            [
+                "s_h",
+                "_s_interval_start_seconds",
+                "landmark_seconds",
+                "decision_eligible",
+            ],
+        ].itertuples(index=True, name=None):
             if pd.notna(cumulative_truth):
                 if bool(cumulative_truth) and survival_failed:
                     raise X15ModelInputError(
@@ -671,10 +748,10 @@ def _annotate_discrete_survival_intervals(
                     )
                 if not bool(cumulative_truth):
                     survival_failed = True
-            interval_start = int(row["_s_interval_start_seconds"])
-            landmark_seconds = int(row["landmark_seconds"])
+            interval_start = int(interval_start_value)
+            landmark_seconds = int(landmark_seconds_value)
             if interval_start == landmark_seconds:
-                at_risk = bool(row["decision_eligible"])
+                at_risk = bool(decision_eligible)
             else:
                 prior_index = by_endpoint.get(interval_start)
                 if prior_index is None:
@@ -683,7 +760,7 @@ def _annotate_discrete_survival_intervals(
                     )
                 prior_truth = frame.at[prior_index, "s_h"]
                 at_risk = bool(
-                    row["decision_eligible"]
+                    decision_eligible
                     and pd.notna(prior_truth)
                     and bool(prior_truth)
                 )
@@ -1178,34 +1255,43 @@ def _feature_bundle(
     )
     train_matrix = np.asarray(transformer.fit_transform(train), dtype=float)
     validation_matrix = np.asarray(transformer.transform(validation), dtype=float)
-    digest_rows = sorted(
-        [
-            {
-                "game_id": str(row["game_id"]),
-                "source_row_id": int(row["_source_row_id"]),
-                "decision_feature_sha256": str(
-                    row["decision_feature_sha256"]
-                ),
-            }
-            for _, row in train_frame.iterrows()
-        ],
-        key=lambda item: (
-            item["game_id"],
-            item["source_row_id"],
-            item["decision_feature_sha256"],
-        ),
+    digest_frame = pd.DataFrame(
+        {
+            "game_id": train_frame["game_id"].astype(str),
+            "source_row_id": pd.to_numeric(
+                train_frame["_source_row_id"], errors="raise"
+            ).astype(int),
+            "decision_feature_sha256": train_frame[
+                "decision_feature_sha256"
+            ].astype(str),
+        },
+        index=train_frame.index,
+    ).sort_values(
+        ["game_id", "source_row_id", "decision_feature_sha256"],
+        kind="mergesort",
     )
     return _FeatureBundle(
         transformer=transformer,
         train_matrix=train_matrix,
         validation_matrix=validation_matrix,
         columns=columns,
-        training_sha256=_sha256(
-            {
+        training_sha256=_sha256_row_stream(
+            (
+                {
+                    "game_id": game_id,
+                    "source_row_id": source_row_id,
+                    "decision_feature_sha256": decision_feature_sha256,
+                }
+                for (
+                    game_id,
+                    source_row_id,
+                    decision_feature_sha256,
+                ) in digest_frame.itertuples(index=False, name=None)
+            ),
+            envelope={
                 "feature_block_id": block_id,
                 "columns": columns,
-                "rows": digest_rows,
-            }
+            },
         ),
     )
 
@@ -1248,40 +1334,82 @@ def _training_hash(
     weights: pd.Series,
 ) -> str:
     mask = _head_mask(frame, head)
-    rows = sorted(
-        [
-            {
-                "game_id": str(row.game_id),
-                "episode_id": str(row.atomic_information_episode_id),
-                "source_row_id": int(row._source_row_id),
-                "decision_feature_sha256": str(row.decision_feature_sha256),
-                "truth": _canonical(
-                    row._s_interval_truth
-                    if head == "S_H"
-                    else row.o_h_given_s
-                    if head == "O_H_GIVEN_S"
-                    else row._direction_truth
-                ),
-                "weight": float(weights.loc[index]),
-            }
-            for index, row in frame.loc[mask].iterrows()
-        ],
-        key=lambda item: (
-            item["game_id"],
-            item["episode_id"],
-            item["source_row_id"],
-            item["decision_feature_sha256"],
-            json.dumps(item["truth"], sort_keys=True),
-            item["weight"],
-        ),
+    truth_column = (
+        "_s_interval_truth"
+        if head == "S_H"
+        else "o_h_given_s"
+        if head == "O_H_GIVEN_S"
+        else "_direction_truth"
     )
-    return _sha256(
-        {
+    selected = frame.loc[
+        mask,
+        [
+            "game_id",
+            "atomic_information_episode_id",
+            "_source_row_id",
+            "decision_feature_sha256",
+            truth_column,
+        ],
+    ].copy()
+    selected["_weight"] = weights.loc[selected.index].to_numpy(dtype=float)
+    selected["game_id"] = selected["game_id"].astype(str)
+    selected["atomic_information_episode_id"] = selected[
+        "atomic_information_episode_id"
+    ].astype(str)
+    selected["_source_row_id"] = pd.to_numeric(
+        selected["_source_row_id"], errors="raise"
+    ).astype(int)
+    selected["decision_feature_sha256"] = selected[
+        "decision_feature_sha256"
+    ].astype(str)
+    selected["_truth_sort"] = selected[truth_column].map(
+        _canonical_scalar_json
+    )
+    selected = selected.sort_values(
+        [
+            "game_id",
+            "atomic_information_episode_id",
+            "_source_row_id",
+            "decision_feature_sha256",
+            "_truth_sort",
+            "_weight",
+        ],
+        kind="mergesort",
+    )
+    return _sha256_row_stream(
+        (
+            {
+                "game_id": game_id,
+                "episode_id": episode_id,
+                "source_row_id": source_row_id,
+                "decision_feature_sha256": decision_feature_sha256,
+                "truth": truth,
+                "weight": weight,
+            }
+            for (
+                game_id,
+                episode_id,
+                source_row_id,
+                decision_feature_sha256,
+                truth,
+                weight,
+            ) in selected.loc[
+                :,
+                [
+                    "game_id",
+                    "atomic_information_episode_id",
+                    "_source_row_id",
+                    "decision_feature_sha256",
+                    truth_column,
+                    "_weight",
+                ],
+            ].itertuples(index=False, name=None)
+        ),
+        envelope={
             "model_id": model_id,
             "feature_block_id": block_id,
             "head": head,
-            "rows": rows,
-        }
+        },
     )
 
 
@@ -1559,17 +1687,18 @@ def _prequential_calibrator(
             np.asarray(
                 [
                     "|".join(
-                        (
-                            str(row["game_id"]),
-                            str(row["atomic_information_episode_id"]),
-                            str(row["venue"]),
-                            str(row["landmark_seconds"]),
-                            str(row["endpoint_seconds"]),
-                        )
+                        map(str, values)
                     )
-                    for _, row in inner_validation.loc[
-                        evaluation_mask
-                    ].iterrows()
+                    for values in inner_validation.loc[
+                        evaluation_mask,
+                        [
+                            "game_id",
+                            "atomic_information_episode_id",
+                            "venue",
+                            "landmark_seconds",
+                            "endpoint_seconds",
+                        ],
+                    ].itertuples(index=False, name=None)
                 ]
             )
         )
@@ -1714,26 +1843,86 @@ def _prediction_rows(
     calibrated: Mapping[str, np.ndarray],
     validation_weights: Mapping[str, pd.Series],
 ) -> list[dict[str, object]]:
+    model_spec_sha256 = _sha256(
+        {
+            "model_id": model_id,
+            "logistic": {
+                "C": 0.5,
+                "solver": "lbfgs",
+                "max_iter": 1_000,
+            },
+            "xgboost": (
+                _XGB_PARAMS
+                if model_id == "shallow_xgboost_v1"
+                else None
+            ),
+            "b0_strata": (
+                ("landmark_seconds", "endpoint_seconds")
+                if model_id == "b0_empirical_v1"
+                else None
+            ),
+        }
+    )
+    calibrator_fit_game_ids = {
+        head: tuple(sorted(calibrators[head].fit_game_ids))
+        for head in ("S_H", "O_H_GIVEN_S", "DIRECTION")
+    }
+    validation_weight_arrays = {
+        head: validation_weights[head]
+        .reindex(validation.index)
+        .to_numpy(dtype=float)
+        for head in ("S_H", "O_H_GIVEN_S", "DIRECTION")
+    }
+    source_columns = [
+        "_source_row_id",
+        "game_id",
+        "nfl_week",
+        "atomic_information_episode_id",
+        "actual_home_contract_id",
+        "landmark_seconds",
+        "endpoint_seconds",
+        "target_eligible",
+        "s_h",
+        "o_h_given_s",
+        "_direction_truth",
+        "_conditional_magnitude",
+    ]
     rows: list[dict[str, object]] = []
-    for position, (_, source) in enumerate(validation.iterrows()):
-        direction_truth = source["_direction_truth"]
-        survived = pd.notna(source["s_h"]) and bool(source["s_h"])
+    for position, source in enumerate(
+        validation.loc[:, source_columns].itertuples(
+            index=False, name=None
+        )
+    ):
+        (
+            source_row_id,
+            game_id,
+            nfl_week,
+            episode_id,
+            actual_home_contract_id,
+            landmark_seconds,
+            endpoint_seconds,
+            target_eligible_value,
+            s_h,
+            o_h_given_s,
+            direction_truth,
+            conditional_magnitude,
+        ) = source
+        target_eligible = bool(target_eligible_value)
+        survived = pd.notna(s_h) and bool(s_h)
         rows.append(
             {
-                "source_row_id": int(source["_source_row_id"]),
+                "source_row_id": int(source_row_id),
                 "cohort_authority_sha256": cohort_authority_sha256,
-                "game_id": source["game_id"],
-                "nfl_week": int(source["nfl_week"]),
-                "atomic_information_episode_id": source[
-                    "atomic_information_episode_id"
-                ],
+                "game_id": game_id,
+                "nfl_week": int(nfl_week),
+                "atomic_information_episode_id": episode_id,
                 "venue": evaluation_venue,
                 "training_venue": training_venue,
                 "calibration_venue": training_venue,
                 "transport_mode": transport_mode,
-                "actual_home_contract_id": source["actual_home_contract_id"],
-                "landmark_seconds": int(source["landmark_seconds"]),
-                "endpoint_seconds": int(source["endpoint_seconds"]),
+                "actual_home_contract_id": actual_home_contract_id,
+                "landmark_seconds": int(landmark_seconds),
+                "endpoint_seconds": int(endpoint_seconds),
                 "fold_id": fold.fold_id,
                 "train_weeks": fold.train_weeks,
                 "validation_weeks": fold.validation_weeks,
@@ -1743,37 +1932,38 @@ def _prediction_rows(
                 "model_id": model_id,
                 "feature_block_id": block_id,
                 "decision_eligible": True,
-                "target_eligible": bool(source["target_eligible"]),
+                "target_eligible": target_eligible,
                 "s_h_truth": (
-                    bool(source["s_h"]) if pd.notna(source["s_h"]) else pd.NA
+                    bool(s_h) if pd.notna(s_h) else pd.NA
                 ),
                 "o_h_given_s_truth": (
-                    bool(source["o_h_given_s"])
-                    if survived
-                    and pd.notna(source["o_h_given_s"])
+                    bool(o_h_given_s)
+                    if survived and pd.notna(o_h_given_s)
                     else pd.NA
                 ),
                 "direction_truth": (
                     str(direction_truth)
                     if pd.notna(direction_truth)
-                    and bool(source["target_eligible"])
+                    and target_eligible
                     else pd.NA
                 ),
                 "direction_truth_status": (
-                    "AVAILABLE" if bool(source["target_eligible"]) else "UNAVAILABLE"
+                    "AVAILABLE" if target_eligible else "UNAVAILABLE"
                 ),
                 "conditional_magnitude_truth": (
-                    float(source["_conditional_magnitude"])
-                    if bool(source["target_eligible"])
+                    float(conditional_magnitude)
+                    if target_eligible
                     and str(direction_truth) in DIRECTION_CONDITIONS
                     else math.nan
                 ),
-                "s_h_weight": float(validation_weights["S_H"].loc[source.name]),
+                "s_h_weight": float(
+                    validation_weight_arrays["S_H"][position]
+                ),
                 "o_h_given_s_weight": float(
-                    validation_weights["O_H_GIVEN_S"].loc[source.name]
+                    validation_weight_arrays["O_H_GIVEN_S"][position]
                 ),
                 "direction_weight": float(
-                    validation_weights["DIRECTION"].loc[source.name]
+                    validation_weight_arrays["DIRECTION"][position]
                 ),
                 "s_h_support_status": fits["S_H"].status,
                 "o_h_given_s_support_status": fits["O_H_GIVEN_S"].status,
@@ -1820,14 +2010,12 @@ def _prediction_rows(
                 "calibration_support_min_games": calibrators[
                     "S_H"
                 ].support_min_games,
-                "calibrator_fit_game_ids_s_h": tuple(
-                    sorted(calibrators["S_H"].fit_game_ids)
+                "calibrator_fit_game_ids_s_h": calibrator_fit_game_ids["S_H"],
+                "calibrator_fit_game_ids_o_h_given_s": (
+                    calibrator_fit_game_ids["O_H_GIVEN_S"]
                 ),
-                "calibrator_fit_game_ids_o_h_given_s": tuple(
-                    sorted(calibrators["O_H_GIVEN_S"].fit_game_ids)
-                ),
-                "calibrator_fit_game_ids_direction": tuple(
-                    sorted(calibrators["DIRECTION"].fit_game_ids)
+                "calibrator_fit_game_ids_direction": (
+                    calibrator_fit_game_ids["DIRECTION"]
                 ),
                 "training_data_sha256": training_data_sha256,
                 "preprocessor_training_sha256": bundle.training_sha256,
@@ -1848,26 +2036,7 @@ def _prediction_rows(
                     "DIRECTION"
                 ].training_sha256,
                 "feature_block_sha256": feature_block_sha256,
-                "model_spec_sha256": _sha256(
-                    {
-                        "model_id": model_id,
-                        "logistic": {
-                            "C": 0.5,
-                            "solver": "lbfgs",
-                            "max_iter": 1_000,
-                        },
-                        "xgboost": (
-                            _XGB_PARAMS
-                            if model_id == "shallow_xgboost_v1"
-                            else None
-                        ),
-                        "b0_strata": (
-                            ("landmark_seconds", "endpoint_seconds")
-                            if model_id == "b0_empirical_v1"
-                            else None
-                        ),
-                    }
-                ),
+                "model_spec_sha256": model_spec_sha256,
                 "fold_sha256": fold_sha256,
             }
         )
@@ -2038,33 +2207,92 @@ def _probability_metric_rows(predictions: pd.DataFrame) -> list[dict[str, object
 
 
 def _training_data_hash(frame: pd.DataFrame) -> str:
-    rows = sorted(
+    work = frame.loc[
+        :,
         [
-            {
-                "game_id": str(row["game_id"]),
-                "episode_id": str(row["atomic_information_episode_id"]),
-                "source_row_id": int(row["_source_row_id"]),
-                "venue": str(row["venue"]),
-                "decision_feature_sha256": str(
-                    row["decision_feature_sha256"]
-                ),
-                "s_h": _canonical(row["s_h"]),
-                "o_h_given_s": _canonical(row["o_h_given_s"]),
-                "direction": _canonical(row["_direction_truth"]),
-                "magnitude": _canonical(row["_conditional_magnitude"]),
-            }
-            for _, row in frame.iterrows()
+            "game_id",
+            "atomic_information_episode_id",
+            "_source_row_id",
+            "venue",
+            "decision_feature_sha256",
+            "s_h",
+            "o_h_given_s",
+            "_direction_truth",
+            "_conditional_magnitude",
         ],
-        key=lambda item: (
-            item["game_id"],
-            item["episode_id"],
-            item["source_row_id"],
-            item["venue"],
-            item["decision_feature_sha256"],
-            json.dumps(item, sort_keys=True),
-        ),
+    ].copy()
+    work["game_id"] = work["game_id"].astype(str)
+    work["atomic_information_episode_id"] = work[
+        "atomic_information_episode_id"
+    ].astype(str)
+    work["_source_row_id"] = pd.to_numeric(
+        work["_source_row_id"], errors="raise"
+    ).astype(int)
+    work["venue"] = work["venue"].astype(str)
+    work["decision_feature_sha256"] = work[
+        "decision_feature_sha256"
+    ].astype(str)
+    canonical_columns = (
+        "_direction_truth",
+        "_conditional_magnitude",
+        "o_h_given_s",
+        "s_h",
     )
-    return _sha256(rows)
+    sort_columns: list[str] = []
+    for position, column in enumerate(canonical_columns):
+        sort_column = f"_canonical_sort_{position}"
+        work[sort_column] = work[column].map(_canonical_scalar_json)
+        sort_columns.append(sort_column)
+    work = work.sort_values(
+        [
+            "game_id",
+            "atomic_information_episode_id",
+            "_source_row_id",
+            "venue",
+            "decision_feature_sha256",
+            *sort_columns,
+        ],
+        kind="mergesort",
+    )
+    return _sha256_row_stream(
+        (
+            {
+                "game_id": game_id,
+                "episode_id": episode_id,
+                "source_row_id": source_row_id,
+                "venue": venue,
+                "decision_feature_sha256": decision_feature_sha256,
+                "s_h": s_h,
+                "o_h_given_s": o_h_given_s,
+                "direction": direction,
+                "magnitude": magnitude,
+            }
+            for (
+                game_id,
+                episode_id,
+                source_row_id,
+                venue,
+                decision_feature_sha256,
+                s_h,
+                o_h_given_s,
+                direction,
+                magnitude,
+            ) in work.loc[
+                :,
+                [
+                    "game_id",
+                    "atomic_information_episode_id",
+                    "_source_row_id",
+                    "venue",
+                    "decision_feature_sha256",
+                    "s_h",
+                    "o_h_given_s",
+                    "_direction_truth",
+                    "_conditional_magnitude",
+                ],
+            ].itertuples(index=False, name=None)
+        )
+    )
 
 
 def _magnitude_outputs(
@@ -2105,15 +2333,18 @@ def _magnitude_outputs(
         row_ids=np.asarray(
             [
                 "|".join(
-                    (
-                        str(row["game_id"]),
-                        str(row["atomic_information_episode_id"]),
-                        str(row["venue"]),
-                        str(row["landmark_seconds"]),
-                        str(row["endpoint_seconds"]),
-                    )
+                    map(str, values)
                 )
-                for _, row in train.loc[mask].iterrows()
+                for values in train.loc[
+                    mask,
+                    [
+                        "game_id",
+                        "atomic_information_episode_id",
+                        "venue",
+                        "landmark_seconds",
+                        "endpoint_seconds",
+                    ],
+                ].itertuples(index=False, name=None)
             ]
         ),
         support_contract=support_contract,
@@ -2125,6 +2356,30 @@ def _magnitude_outputs(
     support_rows: list[dict[str, object]] = []
     output_rows: list[dict[str, object]] = []
     quantile_columns = [f"q{int(value * 100):02d}" for value in PRIMARY_QUANTILES]
+    magnitude_model_spec_sha256 = _sha256(
+        {
+            "model_id": QUANTILE_MODEL_ID,
+            "primary_quantiles": PRIMARY_QUANTILES,
+            "support_contract": support_contract,
+        }
+    )
+    validation_weight_array = validation_weights.reindex(
+        validation.index
+    ).to_numpy(dtype=float)
+    validation_values = tuple(
+        validation.loc[
+            :,
+            [
+                "_source_row_id",
+                "game_id",
+                "nfl_week",
+                "atomic_information_episode_id",
+                "target_eligible",
+                "_direction_truth",
+                "_conditional_magnitude",
+            ],
+        ].itertuples(index=False, name=None)
+    )
     for direction in DIRECTION_CONDITIONS:
         support = fitted.support[direction]
         support_rows.append(
@@ -2159,25 +2414,40 @@ def _magnitude_outputs(
             }
         )
         predicted = fitted.predict(validation_features, direction=direction)
-        for position, (_, source) in enumerate(validation.iterrows()):
+        predicted_arrays = {
+            column: pd.to_numeric(
+                predicted[column], errors="coerce"
+            ).to_numpy(dtype=float)
+            for column in ("q05", *quantile_columns, "q95")
+            if column in predicted
+        }
+        for position, source in enumerate(validation_values):
+            (
+                source_row_id,
+                game_id,
+                nfl_week,
+                episode_id,
+                target_eligible_value,
+                direction_truth,
+                conditional_magnitude,
+            ) = source
+            target_eligible = bool(target_eligible_value)
             values = {
                 column: (
-                    float(predicted.iloc[position][column])
-                    if column in predicted
-                    and pd.notna(predicted.iloc[position][column])
+                    float(predicted_arrays[column][position])
+                    if column in predicted_arrays
+                    and not np.isnan(predicted_arrays[column][position])
                     else math.nan
                 )
                 for column in quantile_columns
             }
             output_rows.append(
                 {
-                    "source_row_id": int(source["_source_row_id"]),
+                    "source_row_id": int(source_row_id),
                     "cohort_authority_sha256": cohort_authority_sha256,
-                    "game_id": source["game_id"],
-                    "nfl_week": int(source["nfl_week"]),
-                    "atomic_information_episode_id": source[
-                        "atomic_information_episode_id"
-                    ],
+                    "game_id": game_id,
+                    "nfl_week": int(nfl_week),
+                    "atomic_information_episode_id": episode_id,
                     "venue": evaluation_venue,
                     "training_venue": training_venue,
                     "calibration_venue": training_venue,
@@ -2187,46 +2457,37 @@ def _magnitude_outputs(
                     "model_id": QUANTILE_MODEL_ID,
                     "direction_condition": direction,
                     "direction_truth": (
-                        source["_direction_truth"]
-                        if bool(source["target_eligible"])
-                        else pd.NA
+                        direction_truth if target_eligible else pd.NA
                     ),
                     "conditional_magnitude_truth": (
-                        float(source["_conditional_magnitude"])
-                        if bool(source["target_eligible"])
-                        and source["_direction_truth"] == direction
+                        float(conditional_magnitude)
+                        if target_eligible
+                        and direction_truth == direction
                         else math.nan
                     ),
                     "magnitude_weight": (
-                        float(validation_weights.loc[source.name])
-                        if bool(source["target_eligible"])
-                        and source["_direction_truth"] == direction
+                        float(validation_weight_array[position])
+                        if target_eligible and direction_truth == direction
                         else 0.0
                     ),
                     "support_status": support.primary_status,
                     "extreme_quantile_status": support.extreme_status,
                     "q05": (
-                        float(predicted.iloc[position]["q05"])
-                        if "q05" in predicted
-                        and pd.notna(predicted.iloc[position]["q05"])
+                        float(predicted_arrays["q05"][position])
+                        if "q05" in predicted_arrays
+                        and not np.isnan(predicted_arrays["q05"][position])
                         else math.nan
                     ),
                     **values,
                     "q95": (
-                        float(predicted.iloc[position]["q95"])
-                        if "q95" in predicted
-                        and pd.notna(predicted.iloc[position]["q95"])
+                        float(predicted_arrays["q95"][position])
+                        if "q95" in predicted_arrays
+                        and not np.isnan(predicted_arrays["q95"][position])
                         else math.nan
                     ),
                     "preprocessor_training_sha256": bundle.training_sha256,
                     "quantile_training_sha256": support.training_sha256,
-                    "model_spec_sha256": _sha256(
-                        {
-                            "model_id": QUANTILE_MODEL_ID,
-                            "primary_quantiles": PRIMARY_QUANTILES,
-                            "support_contract": support_contract,
-                        }
-                    ),
+                    "model_spec_sha256": magnitude_model_spec_sha256,
                     "preprocessor_fit_game_ids": training_game_ids,
                 }
             )

@@ -1,0 +1,196 @@
+<!doctype html><html lang="zh-CN"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NFL X-15 153场两阶段概率研究</title><style>
+    :root{--ink:#18201d;--muted:#65716b;--paper:#f6f2e8;--card:#fffdf7;
+      --line:#d8d0bf;--green:#267a50;--red:#a23c38;--amber:#9a6a16}
+    *{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);
+      font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",
+      sans-serif;line-height:1.45}.wrap{max-width:1500px;margin:auto;padding:28px}
+    h1,h2,h3{font-family:Georgia,"Times New Roman",serif;margin:.2em 0 .6em}
+    h1{font-size:2.25rem}.sub{color:var(--muted);max-width:1050px}
+    .hero{display:grid;grid-template-columns:1.5fr 1fr;gap:18px}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:14px;
+      padding:20px;box-shadow:0 8px 24px rgba(40,35,20,.05)}
+    .decision{font-size:1.45rem;font-weight:800;color:var(--red)}
+    .chips{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+    .chip{border:1px solid var(--line);border-radius:999px;padding:5px 10px;
+      font-size:.85rem;background:#fff}.chip.good{color:var(--green)}
+    .chip.bad{color:var(--red)}.metrics{display:grid;
+      grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+    .metric{padding:12px;border-left:3px solid var(--green);background:#faf7ef}
+    .metric b{display:block;font-size:1.25rem}.metric span{color:var(--muted);
+      font-size:.8rem}.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:24px 0 12px}
+    button{border:1px solid var(--line);background:#fff;padding:9px 13px;
+      border-radius:9px;cursor:pointer}button.active{background:var(--ink);color:white}
+    .tab{display:none}.tab.active{display:block}table{width:100%;
+      border-collapse:collapse;font-variant-numeric:tabular-nums;font-size:.88rem}
+    th,td{border-bottom:1px solid var(--line);padding:9px 10px;text-align:right}
+    th:first-child,td:first-child,th:nth-child(2),td:nth-child(2){text-align:left}
+    th{position:sticky;top:0;background:#ede7d9;z-index:1}.scroll{overflow:auto;
+      max-height:690px;border:1px solid var(--line);border-radius:10px}
+    .gate{font-weight:800}.gate.pass{color:var(--green)}.gate.fail{color:var(--red)}
+    .note{border-left:4px solid var(--amber);padding:10px 14px;background:#fff7df}
+    .flow{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}
+    .flow div{padding:12px;border:1px solid var(--line);background:#fff;
+      border-radius:9px;text-align:center}.hash{font-family:ui-monospace,SFMono-Regular,
+      Menlo,monospace;font-size:.74rem;word-break:break-all}.two{display:grid;
+      grid-template-columns:1fr 1fr;gap:16px}a{color:#195d82}
+    @media(max-width:900px){.hero,.two{grid-template-columns:1fr}
+      .metrics{grid-template-columns:repeat(2,1fr)}.flow{grid-template-columns:1fr}}
+    </style></head><body>
+<main class="wrap">
+  <div class="hero">
+    <section class="card"><div class="sub">NFL X-15 · exact-153 development</div>
+      <h1>比赛事实 → 合理胜率 → 市场反应概率</h1>
+      <p class="sub">这是当前 canonical、holdout-blind 的两阶段研究结论。
+      Stage A 是冻结 no-spread 模型在 153 场上的 retrospective diagnostic；
+      Stage B 才是按比赛等权、按周向前的 OOF 验证，预测事件后是否出现新成交，
+      以及有成交时价格方向。</p>
+      <div class="chips"><span class="chip good">153 games</span>
+      <span class="chip good">123 OOF games</span>
+      <span class="chip good">94,964
+      unique OOF source rows</span>
+      <span class="chip bad">Holdout reads: 0</span></div>
+      <a href="http://127.0.0.1:8890/lab/tree/notebooks/nfl-factor-lab/NFL_Factor_Lab_Master.ipynb">打开 Master Notebook（localhost:8890）</a>
+    </section>
+    <aside class="card"><h2>正式决策</h2>
+      <div class="decision">NO_MODEL_ADVANCE</div>
+      <p><b>NO_CANDIDATE_PASSED</b></p>
+      <p>本次冻结的六个候选中 0 个同时通过 joint、availability、direction
+      和 anchor 门槛；结论只是否定这六个候选在当前 target 上的晋级，
+      不否定其他 factor 或未来预注册模型。81场 holdout 保持封存。</p>
+    </aside>
+  </div>
+
+  <div class="tabs">
+    <button data-tab="state" class="active">State / 当前状态</button>
+    <button data-tab="selection">Model gates / 模型门</button>
+    <button data-tab="folds">Fold heatmap / 逐折</button>
+    <button data-tab="stagea">Stage A / 胜率</button>
+    <button data-tab="kalshi">Kalshi / 规则与验证</button>
+    <button data-tab="audit">Audit / 谱系</button>
+  </div>
+
+  <section id="state" class="tab active card">
+    <h2>全链路状态</h2>
+    <div class="flow"><div>153场 FactsV4<br><b>PASS</b></div>
+      <div>PIA + Prestate<br><b>PASS</b></div>
+      <div>PanelV4<br><b>PASS</b></div>
+      <div>45-cell OOF<br><b>PASS</b></div>
+      <div>Selection<br><b>NO ADVANCE</b></div></div>
+    <h3>Panel 真实样本</h3>
+    <div class="metrics">
+      <div class="metric"><b>2,857,980</b>
+        <span>Panel rows（anchor × L × H 展开）</span></div>
+      <div class="metric"><b>801,249</b>
+        <span>Loss eligible</span></div>
+      <div class="metric"><b>737,844</b>
+        <span>Availability = 1</span></div>
+      <div class="metric"><b>63,405</b>
+        <span>Availability = 0</span></div>
+    </div>
+    <div class="note"><b>大白话：</b>我们已经能回答“这个事件之后，在给定时间窗
+    内有没有新的实际成交”以及“有成交时价格向上/不变/向下的概率”。
+    当前复杂模型主要学会了成交是否出现，却没有稳定提高方向判断。</div>
+    <p><b>独立单位：</b>153 场 development cohort；其中
+    123 场进入 OOF 验证，
+    120 场进入 anchor gate。
+    854,676 是 45 个模型 cell 的累计行数，
+    同一 source-risk-set 会跨模型重复；去重后是
+    94,964 条 OOF source rows，
+    统计推断仍以 game 为 cluster。</p>
+  </section>
+
+  <section id="selection" class="tab card">
+    <h2>六个候选的 10,000 次 game-cluster bootstrap 门</h2>
+    <p>下表都是 <b>B0 loss − candidate loss</b>：正数代表候选更好。
+    只有所有强制门均通过才可晋升。</p>
+    <div class="scroll"><table><thead><tr><th>Model</th><th>Block</th>
+      <th>Games</th><th>Joint mean</th><th>Joint CI low</th>
+      <th>Avail LL CI low</th><th>Direction LL CI low</th>
+      <th>Anchor</th><th>Final gate</th></tr></thead>
+      <tbody><tr><td>regularized_logistic_v1</td><td>D1</td><td>123</td><td style='background:rgba(45,155,96,0.497)'>+0.0361</td><td style='background:rgba(45,155,96,0.365)'>+0.0241</td><td style='background:rgba(45,155,96,0.395)'>+0.0268</td><td style='background:rgba(207,70,65,0.243)'>-0.0130</td><td>PASS</td><td class='gate fail'>FAIL</td></tr><tr><td>regularized_logistic_v1</td><td>D2</td><td>123</td><td style='background:rgba(45,155,96,0.515)'>+0.0377</td><td style='background:rgba(45,155,96,0.375)'>+0.0250</td><td style='background:rgba(45,155,96,0.382)'>+0.0256</td><td style='background:rgba(207,70,65,0.282)'>-0.0165</td><td>PASS</td><td class='gate fail'>FAIL</td></tr><tr><td>regularized_logistic_v1</td><td>D3</td><td>123</td><td style='background:rgba(45,155,96,0.562)'>+0.0420</td><td style='background:rgba(45,155,96,0.408)'>+0.0280</td><td style='background:rgba(45,155,96,0.352)'>+0.0229</td><td style='background:rgba(207,70,65,0.239)'>-0.0126</td><td>PASS</td><td class='gate fail'>FAIL</td></tr><tr><td>shallow_xgboost_v1</td><td>D1</td><td>123</td><td style='background:rgba(207,70,65,0.338)'>-0.0217</td><td style='background:rgba(207,70,65,0.459)'>-0.0327</td><td style='background:rgba(207,70,65,0.470)'>-0.0336</td><td style='background:rgba(207,70,65,0.152)'>-0.0048</td><td>FAIL</td><td class='gate fail'>FAIL</td></tr><tr><td>shallow_xgboost_v1</td><td>D2</td><td>123</td><td style='background:rgba(207,70,65,0.291)'>-0.0174</td><td style='background:rgba(207,70,65,0.414)'>-0.0286</td><td style='background:rgba(207,70,65,0.439)'>-0.0308</td><td style='background:rgba(207,70,65,0.130)'>-0.0028</td><td>PASS</td><td class='gate fail'>FAIL</td></tr><tr><td>shallow_xgboost_v1</td><td>D3</td><td>123</td><td style='background:rgba(207,70,65,0.257)'>-0.0143</td><td style='background:rgba(207,70,65,0.385)'>-0.0259</td><td style='background:rgba(207,70,65,0.432)'>-0.0302</td><td style='background:rgba(45,155,96,0.111)'>+0.0010</td><td>PASS</td><td class='gate fail'>FAIL</td></tr></tbody></table></div>
+    <div class="two" style="margin-top:16px">
+      <div class="note"><b>Logistic D1–D3：</b>joint 与 availability 确有改善，
+      但 direction 的置信区间下界为负，说明跨比赛不够稳定。</div>
+      <div class="note"><b>XGBoost：</b>D3 的 direction 有改善，但牺牲了
+      availability 与整体 joint；D1/D2 更弱。</div>
+    </div>
+    <h3>Target 与 feature block 的精确定义</h3>
+    <p><b>Availability：</b>已有 landmark actual trade、连续性有效且未被下一信息
+    事件等 censor 后，区间 <code>(T+L, T+H]</code> 是否出现新的实际成交。
+    <code>availability=0</code> 不是“盘口不可交易”。</p>
+    <p><b>Direction：</b>仅在出现新实际成交时，比较 HOME_TEAM_OUTCOME 的
+    最新同秒 size-weighted trade mark 与 landmark mark；变化 ≥+1pp 为 UP，
+    ≤−1pp 为 DOWN，中间为 NO_MOVE。没有成交绝不记为 NO_MOVE。</p>
+    <p><b>D0</b>：L/H 时间网格基线；<b>D1</b>：加入 landmark 价格、
+    staleness 与 30/60 秒成交活跃度；<b>D2</b>：再加入比赛 pre-state 与
+    <code>p_before</code>；<b>D3</b>：再加入 provisional event 语义。</p>
+  </section>
+
+  <section id="folds" class="tab card">
+    <h2>逐折 joint log-loss 改善热力图</h2>
+    <p>绿色为优于同折 B0，红色为差于 B0。逐折变化说明为什么不能只看总均值。</p>
+    <div class="scroll"><table><thead><tr><th>Model</th><th>Block</th>
+      <th>Fold 1</th><th>Fold 2</th><th>Fold 3</th><th>Fold 4</th>
+      <th>Fold 5</th></tr></thead><tbody><tr><td>regularized_logistic_v1</td><td>D1</td><td style='background:rgba(45,155,96,0.298)'>+0.0180</td><td style='background:rgba(45,155,96,0.454)'>+0.0322</td><td style='background:rgba(45,155,96,0.316)'>+0.0196</td><td style='background:rgba(45,155,96,0.392)'>+0.0266</td><td style='background:rgba(45,155,96,0.650)'>+0.0798</td></tr><tr><td>regularized_logistic_v1</td><td>D2</td><td style='background:rgba(45,155,96,0.298)'>+0.0180</td><td style='background:rgba(45,155,96,0.508)'>+0.0371</td><td style='background:rgba(45,155,96,0.307)'>+0.0188</td><td style='background:rgba(45,155,96,0.389)'>+0.0262</td><td style='background:rgba(45,155,96,0.650)'>+0.0831</td></tr><tr><td>regularized_logistic_v1</td><td>D3</td><td style='background:rgba(45,155,96,0.150)'>+0.0045</td><td style='background:rgba(45,155,96,0.589)'>+0.0445</td><td style='background:rgba(45,155,96,0.393)'>+0.0267</td><td style='background:rgba(45,155,96,0.473)'>+0.0339</td><td style='background:rgba(45,155,96,0.650)'>+0.0952</td></tr><tr><td>shallow_xgboost_v1</td><td>D1</td><td style='background:rgba(207,70,65,0.650)'>-0.0554</td><td style='background:rgba(207,70,65,0.650)'>-0.0584</td><td style='background:rgba(207,70,65,0.191)'>-0.0082</td><td style='background:rgba(207,70,65,0.313)'>-0.0193</td><td style='background:rgba(45,155,96,0.495)'>+0.0359</td></tr><tr><td>shallow_xgboost_v1</td><td>D2</td><td style='background:rgba(207,70,65,0.650)'>-0.0568</td><td style='background:rgba(207,70,65,0.650)'>-0.0553</td><td style='background:rgba(207,70,65,0.162)'>-0.0056</td><td style='background:rgba(207,70,65,0.160)'>-0.0055</td><td style='background:rgba(45,155,96,0.534)'>+0.0395</td></tr><tr><td>shallow_xgboost_v1</td><td>D3</td><td style='background:rgba(207,70,65,0.650)'>-0.0565</td><td style='background:rgba(207,70,65,0.650)'>-0.0549</td><td style='background:rgba(207,70,65,0.200)'>-0.0091</td><td style='background:rgba(207,70,65,0.115)'>-0.0013</td><td style='background:rgba(45,155,96,0.650)'>+0.0523</td></tr></tbody></table></div>
+  </section>
+
+  <section id="stagea" class="tab card">
+    <h2>Stage A：参考胜率模型</h2>
+    <div class="metrics">
+      <div class="metric"><b>0.158593</b>
+        <span>Brier（95% CI 0.138409
+        – 0.179448）</span></div>
+      <div class="metric"><b>0.470834</b>
+        <span>Log loss（95% CI 0.419756
+        – 0.523813）</span></div>
+      <div class="metric"><b>1.0911</b>
+        <span>Calibration slope（理想 1）</span></div>
+      <div class="metric"><b>-0.0214</b>
+        <span>Calibration intercept（理想 0）</span></div>
+    </div>
+    <p>覆盖 153 场、
+    21,641 个支持状态；CI 来自 10,000 次
+    game-cluster bootstrap。</p>
+    <p>冻结的 nflfastR/fastrmodels no-spread XGBoost 是
+    <b>retrospective diagnostic reference</b>，不是市场真值，也不是
+    live-PIT latency 证据。它帮助把“同为 INT/TD 但比赛状态不同”的影响统一到
+    胜率概率点上。</p>
+  </section>
+
+  <section id="kalshi" class="tab card">
+    <h2>Kalshi：现在能说什么</h2>
+    <div class="metrics">
+      <div class="metric"><b>153/153</b>
+        <span>Completed non-tie 可比</span></div>
+      <div class="metric"><b>0/153</b>
+        <span>严格规则等价</span></div>
+      <div class="metric"><b>0</b><span>Holdout reaction reads</span></div>
+      <div class="metric"><b>NOT APPLICABLE</b><span>Candidate transport</span></div>
+    </div>
+    <p>已证明 153 场完成且非平局时，两 venue 的实际胜者命题可作
+    <b>描述性对照</b>；但 152 场存在 tie-clause 差异，另 1 场规则仍
+    unproven，所以不能声称严格合约等价。</p>
+    <div class="note"><b>两件事分开：</b>Gate 2 因规则不等价而禁止 formal
+    contract transport；更早一步，SelectionLock 没有 winner，所以本轮
+    candidate transport 根本未运行（NOT_APPLICABLE），不能写成一次失败的
+    Kalshi 验证，也不能把 Kalshi 变成第二个 development set。</div>
+  </section>
+
+  <section id="audit" class="tab card">
+    <h2>不可变谱系与边界</h2>
+    <table><thead><tr><th>Artifact</th><th>SHA-256</th></tr></thead>
+      <tbody><tr><td>Stage A</td><td class='hash'>sha256:50040cc83d44f5a62d70cbac92d2aa4d8064bbd4b9c3b36f79fe578bd72a2182</td></tr><tr><td>PanelV4</td><td class='hash'>sha256:fd6bec0b2731c7b2fb544c6bf804cec86d0d1ed4d5d01c83092138ebddd95783</td></tr><tr><td>Exact-45 OOF</td><td class='hash'>sha256:52357af81a293f9544301ce528fcf2278f529b333b80808f29152745af3c84f4</td></tr><tr><td>SelectionLock</td><td class='hash'>sha256:20451fd224891a7b7bf0073d223b3f690935f07a140a434ec4dd8ce027eb6031</td></tr><tr><td>Native rule audit</td><td class='hash'>sha256:83394c31840c6e1903092da6567a86407f29d83df25687567171bba459b39c93</td></tr><tr><td>Selection semantic</td><td class='hash'>sha256:24506144a538dc71d248eb770d1eb3ffb7b8f5e5560e04994c484eeaeda07ba1</td></tr><tr><td>Selection lock semantic</td><td class='hash'>sha256:ffca3fdfcdf5dd8a31ad5cee067e7fc2853557659e05ae5e633b082ab6ee632c</td></tr></tbody></table>
+    <p class="hash">Claim boundary: DEVELOPMENT_HISTORICAL_ACTUAL_TRADES_ONLY;SOURCE_TIME_PROBABILITY_DIAGNOSTIC;NO_LIVE_LATENCY;NO_CAUSALITY;NO_EXECUTION;NO_ALPHA_CLAIM</p>
+    <p>不声称真实 latency、因果、bid/ask、L2、fill、执行性或可交易 alpha；
+    不读取 81 场 final holdout；不进行真实资金、maker、hedging 或下单。</p>
+  </section>
+</main><script>
+    const buttons=[...document.querySelectorAll('[data-tab]')];
+    buttons.forEach(b=>b.addEventListener('click',()=>{
+      buttons.forEach(x=>x.classList.toggle('active',x===b));
+      document.querySelectorAll('.tab').forEach(x=>
+        x.classList.toggle('active',x.id===b.dataset.tab));
+    }));
+    </script></body></html>
