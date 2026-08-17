@@ -127,3 +127,4 @@ ART-X-014,registries/experiments/X-14.yaml,B+C+D2+H,v0,2026-08-05_W2_review,regi
 ART-X-015,registries/experiments/X-15.yaml,C+D2+E+H,v0,2026-08-05_W2_review,registered
 ART-H-013,artifacts/validation/validation_standard_v1.md,H,v1,2026-08-05_W2_review,registered
 ART-A-021,artifacts/architecture/trading_layer_design_v0.md,A+B+C,v0,pending_program_review,registered
+ART-B-009,docs/superpowers/plans/2026-08-17-mlb-max-trading-layer.md,B+D4+H,v0,pending_program_review,registered
